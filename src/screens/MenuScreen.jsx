@@ -106,6 +106,16 @@ export default function MenuScreen({ navigation }) {
       </Text>
 
       <TouchableOpacity
+        style={styles.menuItem}
+        onPress={() => navigation.navigate('QRGenerator')}
+        activeOpacity={0.8}
+      >
+        <Ionicons name="qr-code-outline" size={24} color={colors.primary} />
+        <Text style={styles.menuItemText}>Customer QR Generator</Text>
+        <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
+      </TouchableOpacity>
+
+      <TouchableOpacity
         style={styles.logoutBtn}
         onPress={handleLogout}
         activeOpacity={0.8}
@@ -135,7 +145,23 @@ const styles = StyleSheet.create({
   },
   syncText: { color: '#fff', fontSize: 16, fontWeight: '600' },
   lastSync: { fontSize: 12, color: colors.textSecondary, marginBottom: 4 },
-  hint: { fontSize: 11, color: colors.textSecondary, marginBottom: spacing.xl },
+  hint: { fontSize: 11, color: colors.textSecondary, marginBottom: spacing.md },
+  menuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: colors.surface,
+    paddingVertical: 14,
+    paddingHorizontal: spacing.md,
+    borderRadius: borderRadius.md,
+    marginBottom: spacing.md,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 3,
+  },
+  menuItemText: { fontSize: 16, fontWeight: '600', color: colors.text, flex: 1 },
   logoutBtn: {
     flexDirection: 'row',
     alignItems: 'center',

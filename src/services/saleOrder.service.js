@@ -16,6 +16,7 @@ export const getAllSaleOrders = () =>
         "state",
         "date_order",
         "amount_total",
+        "order_line",
       ],
       order: "date_order desc",
       limit: 50, // change if needed

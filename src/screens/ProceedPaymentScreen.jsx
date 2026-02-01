@@ -74,7 +74,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
 
       <View style={styles.card}>
         <Text style={styles.label}>Total Amount</Text>
-        <Text style={styles.total}>Rs. {total}</Text>
+        <Text style={styles.total}>LKR {Number(total).toFixed(2)}</Text>
       </View>
 
       <TouchableOpacity

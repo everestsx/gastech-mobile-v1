@@ -98,7 +98,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
         </TouchableOpacity>
       </View>
 
-      <Text style={styles.price}>Rs. {item.price_total}</Text>
+      <Text style={styles.price}>LKR {Number(item.price_total).toFixed(2)}</Text>
     </View>
   );
 
@@ -131,17 +131,17 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
       <View style={styles.summary}>
         <View style={styles.row}>
           <Text style={styles.label}>Subtotal</Text>
-          <Text style={styles.value}>Rs. {order.amount_untaxed}</Text>
+          <Text style={styles.value}>LKR {Number(order.amount_untaxed).toFixed(2)}</Text>
         </View>
 
         <View style={styles.row}>
           <Text style={styles.label}>Tax</Text>
-          <Text style={styles.value}>Rs. {order.amount_tax}</Text>
+          <Text style={styles.value}>LKR {Number(order.amount_tax).toFixed(2)}</Text>
         </View>
 
         <View style={styles.row}>
           <Text style={styles.totalLabel}>Total</Text>
-          <Text style={styles.totalValue}>Rs. {order.amount_total}</Text>
+          <Text style={styles.totalValue}>LKR {Number(order.amount_total).toFixed(2)}</Text>
         </View>
       </View>
 

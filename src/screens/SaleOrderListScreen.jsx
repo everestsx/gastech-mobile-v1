@@ -121,7 +121,7 @@ export default function SaleOrderListScreen({ route, navigation }) {
 
             <View style={styles.rowBetween}>
               <Text style={styles.date}>{item.date_order}</Text>
-              <Text style={styles.amount}>Rs. {item.amount_total}</Text>
+              <Text style={styles.amount}>LKR {Number(item.amount_total).toFixed(2)}</Text>
             </View>
           </TouchableOpacity>
         )}

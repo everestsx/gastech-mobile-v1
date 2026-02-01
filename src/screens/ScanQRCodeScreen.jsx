@@ -6,7 +6,8 @@ import { colors } from '../constants/theme';
 
 const CUSTOMER_PREFIX = 'CUSTOMER:';
 
-export default function ScanQRCodeScreen({ navigation }) {
+export default function ScanQRCodeScreen({ navigation, route }) {
+  const returnTo = route?.params?.returnTo ?? null;
   const [permission, requestPermission] = useCameraPermissions();
   const [scanned, setScanned] = useState(false);
 
@@ -19,17 +20,31 @@ export default function ScanQRCodeScreen({ navigation }) {
         const idStr = trimmed.slice(CUSTOMER_PREFIX.length).trim();
         const customerId = parseInt(idStr, 10);
         if (!Number.isNaN(customerId)) {
-          navigation.reset({
-            index: 0,
-            routes: [{ name: 'MainTabs', params: { screen: 'Orders', params: { customerId } } }],
-          });
+          if (returnTo === 'DailyVisit') {
+            navigation.reset({
+              index: 0,
+              routes: [
+                {
+                  name: 'MainTabs',
+                  params: { screen: 'DailyVisit', params: { customerId } },
+                },
+              ],
+            });
+          } else {
+            navigation.reset({
+              index: 0,
+              routes: [
+                { name: 'MainTabs', params: { screen: 'Orders', params: { customerId } } },
+              ],
+            });
+          }
           return;
         }
       }
       Alert.alert('Invalid QR', 'This is not a customer QR code. Expected format: CUSTOMER:id');
       setScanned(false);
     },
-    [navigation, scanned]
+    [navigation, scanned, returnTo]
   );
 
   if (!permission) {

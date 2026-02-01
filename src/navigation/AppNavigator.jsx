@@ -16,6 +16,7 @@ import InvoiceScreen from '../screens/InvoiceScreen';
 import QrGenerateScreen from '../screens/QrGenarateScreen';
 import ScanQRCodeScreen from '../screens/ScanQRCodeScreen';
 import MenuScreen from '../screens/MenuScreen';
+import CustomersScreen from '../screens/CustomersScreen';
 
 import { colors } from '../constants/theme';
 import { runSync, getSyncIntervalMs } from '../services/sync.service';
@@ -66,12 +67,12 @@ function MainTabs() {
         }}
       />
       <Tab.Screen
-        name="QRGenerator"
-        component={QrGenerateScreen}
+        name="Customers"
+        component={CustomersScreen}
         options={{
-          tabBarLabel: 'QR',
+          tabBarLabel: 'Customers',
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="qr-code-outline" size={size} color={color} />
+            <Ionicons name="people-outline" size={size} color={color} />
           ),
         }}
       />
@@ -144,6 +145,11 @@ function MainStackScreen() {
         name="ScanQRCode"
         component={ScanQRCodeScreen}
         options={{ headerShown: false }}
+      />
+      <MainStack.Screen
+        name="QRGenerator"
+        component={QrGenerateScreen}
+        options={{ ...headerScreenOptions, title: 'Customer QR Generator' }}
       />
     </MainStack.Navigator>
   );

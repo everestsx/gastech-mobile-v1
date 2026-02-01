@@ -11,17 +11,18 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing, borderRadius } from '../constants/theme';
 import { dashboardConfig } from '../constants/dashboardConfig';
-import { getCachedOrders } from '../services/sync.service';
+import { getCachedOrders, runSync } from '../services/sync.service';
 import WeeklyLineChart from '../components/WeeklyLineChart';
 
 function formatCurrency(amount) {
-  return `₹${Number(amount).toFixed(2)}`;
+  return `LKR ${Number(amount).toFixed(2)}`;
 }
 
 export default function DashboardScreen({ navigation }) {
   const [orders, setOrders] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
 
   const loadData = useCallback(async () => {
     try {
@@ -44,6 +45,17 @@ export default function DashboardScreen({ navigation }) {
     setRefreshing(true);
     await loadData();
     setRefreshing(false);
+  };
+
+  const onSync = async () => {
+    if (syncing) return;
+    setSyncing(true);
+    try {
+      await runSync();
+      await loadData();
+    } finally {
+      setSyncing(false);
+    }
   };
 
   const today = new Date().toISOString().split('T')[0];
@@ -84,14 +96,28 @@ export default function DashboardScreen({ navigation }) {
           <Text style={styles.greeting}>Hi, Driver</Text>
           <Text style={styles.hint}>Your daily overview</Text>
         </View>
-        <TouchableOpacity
-          style={styles.dailyVisitBtnTop}
-          onPress={() => navigation.navigate('DailyVisit')}
-          activeOpacity={0.8}
-        >
-          <Ionicons name="calendar-outline" size={20} color="#fff" />
-          <Text style={styles.dailyVisitBtnTopText}>Daily Visit</Text>
-        </TouchableOpacity>
+        <View style={styles.headerButtons}>
+          <TouchableOpacity
+            style={styles.dailyVisitBtnTop}
+            onPress={() => navigation.navigate('DailyVisit')}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="calendar-outline" size={20} color="#fff" />
+            <Text style={styles.dailyVisitBtnTopText}>Daily Visit</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.syncBtnTop}
+            onPress={onSync}
+            disabled={syncing}
+            activeOpacity={0.8}
+          >
+            {syncing ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Ionicons name="sync-outline" size={20} color="#fff" />
+            )}
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* 1. Daily Overview */}
@@ -109,7 +135,7 @@ export default function DashboardScreen({ navigation }) {
         </View>
       </View>
 
-      {/* 2. Totals panel: flat white card – Total Sales row, then Cash | Credit */}
+      {/* 2. Totals panel: Total Sales (label left, value right); Cash | Credit same alignment */}
       <View style={styles.totalsCard}>
         <View style={styles.totalSalesRow}>
           <Text style={styles.totalsLabel}>Total Sales</Text>
@@ -178,6 +204,19 @@ const styles = StyleSheet.create({
   },
   greeting: { fontSize: 22, fontWeight: '800', color: colors.text },
   hint: { fontSize: 14, color: colors.textSecondary, marginTop: 2 },
+  headerButtons: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  syncBtnTop: {
+    backgroundColor: colors.primary,
+    borderRadius: borderRadius.md,
+    padding: 10,
+    minWidth: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   dailyVisitBtnTop: {
     backgroundColor: colors.primary,
     borderRadius: borderRadius.md,
@@ -236,12 +275,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: spacing.sm,
     paddingTop: 10,
+    alignItems: 'center',
   },
   halfBox: {
     flex: 1,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
+    minHeight: 32,
   },
-  totalsLabel: { fontSize: 13, color: colors.textSecondary, marginBottom: 4 },
+  totalsLabel: { fontSize: 13, color: colors.textSecondary },
   totalsValue: { fontSize: 16, fontWeight: '800', color: colors.text },
   chartCard: {
     backgroundColor: colors.primaryDark,

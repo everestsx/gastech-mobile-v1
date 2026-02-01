@@ -18,10 +18,19 @@ function formatDate(d) {
 }
 
 function formatCurrency(amount) {
-  return `₹${Number(amount).toFixed(2)}`;
+  return `LKR ${Number(amount).toFixed(2)}`;
 }
 
-export default function DailyVisitScreen({ navigation }) {
+function getTotalQty(order) {
+  const lines = order.order_line;
+  if (Array.isArray(lines) && lines.length > 0) {
+    return lines.length;
+  }
+  return '—';
+}
+
+export default function DailyVisitScreen({ route, navigation }) {
+  const customerId = route?.params?.customerId ?? null;
   const [orders, setOrders] = useState([]);
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [showPicker, setShowPicker] = useState(false);
@@ -33,14 +42,17 @@ export default function DailyVisitScreen({ navigation }) {
       const data = await getCachedOrders();
       const all = Array.isArray(data) ? data : [];
       const dateStr = formatDate(selectedDate);
-      const filtered = all.filter((o) => (o.date_order || '').startsWith(dateStr));
+      let filtered = all.filter((o) => (o.date_order || '').startsWith(dateStr));
+      if (customerId != null) {
+        filtered = filtered.filter((o) => o.partner_id?.[0] === customerId);
+      }
       setOrders(filtered);
     } catch (_) {
       setOrders([]);
     } finally {
       setLoading(false);
     }
-  }, [selectedDate]);
+  }, [selectedDate, customerId]);
 
   useEffect(() => {
     loadOrders();
@@ -53,6 +65,14 @@ export default function DailyVisitScreen({ navigation }) {
 
   const openOrder = (order) => {
     navigation.navigate('SaleOrderDetails', { saleOrderId: order.id });
+  };
+
+  const openQRScan = () => {
+    navigation.navigate('ScanQRCode', { returnTo: 'DailyVisit' });
+  };
+
+  const clearCustomerFilter = () => {
+    navigation.setParams({ customerId: null });
   };
 
   const renderItem = ({ item }) => (
@@ -69,15 +89,19 @@ export default function DailyVisitScreen({ navigation }) {
       </View>
       <Text style={styles.customer}>{item.partner_id?.[1] || '—'}</Text>
       <View style={styles.rowBetween}>
-        <Text style={styles.date}>{item.date_order}</Text>
+        <Text style={styles.meta}>Total Qty: {getTotalQty(item)}</Text>
         <Text style={styles.amount}>{formatCurrency(item.amount_total)}</Text>
       </View>
+      {item.date_order ? (
+        <Text style={styles.date}>{item.date_order}</Text>
+      ) : null}
     </TouchableOpacity>
   );
 
   return (
     <View style={styles.container}>
-      <View style={styles.dateBar}>
+      {/* Top bar: date picker + QR scan (same style as Sales Order screen) */}
+      <View style={styles.topBar}>
         <TouchableOpacity
           style={styles.dateBtn}
           onPress={() => setShowPicker(true)}
@@ -86,7 +110,24 @@ export default function DailyVisitScreen({ navigation }) {
           <Text style={styles.dateText}>{formatDate(selectedDate)}</Text>
           <Ionicons name="chevron-down" size={20} color={colors.primary} />
         </TouchableOpacity>
+        <TouchableOpacity
+          onPress={openQRScan}
+          style={styles.qrBtnHeader}
+        >
+          <Ionicons name="qr-code-outline" size={28} color={colors.primary} />
+        </TouchableOpacity>
       </View>
+
+      {customerId != null && (
+        <TouchableOpacity
+          style={styles.filterChip}
+          onPress={clearCustomerFilter}
+          activeOpacity={0.8}
+        >
+          <Text style={styles.filterChipText}>Showing one customer — tap to show all</Text>
+          <Ionicons name="close-circle" size={20} color={colors.primary} />
+        </TouchableOpacity>
+      )}
 
       {showPicker && (
         <DateTimePicker
@@ -120,7 +161,11 @@ export default function DailyVisitScreen({ navigation }) {
           ListEmptyComponent={
             <View style={styles.empty}>
               <Ionicons name="document-text-outline" size={48} color={colors.textSecondary} />
-              <Text style={styles.emptyText}>No orders for this date</Text>
+              <Text style={styles.emptyText}>
+                {customerId != null
+                  ? 'No orders for this customer on this date'
+                  : 'No orders for this date'}
+              </Text>
             </View>
           }
           renderItem={renderItem}
@@ -133,7 +178,10 @@ export default function DailyVisitScreen({ navigation }) {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  dateBar: {
+  topBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     padding: spacing.md,
     backgroundColor: colors.surface,
     borderBottomWidth: 1,
@@ -142,7 +190,6 @@ const styles = StyleSheet.create({
   dateBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    alignSelf: 'flex-start',
     paddingVertical: 8,
     paddingHorizontal: 12,
     backgroundColor: colors.background,
@@ -150,6 +197,19 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   dateText: { fontSize: 16, fontWeight: '600', color: colors.text },
+  qrBtnHeader: { padding: 4 },
+  filterChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 8,
+    paddingHorizontal: spacing.md,
+    backgroundColor: colors.background,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  filterChipText: { fontSize: 13, color: colors.textSecondary, fontWeight: '500' },
   list: { padding: spacing.md, paddingBottom: 100 },
   card: {
     backgroundColor: colors.surface,
@@ -169,8 +229,9 @@ const styles = StyleSheet.create({
   badgeDraft: { backgroundColor: colors.warning },
   badgeText: { fontSize: 11, fontWeight: '700', color: '#fff' },
   customer: { fontSize: 15, color: colors.textSecondary, marginVertical: 6 },
-  date: { fontSize: 13, color: colors.textSecondary },
+  meta: { fontSize: 13, color: colors.textSecondary },
   amount: { fontSize: 16, fontWeight: '800', color: colors.primary },
+  date: { fontSize: 12, color: colors.textSecondary, marginTop: 4 },
   empty: {
     alignItems: 'center',
     justifyContent: 'center',
