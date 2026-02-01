@@ -67,11 +67,17 @@ export default function ProceedPaymentScreen({ route, navigation }) {
 
       await validatePicking(picking.id);
 
-      Alert.alert('Success', 'Order delivered successfully');
+      const selectedBankName =
+        paymentType === PAYMENT_BANK && selectedBank
+          ? selectedBank.name
+          : null;
 
-      navigation.reset({
-        index: 0,
-        routes: [{ name: 'Main', params: { screen: 'Dashboard' } }],
+      navigation.replace('InvoiceScreen', {
+        saleOrderId,
+        total,
+        paymentType,
+        selectedBankId: paymentType === PAYMENT_BANK ? selectedBankId : null,
+        selectedBankName,
       });
     } catch (err) {
       console.error(err);
