@@ -1,16 +1,17 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback } from 'react';
 import {
-  StatusBar,
   View,
   Text,
   FlatList,
   TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
-} from "react-native";
-import { Ionicons } from "@expo/vector-icons";
-import { getAllSaleOrders } from "../services/saleOrder.service";
-import { getCachedOrders } from "../services/sync.service";
+} from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { colors, spacing, borderRadius } from '../constants/theme';
+import { getAllSaleOrders } from '../services/saleOrder.service';
+import { getCachedOrders } from '../services/sync.service';
+import OrderCard from '../components/OrderCard';
 
 export default function SaleOrderListScreen({ route, navigation }) {
   const customerId = route?.params?.customerId ?? null;
@@ -34,7 +35,7 @@ export default function SaleOrderListScreen({ route, navigation }) {
         }
         setOrders(list);
       } catch (err) {
-        console.error("Sale Order Error:", err);
+        console.error('Sale Order Error:', err);
         setOrders([]);
       }
     } finally {
@@ -43,87 +44,62 @@ export default function SaleOrderListScreen({ route, navigation }) {
   }, [customerId]);
 
   useEffect(() => {
+    const unsub = navigation.addListener?.('focus', loadOrders);
     loadOrders();
-  }, [loadOrders]);
+    return () => unsub?.();
+  }, [loadOrders, navigation]);
 
   const openDetails = (order) => {
-    navigation.navigate("SaleOrderDetails", {
-      saleOrderId: order.id,
-    });
-  };
-
-  const getStatusStyle = (state) => {
-    switch (state) {
-      case "sale":
-        return styles.sale;
-      case "draft":
-        return styles.draft;
-      case "cancel":
-        return styles.cancel;
-      default:
-        return styles.defaultStatus;
-    }
+    navigation.navigate('SaleOrderDetails', { saleOrderId: order.id });
   };
 
   if (loading) {
     return (
       <View style={styles.center}>
-        <ActivityIndicator size="large" color="#1e5aa8" />
+        <ActivityIndicator size="large" color={colors.primary} />
       </View>
     );
   }
 
   return (
     <View style={styles.container}>
-      <StatusBar style="light" />
-
-      {/* ---------------- HEADER ---------------- */}
+      {/* Header: back, title, QR scan (same style as Daily Visit top bar) */}
       <View style={styles.header}>
         <TouchableOpacity
           onPress={() => {
-            if (customerId != null) navigation.navigate('Orders', { customerId: null });
-            else navigation.goBack();
+            if (customerId != null) {
+              navigation.navigate('Orders', { customerId: null });
+            } else {
+              navigation.goBack();
+            }
           }}
-          style={styles.backBtn}
+          style={styles.headerBtn}
         >
-          <Ionicons name="arrow-back" size={24} color="#1e5aa8" />
+          <Ionicons name="arrow-back" size={24} color={colors.primary} />
         </TouchableOpacity>
-        <Text style={styles.screenTitle}>
-          {customerId != null ? "Orders (Customer)" : "Sale Orders"}
+        <Text style={styles.screenTitle} numberOfLines={1}>
+          {customerId != null ? 'Orders (Customer)' : 'Sale Orders'}
         </Text>
         <TouchableOpacity
-          onPress={() => navigation.navigate("ScanQRCode")}
-          style={styles.qrBtnHeader}
+          onPress={() => navigation.navigate('ScanQRCode')}
+          style={[styles.headerBtn, styles.headerBtnRight]}
         >
-          <Ionicons name="qr-code-outline" size={28} color="#1e5aa8" />
+          <Ionicons name="qr-code-outline" size={28} color={colors.primary} />
         </TouchableOpacity>
       </View>
 
-      {/* ---------------- SALE ORDER LIST ---------------- */}
       <FlatList
         data={orders}
-        keyExtractor={(item) => item.id.toString()}
-        contentContainerStyle={{ paddingBottom: 140 }}
+        keyExtractor={(item) => String(item.id)}
+        contentContainerStyle={styles.list}
+        ListEmptyComponent={
+          <View style={styles.empty}>
+            <Ionicons name="document-text-outline" size={48} color={colors.textSecondary} />
+            <Text style={styles.emptyText}>No orders</Text>
+          </View>
+        }
         renderItem={({ item }) => (
-          <TouchableOpacity
-            style={styles.card}
-            onPress={() => openDetails(item)}
-            activeOpacity={0.8}
-          >
-            <View style={styles.rowBetween}>
-              <Text style={styles.orderNo}>{item.name}</Text>
-              <View style={[styles.statusBadge, getStatusStyle(item.state)]}>
-                <Text style={styles.statusText}>{item.state.toUpperCase()}</Text>
-              </View>
-            </View>
-
-            <Text style={styles.customer}>{item.partner_id?.[1] || "—"}</Text>
-
-            <View style={styles.rowBetween}>
-              <Text style={styles.date}>{item.date_order}</Text>
-              <Text style={styles.amount}>LKR {Number(item.amount_total).toFixed(2)}</Text>
-            </View>
-          </TouchableOpacity>
+          <OrderCard order={item} onPress={openDetails} />
         )}
       />
     </View>
@@ -133,93 +109,50 @@ export default function SaleOrderListScreen({ route, navigation }) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#f4f6f8",
-    paddingHorizontal: 15,
-    paddingTop: 10,
+    backgroundColor: colors.background,
   },
-
   center: {
     flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
+    justifyContent: 'center',
+    alignItems: 'center',
   },
-
-  /* ---------------- HEADER ---------------- */
   header: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginBottom: 10,
-    justifyContent: "space-between",
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.md,
+    backgroundColor: colors.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
   },
-
-  backBtn: {
+  headerBtn: {
     padding: 4,
+    minWidth: 40,
+    alignItems: 'flex-start',
   },
-
+  headerBtnRight: {
+    alignItems: 'flex-end',
+  },
   screenTitle: {
-    fontSize: 22,
-    fontWeight: "800",
-    color: "#1e5aa8",
-    textAlign: "center",
     flex: 1,
+    fontSize: 18,
+    fontWeight: '700',
+    color: colors.text,
+    textAlign: 'center',
   },
-
-  qrBtnHeader: {
-    padding: 4,
+  list: {
+    padding: spacing.md,
+    paddingBottom: 140,
   },
-
-  /* ---------------- CARD ---------------- */
-  card: {
-    backgroundColor: "#ffffff",
-    padding: 18,
-    borderRadius: 16,
-    marginBottom: 12,
-    elevation: 4,
+  empty: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 48,
   },
-
-  rowBetween: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-
-  orderNo: {
+  emptyText: {
     fontSize: 16,
-    fontWeight: "700",
-    color: "#111",
+    color: colors.textSecondary,
+    marginTop: 12,
   },
-
-  customer: {
-    fontSize: 15,
-    color: "#555",
-    marginVertical: 6,
-  },
-
-  date: {
-    fontSize: 13,
-    color: "#999",
-  },
-
-  amount: {
-    fontSize: 16,
-    fontWeight: "800",
-    color: "#1e5aa8",
-  },
-
-  statusBadge: {
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: 20,
-  },
-
-  statusText: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: "#fff",
-  },
-
-  sale: { backgroundColor: "#34a853" },
-  draft: { backgroundColor: "#fbbc05" },
-  cancel: { backgroundColor: "#ea4335" },
-  defaultStatus: { backgroundColor: "#999" },
 });

@@ -12,21 +12,10 @@ import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { colors, spacing, borderRadius } from '../constants/theme';
 import { getCachedOrders } from '../services/sync.service';
+import OrderCard from '../components/OrderCard';
 
 function formatDate(d) {
   return d.toISOString().split('T')[0];
-}
-
-function formatCurrency(amount) {
-  return `LKR ${Number(amount).toFixed(2)}`;
-}
-
-function getTotalQty(order) {
-  const lines = order.order_line;
-  if (Array.isArray(lines) && lines.length > 0) {
-    return lines.length;
-  }
-  return '—';
 }
 
 export default function DailyVisitScreen({ route, navigation }) {
@@ -76,26 +65,7 @@ export default function DailyVisitScreen({ route, navigation }) {
   };
 
   const renderItem = ({ item }) => (
-    <TouchableOpacity
-      style={styles.card}
-      onPress={() => openOrder(item)}
-      activeOpacity={0.8}
-    >
-      <View style={styles.rowBetween}>
-        <Text style={styles.orderNo}>{item.name}</Text>
-        <View style={[styles.badge, item.state === 'sale' ? styles.badgeSale : styles.badgeDraft]}>
-          <Text style={styles.badgeText}>{(item.state || 'draft').toUpperCase()}</Text>
-        </View>
-      </View>
-      <Text style={styles.customer}>{item.partner_id?.[1] || '—'}</Text>
-      <View style={styles.rowBetween}>
-        <Text style={styles.meta}>Total Qty: {getTotalQty(item)}</Text>
-        <Text style={styles.amount}>{formatCurrency(item.amount_total)}</Text>
-      </View>
-      {item.date_order ? (
-        <Text style={styles.date}>{item.date_order}</Text>
-      ) : null}
-    </TouchableOpacity>
+    <OrderCard order={item} onPress={openOrder} />
   );
 
   return (
@@ -211,27 +181,6 @@ const styles = StyleSheet.create({
   },
   filterChipText: { fontSize: 13, color: colors.textSecondary, fontWeight: '500' },
   list: { padding: spacing.md, paddingBottom: 100 },
-  card: {
-    backgroundColor: colors.surface,
-    padding: spacing.md,
-    borderRadius: borderRadius.lg,
-    marginBottom: spacing.sm,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 4,
-  },
-  rowBetween: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  orderNo: { fontSize: 16, fontWeight: '700', color: colors.text },
-  badge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
-  badgeSale: { backgroundColor: colors.success },
-  badgeDraft: { backgroundColor: colors.warning },
-  badgeText: { fontSize: 11, fontWeight: '700', color: '#fff' },
-  customer: { fontSize: 15, color: colors.textSecondary, marginVertical: 6 },
-  meta: { fontSize: 13, color: colors.textSecondary },
-  amount: { fontSize: 16, fontWeight: '800', color: colors.primary },
-  date: { fontSize: 12, color: colors.textSecondary, marginTop: 4 },
   empty: {
     alignItems: 'center',
     justifyContent: 'center',
