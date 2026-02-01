@@ -17,8 +17,9 @@ import QrGenerateScreen from '../screens/QrGenarateScreen';
 import ScanQRCodeScreen from '../screens/ScanQRCodeScreen';
 import MenuScreen from '../screens/MenuScreen';
 import CustomersScreen from '../screens/CustomersScreen';
+import SettingsScreen from '../screens/SettingsScreen';
 
-import { colors } from '../constants/theme';
+import { useTheme } from '../context/ThemeContext';
 import { runSync, getSyncIntervalMs } from '../services/sync.service';
 
 const RootStack = createNativeStackNavigator();
@@ -26,13 +27,20 @@ const Tab = createBottomTabNavigator();
 const MainStack = createNativeStackNavigator();
 
 function MainTabs() {
+  const { colors } = useTheme();
   return (
     <Tab.Navigator
       screenOptions={{
         headerShown: false,
         tabBarActiveTintColor: colors.primary,
         tabBarInactiveTintColor: colors.textSecondary,
-        tabBarStyle: { paddingBottom: 6, paddingTop: 8, height: 60 },
+        tabBarStyle: {
+          paddingBottom: 6,
+          paddingTop: 8,
+          height: 60,
+          backgroundColor: colors.surface,
+          borderTopColor: colors.border,
+        },
         tabBarLabelStyle: { fontSize: 12, fontWeight: '600' },
       }}
     >
@@ -80,23 +88,23 @@ function MainTabs() {
   );
 }
 
-const headerScreenOptions = {
-  headerShown: true,
-  headerStyle: {
-    backgroundColor: colors.primary,
-    elevation: 4,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
-    shadowRadius: 4,
-  },
-  headerTintColor: '#fff',
-  headerTitleStyle: { fontWeight: '700', fontSize: 18 },
-  headerBackTitle: 'Back',
-  headerShadowVisible: true,
-};
-
 function MainStackScreen() {
+  const { colors } = useTheme();
+  const headerScreenOptions = {
+    headerShown: true,
+    headerStyle: {
+      backgroundColor: colors.primary,
+      elevation: 4,
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.15,
+      shadowRadius: 4,
+    },
+    headerTintColor: '#fff',
+    headerTitleStyle: { fontWeight: '700', fontSize: 18 },
+    headerBackTitle: 'Back',
+    headerShadowVisible: true,
+  };
   return (
     <MainStack.Navigator
       screenOptions={{
@@ -125,6 +133,11 @@ function MainStackScreen() {
         name="Menu"
         component={MenuScreen}
         options={{ ...headerScreenOptions, title: 'Menu' }}
+      />
+      <MainStack.Screen
+        name="Settings"
+        component={SettingsScreen}
+        options={{ ...headerScreenOptions, title: 'Settings' }}
       />
       <MainStack.Screen
         name="SaleOrderDetails"

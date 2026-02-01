@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -9,8 +9,8 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { colors, spacing, borderRadius } from '../constants/theme';
-import { dashboardConfig } from '../constants/dashboardConfig';
+import { useTheme } from '../context/ThemeContext';
+import { spacing, borderRadius } from '../constants/theme';
 import { getCachedOrders, runSync } from '../services/sync.service';
 import WeeklyLineChart from '../components/WeeklyLineChart';
 
@@ -19,6 +19,7 @@ function formatCurrency(amount) {
 }
 
 export default function DashboardScreen({ navigation }) {
+  const { colors, showCreateSalesOrder, showReturnOrder } = useTheme();
   const [orders, setOrders] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -73,7 +74,137 @@ export default function DashboardScreen({ navigation }) {
     last7Days.push(dayOrders.reduce((s, o) => s + (Number(o.amount_total) || 0), 0));
   }
 
-  const { showCreateSalesOrder, showReturnOrder } = dashboardConfig;
+  const styles = useMemo(
+    () =>
+      StyleSheet.create({
+        container: { flex: 1, backgroundColor: colors.background },
+        content: { padding: spacing.md, paddingBottom: 100 },
+        center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+        header: {
+          flexDirection: 'row',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          marginBottom: spacing.md,
+        },
+        greeting: { fontSize: 22, fontWeight: '800', color: colors.text },
+        hint: { fontSize: 14, color: colors.textSecondary, marginTop: 2 },
+        headerButtons: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+        syncBtnTop: {
+          backgroundColor: colors.primary,
+          borderRadius: borderRadius.md,
+          padding: 10,
+          minWidth: 44,
+          alignItems: 'center',
+          justifyContent: 'center',
+        },
+        dailyVisitBtnTop: {
+          backgroundColor: colors.primary,
+          borderRadius: borderRadius.md,
+          paddingVertical: 8,
+          paddingHorizontal: 12,
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 6,
+        },
+        dailyVisitBtnTopText: { fontSize: 14, fontWeight: '700', color: '#fff' },
+        sectionTitle: {
+          fontSize: 17,
+          fontWeight: '700',
+          color: colors.text,
+          marginBottom: spacing.sm,
+        },
+        metricsRow: {
+          flexDirection: 'row',
+          gap: spacing.sm,
+          marginBottom: spacing.md,
+        },
+        metricCard: {
+          flex: 1,
+          backgroundColor: colors.surface,
+          borderRadius: borderRadius.lg,
+          padding: spacing.md,
+          alignItems: 'center',
+          elevation: 2,
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: 2 },
+          shadowOpacity: 0.06,
+          shadowRadius: 4,
+        },
+        metricValue: { fontSize: 15, fontWeight: '800', color: colors.text, marginTop: 4 },
+        metricLabel: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
+        totalsCard: {
+          backgroundColor: colors.surface,
+          borderRadius: borderRadius.lg,
+          padding: spacing.md,
+          marginBottom: spacing.md,
+          elevation: 2,
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: 2 },
+          shadowOpacity: 0.06,
+          shadowRadius: 4,
+        },
+        totalSalesRow: {
+          flexDirection: 'row',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          paddingVertical: 10,
+          borderBottomWidth: 1,
+          borderBottomColor: colors.border,
+        },
+        cashCreditRow: {
+          flexDirection: 'row',
+          gap: spacing.sm,
+          paddingTop: 10,
+          alignItems: 'center',
+        },
+        halfBox: {
+          flex: 1,
+          flexDirection: 'row',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          minHeight: 32,
+        },
+        totalsLabel: { fontSize: 13, color: colors.textSecondary },
+        totalsValue: { fontSize: 16, fontWeight: '800', color: colors.text },
+        chartCard: {
+          backgroundColor: colors.surface,
+          borderRadius: borderRadius.lg,
+          padding: spacing.md,
+          marginBottom: spacing.md,
+          elevation: 2,
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: 2 },
+          shadowOpacity: 0.06,
+          shadowRadius: 4,
+          overflow: 'hidden',
+        },
+        chartTitle: { fontSize: 16, fontWeight: '600', color: colors.text, marginBottom: 4 },
+        actionsRow: { flexDirection: 'row', gap: spacing.md },
+        actionCard: {
+          flex: 1,
+          backgroundColor: colors.surface,
+          borderRadius: borderRadius.lg,
+          padding: spacing.lg,
+          alignItems: 'center',
+          elevation: 2,
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: 2 },
+          shadowOpacity: 0.06,
+          shadowRadius: 4,
+        },
+        actionIconWrap: {
+          width: 56,
+          height: 56,
+          borderRadius: 28,
+          backgroundColor: colors.background,
+          justifyContent: 'center',
+          alignItems: 'center',
+          marginBottom: 8,
+        },
+        actionLabel: { fontSize: 13, fontWeight: '600', color: colors.text },
+      }),
+    [colors]
+  );
 
   if (loading) {
     return (
@@ -191,138 +322,3 @@ export default function DashboardScreen({ navigation }) {
     </ScrollView>
   );
 }
-
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
-  content: { padding: spacing.md, paddingBottom: 100 },
-  center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: spacing.md,
-  },
-  greeting: { fontSize: 22, fontWeight: '800', color: colors.text },
-  hint: { fontSize: 14, color: colors.textSecondary, marginTop: 2 },
-  headerButtons: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  syncBtnTop: {
-    backgroundColor: colors.primary,
-    borderRadius: borderRadius.md,
-    padding: 10,
-    minWidth: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  dailyVisitBtnTop: {
-    backgroundColor: colors.primary,
-    borderRadius: borderRadius.md,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  dailyVisitBtnTopText: { fontSize: 14, fontWeight: '700', color: '#fff' },
-  sectionTitle: {
-    fontSize: 17,
-    fontWeight: '700',
-    color: colors.text,
-    marginBottom: spacing.sm,
-  },
-  metricsRow: {
-    flexDirection: 'row',
-    gap: spacing.sm,
-    marginBottom: spacing.md,
-  },
-  metricCard: {
-    flex: 1,
-    backgroundColor: colors.surface,
-    borderRadius: borderRadius.lg,
-    padding: spacing.md,
-    alignItems: 'center',
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 4,
-  },
-  metricValue: { fontSize: 15, fontWeight: '800', color: colors.text, marginTop: 4 },
-  metricLabel: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
-  totalsCard: {
-    backgroundColor: colors.surface,
-    borderRadius: borderRadius.lg,
-    padding: spacing.md,
-    marginBottom: spacing.md,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 4,
-  },
-  totalSalesRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.border,
-  },
-  cashCreditRow: {
-    flexDirection: 'row',
-    gap: spacing.sm,
-    paddingTop: 10,
-    alignItems: 'center',
-  },
-  halfBox: {
-    flex: 1,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    minHeight: 32,
-  },
-  totalsLabel: { fontSize: 13, color: colors.textSecondary },
-  totalsValue: { fontSize: 16, fontWeight: '800', color: colors.text },
-  chartCard: {
-    backgroundColor: colors.surface,
-    borderRadius: borderRadius.lg,
-    padding: spacing.md,
-    marginBottom: spacing.md,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 4,
-    overflow: 'hidden',
-  },
-  chartTitle: { fontSize: 16, fontWeight: '600', color: colors.text, marginBottom: 4 },
-  actionsRow: {
-    flexDirection: 'row',
-    gap: spacing.md,
-  },
-  actionCard: {
-    flex: 1,
-    backgroundColor: colors.surface,
-    borderRadius: borderRadius.lg,
-    padding: spacing.lg,
-    alignItems: 'center',
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 4,
-  },
-  actionIconWrap: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: colors.background,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  actionLabel: { fontSize: 13, fontWeight: '600', color: colors.text },
-});
