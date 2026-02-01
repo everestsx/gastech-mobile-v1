@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -11,7 +11,8 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Print from 'expo-print';
-import { colors, spacing, borderRadius } from '../constants/theme';
+import { useTheme } from '../context/ThemeContext';
+import { spacing, borderRadius } from '../constants/theme';
 import { getSaleOrderDetails } from '../services/saleOrderLine.service';
 
 function formatCurrency(amount) {
@@ -93,6 +94,7 @@ function buildInvoiceHtml(order, lines, paymentType, selectedBankName) {
 }
 
 export default function InvoiceScreen({ route, navigation }) {
+  const { colors } = useTheme();
   const {
     saleOrderId,
     total,
@@ -104,6 +106,103 @@ export default function InvoiceScreen({ route, navigation }) {
   const [lines, setLines] = useState([]);
   const [loading, setLoading] = useState(true);
   const [printing, setPrinting] = useState(false);
+
+  const styles = useMemo(
+    () =>
+      StyleSheet.create({
+        container: { flex: 1, backgroundColor: colors.background },
+        content: { padding: spacing.md, paddingBottom: spacing.xl + 60 },
+        center: {
+          flex: 1,
+          justifyContent: 'center',
+          alignItems: 'center',
+          backgroundColor: colors.background,
+        },
+        previewCard: {
+          backgroundColor: colors.surface,
+          borderRadius: borderRadius.lg,
+          padding: spacing.lg,
+          marginBottom: spacing.lg,
+          elevation: 2,
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: 2 },
+          shadowOpacity: 0.06,
+          shadowRadius: 4,
+        },
+        companyName: { fontSize: 20, fontWeight: '800', color: colors.primary, marginBottom: 4 },
+        invoiceTitle: { fontSize: 14, fontWeight: '700', color: colors.textSecondary, marginBottom: spacing.md },
+        metaRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 },
+        metaLabel: { fontSize: 12, color: colors.textSecondary },
+        metaValue: { fontSize: 13, fontWeight: '600', color: colors.text, flex: 1, marginLeft: 8 },
+        tableHeader: {
+          flexDirection: 'row',
+          borderBottomWidth: 2,
+          borderBottomColor: colors.primary,
+          paddingVertical: 6,
+          marginTop: spacing.sm,
+          marginBottom: 4,
+        },
+        th: { fontSize: 11, fontWeight: '700', color: colors.textSecondary },
+        thProduct: { flex: 1 },
+        thNum: { width: 56, textAlign: 'right' },
+        tableRow: {
+          flexDirection: 'row',
+          borderBottomWidth: 1,
+          borderBottomColor: colors.border,
+          paddingVertical: 6,
+        },
+        td: { fontSize: 13, color: colors.text },
+        tdProduct: { flex: 1 },
+        tdNum: { width: 56, textAlign: 'right' },
+        totalsSection: { marginTop: spacing.sm, paddingTop: spacing.sm, borderTopWidth: 1, borderTopColor: colors.border },
+        totalsRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 },
+        totalsRowMain: { marginTop: 4 },
+        totalsLabel: { fontSize: 13, color: colors.textSecondary },
+        totalsValue: { fontSize: 13, fontWeight: '600', color: colors.text },
+        totalsLabelMain: { fontSize: 16, fontWeight: '700', color: colors.text },
+        totalsValueMain: { fontSize: 16, fontWeight: '800', color: colors.text },
+        paymentBadge: {
+          marginTop: spacing.sm,
+          padding: spacing.sm,
+          backgroundColor: colors.background,
+          borderRadius: borderRadius.sm,
+        },
+        paymentText: { fontSize: 13, fontWeight: '600', color: colors.text },
+        printBtn: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 8,
+          backgroundColor: colors.primary,
+          paddingVertical: 14,
+          borderRadius: borderRadius.lg,
+          marginBottom: spacing.md,
+          elevation: 2,
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: 2 },
+          shadowOpacity: 0.08,
+          shadowRadius: 4,
+        },
+        printBtnText: { fontSize: 16, fontWeight: '700', color: '#fff' },
+        printerNote: {
+          flexDirection: 'row',
+          alignItems: 'flex-start',
+          gap: spacing.sm,
+          backgroundColor: colors.surface,
+          padding: spacing.md,
+          borderRadius: borderRadius.md,
+          marginBottom: spacing.md,
+          borderWidth: 1,
+          borderColor: colors.border,
+        },
+        printerNoteTextWrap: { flex: 1 },
+        printerNoteTitle: { fontSize: 14, fontWeight: '700', color: colors.text, marginBottom: 4 },
+        printerNoteText: { fontSize: 12, color: colors.textSecondary, lineHeight: 18 },
+        doneBtn: { paddingVertical: 14, alignItems: 'center' },
+        doneBtnText: { fontSize: 16, fontWeight: '700', color: colors.primary },
+      }),
+    [colors]
+  );
 
   const loadInvoice = useCallback(async () => {
     if (!saleOrderId) {
@@ -281,135 +380,3 @@ export default function InvoiceScreen({ route, navigation }) {
     </ScrollView>
   );
 }
-
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
-  content: { padding: spacing.md, paddingBottom: spacing.xl + 60 },
-  center: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: colors.background,
-  },
-  previewCard: {
-    backgroundColor: colors.surface,
-    borderRadius: borderRadius.lg,
-    padding: spacing.lg,
-    marginBottom: spacing.lg,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 4,
-  },
-  companyName: {
-    fontSize: 20,
-    fontWeight: '800',
-    color: colors.primary,
-    marginBottom: 4,
-  },
-  invoiceTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: colors.textSecondary,
-    marginBottom: spacing.md,
-  },
-  metaRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 4,
-  },
-  metaLabel: { fontSize: 12, color: colors.textSecondary },
-  metaValue: { fontSize: 13, fontWeight: '600', color: colors.text, flex: 1, marginLeft: 8 },
-  tableHeader: {
-    flexDirection: 'row',
-    borderBottomWidth: 2,
-    borderBottomColor: colors.primary,
-    paddingVertical: 6,
-    marginTop: spacing.sm,
-    marginBottom: 4,
-  },
-  th: { fontSize: 11, fontWeight: '700', color: colors.textSecondary },
-  thProduct: { flex: 1 },
-  thNum: { width: 56, textAlign: 'right' },
-  tableRow: {
-    flexDirection: 'row',
-    borderBottomWidth: 1,
-    borderBottomColor: colors.border,
-    paddingVertical: 6,
-  },
-  td: { fontSize: 13, color: colors.text },
-  tdProduct: { flex: 1 },
-  tdNum: { width: 56, textAlign: 'right' },
-  totalsSection: {
-    marginTop: spacing.sm,
-    paddingTop: spacing.sm,
-    borderTopWidth: 1,
-    borderTopColor: colors.border,
-  },
-  totalsRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 4,
-  },
-  totalsRowMain: { marginTop: 4 },
-  totalsLabel: { fontSize: 13, color: colors.textSecondary },
-  totalsValue: { fontSize: 13, fontWeight: '600', color: colors.text },
-  totalsLabelMain: { fontSize: 16, fontWeight: '700', color: colors.text },
-  totalsValueMain: { fontSize: 16, fontWeight: '800', color: colors.text },
-  paymentBadge: {
-    marginTop: spacing.sm,
-    padding: spacing.sm,
-    backgroundColor: colors.background,
-    borderRadius: borderRadius.sm,
-  },
-  paymentText: { fontSize: 13, fontWeight: '600', color: colors.text },
-  printBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: colors.primary,
-    paddingVertical: 14,
-    borderRadius: borderRadius.lg,
-    marginBottom: spacing.md,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 4,
-  },
-  printBtnText: { fontSize: 16, fontWeight: '700', color: '#fff' },
-  printerNote: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: spacing.sm,
-    backgroundColor: colors.surface,
-    padding: spacing.md,
-    borderRadius: borderRadius.md,
-    marginBottom: spacing.md,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  printerNoteTextWrap: { flex: 1 },
-  printerNoteTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: colors.text,
-    marginBottom: 4,
-  },
-  printerNoteText: {
-    fontSize: 12,
-    color: colors.textSecondary,
-    lineHeight: 18,
-  },
-  doneBtn: {
-    paddingVertical: 14,
-    alignItems: 'center',
-  },
-  doneBtnText: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: colors.primary,
-  },
-});

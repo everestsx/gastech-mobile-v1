@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -16,13 +16,15 @@ import {
   getSaleOrderDetails,
   updateSaleOrderLineQty,
 } from '../services/saleOrderLine.service';
-import { colors, spacing, borderRadius } from '../constants/theme';
+import { useTheme } from '../context/ThemeContext';
+import { spacing, borderRadius } from '../constants/theme';
 
 function formatCurrency(amount) {
   return `LKR ${Number(amount).toFixed(2)}`;
 }
 
 export default function SaleOrderDetailsScreen({ route, navigation }) {
+  const { colors } = useTheme();
   const { saleOrderId } = route.params;
 
   const [order, setOrder] = useState(null);
@@ -31,6 +33,142 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
   const [qtyChanged, setQtyChanged] = useState(false);
   const [loading, setLoading] = useState(true);
   const [updating, setUpdating] = useState(false);
+
+  const styles = useMemo(
+    () =>
+      StyleSheet.create({
+        container: { flex: 1, backgroundColor: colors.background },
+        center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.background },
+        scroll: { flex: 1 },
+        scrollContent: { padding: spacing.md, paddingBottom: 24 },
+        errorText: { fontSize: 16, color: colors.textSecondary },
+        customerRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.md, paddingVertical: 4 },
+        customerLabel: { fontSize: 14, fontWeight: '600', color: colors.textSecondary },
+        customerName: { fontSize: 16, fontWeight: '600', color: colors.text, flex: 1 },
+        changedBanner: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: spacing.sm,
+          backgroundColor: colors.surface,
+          borderLeftWidth: 4,
+          borderLeftColor: colors.warning,
+          paddingVertical: 10,
+          paddingHorizontal: spacing.md,
+          borderRadius: borderRadius.md,
+          marginBottom: spacing.md,
+        },
+        changedBannerText: { fontSize: 13, fontWeight: '600', color: colors.warning, flex: 1 },
+        sectionTitle: { fontSize: 16, fontWeight: '700', color: colors.text, marginBottom: spacing.sm },
+        emptyLines: { padding: spacing.lg, alignItems: 'center' },
+        emptyText: { fontSize: 15, color: colors.textSecondary },
+        lineCard: {
+          backgroundColor: colors.surface,
+          padding: spacing.md,
+          borderRadius: borderRadius.lg,
+          marginBottom: spacing.sm,
+          elevation: 2,
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: 2 },
+          shadowOpacity: 0.06,
+          shadowRadius: 4,
+        },
+        lineProductName: { fontSize: 16, fontWeight: '700', color: colors.text, marginBottom: spacing.sm },
+        qtyPriceRow: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', marginTop: 4, gap: spacing.md },
+        qtyBlock: { flex: 1, alignItems: 'flex-end' },
+        unitPriceBlock: { alignItems: 'flex-start', minWidth: 90 },
+        lineRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 },
+        lineTotalRow: { marginTop: spacing.sm, paddingTop: spacing.sm, borderTopWidth: 1, borderTopColor: colors.border },
+        lineLabel: { fontSize: 14, color: colors.textSecondary },
+        lineValue: { fontSize: 14, fontWeight: '600', color: colors.text },
+        qtyInput: {
+          fontSize: 16,
+          fontWeight: '700',
+          color: colors.text,
+          borderWidth: 1,
+          borderColor: colors.primary,
+          borderRadius: borderRadius.sm,
+          paddingVertical: 6,
+          paddingHorizontal: 10,
+          minWidth: 56,
+          width: 56,
+          textAlign: 'center',
+        },
+        qtyControls: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginTop: 2 },
+        qtyIconBtn: { padding: 8, alignItems: 'center', justifyContent: 'center' },
+        qtyValue: { fontSize: 16, fontWeight: '700', color: colors.text, marginTop: 2 },
+        lineTotalLabel: { fontSize: 14, fontWeight: '700', color: colors.text },
+        lineTotalValue: { fontSize: 16, fontWeight: '800', color: colors.primary },
+        summaryCard: {
+          backgroundColor: colors.surface,
+          padding: spacing.md,
+          borderRadius: borderRadius.lg,
+          marginTop: spacing.md,
+          elevation: 2,
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: 2 },
+          shadowOpacity: 0.06,
+          shadowRadius: 4,
+        },
+        summaryRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
+        summaryTotalRow: { marginTop: 6, paddingTop: spacing.sm, borderTopWidth: 1, borderTopColor: colors.border, marginBottom: 0 },
+        summaryLabel: { fontSize: 14, color: colors.textSecondary },
+        summaryValue: { fontSize: 14, fontWeight: '600', color: colors.text },
+        summaryTotalLabel: { fontSize: 16, fontWeight: '700', color: colors.text },
+        summaryTotalValue: { fontSize: 18, fontWeight: '800', color: colors.text },
+        bottomSpacer: { height: 200 },
+        bottomBar: {
+          position: 'absolute',
+          bottom: 0,
+          left: 0,
+          right: 0,
+          backgroundColor: colors.surface,
+          padding: spacing.md,
+          paddingBottom: spacing.md + 8,
+          borderTopLeftRadius: borderRadius.xl,
+          borderTopRightRadius: borderRadius.xl,
+          elevation: 8,
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: -2 },
+          shadowOpacity: 0.08,
+          shadowRadius: 6,
+          gap: spacing.sm,
+        },
+        modifyBtn: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 8,
+          paddingVertical: 12,
+          borderRadius: borderRadius.md,
+          borderWidth: 2,
+          borderColor: colors.primary,
+          backgroundColor: 'transparent',
+        },
+        modifyBtnText: { fontSize: 15, fontWeight: '700', color: colors.primary },
+        updateBtn: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 8,
+          paddingVertical: 14,
+          borderRadius: borderRadius.md,
+          backgroundColor: colors.warning,
+        },
+        updateBtnText: { fontSize: 16, fontWeight: '700', color: '#fff' },
+        payBtn: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 8,
+          paddingVertical: 14,
+          borderRadius: borderRadius.md,
+          backgroundColor: colors.primary,
+        },
+        payBtnDisabled: { backgroundColor: colors.textSecondary, opacity: 0.8 },
+        payBtnText: { fontSize: 16, fontWeight: '700', color: '#fff' },
+      }),
+    [colors]
+  );
 
   const loadDetails = useCallback(async () => {
     setLoading(true);
@@ -306,275 +444,3 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
     </KeyboardAvoidingView>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: colors.background,
-  },
-  center: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: colors.background,
-  },
-  scroll: { flex: 1 },
-  scrollContent: {
-    padding: spacing.md,
-    paddingBottom: 24,
-  },
-  errorText: {
-    fontSize: 16,
-    color: colors.textSecondary,
-  },
-  customerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-    marginBottom: spacing.md,
-    paddingVertical: 4,
-  },
-  customerLabel: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: colors.textSecondary,
-  },
-  customerName: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: colors.text,
-    flex: 1,
-  },
-  changedBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-    backgroundColor: '#fef3c7',
-    paddingVertical: 10,
-    paddingHorizontal: spacing.md,
-    borderRadius: borderRadius.md,
-    marginBottom: spacing.md,
-  },
-  changedBannerText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#92400e',
-    flex: 1,
-  },
-  sectionTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: colors.text,
-    marginBottom: spacing.sm,
-  },
-  emptyLines: {
-    padding: spacing.lg,
-    alignItems: 'center',
-  },
-  emptyText: {
-    fontSize: 15,
-    color: colors.textSecondary,
-  },
-  lineCard: {
-    backgroundColor: colors.surface,
-    padding: spacing.md,
-    borderRadius: borderRadius.lg,
-    marginBottom: spacing.sm,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 4,
-  },
-  lineProductName: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: colors.text,
-    marginBottom: spacing.sm,
-  },
-  qtyPriceRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    marginTop: 4,
-    gap: spacing.md,
-  },
-  qtyBlock: {
-    flex: 1,
-    alignItems: 'flex-end',
-  },
-  unitPriceBlock: {
-    alignItems: 'flex-start',
-    minWidth: 90,
-  },
-  lineRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginTop: 4,
-  },
-  lineTotalRow: {
-    marginTop: spacing.sm,
-    paddingTop: spacing.sm,
-    borderTopWidth: 1,
-    borderTopColor: colors.border,
-  },
-  lineLabel: {
-    fontSize: 14,
-    color: colors.textSecondary,
-  },
-  lineValue: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: colors.text,
-  },
-  qtyInput: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: colors.text,
-    borderWidth: 1,
-    borderColor: colors.primary,
-    borderRadius: borderRadius.sm,
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    minWidth: 56,
-    width: 56,
-    textAlign: 'center',
-  },
-  qtyControls: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-    marginTop: 2,
-  },
-  qtyIconBtn: {
-    padding: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  qtyValue: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: colors.text,
-    marginTop: 2,
-  },
-  lineTotalLabel: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: colors.text,
-  },
-  lineTotalValue: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: colors.primary,
-  },
-  summaryCard: {
-    backgroundColor: colors.surface,
-    padding: spacing.md,
-    borderRadius: borderRadius.lg,
-    marginTop: spacing.md,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 4,
-  },
-  summaryRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 6,
-  },
-  summaryTotalRow: {
-    marginTop: 6,
-    paddingTop: spacing.sm,
-    borderTopWidth: 1,
-    borderTopColor: colors.border,
-    marginBottom: 0,
-  },
-  summaryLabel: {
-    fontSize: 14,
-    color: colors.textSecondary,
-  },
-  summaryValue: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: colors.text,
-  },
-  summaryTotalLabel: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: colors.text,
-  },
-  summaryTotalValue: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: colors.text,
-  },
-  bottomSpacer: { height: 200 },
-  bottomBar: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    backgroundColor: colors.surface,
-    padding: spacing.md,
-    paddingBottom: spacing.md + 8,
-    borderTopLeftRadius: borderRadius.xl,
-    borderTopRightRadius: borderRadius.xl,
-    elevation: 8,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: -2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 6,
-    gap: spacing.sm,
-  },
-  modifyBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    paddingVertical: 12,
-    borderRadius: borderRadius.md,
-    borderWidth: 2,
-    borderColor: colors.primary,
-    backgroundColor: 'transparent',
-  },
-  modifyBtnText: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: colors.primary,
-  },
-  updateBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    paddingVertical: 14,
-    borderRadius: borderRadius.md,
-    backgroundColor: colors.warning,
-  },
-  updateBtnText: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#fff',
-  },
-  payBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    paddingVertical: 14,
-    borderRadius: borderRadius.md,
-    backgroundColor: colors.primary,
-  },
-  payBtnDisabled: {
-    backgroundColor: colors.textSecondary,
-    opacity: 0.8,
-  },
-  payBtnText: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#fff',
-  },
-});

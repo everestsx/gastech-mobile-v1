@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -10,7 +10,8 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import { colors, spacing, borderRadius } from '../constants/theme';
+import { useTheme } from '../context/ThemeContext';
+import { spacing, borderRadius } from '../constants/theme';
 import { getCachedOrders } from '../services/sync.service';
 import OrderCard from '../components/OrderCard';
 
@@ -19,11 +20,62 @@ function formatDate(d) {
 }
 
 export default function DailyVisitScreen({ route, navigation }) {
+  const { colors } = useTheme();
   const customerId = route?.params?.customerId ?? null;
   const [orders, setOrders] = useState([]);
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [showPicker, setShowPicker] = useState(false);
   const [loading, setLoading] = useState(true);
+
+  const styles = useMemo(
+    () =>
+      StyleSheet.create({
+        container: { flex: 1, backgroundColor: colors.background },
+        center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+        topBar: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: spacing.md,
+          backgroundColor: colors.surface,
+          borderBottomWidth: 1,
+          borderBottomColor: colors.border,
+        },
+        dateBtn: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          paddingVertical: 8,
+          paddingHorizontal: 12,
+          backgroundColor: colors.background,
+          borderRadius: borderRadius.md,
+          gap: 8,
+        },
+        dateText: { fontSize: 16, fontWeight: '600', color: colors.text },
+        qrBtnHeader: { padding: 4 },
+        filterChip: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 6,
+          paddingVertical: 8,
+          paddingHorizontal: spacing.md,
+          backgroundColor: colors.background,
+          borderBottomWidth: 1,
+          borderBottomColor: colors.border,
+        },
+        filterChipText: { fontSize: 13, color: colors.textSecondary, fontWeight: '500' },
+        list: { padding: spacing.md, paddingBottom: 100 },
+        empty: { alignItems: 'center', justifyContent: 'center', paddingVertical: 48 },
+        emptyText: { fontSize: 16, color: colors.textSecondary, marginTop: 12 },
+        doneDateBtn: {
+          padding: 12,
+          alignItems: 'center',
+          backgroundColor: colors.surface,
+        },
+        doneDateText: { fontSize: 16, fontWeight: '600', color: colors.primary },
+      }),
+    [colors]
+  );
 
   const loadOrders = useCallback(async () => {
     setLoading(true);
@@ -144,53 +196,3 @@ export default function DailyVisitScreen({ route, navigation }) {
     </View>
   );
 }
-
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
-  center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  topBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: spacing.md,
-    backgroundColor: colors.surface,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.border,
-  },
-  dateBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    backgroundColor: colors.background,
-    borderRadius: borderRadius.md,
-    gap: 8,
-  },
-  dateText: { fontSize: 16, fontWeight: '600', color: colors.text },
-  qrBtnHeader: { padding: 4 },
-  filterChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    paddingVertical: 8,
-    paddingHorizontal: spacing.md,
-    backgroundColor: colors.background,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.border,
-  },
-  filterChipText: { fontSize: 13, color: colors.textSecondary, fontWeight: '500' },
-  list: { padding: spacing.md, paddingBottom: 100 },
-  empty: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 48,
-  },
-  emptyText: { fontSize: 16, color: colors.textSecondary, marginTop: 12 },
-  doneDateBtn: {
-    padding: 12,
-    alignItems: 'center',
-    backgroundColor: colors.surface,
-  },
-  doneDateText: { fontSize: 16, fontWeight: '600', color: colors.primary },
-});

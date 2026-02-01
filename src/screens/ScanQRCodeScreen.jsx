@@ -1,15 +1,77 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Alert } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { Ionicons } from '@expo/vector-icons';
-import { colors } from '../constants/theme';
+import { useTheme } from '../context/ThemeContext';
 
 const CUSTOMER_PREFIX = 'CUSTOMER:';
 
 export default function ScanQRCodeScreen({ navigation, route }) {
+  const { colors } = useTheme();
   const returnTo = route?.params?.returnTo ?? null;
   const [permission, requestPermission] = useCameraPermissions();
   const [scanned, setScanned] = useState(false);
+
+  const styles = useMemo(
+    () =>
+      StyleSheet.create({
+        container: { flex: 1 },
+        center: {
+          flex: 1,
+          justifyContent: 'center',
+          alignItems: 'center',
+          backgroundColor: colors.background,
+          padding: 24,
+        },
+        text: { fontSize: 16, color: colors.text, textAlign: 'center', marginBottom: 16 },
+        btn: {
+          backgroundColor: colors.primary,
+          paddingVertical: 12,
+          paddingHorizontal: 24,
+          borderRadius: 12,
+        },
+        btnText: { color: '#fff', fontSize: 16, fontWeight: '600' },
+        overlay: {
+          ...StyleSheet.absoluteFillObject,
+          justifyContent: 'center',
+          alignItems: 'center',
+        },
+        frame: {
+          width: 220,
+          height: 220,
+          borderWidth: 2,
+          borderColor: 'rgba(255,255,255,0.8)',
+          borderRadius: 16,
+          backgroundColor: 'transparent',
+        },
+        hint: {
+          fontSize: 14,
+          color: '#fff',
+          marginTop: 16,
+          textAlign: 'center',
+          textShadowColor: '#000',
+          textShadowOffset: { width: 0, height: 1 },
+          textShadowRadius: 2,
+        },
+        rescanBtn: {
+          marginTop: 24,
+          paddingVertical: 12,
+          paddingHorizontal: 20,
+          backgroundColor: 'rgba(0,0,0,0.5)',
+          borderRadius: 12,
+        },
+        rescanText: { color: '#fff', fontSize: 16, fontWeight: '600' },
+        closeBtn: {
+          position: 'absolute',
+          top: 48,
+          right: 20,
+          padding: 8,
+          backgroundColor: 'rgba(0,0,0,0.4)',
+          borderRadius: 20,
+        },
+      }),
+    [colors]
+  );
 
   const handleBarCodeScanned = useCallback(
     ({ data }) => {
@@ -96,62 +158,3 @@ export default function ScanQRCodeScreen({ navigation, route }) {
     </View>
   );
 }
-
-const styles = StyleSheet.create({
-  container: { flex: 1 },
-  center: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: colors.background,
-    padding: 24,
-  },
-  text: { fontSize: 16, color: colors.text, textAlign: 'center', marginBottom: 16 },
-  btn: {
-    backgroundColor: colors.primary,
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    borderRadius: 12,
-  },
-  btnText: { color: '#fff', fontSize: 16, fontWeight: '600' },
-  overlay: {
-    ...StyleSheet.absoluteFillObject,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  frame: {
-    width: 220,
-    height: 220,
-    borderWidth: 2,
-    borderColor: 'rgba(255,255,255,0.8)',
-    borderRadius: 16,
-    backgroundColor: 'transparent',
-  },
-  hint: {
-    marginTop: 24,
-    color: '#fff',
-    fontSize: 14,
-    textShadowColor: '#000',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 2,
-  },
-  rescanBtn: {
-    marginTop: 24,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingVertical: 12,
-    paddingHorizontal: 20,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    borderRadius: 12,
-  },
-  rescanText: { color: '#fff', fontSize: 16, fontWeight: '600' },
-  closeBtn: {
-    position: 'absolute',
-    top: 48,
-    right: 20,
-    padding: 8,
-    backgroundColor: 'rgba(0,0,0,0.4)',
-    borderRadius: 24,
-  },
-});

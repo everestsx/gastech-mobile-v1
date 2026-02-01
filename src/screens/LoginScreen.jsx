@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   View,
   Text,
@@ -13,13 +13,66 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import AppLogo from '../components/AppLogo';
-import { colors, spacing, borderRadius } from '../constants/theme';
+import { useTheme } from '../context/ThemeContext';
+import { spacing, borderRadius } from '../constants/theme';
 
 export default function LoginScreen({ navigation }) {
+  const { colors } = useTheme();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+
+  const styles = useMemo(
+    () =>
+      StyleSheet.create({
+        container: { flex: 1, backgroundColor: colors.surface },
+        keyboard: { flex: 1 },
+        content: {
+          flex: 1,
+          paddingHorizontal: spacing.lg,
+          paddingTop: spacing.xl,
+          alignItems: 'center',
+        },
+        title: { fontSize: 28, fontWeight: '800', color: colors.text, marginTop: spacing.xl },
+        subtitle: { fontSize: 15, color: colors.textSecondary, marginTop: spacing.xs, marginBottom: spacing.lg },
+        label: { fontSize: 14, fontWeight: '600', color: colors.text, alignSelf: 'stretch', marginBottom: spacing.sm, marginTop: spacing.sm },
+        input: {
+          alignSelf: 'stretch',
+          fontSize: 16,
+          color: colors.text,
+          backgroundColor: colors.surface,
+          borderWidth: 1,
+          borderColor: colors.border,
+          borderRadius: borderRadius.md,
+          paddingVertical: 14,
+          paddingHorizontal: 16,
+          marginBottom: spacing.md,
+        },
+        passwordWrap: {
+          flexDirection: 'row',
+          alignSelf: 'stretch',
+          alignItems: 'center',
+          borderWidth: 1,
+          borderColor: colors.border,
+          borderRadius: borderRadius.md,
+          backgroundColor: colors.surface,
+        },
+        passwordInput: { flex: 1, borderWidth: 0, marginTop: 0 },
+        eyeBtn: { padding: spacing.md },
+        loginBtn: {
+          alignSelf: 'stretch',
+          backgroundColor: colors.primary,
+          paddingVertical: 16,
+          borderRadius: borderRadius.md,
+          alignItems: 'center',
+          marginTop: spacing.xl,
+        },
+        loginBtnDisabled: { opacity: 0.7 },
+        loginBtnText: { fontSize: 17, fontWeight: '700', color: '#fff' },
+      }),
+    [colors]
+  );
 
   const handleLogin = async () => {
     if (!username.trim() || !password.trim()) {
@@ -101,83 +154,3 @@ export default function LoginScreen({ navigation }) {
     </SafeAreaView>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: colors.surface,
-  },
-  keyboard: {
-    flex: 1,
-  },
-  content: {
-    flex: 1,
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.xl,
-    alignItems: 'center',
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: '800',
-    color: colors.text,
-    marginTop: spacing.xl,
-  },
-  subtitle: {
-    fontSize: 15,
-    color: colors.textSecondary,
-    marginTop: spacing.xs,
-    marginBottom: spacing.lg,
-  },
-  label: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: colors.text,
-    alignSelf: 'stretch',
-    marginBottom: spacing.sm,
-    marginTop: spacing.sm,
-  },
-  input: {
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: borderRadius.md,
-    paddingVertical: 14,
-    paddingHorizontal: 16,
-    fontSize: 16,
-    color: colors.text,
-    alignSelf: 'stretch',
-  },
-  passwordWrap: {
-    flexDirection: 'row',
-    alignSelf: 'stretch',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: borderRadius.md,
-    backgroundColor: colors.surface,
-  },
-  passwordInput: {
-    flex: 1,
-    borderWidth: 0,
-    marginTop: 0,
-  },
-  eyeBtn: {
-    padding: spacing.md,
-  },
-  loginBtn: {
-    backgroundColor: colors.primary,
-    alignSelf: 'stretch',
-    paddingVertical: 16,
-    borderRadius: borderRadius.md,
-    alignItems: 'center',
-    marginTop: spacing.xl,
-  },
-  loginBtnDisabled: {
-    opacity: 0.7,
-  },
-  loginBtnText: {
-    color: '#fff',
-    fontSize: 17,
-    fontWeight: '700',
-  },
-});

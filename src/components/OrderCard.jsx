@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
-import { colors, spacing, borderRadius } from '../constants/theme';
+import { useTheme } from '../context/ThemeContext';
+import { spacing, borderRadius } from '../constants/theme';
 
 function formatCurrency(amount) {
   return `LKR ${Number(amount).toFixed(2)}`;
@@ -14,23 +15,57 @@ export function getOrderTotalQty(order) {
   return '—';
 }
 
-function getStatusBadgeStyle(state) {
-  switch (state) {
-    case 'sale':
-      return styles.badgeSale;
-    case 'cancel':
-      return styles.badgeCancel;
-    case 'draft':
-    default:
-      return styles.badgeDraft;
-  }
-}
-
 /**
  * Reusable sale order card: order no, status badge, customer, Total Qty, amount, optional date.
  * Used by Daily Visit and Orders screens.
  */
 export default function OrderCard({ order, onPress }) {
+  const { colors } = useTheme();
+  const styles = useMemo(
+    () =>
+      StyleSheet.create({
+        card: {
+          backgroundColor: colors.surface,
+          padding: spacing.md,
+          borderRadius: borderRadius.lg,
+          marginBottom: spacing.sm,
+          elevation: 2,
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: 2 },
+          shadowOpacity: 0.06,
+          shadowRadius: 4,
+        },
+        rowBetween: {
+          flexDirection: 'row',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+        },
+        orderNo: { fontSize: 16, fontWeight: '700', color: colors.text },
+        badge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
+        badgeSale: { backgroundColor: colors.success },
+        badgeDraft: { backgroundColor: colors.warning },
+        badgeCancel: { backgroundColor: colors.error },
+        badgeText: { fontSize: 11, fontWeight: '700', color: '#fff' },
+        customer: { fontSize: 15, color: colors.textSecondary, marginVertical: 6 },
+        meta: { fontSize: 13, color: colors.textSecondary },
+        amount: { fontSize: 16, fontWeight: '800', color: colors.primary },
+        date: { fontSize: 12, color: colors.textSecondary, marginTop: 4 },
+      }),
+    [colors]
+  );
+
+  function getStatusBadgeStyle(state) {
+    switch (state) {
+      case 'sale':
+        return styles.badgeSale;
+      case 'cancel':
+        return styles.badgeCancel;
+      case 'draft':
+      default:
+        return styles.badgeDraft;
+    }
+  }
+
   if (!order) return null;
 
   const state = order.state || 'draft';
@@ -61,59 +96,3 @@ export default function OrderCard({ order, onPress }) {
     </TouchableOpacity>
   );
 }
-
-const styles = StyleSheet.create({
-  card: {
-    backgroundColor: colors.surface,
-    padding: spacing.md,
-    borderRadius: borderRadius.lg,
-    marginBottom: spacing.sm,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 4,
-  },
-  rowBetween: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  orderNo: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: colors.text,
-  },
-  badge: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
-  },
-  badgeSale: { backgroundColor: colors.success },
-  badgeDraft: { backgroundColor: colors.warning },
-  badgeCancel: { backgroundColor: colors.error },
-  badgeText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#fff',
-  },
-  customer: {
-    fontSize: 15,
-    color: colors.textSecondary,
-    marginVertical: 6,
-  },
-  meta: {
-    fontSize: 13,
-    color: colors.textSecondary,
-  },
-  amount: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: colors.primary,
-  },
-  date: {
-    fontSize: 12,
-    color: colors.textSecondary,
-    marginTop: 4,
-  },
-});

@@ -1,5 +1,5 @@
 import { StatusBar } from "expo-status-bar";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import {
   StyleSheet,
   Text,
@@ -15,9 +15,11 @@ import * as MediaLibrary from "expo-media-library";
 import * as FileSystem from "expo-file-system";
 import { Ionicons } from "@expo/vector-icons";
 
+import { useTheme } from "../context/ThemeContext";
 import { getCustomers } from "../services/customer.service";
 
 export default function QrGenerateScreen({ navigation }) {
+  const { colors, isDark } = useTheme();
   const [customers, setCustomers] = useState([]);
   const [filtered, setFiltered] = useState([]);
   const [search, setSearch] = useState("");
@@ -26,6 +28,66 @@ export default function QrGenerateScreen({ navigation }) {
   const [hasPermission, setHasPermission] = useState(false);
 
   const qrRef = useRef(null);
+
+  const styles = useMemo(
+    () =>
+      StyleSheet.create({
+        container: { flex: 1, backgroundColor: colors.background, padding: 16 },
+        header: { flexDirection: "row", alignItems: "center", marginTop: 20 },
+        headerTitle: { fontSize: 22, fontWeight: "700", color: colors.primary, marginLeft: 12 },
+        input: {
+          backgroundColor: colors.surface,
+          fontSize: 16,
+          paddingVertical: 10,
+          paddingHorizontal: 14,
+          borderRadius: 10,
+          color: colors.text,
+          marginBottom: 10,
+        },
+        suggestionBox: { maxHeight: 160, marginBottom: 10 },
+        suggestionItem: {
+          backgroundColor: colors.primary,
+          padding: 12,
+          borderRadius: 10,
+          marginBottom: 6,
+        },
+        suggestionText: { color: "#fff", fontSize: 16 },
+        button: {
+          backgroundColor: colors.primary,
+          paddingVertical: 14,
+          paddingHorizontal: 16,
+          borderRadius: 12,
+          alignItems: "center",
+          marginTop: 12,
+        },
+        buttonDisabled: { backgroundColor: colors.textSecondary, opacity: 0.6 },
+        buttonText: { color: "#fff", fontWeight: "600", fontSize: 16 },
+        qrWrapper: { marginTop: 30, alignItems: "center" },
+        qrBox: {
+          backgroundColor: colors.surface,
+          padding: 20,
+          borderRadius: 20,
+          elevation: 4,
+        },
+        customerName: {
+          marginTop: 12,
+          fontSize: 18,
+          fontWeight: "600",
+          color: colors.text,
+          textAlign: "center",
+        },
+        qrPlaceholder: {
+          height: 240,
+          width: 240,
+          backgroundColor: colors.border,
+          borderRadius: 20,
+          justifyContent: "center",
+          alignItems: "center",
+        },
+        placeholderText: { fontSize: 16, color: colors.textSecondary },
+      }),
+    [colors]
+  );
 
   useEffect(() => {
     loadCustomers();
@@ -105,12 +167,12 @@ export default function QrGenerateScreen({ navigation }) {
 
   return (
     <SafeAreaView style={styles.container}>
-      <StatusBar style="light" />
+      <StatusBar style={isDark ? "light" : "dark"} />
       
       {/* ---------------- HEADER ---------------- */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()}>
-          <Ionicons name="arrow-back" size={28} color="#1a73e8" />
+          <Ionicons name="arrow-back" size={28} color={colors.primary} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>QR Generator</Text>
       </View>
@@ -119,7 +181,7 @@ export default function QrGenerateScreen({ navigation }) {
       <TextInput
         style={styles.input}
         placeholder="Search customer..."
-        placeholderTextColor="#999"
+        placeholderTextColor={colors.textSecondary}
         value={search}
         onChangeText={onSearch}
       />
@@ -171,100 +233,3 @@ export default function QrGenerateScreen({ navigation }) {
     </SafeAreaView>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#f4f6f8",
-    padding: 16,
-    
-  },
-
-  /* HEADER */
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginTop:20
-  },
-  headerTitle: {
-    fontSize: 22,
-    fontWeight: "700",
-    color: "#1a73e8",
-    marginLeft: 12,
-  },
-
-  /* SEARCH */
-  input: {
-    backgroundColor: "#fff",
-    fontSize: 16,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    borderRadius: 10,
-    color: "#111",
-    marginBottom: 10,
-  },
-  suggestionBox: {
-    maxHeight: 160,
-    marginBottom: 10,
-  },
-  suggestionItem: {
-    backgroundColor: "#1a73e8",
-    padding: 12,
-    borderRadius: 10,
-    marginBottom: 6,
-  },
-  suggestionText: {
-    color: "#fff",
-    fontSize: 16,
-  },
-
-  /* BUTTONS */
-  button: {
-    backgroundColor: "#1a73e8",
-    paddingVertical: 14,
-    paddingHorizontal:16,
-    borderRadius: 12,
-    alignItems: "center",
-    marginTop: 12,
-  },
-  buttonDisabled: {
-    backgroundColor: "gray",
-    opacity: 0.6,
-  },
-  buttonText: {
-    color: "#fff",
-    fontWeight: "600",
-    fontSize: 16,
-  },
-
-  /* QR */
-  qrWrapper: {
-    marginTop: 30,
-    alignItems: "center",
-  },
-  qrBox: {
-    backgroundColor: "#fff",
-    padding: 20,
-    borderRadius: 20,
-    elevation: 4,
-  },
-  customerName: {
-    marginTop: 12,
-    fontSize: 18,
-    fontWeight: "600",
-    color: "#111",
-    textAlign: "center",
-  },
-  qrPlaceholder: {
-    height: 240,
-    width: 240,
-    backgroundColor: "#e0e0e0",
-    borderRadius: 20,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  placeholderText: {
-    fontSize: 16,
-    color: "#555",
-  },
-});

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -8,15 +8,48 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { colors, spacing, borderRadius } from '../constants/theme';
+import { useTheme } from '../context/ThemeContext';
+import { spacing, borderRadius } from '../constants/theme';
 import { getAllSaleOrders } from '../services/saleOrder.service';
 import { getCachedOrders } from '../services/sync.service';
 import OrderCard from '../components/OrderCard';
 
 export default function SaleOrderListScreen({ route, navigation }) {
+  const { colors } = useTheme();
   const customerId = route?.params?.customerId ?? null;
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
+
+  const styles = useMemo(
+    () =>
+      StyleSheet.create({
+        container: { flex: 1, backgroundColor: colors.background },
+        center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+        header: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          paddingHorizontal: spacing.sm,
+          paddingVertical: spacing.md,
+          backgroundColor: colors.surface,
+          borderBottomWidth: 1,
+          borderBottomColor: colors.border,
+        },
+        headerBtn: { padding: 4, minWidth: 40, alignItems: 'flex-start' },
+        headerBtnRight: { alignItems: 'flex-end' },
+        screenTitle: {
+          flex: 1,
+          fontSize: 18,
+          fontWeight: '700',
+          color: colors.text,
+          textAlign: 'center',
+        },
+        list: { padding: spacing.md, paddingBottom: 140 },
+        empty: { alignItems: 'center', justifyContent: 'center', paddingVertical: 48 },
+        emptyText: { fontSize: 16, color: colors.textSecondary, marginTop: 12 },
+      }),
+    [colors]
+  );
 
   const loadOrders = useCallback(async () => {
     try {
@@ -105,54 +138,3 @@ export default function SaleOrderListScreen({ route, navigation }) {
     </View>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: colors.background,
-  },
-  center: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.md,
-    backgroundColor: colors.surface,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.border,
-  },
-  headerBtn: {
-    padding: 4,
-    minWidth: 40,
-    alignItems: 'flex-start',
-  },
-  headerBtnRight: {
-    alignItems: 'flex-end',
-  },
-  screenTitle: {
-    flex: 1,
-    fontSize: 18,
-    fontWeight: '700',
-    color: colors.text,
-    textAlign: 'center',
-  },
-  list: {
-    padding: spacing.md,
-    paddingBottom: 140,
-  },
-  empty: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 48,
-  },
-  emptyText: {
-    fontSize: 16,
-    color: colors.textSecondary,
-    marginTop: 12,
-  },
-});

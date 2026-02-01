@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { View, Text, StyleSheet, useWindowDimensions } from 'react-native';
 import Svg, { Path, Line, Circle } from 'react-native-svg';
-import { colors, spacing } from '../constants/theme';
+import { useTheme } from '../context/ThemeContext';
+import { spacing } from '../constants/theme';
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const CHART_HEIGHT = 160;
@@ -31,6 +32,7 @@ function smoothPathThroughPoints(points) {
 }
 
 export default function WeeklyLineChart({ data = [], label = 'Weekly Sales' }) {
+  const { colors } = useTheme();
   const values = Array.isArray(data) && data.length > 0
     ? data.map((v) => Math.max(0, Number(v)))
     : [0, 4, 2, 1, 5, 3, 4];
@@ -50,6 +52,26 @@ export default function WeeklyLineChart({ data = [], label = 'Weekly Sales' }) {
   }));
 
   const pathD = smoothPathThroughPoints(points);
+
+  const styles = useMemo(
+    () =>
+      StyleSheet.create({
+        wrapper: { alignItems: 'center', marginVertical: 4 },
+        label: {
+          fontSize: 14,
+          fontWeight: '600',
+          color: colors.textSecondary,
+          marginBottom: 4,
+        },
+        daysRow: {
+          flexDirection: 'row',
+          justifyContent: 'space-between',
+          marginTop: 4,
+        },
+        dayText: { fontSize: 10, color: colors.textSecondary },
+      }),
+    [colors]
+  );
 
   return (
     <View style={styles.wrapper}>
@@ -101,25 +123,3 @@ export default function WeeklyLineChart({ data = [], label = 'Weekly Sales' }) {
     </View>
   );
 }
-
-const styles = StyleSheet.create({
-  wrapper: {
-    alignItems: 'center',
-    marginVertical: 4,
-  },
-  label: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: colors.textSecondary,
-    marginBottom: 4,
-  },
-  daysRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: 4,
-  },
-  dayText: {
-    fontSize: 10,
-    color: colors.textSecondary,
-  },
-});

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState, useMemo } from 'react';
 import {
   View,
   Text,
@@ -9,13 +9,59 @@ import {
   RefreshControl,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { colors, spacing, borderRadius } from '../constants/theme';
+import { useTheme } from '../context/ThemeContext';
+import { spacing, borderRadius } from '../constants/theme';
 import { getCachedCustomers } from '../services/sync.service';
 
 export default function CustomersScreen({ navigation }) {
+  const { colors } = useTheme();
   const [customers, setCustomers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+
+  const styles = useMemo(
+    () =>
+      StyleSheet.create({
+        container: { flex: 1, backgroundColor: colors.background },
+        center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+        list: { padding: spacing.md, paddingBottom: 100 },
+        listEmpty: { flexGrow: 1 },
+        item: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          backgroundColor: colors.surface,
+          borderRadius: borderRadius.md,
+          padding: spacing.md,
+          marginBottom: spacing.sm,
+          elevation: 2,
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: 1 },
+          shadowOpacity: 0.06,
+          shadowRadius: 3,
+        },
+        itemIcon: {
+          width: 40,
+          height: 40,
+          borderRadius: 20,
+          backgroundColor: colors.background,
+          justifyContent: 'center',
+          alignItems: 'center',
+          marginRight: spacing.md,
+        },
+        itemContent: { flex: 1 },
+        itemName: { fontSize: 16, fontWeight: '600', color: colors.text },
+        itemPhone: { fontSize: 13, color: colors.textSecondary, marginTop: 2 },
+        empty: {
+          flex: 1,
+          justifyContent: 'center',
+          alignItems: 'center',
+          paddingVertical: spacing.xl,
+        },
+        emptyText: { fontSize: 16, fontWeight: '600', color: colors.textSecondary, marginTop: 8 },
+        emptyHint: { fontSize: 13, color: colors.textSecondary, marginTop: 4 },
+      }),
+    [colors]
+  );
 
   const loadCustomers = useCallback(async () => {
     try {
@@ -101,43 +147,3 @@ export default function CustomersScreen({ navigation }) {
     />
   );
 }
-
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
-  center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  list: { padding: spacing.md, paddingBottom: 100 },
-  listEmpty: { flexGrow: 1 },
-  item: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: colors.surface,
-    borderRadius: borderRadius.md,
-    padding: spacing.md,
-    marginBottom: spacing.sm,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.06,
-    shadowRadius: 3,
-  },
-  itemIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: colors.background,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: spacing.md,
-  },
-  itemContent: { flex: 1 },
-  itemName: { fontSize: 16, fontWeight: '600', color: colors.text },
-  itemPhone: { fontSize: 13, color: colors.textSecondary, marginTop: 2 },
-  empty: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingVertical: spacing.xl,
-  },
-  emptyText: { fontSize: 16, fontWeight: '600', color: colors.textSecondary, marginTop: 8 },
-  emptyHint: { fontSize: 13, color: colors.textSecondary, marginTop: 4 },
-});
