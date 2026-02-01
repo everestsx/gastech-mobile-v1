@@ -90,23 +90,30 @@ export default function DashboardScreen({ navigation }) {
         hint: { fontSize: 14, color: colors.textSecondary, marginTop: 2 },
         headerButtons: { flexDirection: 'row', alignItems: 'center', gap: 8 },
         syncBtnTop: {
-          backgroundColor: colors.primary,
+          backgroundColor: colors.primarySurface ?? colors.surface,
           borderRadius: borderRadius.md,
-          padding: 10,
-          minWidth: 44,
+          paddingVertical: 8,
+          paddingHorizontal: 12,
+          flexDirection: 'row',
           alignItems: 'center',
           justifyContent: 'center',
+          gap: 6,
+          borderWidth: 1,
+          borderColor: colors.primary,
         },
+        syncBtnTopText: { fontSize: 14, fontWeight: '700', color: colors.primary },
         dailyVisitBtnTop: {
-          backgroundColor: colors.primary,
+          backgroundColor: colors.primarySurface ?? colors.surface,
           borderRadius: borderRadius.md,
           paddingVertical: 8,
           paddingHorizontal: 12,
           flexDirection: 'row',
           alignItems: 'center',
           gap: 6,
+          borderWidth: 1,
+          borderColor: colors.primary,
         },
-        dailyVisitBtnTopText: { fontSize: 14, fontWeight: '700', color: '#fff' },
+        dailyVisitBtnTopText: { fontSize: 14, fontWeight: '700', color: colors.primary },
         sectionTitle: {
           fontSize: 17,
           fontWeight: '700',
@@ -233,7 +240,7 @@ export default function DashboardScreen({ navigation }) {
             onPress={() => navigation.navigate('DailyVisit')}
             activeOpacity={0.8}
           >
-            <Ionicons name="calendar-outline" size={20} color="#fff" />
+            <Ionicons name="calendar-outline" size={20} color={colors.primary} />
             <Text style={styles.dailyVisitBtnTopText}>Daily Visit</Text>
           </TouchableOpacity>
           <TouchableOpacity
@@ -243,10 +250,11 @@ export default function DashboardScreen({ navigation }) {
             activeOpacity={0.8}
           >
             {syncing ? (
-              <ActivityIndicator size="small" color="#fff" />
+              <ActivityIndicator size="small" color={colors.primary} />
             ) : (
-              <Ionicons name="sync-outline" size={20} color="#fff" />
+              <Ionicons name="sync-outline" size={20} color={colors.primary} />
             )}
+            <Text style={styles.syncBtnTopText}>Sync</Text>
           </TouchableOpacity>
         </View>
       </View>

@@ -1,5 +1,5 @@
-import React, { useEffect, useRef } from 'react';
-import { AppState, TouchableOpacity } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { AppState, TouchableOpacity, View, Text, Image } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
@@ -20,7 +20,48 @@ import CustomersScreen from '../screens/CustomersScreen';
 import SettingsScreen from '../screens/SettingsScreen';
 
 import { useTheme } from '../context/ThemeContext';
-import { runSync, getSyncIntervalMs } from '../services/sync.service';
+import { runSync, getSyncIntervalMs, getUserSession } from '../services/sync.service';
+
+/** Modern header avatar: image or empty user icon. Tapping opens Menu. */
+function HeaderAvatar({ onPress }) {
+  const [user, setUser] = useState(null);
+  useEffect(() => {
+    getUserSession().then(setUser);
+  }, []);
+  const avatarUri = user?.avatarUri ?? user?.avatar ?? null;
+  return (
+    <TouchableOpacity
+      onPress={onPress}
+      activeOpacity={0.85}
+      style={{
+        width: 40,
+        height: 40,
+        borderRadius: 20,
+        backgroundColor: 'rgba(255,255,255,0.15)',
+        borderWidth: 1.5,
+        borderColor: 'rgba(255,255,255,0.4)',
+        alignItems: 'center',
+        justifyContent: 'center',
+        overflow: 'hidden',
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.15,
+        shadowRadius: 2,
+        elevation: 2,
+      }}
+    >
+      {avatarUri ? (
+        <Image
+          source={{ uri: avatarUri }}
+          style={{ width: 36, height: 36, borderRadius: 18 }}
+          resizeMode="cover"
+        />
+      ) : (
+        <Ionicons name="person-outline" size={22} color="rgba(255,255,255,0.9)" />
+      )}
+    </TouchableOpacity>
+  );
+}
 
 const RootStack = createNativeStackNavigator();
 const Tab = createBottomTabNavigator();
@@ -117,15 +158,23 @@ function MainStackScreen() {
         component={MainTabs}
         options={({ navigation }) => ({
           headerShown: true,
-          title: 'GasTech',
           ...headerScreenOptions,
-          headerRight: () => (
-            <TouchableOpacity
-              onPress={() => navigation.navigate('Menu')}
-              style={{ marginRight: 16, padding: 4 }}
+          headerLeft: () => (
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                paddingLeft: 16,
+                marginRight: 16,
+              }}
             >
-              <Ionicons name="menu" size={24} color="#fff" />
-            </TouchableOpacity>
+              <HeaderAvatar onPress={() => navigation.navigate('Menu')} />
+            </View>
+          ),
+          headerTitle: () => (
+            <Text style={{ fontSize: 18, color: '#fff', fontWeight: '700' }} numberOfLines={1}>
+              GasTech
+            </Text>
           ),
         })}
       />
