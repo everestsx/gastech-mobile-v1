@@ -1,96 +1,279 @@
-import { StatusBar } from 'expo-status-bar';
-import { useState } from 'react';
-import { StyleSheet, Text, View,SafeAreaView, SafeAreaViewBase, TouchableOpacity,TextInput } from 'react-native';
-import QRCode from 'react-native-qrcode-svg';
+import React, { useState, useEffect, useCallback } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  ScrollView,
+  RefreshControl,
+  ActivityIndicator,
+} from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { colors, spacing, borderRadius } from '../constants/theme';
+import { dashboardConfig } from '../constants/dashboardConfig';
+import { getCachedOrders } from '../services/sync.service';
+import WeeklyLineChart from '../components/WeeklyLineChart';
 
+function formatCurrency(amount) {
+  return `₹${Number(amount).toFixed(2)}`;
+}
 
-export default function DashboardScreen() {
-  // const [text,SetText] = useState("")
-  const [url,SetUrl] = useState("")
-  const [isQrGenerated,setIsQrGenarator] = useState(false)
+export default function DashboardScreen({ navigation }) {
+  const [orders, setOrders] = useState([]);
+  const [refreshing, setRefreshing] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  const loadData = useCallback(async () => {
+    try {
+      const data = await getCachedOrders();
+      setOrders(Array.isArray(data) ? data : []);
+    } catch (_) {
+      setOrders([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const unsub = navigation.addListener?.('focus', loadData);
+    loadData();
+    return () => unsub?.();
+  }, [loadData, navigation]);
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await loadData();
+    setRefreshing(false);
+  };
+
+  const today = new Date().toISOString().split('T')[0];
+  const todayOrders = orders.filter((o) => (o.date_order || '').startsWith(today));
+  const totalSales = todayOrders.reduce((s, o) => s + (Number(o.amount_total) || 0), 0);
+  const cashTotal = todayOrders.reduce((s, o) => s + (Number(o.amount_total) || 0) * 0.6, 0);
+  const creditTotal = todayOrders.reduce((s, o) => s + (Number(o.amount_total) || 0) * 0.4, 0);
+
+  const last7Days = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    const dayStr = d.toISOString().split('T')[0];
+    const dayOrders = orders.filter((o) => (o.date_order || '').startsWith(dayStr));
+    last7Days.push(dayOrders.reduce((s, o) => s + (Number(o.amount_total) || 0), 0));
+  }
+
+  const { showCreateSalesOrder, showReturnOrder } = dashboardConfig;
+
+  if (loading) {
+    return (
+      <View style={styles.center}>
+        <ActivityIndicator size="large" color={colors.primary} />
+      </View>
+    );
+  }
+
   return (
-    <SafeAreaView style={styles.container}>
-       <View style={styles.view1}/>
-       <View style={styles.view2}/>
-       <View style={styles.maincontainer}>
-      <Text style={{fontSize:54,color:'white',fontWeight:'400'}}>QR</Text>
-      <Text style={{fontSize:54,color:'white',fontWeight:'400'}}>Genarator</Text>
-      <View style={styles.subcontainer}>
-           <View style={{flexDirection:"row",gap:10}}>
-              <TextInput
-                style={styles.input}
-                placeholder="Enter Url Here..."
-                placeholderTextColor={'gray'}
-                onChangeText={text => {SetUrl(text);setIsQrGenarator(false)}}
-              />
-              <TouchableOpacity style={styles.button} onPress={() => setIsQrGenarator(true)}>
-                <Text style={{color:'white',fontSize:16}}>Genarate QR</Text>
-              </TouchableOpacity>
-           </View>
-           <View style={{marginVertical:80,borderColor:'white',borderWidth:1,padding:20,backgroundColor:'white'}}>
-            {
-              isQrGenerated && url?
-              <QRCode size={200} value={url}/>:
-              <View style={{height:200,width:200,justifyContent:"center",alignItems:'center'}}>
-                <Text style={{fontSize:20}}>QR Code Here</Text>
-              </View>
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={styles.content}
+      refreshControl={
+        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.primary]} />
+      }
+    >
+      <View style={styles.header}>
+        <View>
+          <Text style={styles.greeting}>Hi, Driver</Text>
+          <Text style={styles.hint}>Your daily overview</Text>
+        </View>
+        <TouchableOpacity
+          style={styles.dailyVisitBtnTop}
+          onPress={() => navigation.navigate('DailyVisit')}
+          activeOpacity={0.8}
+        >
+          <Ionicons name="calendar-outline" size={20} color="#fff" />
+          <Text style={styles.dailyVisitBtnTopText}>Daily Visit</Text>
+        </TouchableOpacity>
+      </View>
 
-            } 
-             
-           </View>
+      {/* 1. Daily Overview */}
+      <Text style={styles.sectionTitle}>Daily Overview</Text>
+      <View style={styles.metricsRow}>
+        <View style={styles.metricCard}>
+          <Ionicons name="cart-outline" size={22} color={colors.primary} />
+          <Text style={styles.metricValue}>{todayOrders.length}</Text>
+          <Text style={styles.metricLabel}>Sales Orders</Text>
+        </View>
+        <View style={styles.metricCard}>
+          <Ionicons name="wallet-outline" size={22} color={colors.primary} />
+          <Text style={styles.metricValue}>{formatCurrency(cashTotal + creditTotal)}</Text>
+          <Text style={styles.metricLabel}>To Collect</Text>
+        </View>
       </View>
+
+      {/* 2. Totals panel: flat white card – Total Sales row, then Cash | Credit */}
+      <View style={styles.totalsCard}>
+        <View style={styles.totalSalesRow}>
+          <Text style={styles.totalsLabel}>Total Sales</Text>
+          <Text style={styles.totalsValue}>{formatCurrency(totalSales)}</Text>
+        </View>
+        <View style={styles.cashCreditRow}>
+          <View style={styles.halfBox}>
+            <Text style={styles.totalsLabel}>Cash</Text>
+            <Text style={styles.totalsValue}>{formatCurrency(cashTotal)}</Text>
+          </View>
+          <View style={styles.halfBox}>
+            <Text style={styles.totalsLabel}>Credit</Text>
+            <Text style={styles.totalsValue}>{formatCurrency(creditTotal)}</Text>
+          </View>
+        </View>
       </View>
-    </SafeAreaView>
+
+      {/* 3. Weekly Sales chart */}
+      <View style={styles.chartCard}>
+        <Text style={styles.chartTitle}>Weekly Sales</Text>
+        <WeeklyLineChart data={last7Days} label="" />
+      </View>
+
+      {/* 4. Configurable: Create Sales Order & Return */}
+      {(showCreateSalesOrder || showReturnOrder) && (
+        <View style={styles.actionsRow}>
+          {showCreateSalesOrder && (
+            <TouchableOpacity
+              style={styles.actionCard}
+              onPress={() => navigation.navigate('Orders', { customerId: null })}
+              activeOpacity={0.8}
+            >
+              <View style={styles.actionIconWrap}>
+                <Ionicons name="add" size={32} color={colors.primary} />
+              </View>
+              <Text style={styles.actionLabel}>Create Sales Order</Text>
+            </TouchableOpacity>
+          )}
+          {showReturnOrder && (
+            <TouchableOpacity
+              style={styles.actionCard}
+              onPress={() => navigation.navigate('Orders')}
+              activeOpacity={0.8}
+            >
+              <View style={styles.actionIconWrap}>
+                <Ionicons name="return-down-back-outline" size={28} color={colors.primary} />
+              </View>
+              <Text style={styles.actionLabel}>Return Order</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      )}
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  container: { flex: 1, backgroundColor: colors.background },
+  content: { padding: spacing.md, paddingBottom: 100 },
+  center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: spacing.md,
+  },
+  greeting: { fontSize: 22, fontWeight: '800', color: colors.text },
+  hint: { fontSize: 14, color: colors.textSecondary, marginTop: 2 },
+  dailyVisitBtnTop: {
+    backgroundColor: colors.primary,
+    borderRadius: borderRadius.md,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  dailyVisitBtnTopText: { fontSize: 14, fontWeight: '700', color: '#fff' },
+  sectionTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: colors.text,
+    marginBottom: spacing.sm,
+  },
+  metricsRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    marginBottom: spacing.md,
+  },
+  metricCard: {
     flex: 1,
-    backgroundColor: 'rgb(10,10,10)',
-   position:'relative'
+    backgroundColor: colors.surface,
+    borderRadius: borderRadius.lg,
+    padding: spacing.md,
+    alignItems: 'center',
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 4,
   },
-  view1:{
-    width:300,
-    height:200,
-    backgroundColor:'rgb(26,40,66)',
-    position:'absolute',
-    top:0,
-    right:0,
-    borderBottomLeftRadius:'100%'
+  metricValue: { fontSize: 15, fontWeight: '800', color: colors.text, marginTop: 4 },
+  metricLabel: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
+  totalsCard: {
+    backgroundColor: colors.surface,
+    borderRadius: borderRadius.lg,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 4,
   },
-  view2:{
-    width:250,
-    height:250,
-    backgroundColor:'rgb(26,40,66)',
-    position:'absolute',
-    bottom:0,
-   left:0,
-    borderTopRightRadius:'100%'
+  totalSalesRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
   },
-  maincontainer:{
-    padding:20
+  cashCreditRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    paddingTop: 10,
   },
-  subcontainer:{
-    marginTop:80,
-    justifyContent:'center',
-    alignItems:'center'
+  halfBox: {
+    flex: 1,
+    alignItems: 'center',
   },
-  input:{
-   backgroundColor:'rgb(28,28,28)',
-   fontSize:20,
-   paddingVertical:10,
-   paddingHorizontal:16,
-   color:'white',
-   borderRadius:10,
-   flex:1
+  totalsLabel: { fontSize: 13, color: colors.textSecondary, marginBottom: 4 },
+  totalsValue: { fontSize: 16, fontWeight: '800', color: colors.text },
+  chartCard: {
+    backgroundColor: colors.primaryDark,
+    borderRadius: borderRadius.lg,
+    padding: spacing.md,
+    marginBottom: spacing.md,
   },
-  button:{
-    backgroundColor:'rgb(37,162,171)',
-    justifyContent:'center',
-    alignItems:'center',
-    paddingHorizontal:10,
-    borderRadius:10,
-    paddingVertical:10
-  }
+  chartTitle: { fontSize: 16, fontWeight: '600', color: '#fff', marginBottom: 4 },
+  actionsRow: {
+    flexDirection: 'row',
+    gap: spacing.md,
+  },
+  actionCard: {
+    flex: 1,
+    backgroundColor: colors.surface,
+    borderRadius: borderRadius.lg,
+    padding: spacing.lg,
+    alignItems: 'center',
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 4,
+  },
+  actionIconWrap: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: colors.background,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  actionLabel: { fontSize: 13, fontWeight: '600', color: colors.text },
 });

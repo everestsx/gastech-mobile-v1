@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import {
   StatusBar,
   View,
@@ -10,25 +10,41 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { getAllSaleOrders } from "../services/saleOrder.service";
+import { getCachedOrders } from "../services/sync.service";
 
-export default function SaleOrderListScreen({ navigation }) {
+export default function SaleOrderListScreen({ route, navigation }) {
+  const customerId = route?.params?.customerId ?? null;
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    loadOrders();
-  }, []);
-
-  const loadOrders = async () => {
+  const loadOrders = useCallback(async () => {
     try {
-      const data = await getAllSaleOrders();
-      setOrders(data);
-    } catch (err) {
-      console.error("Sale Order Error:", err);
+      const data = await getCachedOrders();
+      let list = Array.isArray(data) ? data : [];
+      if (customerId != null) {
+        list = list.filter((o) => o.partner_id?.[0] === customerId);
+      }
+      setOrders(list);
+    } catch (_) {
+      try {
+        const data = await getAllSaleOrders();
+        let list = data || [];
+        if (customerId != null) {
+          list = list.filter((o) => o.partner_id?.[0] === customerId);
+        }
+        setOrders(list);
+      } catch (err) {
+        console.error("Sale Order Error:", err);
+        setOrders([]);
+      }
     } finally {
       setLoading(false);
     }
-  };
+  }, [customerId]);
+
+  useEffect(() => {
+    loadOrders();
+  }, [loadOrders]);
 
   const openDetails = (order) => {
     navigation.navigate("SaleOrderDetails", {
@@ -52,7 +68,7 @@ export default function SaleOrderListScreen({ navigation }) {
   if (loading) {
     return (
       <View style={styles.center}>
-        <ActivityIndicator size="large" color="#1a73e8" />
+        <ActivityIndicator size="large" color="#1e5aa8" />
       </View>
     );
   }
@@ -64,17 +80,22 @@ export default function SaleOrderListScreen({ navigation }) {
       {/* ---------------- HEADER ---------------- */}
       <View style={styles.header}>
         <TouchableOpacity
-          onPress={() => navigation.goBack()}
+          onPress={() => {
+            if (customerId != null) navigation.navigate('Orders', { customerId: null });
+            else navigation.goBack();
+          }}
           style={styles.backBtn}
         >
-          <Ionicons name="arrow-back" size={24} color="#1a73e8" />
+          <Ionicons name="arrow-back" size={24} color="#1e5aa8" />
         </TouchableOpacity>
-        <Text style={styles.screenTitle}>Sale Orders</Text>
+        <Text style={styles.screenTitle}>
+          {customerId != null ? "Orders (Customer)" : "Sale Orders"}
+        </Text>
         <TouchableOpacity
           onPress={() => navigation.navigate("ScanQRCode")}
           style={styles.qrBtnHeader}
         >
-          <Ionicons name="qr-code-outline" size={28} color="#1a73e8" />
+          <Ionicons name="qr-code-outline" size={28} color="#1e5aa8" />
         </TouchableOpacity>
       </View>
 
@@ -138,7 +159,7 @@ const styles = StyleSheet.create({
   screenTitle: {
     fontSize: 22,
     fontWeight: "800",
-    color: "#1a73e8",
+    color: "#1e5aa8",
     textAlign: "center",
     flex: 1,
   },
@@ -182,7 +203,7 @@ const styles = StyleSheet.create({
   amount: {
     fontSize: 16,
     fontWeight: "800",
-    color: "#1a73e8",
+    color: "#1e5aa8",
   },
 
   statusBadge: {

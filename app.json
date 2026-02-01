@@ -10,21 +10,30 @@
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#1e5aa8"
     },
     "ios": {
       "supportsTablet": true
     },
     "android": {
+      "package": "com.gastech.mobile",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
+        "backgroundColor": "#1e5aa8"
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false
     },
     "web": {
       "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      ["expo-camera", { "cameraPermission": "Allow GasTech to scan customer QR codes" }]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "9521d75d-13dc-49e5-8793-2022463e75c5"
+      }
     }
   }
 }
