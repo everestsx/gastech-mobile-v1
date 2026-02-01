@@ -8,7 +8,9 @@ import {
   ActivityIndicator,
   ScrollView,
   TextInput,
+  Image,
 } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing, borderRadius } from '../constants/theme';
 import { SRI_LANKA_BANKS } from '../constants/sriLankaBanks';
@@ -29,6 +31,9 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   const [paymentType, setPaymentType] = useState(PAYMENT_CASH);
   const [selectedBankId, setSelectedBankId] = useState(null);
   const [bankSearch, setBankSearch] = useState('');
+  const [deliveryPhotos, setDeliveryPhotos] = useState([]);
+
+  const MAX_PHOTOS = 3;
 
   const filteredBanks = useMemo(() => {
     const q = (bankSearch || '').trim().toLowerCase();
@@ -40,8 +45,9 @@ export default function ProceedPaymentScreen({ route, navigation }) {
     ? SRI_LANKA_BANKS.find((b) => b.id === selectedBankId)
     : null;
 
-  const canProceed =
+  const paymentComplete =
     paymentType === PAYMENT_CASH || (paymentType === PAYMENT_BANK && selectedBankId != null);
+  const canProceed = paymentComplete && deliveryPhotos.length >= 1;
 
   const handleProceed = async () => {
     if (!canProceed) return;
@@ -78,6 +84,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         paymentType,
         selectedBankId: paymentType === PAYMENT_BANK ? selectedBankId : null,
         selectedBankName,
+        deliveryPhotoUris: deliveryPhotos,
       });
     } catch (err) {
       console.error(err);
@@ -227,6 +234,90 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         </>
       )}
 
+      {/* Mandatory: Evidence of delivery photos (max 3) */}
+      <Text style={styles.sectionLabel}>
+        Evidence of delivery <Text style={styles.requiredStar}>*</Text>
+        {deliveryPhotos.length > 0 && (
+          <Text style={styles.photoCount}> ({deliveryPhotos.length}/{MAX_PHOTOS})</Text>
+        )}
+      </Text>
+      {deliveryPhotos.length > 0 && (
+        <View style={styles.photoList}>
+          {deliveryPhotos.map((uri, index) => (
+            <View key={`${uri}-${index}`} style={styles.photoPreviewWrap}>
+              <Image source={{ uri }} style={styles.photoPreview} resizeMode="cover" />
+              <TouchableOpacity
+                style={styles.photoRemoveBtn}
+                onPress={() => setDeliveryPhotos((prev) => prev.filter((_, i) => i !== index))}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="close-circle" size={28} color={colors.error} />
+              </TouchableOpacity>
+            </View>
+          ))}
+        </View>
+      )}
+      {deliveryPhotos.length < MAX_PHOTOS && (
+        <View style={styles.photoButtonsRow}>
+          <TouchableOpacity
+            style={styles.photoBtn}
+            onPress={async () => {
+              const { status } = await ImagePicker.requestCameraPermissionsAsync();
+              if (status !== 'granted') {
+                Alert.alert('Permission', 'Camera access is required to take a photo.');
+                return;
+              }
+              const result = await ImagePicker.launchCameraAsync({
+                mediaTypes: ['images'],
+                allowsEditing: true,
+                aspect: [4, 3],
+                quality: 0.8,
+              });
+              if (!result.canceled && result.assets?.[0]?.uri) {
+                setDeliveryPhotos((prev) =>
+                  prev.length < MAX_PHOTOS ? [...prev, result.assets[0].uri] : prev
+                );
+              }
+            }}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="camera" size={28} color={colors.primary} />
+            <Text style={styles.photoBtnText}>Take photo</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.photoBtn}
+            onPress={async () => {
+              const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+              if (status !== 'granted') {
+                Alert.alert('Permission', 'Gallery access is required to choose a photo.');
+                return;
+              }
+              const result = await ImagePicker.launchImageLibraryAsync({
+                mediaTypes: ['images'],
+                allowsEditing: true,
+                aspect: [4, 3],
+                quality: 0.8,
+              });
+              if (!result.canceled && result.assets?.[0]?.uri) {
+                setDeliveryPhotos((prev) =>
+                  prev.length < MAX_PHOTOS ? [...prev, result.assets[0].uri] : prev
+                );
+              }
+            }}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="images-outline" size={28} color={colors.primary} />
+            <Text style={styles.photoBtnText}>Choose photo</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+      {deliveryPhotos.length === 0 && (
+        <Text style={styles.photoHint}>Attach at least 1 photo (max {MAX_PHOTOS}) as evidence of delivery</Text>
+      )}
+      {deliveryPhotos.length >= 1 && deliveryPhotos.length < MAX_PHOTOS && (
+        <Text style={styles.photoHint}>You can add up to {MAX_PHOTOS - deliveryPhotos.length} more</Text>
+      )}
+
       <View style={styles.bottomSpacer} />
 
       <TouchableOpacity
@@ -287,6 +378,75 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: colors.text,
     marginBottom: spacing.sm,
+  },
+  requiredStar: {
+    color: colors.error,
+    fontWeight: '700',
+  },
+  photoCount: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.textSecondary,
+  },
+  photoList: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+    marginBottom: spacing.sm,
+  },
+  photoButtonsRow: {
+    flexDirection: 'row',
+    gap: spacing.md,
+    marginBottom: spacing.sm,
+  },
+  photoBtn: {
+    flex: 1,
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: spacing.lg,
+    backgroundColor: colors.surface,
+    borderRadius: borderRadius.lg,
+    borderWidth: 2,
+    borderColor: colors.border,
+    borderStyle: 'dashed',
+  },
+  photoBtnText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.primary,
+  },
+  photoPreviewWrap: {
+    width: 100,
+    height: 100,
+    borderRadius: borderRadius.md,
+    overflow: 'hidden',
+    backgroundColor: colors.surface,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 4,
+  },
+  photoPreview: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: colors.background,
+  },
+  photoRemoveBtn: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    padding: 2,
+    backgroundColor: 'rgba(255,255,255,0.9)',
+    borderRadius: 14,
+  },
+  photoHint: {
+    fontSize: 12,
+    color: colors.textSecondary,
+    marginBottom: spacing.md,
+    marginTop: -4,
   },
   radioRow: {
     flexDirection: 'row',
