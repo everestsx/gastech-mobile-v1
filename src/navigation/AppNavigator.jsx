@@ -13,7 +13,7 @@ import SaleOrderListScreen from '../screens/SaleOrderListScreen';
 import SaleOrderDetailsScreen from '../screens/SaleOrderDetailsScreen';
 import ProceedPaymentScreen from '../screens/ProceedPaymentScreen';
 import InvoiceScreen from '../screens/InvoiceScreen';
-import QrGenerateScreen from '../screens/QrGenarateScreen';
+import QrGenerateScreen from '../screens/QrGenerateScreen';
 import ScanQRCodeScreen from '../screens/ScanQRCodeScreen';
 import MenuScreen from '../screens/MenuScreen';
 import CustomersScreen from '../screens/CustomersScreen';
