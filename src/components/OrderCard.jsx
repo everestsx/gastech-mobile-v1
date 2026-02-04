@@ -55,8 +55,10 @@ export default function OrderCard({ order, onPress }) {
   );
 
   function getStatusBadgeStyle(state) {
-    switch (state) {
+    const normalized = (state || '').toLowerCase();
+    switch (normalized) {
       case 'sale':
+      case 'batch':
         return styles.badgeSale;
       case 'cancel':
         return styles.badgeCancel;
@@ -64,6 +66,12 @@ export default function OrderCard({ order, onPress }) {
       default:
         return styles.badgeDraft;
     }
+  }
+
+  function getStatusLabel(state) {
+    const normalized = (state || '').toLowerCase();
+    if (normalized === 'batch') return 'SALE';
+    return String(state || 'draft').toUpperCase();
   }
 
   if (!order) return null;
@@ -80,7 +88,7 @@ export default function OrderCard({ order, onPress }) {
       <View style={styles.rowBetween}>
         <Text style={styles.orderNo}>{order.name}</Text>
         <View style={[styles.badge, getStatusBadgeStyle(state)]}>
-          <Text style={styles.badgeText}>{String(state).toUpperCase()}</Text>
+          <Text style={styles.badgeText}>{getStatusLabel(state)}</Text>
         </View>
       </View>
       <Text style={styles.customer} numberOfLines={1}>

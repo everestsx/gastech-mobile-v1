@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { AppState, TouchableOpacity, View, Text, Image } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
@@ -69,8 +70,16 @@ const RootStack = createNativeStackNavigator();
 const Tab = createBottomTabNavigator();
 const MainStack = createNativeStackNavigator();
 
+const TAB_BAR_TOP_PADDING = 8;
+const TAB_BAR_INNER_HEIGHT = 52;
+const TAB_BAR_MIN_BOTTOM = 4;
+
 function MainTabs() {
   const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
+  const bottomInset = Math.max(TAB_BAR_MIN_BOTTOM, insets.bottom);
+  const tabBarHeight = TAB_BAR_INNER_HEIGHT + TAB_BAR_TOP_PADDING + bottomInset;
+
   return (
     <Tab.Navigator
       screenOptions={{
@@ -78,9 +87,9 @@ function MainTabs() {
         tabBarActiveTintColor: colors.primary,
         tabBarInactiveTintColor: colors.textSecondary,
         tabBarStyle: {
-          paddingBottom: 6,
-          paddingTop: 8,
-          height: 60,
+          paddingTop: TAB_BAR_TOP_PADDING,
+          paddingBottom: bottomInset,
+          height: tabBarHeight,
           backgroundColor: colors.surface,
           borderTopColor: colors.border,
         },

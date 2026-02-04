@@ -10,16 +10,23 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { useNetwork } from '../context/NetworkContext';
+import { useAuth } from '../context/AuthContext';
 import { spacing, borderRadius } from '../constants/theme';
 import { getCachedOrders } from '../services/sync.service';
 import OrderCard from '../components/OrderCard';
 
+/** Tab key: show only orders with this invoice_status */
+const TAB_INVOICED = 'invoiced';
+const TAB_TO_INVOICE = 'to_invoice';
+
 export default function SaleOrderListScreen({ route, navigation }) {
   const { colors } = useTheme();
   const { isOnline } = useNetwork();
+  const { vehicleId } = useAuth();
   const customerId = route?.params?.customerId ?? null;
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState(TAB_TO_INVOICE);
 
   const styles = useMemo(
     () =>
@@ -45,6 +52,31 @@ export default function SaleOrderListScreen({ route, navigation }) {
           color: colors.text,
           textAlign: 'center',
         },
+        tabRow: {
+          flexDirection: 'row',
+          paddingHorizontal: spacing.md,
+          paddingVertical: spacing.sm,
+          gap: spacing.sm,
+          backgroundColor: colors.surface,
+          borderBottomWidth: 1,
+          borderBottomColor: colors.border,
+        },
+        tab: {
+          flex: 1,
+          paddingVertical: 10,
+          borderRadius: borderRadius.md,
+          alignItems: 'center',
+          justifyContent: 'center',
+          backgroundColor: colors.background,
+          borderWidth: 1.5,
+          borderColor: colors.border,
+        },
+        tabActive: {
+          backgroundColor: colors.primarySurface ?? colors.surface,
+          borderColor: colors.primary,
+        },
+        tabText: { fontSize: 14, fontWeight: '600', color: colors.textSecondary },
+        tabTextActive: { color: colors.primary, fontWeight: '700' },
         list: { padding: spacing.md, paddingBottom: 140 },
         empty: { alignItems: 'center', justifyContent: 'center', paddingVertical: 48 },
         emptyText: { fontSize: 16, color: colors.textSecondary, marginTop: 12 },
@@ -54,7 +86,7 @@ export default function SaleOrderListScreen({ route, navigation }) {
 
   const loadOrders = useCallback(async () => {
     try {
-      const data = await getCachedOrders(isOnline);
+      const data = await getCachedOrders(isOnline, vehicleId);
       let list = Array.isArray(data) ? data : [];
       if (customerId != null) {
         list = list.filter((o) => o.partner_id?.[0] === customerId);
@@ -70,7 +102,7 @@ export default function SaleOrderListScreen({ route, navigation }) {
     } finally {
       setLoading(false);
     }
-  }, [customerId, isOnline]);
+  }, [customerId, isOnline, vehicleId]);
 
   useEffect(() => {
     const unsub = navigation.addListener?.('focus', loadOrders);
@@ -82,6 +114,14 @@ export default function SaleOrderListScreen({ route, navigation }) {
     navigation.navigate('SaleOrderDetails', { saleOrderId: order.id });
   };
 
+  const filteredOrders = useMemo(() => {
+    const status = (o) => (o.invoice_status || '').toLowerCase().replace(/\s/g, '_');
+    if (activeTab === TAB_INVOICED) {
+      return orders.filter((o) => status(o) === 'invoiced');
+    }
+    return orders.filter((o) => status(o) !== 'invoiced');
+  }, [orders, activeTab]);
+
   if (loading) {
     return (
       <View style={styles.center}>
@@ -92,7 +132,7 @@ export default function SaleOrderListScreen({ route, navigation }) {
 
   return (
     <View style={styles.container}>
-      {/* Header: back, title, QR scan (same style as Daily Visit top bar) */}
+      {/* Header: back, title, QR scan */}
       <View style={styles.header}>
         <TouchableOpacity
           onPress={() => {
@@ -117,14 +157,38 @@ export default function SaleOrderListScreen({ route, navigation }) {
         </TouchableOpacity>
       </View>
 
+      {/* Tabs: Invoiced (paid) / To Invoice (unpaid) */}
+      <View style={styles.tabRow}>
+        <TouchableOpacity
+          style={[styles.tab, activeTab === TAB_TO_INVOICE && styles.tabActive]}
+          onPress={() => setActiveTab(TAB_TO_INVOICE)}
+          activeOpacity={0.8}
+        >
+          <Text style={[styles.tabText, activeTab === TAB_TO_INVOICE && styles.tabTextActive]}>
+            To Invoice
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.tab, activeTab === TAB_INVOICED && styles.tabActive]}
+          onPress={() => setActiveTab(TAB_INVOICED)}
+          activeOpacity={0.8}
+        >
+          <Text style={[styles.tabText, activeTab === TAB_INVOICED && styles.tabTextActive]}>
+            Invoiced
+          </Text>
+        </TouchableOpacity>
+      </View>
+
       <FlatList
-        data={orders}
+        data={filteredOrders}
         keyExtractor={(item) => String(item.id)}
         contentContainerStyle={styles.list}
         ListEmptyComponent={
           <View style={styles.empty}>
             <Ionicons name="document-text-outline" size={48} color={colors.textSecondary} />
-            <Text style={styles.emptyText}>No orders</Text>
+            <Text style={styles.emptyText}>
+              {activeTab === TAB_INVOICED ? 'No invoiced orders' : 'No orders to invoice'}
+            </Text>
           </View>
         }
         renderItem={({ item }) => (

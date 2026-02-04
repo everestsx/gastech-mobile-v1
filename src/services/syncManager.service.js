@@ -53,9 +53,22 @@ export async function getCustomersData(isOnline) {
 }
 
 /**
- * Get sale orders: online → API then save to cache, return data. Offline → read from cache (same shape as online).
+ * Filter orders by vehicle_id when user is vehicle driver.
  */
-export async function getOrdersData(isOnline) {
+function filterOrdersByVehicle(orders, vehicleId) {
+  if (vehicleId == null || !Array.isArray(orders)) return orders;
+  return orders.filter((o) => {
+    const vid = o.vehicle_id;
+    const id = Array.isArray(vid) ? vid[0] : vid;
+    return id === vehicleId;
+  });
+}
+
+/**
+ * Get sale orders: online → API then save to cache, return data (filtered by vehicle if vehicle user).
+ * Offline → read from cache, filter by vehicle if vehicle user.
+ */
+export async function getOrdersData(isOnline, vehicleId = null) {
   if (isOnline) {
     try {
       const data = await getAllSaleOrders();
@@ -66,12 +79,13 @@ export async function getOrdersData(isOnline) {
       } catch (e) {
         // still return list; cache write failed
       }
-      return list;
+      return filterOrdersByVehicle(list, vehicleId);
     } catch (err) {
       console.warn('getOrdersData API failed, using cache:', err?.message);
     }
   }
-  return loadOrdersFromCache();
+  const cached = await loadOrdersFromCache();
+  return filterOrdersByVehicle(cached, vehicleId);
 }
 
 /**

@@ -2,7 +2,6 @@ import { useEffect, useState, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
-  FlatList,
   StyleSheet,
   TouchableOpacity,
   TextInput,
@@ -11,6 +10,7 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { updateSaleOrderLineQty } from '../services/saleOrderLine.service';
 import { getOrderDetailsData, ACTION_UPDATE_LINE_QTY } from '../services/syncManager.service';
@@ -23,9 +23,13 @@ function formatCurrency(amount) {
   return `LKR ${Number(amount).toFixed(2)}`;
 }
 
+const BOTTOM_BAR_VERTICAL_PADDING = 14;
+const BOTTOM_BAR_MIN_BOTTOM = 12;
+
 export default function SaleOrderDetailsScreen({ route, navigation }) {
   const { colors } = useTheme();
   const { isOnline } = useNetwork();
+  const insets = useSafeAreaInsets();
   const { saleOrderId } = route.params;
 
   const [order, setOrder] = useState(null);
@@ -34,6 +38,8 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
   const [qtyChanged, setQtyChanged] = useState(false);
   const [loading, setLoading] = useState(true);
   const [updating, setUpdating] = useState(false);
+
+  const bottomBarPaddingBottom = Math.max(BOTTOM_BAR_MIN_BOTTOM, insets.bottom) + BOTTOM_BAR_VERTICAL_PADDING;
 
   const styles = useMemo(
     () =>
@@ -116,15 +122,16 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
         summaryValue: { fontSize: 14, fontWeight: '600', color: colors.text },
         summaryTotalLabel: { fontSize: 16, fontWeight: '700', color: colors.text },
         summaryTotalValue: { fontSize: 18, fontWeight: '800', color: colors.text },
-        bottomSpacer: { height: 200 },
+        bottomSpacer: { height: 220 },
         bottomBar: {
           position: 'absolute',
           bottom: 0,
           left: 0,
           right: 0,
           backgroundColor: colors.surface,
-          padding: spacing.md,
-          paddingBottom: spacing.md + 8,
+          paddingHorizontal: spacing.md,
+          paddingTop: spacing.md,
+          paddingBottom: bottomBarPaddingBottom,
           borderTopLeftRadius: borderRadius.xl,
           borderTopRightRadius: borderRadius.xl,
           elevation: 8,
@@ -168,7 +175,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
         payBtnDisabled: { backgroundColor: colors.textSecondary, opacity: 0.8 },
         payBtnText: { fontSize: 16, fontWeight: '700', color: '#fff' },
       }),
-    [colors]
+    [colors, bottomBarPaddingBottom]
   );
 
   const loadDetails = useCallback(async () => {

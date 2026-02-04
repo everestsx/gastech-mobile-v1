@@ -12,6 +12,7 @@ import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useTheme } from '../context/ThemeContext';
 import { useNetwork } from '../context/NetworkContext';
+import { useAuth } from '../context/AuthContext';
 import { spacing, borderRadius } from '../constants/theme';
 import { getCachedOrders } from '../services/sync.service';
 import OrderCard from '../components/OrderCard';
@@ -23,6 +24,7 @@ function formatDate(d) {
 export default function DailyVisitScreen({ route, navigation }) {
   const { colors } = useTheme();
   const { isOnline } = useNetwork();
+  const { vehicleId } = useAuth();
   const customerId = route?.params?.customerId ?? null;
   const [orders, setOrders] = useState([]);
   const [selectedDate, setSelectedDate] = useState(new Date());
@@ -82,7 +84,7 @@ export default function DailyVisitScreen({ route, navigation }) {
   const loadOrders = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await getCachedOrders(isOnline);
+      const data = await getCachedOrders(isOnline, vehicleId);
       const all = Array.isArray(data) ? data : [];
       const dateStr = formatDate(selectedDate);
       let filtered = all.filter((o) => (o.date_order || '').startsWith(dateStr));
@@ -99,7 +101,7 @@ export default function DailyVisitScreen({ route, navigation }) {
     } finally {
       setLoading(false);
     }
-  }, [selectedDate, customerId, isOnline]);
+  }, [selectedDate, customerId, isOnline, vehicleId]);
 
   useEffect(() => {
     loadOrders();

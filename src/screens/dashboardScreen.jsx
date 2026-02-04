@@ -11,6 +11,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { useNetwork } from '../context/NetworkContext';
+import { useAuth } from '../context/AuthContext';
 import { spacing, borderRadius } from '../constants/theme';
 import { getCachedOrders, runSync } from '../services/sync.service';
 import WeeklyLineChart from '../components/WeeklyLineChart';
@@ -22,6 +23,7 @@ function formatCurrency(amount) {
 export default function DashboardScreen({ navigation }) {
   const { colors, showCreateSalesOrder, showReturnOrder } = useTheme();
   const { isOnline } = useNetwork();
+  const { vehicleId, vehicleName } = useAuth();
   const [orders, setOrders] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -29,7 +31,7 @@ export default function DashboardScreen({ navigation }) {
 
   const loadData = useCallback(async () => {
     try {
-      const data = await getCachedOrders(isOnline);
+      const data = await getCachedOrders(isOnline, vehicleId);
       const next = Array.isArray(data) ? data : [];
       setOrders((prev) => {
         if (!isOnline && next.length === 0 && prev.length > 0) return prev;
@@ -41,7 +43,7 @@ export default function DashboardScreen({ navigation }) {
     } finally {
       setLoading(false);
     }
-  }, [isOnline]);
+  }, [isOnline, vehicleId]);
 
   useEffect(() => {
     const unsub = navigation.addListener?.('focus', loadData);
@@ -99,6 +101,17 @@ export default function DashboardScreen({ navigation }) {
         },
         greeting: { fontSize: 22, fontWeight: '800', color: colors.text },
         hint: { fontSize: 14, color: colors.textSecondary, marginTop: 2 },
+        vehicleChip: {
+          alignSelf: 'flex-start',
+          marginTop: 6,
+          paddingVertical: 4,
+          paddingHorizontal: 10,
+          backgroundColor: colors.primarySurface ?? colors.surface,
+          borderRadius: borderRadius.md,
+          borderWidth: 1,
+          borderColor: colors.primary,
+        },
+        vehicleChipText: { fontSize: 13, fontWeight: '600', color: colors.primary },
         headerButtons: { flexDirection: 'row', alignItems: 'center', gap: 8 },
         syncBtnTop: {
           backgroundColor: colors.primarySurface ?? colors.surface,
@@ -244,6 +257,11 @@ export default function DashboardScreen({ navigation }) {
         <View>
           <Text style={styles.greeting}>Hi, Driver</Text>
           <Text style={styles.hint}>Your daily overview</Text>
+          {vehicleName ? (
+            <View style={styles.vehicleChip}>
+              <Text style={styles.vehicleChipText}>Vehicle: {vehicleName}</Text>
+            </View>
+          ) : null}
         </View>
         <View style={styles.headerButtons}>
           <TouchableOpacity

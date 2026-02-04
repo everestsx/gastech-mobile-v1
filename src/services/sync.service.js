@@ -42,9 +42,10 @@ export async function getCachedCustomers(isOnline = true) {
 /**
  * Get sale orders. When online uses API then cache (48h); when offline uses SQLite cache.
  * @param {boolean} isOnline - from useNetwork().isOnline
+ * @param {number|null} vehicleId - from session (vehicle user); null = admin sees all
  */
-export async function getCachedOrders(isOnline = true) {
-  return getOrdersData(isOnline);
+export async function getCachedOrders(isOnline = true, vehicleId = null) {
+  return getOrdersData(isOnline, vehicleId);
 }
 
 /**

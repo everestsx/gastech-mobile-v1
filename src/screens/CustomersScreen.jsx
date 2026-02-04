@@ -11,12 +11,14 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { useNetwork } from '../context/NetworkContext';
+import { useAuth } from '../context/AuthContext';
 import { spacing, borderRadius } from '../constants/theme';
-import { getCachedCustomers } from '../services/sync.service';
+import { getCachedCustomers, getCachedOrders } from '../services/sync.service';
 
 export default function CustomersScreen({ navigation }) {
   const { colors } = useTheme();
   const { isOnline } = useNetwork();
+  const { vehicleId, vehicleName } = useAuth();
   const [customers, setCustomers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -61,14 +63,27 @@ export default function CustomersScreen({ navigation }) {
         },
         emptyText: { fontSize: 16, fontWeight: '600', color: colors.textSecondary, marginTop: 8 },
         emptyHint: { fontSize: 13, color: colors.textSecondary, marginTop: 4 },
+        listHeader: { paddingHorizontal: spacing.md, paddingBottom: spacing.sm },
+        vehicleLabel: { fontSize: 13, fontWeight: '600', color: colors.textSecondary },
       }),
     [colors]
   );
 
   const loadCustomers = useCallback(async () => {
     try {
-      const data = await getCachedCustomers(isOnline);
-      const next = Array.isArray(data) ? data : [];
+      const [customersData, ordersData] = await Promise.all([
+        getCachedCustomers(isOnline),
+        vehicleId != null ? getCachedOrders(isOnline, vehicleId) : Promise.resolve([]),
+      ]);
+      let next = Array.isArray(customersData) ? customersData : [];
+      if (vehicleId != null && Array.isArray(ordersData)) {
+        const partnerIds = new Set(
+          ordersData
+            .map((o) => o.partner_id?.[0])
+            .filter((id) => id != null)
+        );
+        next = next.filter((c) => partnerIds.has(c.id));
+      }
       setCustomers((prev) => {
         if (!isOnline && next.length === 0 && prev.length > 0) return prev;
         return next;
@@ -79,7 +94,7 @@ export default function CustomersScreen({ navigation }) {
     } finally {
       setLoading(false);
     }
-  }, [isOnline]);
+  }, [isOnline, vehicleId]);
 
   useEffect(() => {
     const unsub = navigation.addListener?.('focus', loadCustomers);
@@ -128,11 +143,18 @@ export default function CustomersScreen({ navigation }) {
     );
   }
 
+  const listHeader = vehicleName ? (
+    <View style={styles.listHeader}>
+      <Text style={styles.vehicleLabel}>Customers for vehicle: {vehicleName}</Text>
+    </View>
+  ) : null;
+
   return (
     <FlatList
       data={customers}
       keyExtractor={(item) => String(item.id)}
       renderItem={renderItem}
+      ListHeaderComponent={listHeader}
       contentContainerStyle={[
         styles.list,
         customers.length === 0 && styles.listEmpty,

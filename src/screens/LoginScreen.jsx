@@ -14,7 +14,10 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import AppLogo from '../components/AppLogo';
 import { useTheme } from '../context/ThemeContext';
+import { useAuth } from '../context/AuthContext';
 import { spacing, borderRadius } from '../constants/theme';
+import { validateLogin } from '../constants/authConfig';
+import { saveUserSession } from '../services/sync.service';
 
 export default function LoginScreen({ navigation }) {
   const { colors } = useTheme();
@@ -74,6 +77,8 @@ export default function LoginScreen({ navigation }) {
     [colors]
   );
 
+  const { setUser } = useAuth();
+
   const handleLogin = async () => {
     if (!username.trim() || !password.trim()) {
       Alert.alert('Required', 'Please enter username and password.');
@@ -81,9 +86,13 @@ export default function LoginScreen({ navigation }) {
     }
     setLoading(true);
     try {
-      // Offline app: store user for session; replace with your auth API if needed
-      const { saveUserSession } = await import('../services/sync.service');
-      await saveUserSession({ username: username.trim(), password });
+      const session = validateLogin(username.trim(), password);
+      if (!session) {
+        Alert.alert('Login failed', 'Invalid username or password.');
+        return;
+      }
+      await saveUserSession(session);
+      setUser(session);
       navigation.replace('Main');
     } catch (err) {
       Alert.alert('Login failed', err?.message || 'Please try again.');
