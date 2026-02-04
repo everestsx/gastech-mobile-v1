@@ -20,7 +20,9 @@ import CustomersScreen from '../screens/CustomersScreen';
 import SettingsScreen from '../screens/SettingsScreen';
 
 import { useTheme } from '../context/ThemeContext';
-import { runSync, getSyncIntervalMs, getUserSession } from '../services/sync.service';
+import { useNetwork } from '../context/NetworkContext';
+import { runSync, runProcessOfflineQueue, getSyncIntervalMs, getUserSession } from '../services/sync.service';
+import NetworkStatusIndicator from '../components/NetworkStatusIndicator';
 
 /** Modern header avatar: image or empty user icon. Tapping opens Menu. */
 function HeaderAvatar({ onPress }) {
@@ -172,9 +174,12 @@ function MainStackScreen() {
             </View>
           ),
           headerTitle: () => (
-            <Text style={{ fontSize: 18, color: '#fff', fontWeight: '700' }} numberOfLines={1}>
-              GasTech
-            </Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <Text style={{ fontSize: 18, color: '#fff', fontWeight: '700' }} numberOfLines={1}>
+                GasTech
+              </Text>
+              <NetworkStatusIndicator />
+            </View>
           ),
         })}
       />
@@ -217,18 +222,40 @@ function MainStackScreen() {
   );
 }
 
+/** When network reconnects, push queued offline changes then sync; then app goes online. */
+function ReconnectionSync() {
+  const { onReconnect } = useNetwork();
+  useEffect(() => {
+    const unregister = onReconnect(() =>
+      runProcessOfflineQueue()
+        .then(() => runSync())
+        .catch(() => {})
+    );
+    return () => (typeof unregister === 'function' ? unregister() : unregister?.());
+  }, [onReconnect]);
+  return null;
+}
+
 export default function AppNavigator() {
+  const { isOnline } = useNetwork();
   const syncIntervalRef = useRef(null);
   const appStateRef = useRef(AppState.currentState);
 
   useEffect(() => {
+    if (syncIntervalRef.current) {
+      clearInterval(syncIntervalRef.current);
+      syncIntervalRef.current = null;
+    }
     const intervalMs = getSyncIntervalMs();
-    const run = () => runSync().catch(() => {});
+    const run = () => {
+      if (!isOnline) return;
+      runSync().catch(() => {});
+    };
 
     const sub = AppState.addEventListener('change', (nextState) => {
       if (nextState === 'active' && appStateRef.current !== 'active') {
         run();
-        syncIntervalRef.current = setInterval(run, intervalMs);
+        if (isOnline) syncIntervalRef.current = setInterval(run, intervalMs);
       } else if (nextState !== 'active') {
         if (syncIntervalRef.current) {
           clearInterval(syncIntervalRef.current);
@@ -238,7 +265,7 @@ export default function AppNavigator() {
       appStateRef.current = nextState;
     });
 
-    if (AppState.currentState === 'active') {
+    if (AppState.currentState === 'active' && isOnline) {
       run();
       syncIntervalRef.current = setInterval(run, intervalMs);
     }
@@ -247,10 +274,11 @@ export default function AppNavigator() {
       sub?.remove?.();
       if (syncIntervalRef.current) clearInterval(syncIntervalRef.current);
     };
-  }, []);
+  }, [isOnline]);
 
   return (
     <NavigationContainer>
+      <ReconnectionSync />
       <RootStack.Navigator
         initialRouteName="Splash"
         screenOptions={{ headerShown: false }}

@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
+import { useNetwork } from '../context/NetworkContext';
 import { spacing, borderRadius } from '../constants/theme';
 import { getCachedOrders, runSync } from '../services/sync.service';
 import WeeklyLineChart from '../components/WeeklyLineChart';
@@ -20,6 +21,7 @@ function formatCurrency(amount) {
 
 export default function DashboardScreen({ navigation }) {
   const { colors, showCreateSalesOrder, showReturnOrder } = useTheme();
+  const { isOnline } = useNetwork();
   const [orders, setOrders] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -27,14 +29,14 @@ export default function DashboardScreen({ navigation }) {
 
   const loadData = useCallback(async () => {
     try {
-      const data = await getCachedOrders();
+      const data = await getCachedOrders(isOnline);
       setOrders(Array.isArray(data) ? data : []);
     } catch (_) {
       setOrders([]);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [isOnline]);
 
   useEffect(() => {
     const unsub = navigation.addListener?.('focus', loadData);
@@ -52,7 +54,7 @@ export default function DashboardScreen({ navigation }) {
     if (syncing) return;
     setSyncing(true);
     try {
-      await runSync();
+      await runSync(isOnline);
       await loadData();
     } finally {
       setSyncing(false);

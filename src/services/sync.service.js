@@ -1,11 +1,14 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { getCustomers } from './customer.service';
-import { getAllSaleOrders } from './saleOrder.service';
+import {
+  getCustomersData,
+  getOrdersData,
+  runFullSync,
+  getLastSyncTime as getLastSyncFromManager,
+  processOfflineQueue,
+} from './syncManager.service';
 
 const KEYS = {
   USER: '@gastech_user',
-  CUSTOMERS: '@gastech_customers',
-  ORDERS: '@gastech_orders',
   LAST_SYNC: '@gastech_last_sync',
 };
 
@@ -28,44 +31,39 @@ export async function logout() {
   await AsyncStorage.multiRemove([KEYS.USER, KEYS.LAST_SYNC]);
 }
 
-export async function getCachedCustomers() {
-  try {
-    const raw = await AsyncStorage.getItem(KEYS.CUSTOMERS);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
+/**
+ * Get customers. When online uses API then cache; when offline uses SQLite cache.
+ * @param {boolean} isOnline - from useNetwork().isOnline
+ */
+export async function getCachedCustomers(isOnline = true) {
+  return getCustomersData(isOnline);
 }
 
-export async function getCachedOrders() {
-  try {
-    const raw = await AsyncStorage.getItem(KEYS.ORDERS);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
+/**
+ * Get sale orders. When online uses API then cache (48h); when offline uses SQLite cache.
+ * @param {boolean} isOnline - from useNetwork().isOnline
+ */
+export async function getCachedOrders(isOnline = true) {
+  return getOrdersData(isOnline);
 }
 
-export async function runSync() {
-  const results = { customers: 0, orders: 0, error: null };
-  try {
-    const [customers, orders] = await Promise.all([
-      getCustomers(),
-      getAllSaleOrders(),
-    ]);
-    await AsyncStorage.setItem(KEYS.CUSTOMERS, JSON.stringify(customers || []));
-    await AsyncStorage.setItem(KEYS.ORDERS, JSON.stringify(orders || []));
-    await AsyncStorage.setItem(KEYS.LAST_SYNC, new Date().toISOString());
-    results.customers = (customers || []).length;
-    results.orders = (orders || []).length;
-  } catch (err) {
-    results.error = err?.message || 'Sync failed';
-  }
-  return results;
+/**
+ * Run full sync (customers + orders). When online updates SQLite cache.
+ * When offline (isOnline === false) does nothing - cache is never touched.
+ */
+export async function runSync(isOnline = true) {
+  return runFullSync(isOnline);
+}
+
+/**
+ * Process queued offline actions (e.g. qty updates) and push to backend. Call when back online.
+ */
+export async function runProcessOfflineQueue() {
+  return processOfflineQueue();
 }
 
 export async function getLastSyncTime() {
-  return AsyncStorage.getItem(KEYS.LAST_SYNC);
+  return getLastSyncFromManager();
 }
 
 export function getSyncIntervalMs() {

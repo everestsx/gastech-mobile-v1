@@ -12,11 +12,11 @@ import {
   Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import {
-  getSaleOrderDetails,
-  updateSaleOrderLineQty,
-} from '../services/saleOrderLine.service';
+import { updateSaleOrderLineQty } from '../services/saleOrderLine.service';
+import { getOrderDetailsData, ACTION_UPDATE_LINE_QTY } from '../services/syncManager.service';
+import { updateOrderDetailsLinesInCache, enqueueOfflineAction } from '../services/localStorage.service';
 import { useTheme } from '../context/ThemeContext';
+import { useNetwork } from '../context/NetworkContext';
 import { spacing, borderRadius } from '../constants/theme';
 
 function formatCurrency(amount) {
@@ -25,6 +25,7 @@ function formatCurrency(amount) {
 
 export default function SaleOrderDetailsScreen({ route, navigation }) {
   const { colors } = useTheme();
+  const { isOnline } = useNetwork();
   const { saleOrderId } = route.params;
 
   const [order, setOrder] = useState(null);
@@ -173,7 +174,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
   const loadDetails = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await getSaleOrderDetails(saleOrderId);
+      const data = await getOrderDetailsData(saleOrderId, isOnline);
       setOrder(data.order);
       setLines(
         (data.lines || []).map((l) => ({
@@ -188,7 +189,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
     } finally {
       setLoading(false);
     }
-  }, [saleOrderId]);
+  }, [saleOrderId, isOnline]);
 
   useEffect(() => {
     loadDetails();
@@ -228,13 +229,35 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
     if (!hasQtyChanges()) return;
     setUpdating(true);
     try {
-      for (const l of lines) {
-        const newVal = Number(l.newQty);
-        if (!Number.isNaN(newVal) && newVal !== Number(l.product_uom_qty)) {
-          await updateSaleOrderLineQty(l.id, newVal);
+      if (isOnline) {
+        for (const l of lines) {
+          const newVal = Number(l.newQty);
+          if (!Number.isNaN(newVal) && newVal !== Number(l.product_uom_qty)) {
+            await updateSaleOrderLineQty(l.id, newVal);
+          }
         }
+        await loadDetails();
+      } else {
+        const updatedLines = lines.map((l) => {
+          const newVal = Number(l.newQty);
+          const qty = Number.isNaN(newVal) ? (l.product_uom_qty ?? 0) : newVal;
+          return { ...l, product_uom_qty: qty };
+        });
+        await updateOrderDetailsLinesInCache(saleOrderId, updatedLines);
+        for (const l of lines) {
+          const newVal = Number(l.newQty);
+          if (!Number.isNaN(newVal) && newVal !== Number(l.product_uom_qty)) {
+            await enqueueOfflineAction(ACTION_UPDATE_LINE_QTY, { lineId: l.id, qty: newVal });
+          }
+        }
+        setLines(
+          updatedLines.map((l) => ({
+            ...l,
+            newQty: String(l.product_uom_qty ?? 0),
+          }))
+        );
+        setOrder((prev) => (prev ? { ...prev } : null));
       }
-      await loadDetails();
       setModifyEnabled(false);
       setQtyChanged(false);
     } catch (_) {

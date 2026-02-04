@@ -10,11 +10,13 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
+import { useNetwork } from '../context/NetworkContext';
 import { spacing, borderRadius } from '../constants/theme';
 import { getCachedCustomers } from '../services/sync.service';
 
 export default function CustomersScreen({ navigation }) {
   const { colors } = useTheme();
+  const { isOnline } = useNetwork();
   const [customers, setCustomers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -65,14 +67,14 @@ export default function CustomersScreen({ navigation }) {
 
   const loadCustomers = useCallback(async () => {
     try {
-      const data = await getCachedCustomers();
+      const data = await getCachedCustomers(isOnline);
       setCustomers(Array.isArray(data) ? data : []);
     } catch (_) {
       setCustomers([]);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [isOnline]);
 
   useEffect(() => {
     const unsub = navigation.addListener?.('focus', loadCustomers);

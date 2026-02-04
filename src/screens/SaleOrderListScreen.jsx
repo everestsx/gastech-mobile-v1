@@ -9,13 +9,14 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
+import { useNetwork } from '../context/NetworkContext';
 import { spacing, borderRadius } from '../constants/theme';
-import { getAllSaleOrders } from '../services/saleOrder.service';
 import { getCachedOrders } from '../services/sync.service';
 import OrderCard from '../components/OrderCard';
 
 export default function SaleOrderListScreen({ route, navigation }) {
   const { colors } = useTheme();
+  const { isOnline } = useNetwork();
   const customerId = route?.params?.customerId ?? null;
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -53,28 +54,19 @@ export default function SaleOrderListScreen({ route, navigation }) {
 
   const loadOrders = useCallback(async () => {
     try {
-      const data = await getCachedOrders();
+      const data = await getCachedOrders(isOnline);
       let list = Array.isArray(data) ? data : [];
       if (customerId != null) {
         list = list.filter((o) => o.partner_id?.[0] === customerId);
       }
       setOrders(list);
-    } catch (_) {
-      try {
-        const data = await getAllSaleOrders();
-        let list = data || [];
-        if (customerId != null) {
-          list = list.filter((o) => o.partner_id?.[0] === customerId);
-        }
-        setOrders(list);
-      } catch (err) {
-        console.error('Sale Order Error:', err);
-        setOrders([]);
-      }
+    } catch (err) {
+      console.error('Sale Order Error:', err);
+      setOrders([]);
     } finally {
       setLoading(false);
     }
-  }, [customerId]);
+  }, [customerId, isOnline]);
 
   useEffect(() => {
     const unsub = navigation.addListener?.('focus', loadOrders);

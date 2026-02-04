@@ -41,5 +41,12 @@ export const callOdoo = async (model, method, domain = [], options = {}) => {
   });
 
   const json = await response.json();
+  if (!response.ok) {
+    const msg = json.error?.data?.message || json.error?.message || `HTTP ${response.status}`;
+    throw new Error(msg);
+  }
+  if (json.error) {
+    throw new Error(json.error.data?.message || json.error.message || 'API error');
+  }
   return json.result || [];
 };

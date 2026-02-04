@@ -28,7 +28,13 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      ["expo-camera", { "cameraPermission": "Allow GasTech to scan customer QR codes" }]
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow GasTech to scan customer QR codes"
+        }
+      ],
+      "expo-sqlite"
     ],
     "extra": {
       "eas": {

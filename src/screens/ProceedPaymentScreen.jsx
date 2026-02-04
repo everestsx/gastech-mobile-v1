@@ -13,6 +13,7 @@ import {
 import * as ImagePicker from 'expo-image-picker';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
+import { useNetwork } from '../context/NetworkContext';
 import { spacing, borderRadius } from '../constants/theme';
 import { SRI_LANKA_BANKS } from '../constants/sriLankaBanks';
 import { confirmSaleOrder } from '../services/saleOrderLine.service';
@@ -22,12 +23,15 @@ import {
   updateMoveLineQty,
   validatePicking,
 } from '../services/delivery.service';
+import { enqueueOfflineAction } from '../services/localStorage.service';
+import { ACTION_PAYMENT } from '../services/syncManager.service';
 
 const PAYMENT_CASH = 'cash';
 const PAYMENT_BANK = 'bank';
 
 export default function ProceedPaymentScreen({ route, navigation }) {
   const { colors } = useTheme();
+  const { isOnline } = useNetwork();
   const { saleOrderId, total } = route.params;
   const [loading, setLoading] = useState(false);
   const [paymentType, setPaymentType] = useState(PAYMENT_CASH);
@@ -56,6 +60,39 @@ export default function ProceedPaymentScreen({ route, navigation }) {
     try {
       setLoading(true);
 
+      const selectedBankName =
+        paymentType === PAYMENT_BANK && selectedBank
+          ? selectedBank.name
+          : null;
+
+      const invoiceParams = {
+        saleOrderId,
+        total,
+        paymentType,
+        selectedBankId: paymentType === PAYMENT_BANK ? selectedBankId : null,
+        selectedBankName,
+        deliveryPhotoUris: deliveryPhotos,
+      };
+
+      if (!isOnline) {
+        await enqueueOfflineAction(ACTION_PAYMENT, { saleOrderId });
+        Alert.alert(
+          'Offline',
+          'Payment will be completed when you are back online.',
+          [
+            {
+              text: 'OK',
+              onPress: () =>
+                navigation.replace('InvoiceScreen', {
+                  ...invoiceParams,
+                  isPendingSync: true,
+                }),
+            },
+          ]
+        );
+        return;
+      }
+
       await confirmSaleOrder(saleOrderId);
 
       const pickings = await getPickingBySaleOrder(saleOrderId);
@@ -75,19 +112,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
 
       await validatePicking(picking.id);
 
-      const selectedBankName =
-        paymentType === PAYMENT_BANK && selectedBank
-          ? selectedBank.name
-          : null;
-
-      navigation.replace('InvoiceScreen', {
-        saleOrderId,
-        total,
-        paymentType,
-        selectedBankId: paymentType === PAYMENT_BANK ? selectedBankId : null,
-        selectedBankName,
-        deliveryPhotoUris: deliveryPhotos,
-      });
+      navigation.replace('InvoiceScreen', invoiceParams);
     } catch (err) {
       console.error(err);
       Alert.alert(
