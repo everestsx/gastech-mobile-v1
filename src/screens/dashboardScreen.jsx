@@ -30,9 +30,14 @@ export default function DashboardScreen({ navigation }) {
   const loadData = useCallback(async () => {
     try {
       const data = await getCachedOrders(isOnline);
-      setOrders(Array.isArray(data) ? data : []);
+      const next = Array.isArray(data) ? data : [];
+      setOrders((prev) => {
+        if (!isOnline && next.length === 0 && prev.length > 0) return prev;
+        return next;
+      });
     } catch (_) {
-      setOrders([]);
+      if (!isOnline) setOrders((prev) => prev);
+      else setOrders([]);
     } finally {
       setLoading(false);
     }
@@ -54,7 +59,11 @@ export default function DashboardScreen({ navigation }) {
     if (syncing) return;
     setSyncing(true);
     try {
-      await runSync(isOnline);
+      if (!isOnline) {
+        await loadData();
+        return;
+      }
+      await runSync(true);
       await loadData();
     } finally {
       setSyncing(false);

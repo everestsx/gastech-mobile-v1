@@ -59,10 +59,14 @@ export default function SaleOrderListScreen({ route, navigation }) {
       if (customerId != null) {
         list = list.filter((o) => o.partner_id?.[0] === customerId);
       }
-      setOrders(list);
+      setOrders((prev) => {
+        if (!isOnline && list.length === 0 && prev.length > 0) return prev;
+        return list;
+      });
     } catch (err) {
       console.error('Sale Order Error:', err);
-      setOrders([]);
+      if (!isOnline) setOrders((prev) => prev);
+      else setOrders([]);
     } finally {
       setLoading(false);
     }

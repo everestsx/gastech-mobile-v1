@@ -89,9 +89,13 @@ export default function DailyVisitScreen({ route, navigation }) {
       if (customerId != null) {
         filtered = filtered.filter((o) => o.partner_id?.[0] === customerId);
       }
-      setOrders(filtered);
+      setOrders((prev) => {
+        if (!isOnline && filtered.length === 0 && prev.length > 0) return prev;
+        return filtered;
+      });
     } catch (_) {
-      setOrders([]);
+      if (!isOnline) setOrders((prev) => prev);
+      else setOrders([]);
     } finally {
       setLoading(false);
     }

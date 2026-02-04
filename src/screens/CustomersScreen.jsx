@@ -68,9 +68,14 @@ export default function CustomersScreen({ navigation }) {
   const loadCustomers = useCallback(async () => {
     try {
       const data = await getCachedCustomers(isOnline);
-      setCustomers(Array.isArray(data) ? data : []);
+      const next = Array.isArray(data) ? data : [];
+      setCustomers((prev) => {
+        if (!isOnline && next.length === 0 && prev.length > 0) return prev;
+        return next;
+      });
     } catch (_) {
-      setCustomers([]);
+      if (!isOnline) setCustomers((prev) => prev);
+      else setCustomers([]);
     } finally {
       setLoading(false);
     }

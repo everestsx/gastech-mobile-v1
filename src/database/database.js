@@ -15,13 +15,19 @@ let dbInstance = null;
  */
 export async function getDb() {
   if (dbInstance) return dbInstance;
-  dbInstance = await SQLite.openDatabaseAsync(DB_NAME);
-  await initSchema(dbInstance);
-  return dbInstance;
+  try {
+    dbInstance = await SQLite.openDatabaseAsync(DB_NAME);
+    await initSchema(dbInstance);
+    return dbInstance;
+  } catch (e) {
+    dbInstance = null;
+    throw e;
+  }
 }
 
 async function initSchema(db) {
-  await db.execAsync(`
+  try {
+    await db.execAsync(`
     PRAGMA journal_mode = WAL;
 
     CREATE TABLE IF NOT EXISTS customers (
@@ -65,6 +71,9 @@ async function initSchema(db) {
 
     CREATE INDEX IF NOT EXISTS idx_sale_orders_date ON sale_orders(date_order);
   `);
+  } catch (e) {
+    console.warn('initSchema warning:', e?.message);
+  }
 }
 
 /**
@@ -177,15 +186,19 @@ async function pruneOrdersOlderThan(db, cutoffDate) {
 
 /**
  * Get sale orders from local DB (last 48h only). Returns [] on any error.
+ * If date filter returns no rows, falls back to all cached orders so offline view is never empty.
  */
 export async function getSaleOrdersFromDb() {
   try {
     const db = await getDb();
     const cutoff = getCutoffDate(CACHE_HOURS);
-    const rows = await db.getAllAsync(
+    let rows = await db.getAllAsync(
       'SELECT payload FROM sale_orders WHERE date_order >= ? ORDER BY date_order DESC',
       cutoff
     );
+    if (!rows || rows.length === 0) {
+      rows = await db.getAllAsync('SELECT payload FROM sale_orders ORDER BY id DESC LIMIT 100');
+    }
     return (rows || []).map((r) => {
       try {
         return JSON.parse(r.payload);
