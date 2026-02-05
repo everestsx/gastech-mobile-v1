@@ -1,13 +1,14 @@
 /**
  * Gas Cylinder Delivery App - Light & Dark Theme
- * Replace primary/secondary hex values to adjust branding.
+ * Vibrant blue-purple theme (matching reference).
  */
 
 export const lightColors = {
-  primary: '#1e5aa8',
-  primaryDark: '#154a82',
-  primaryLight: '#2d7dd2',
-  secondary: '#0d3b66',
+  primary: '#6366f1',
+  primaryDark: '#4f46e5',
+  primaryLight: '#818cf8',
+  primarySurface: '#e0e7ff',
+  secondary: '#4338ca',
   background: '#f4f6f9',
   surface: '#ffffff',
   text: '#111827',
@@ -17,14 +18,15 @@ export const lightColors = {
   warning: '#d97706',
   error: '#dc2626',
   cash: '#059669',
-  credit: '#2563eb',
+  credit: '#6366f1',
 };
 
 export const darkColors = {
-  primary: '#3b82d6',
-  primaryDark: '#2563eb',
-  primaryLight: '#60a5fa',
-  secondary: '#1e3a5f',
+  primary: '#818cf8',
+  primaryDark: '#6366f1',
+  primaryLight: '#a5b4fc',
+  primarySurface: '#312e81',
+  secondary: '#4338ca',
   background: '#111827',
   surface: '#1f2937',
   text: '#f9fafb',
@@ -34,7 +36,7 @@ export const darkColors = {
   warning: '#f59e0b',
   error: '#ef4444',
   cash: '#10b981',
-  credit: '#60a5fa',
+  credit: '#818cf8',
 };
 
 export function getThemeColors(theme) {
