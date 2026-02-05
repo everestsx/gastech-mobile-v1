@@ -43,3 +43,34 @@ export const callOdoo = async (model, method, domain = [], options = {}) => {
   const json = await response.json();
   return json.result || [];
 };
+
+/**
+ * Call Odoo with explicit positional args (e.g. create(vals), process([id])).
+ * positionalArgs = array of positional arguments for the method.
+ */
+export const callOdooArgs = async (model, method, positionalArgs) => {
+  const args = USE_SESSION
+    ? [ODOO_DB, UID, null, model, method, positionalArgs]
+    : [ODOO_DB, UID, API_KEY, model, method, positionalArgs];
+
+  const payload = {
+    jsonrpc: "2.0",
+    method: "call",
+    params: {
+      service: "object",
+      method: "execute_kw",
+      args,
+    },
+    id: Date.now(),
+  };
+
+  const response = await fetch(ODOO_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    credentials: USE_SESSION ? "include" : "omit",
+  });
+
+  const json = await response.json();
+  return json.result;
+};

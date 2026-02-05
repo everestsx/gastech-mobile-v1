@@ -12,10 +12,16 @@ import {
   Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { getSaleOrderDetails } from '../services/saleOrderLine.service';
 import {
-  getSaleOrderDetails,
-  updateSaleOrderLineQty,
-} from '../services/saleOrderLine.service';
+  getDeliveryDataForSaleOrder,
+  buildProductIdToMoveLineIdMap,
+  updateMoveLineQty,
+  validatePicking,
+  createBackorderConfirmation,
+  processBackorderConfirmation,
+  getPickingBySaleOrder,
+} from '../services/delivery.service';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
 
@@ -33,6 +39,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
   const [qtyChanged, setQtyChanged] = useState(false);
   const [loading, setLoading] = useState(true);
   const [updating, setUpdating] = useState(false);
+  const [updateError, setUpdateError] = useState(null);
 
   const styles = useMemo(
     () =>
@@ -195,6 +202,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
   }, [loadDetails]);
 
   const setLineQty = useCallback((lineId, value) => {
+    setUpdateError(null);
     const trimmed = value.replace(/[^0-9.]/g, '');
     const num = trimmed === '' ? 0 : parseFloat(trimmed);
     const safeQty = isNaN(num) || num < 0 ? 0 : num;
@@ -207,11 +215,13 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
   }, []);
 
   const changeQtyBy = useCallback((lineId, delta) => {
+    setUpdateError(null);
     setLines((prev) =>
       prev.map((l) => {
         if (l.id !== lineId) return l;
         const current = parseFloat(l.newQty) || 0;
-        const next = Math.max(0, current + delta);
+        const maxQty = Number(l.product_uom_qty) ?? 0;
+        const next = Math.max(0, Math.min(maxQty, current + delta));
         return { ...l, newQty: String(next) };
       })
     );
@@ -224,21 +234,75 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
     );
   }, [lines]);
 
+  /** Validate: 0 <= qty <= product_uom_qty for each line; return first error message or null */
+  const validateQuantities = useCallback(() => {
+    const maxQty = (l) => Number(l.product_uom_qty) ?? 0;
+    for (const l of lines) {
+      const qty = Number(l.newQty);
+      if (Number.isNaN(qty) || qty < 0) {
+        return `Quantity for "${l.product_id?.[1] ?? l.name}" must be a number >= 0`;
+      }
+      if (qty > maxQty(l)) {
+        return `Quantity for "${l.product_id?.[1] ?? l.name}" cannot exceed ordered quantity (${maxQty(l)})`;
+      }
+    }
+    return null;
+  }, [lines]);
+
   const updateQty = async () => {
     if (!hasQtyChanges()) return;
+    const validationError = validateQuantities();
+    if (validationError) {
+      setUpdateError(validationError);
+      return;
+    }
+    setUpdateError(null);
     setUpdating(true);
     try {
+      const { picking, moves, moveLines } = await getDeliveryDataForSaleOrder(order.id);
+      if (!picking?.id) {
+        setUpdateError('No delivery order found for this sale order. Confirm the order first.');
+        return;
+      }
+      const productIdToMoveLineId = buildProductIdToMoveLineIdMap(moves, moveLines);
+
       for (const l of lines) {
+        const productId = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
+        const moveLineId = productId != null ? productIdToMoveLineId[productId] : null;
         const newVal = Number(l.newQty);
-        if (!Number.isNaN(newVal) && newVal !== Number(l.product_uom_qty)) {
-          await updateSaleOrderLineQty(l.id, newVal);
+        if (moveLineId != null) {
+          await updateMoveLineQty(moveLineId, newVal);
         }
       }
+
+      let validateResult = await validatePicking(picking.id);
+      if (validateResult !== true && validateResult != null) {
+        let backorderIds = [];
+        if (typeof validateResult === 'number') {
+          await processBackorderConfirmation(validateResult);
+        } else if (typeof validateResult === 'object') {
+          const pickIds = validateResult.pick_ids ?? validateResult.backorder_pick_ids;
+          if (Array.isArray(pickIds) && pickIds.length > 0) {
+            backorderIds = pickIds;
+          }
+        }
+        if (backorderIds.length === 0) {
+          const pickingsAgain = await getPickingBySaleOrder(order.id);
+          const currentPicking = pickingsAgain?.find((p) => p.id === picking.id) ?? picking;
+          backorderIds = currentPicking?.backorder_ids ?? [];
+        }
+        if (backorderIds.length > 0) {
+          const wizardId = await createBackorderConfirmation(backorderIds);
+          if (wizardId != null) await processBackorderConfirmation(wizardId);
+        }
+      }
+
       await loadDetails();
       setModifyEnabled(false);
       setQtyChanged(false);
-    } catch (_) {
-      // silent fail or show inline error if you add state
+      setUpdateError(null);
+    } catch (err) {
+      setUpdateError(err?.message ?? 'Update failed. Please try again.');
     } finally {
       setUpdating(false);
     }
@@ -353,6 +417,15 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
             <Ionicons name="pencil" size={18} color={colors.warning} />
             <Text style={styles.changedBannerText}>
               Quantities changed. Tap "Update quantity" to save.
+            </Text>
+          </View>
+        )}
+
+        {updateError != null && (
+          <View style={[styles.changedBanner, { borderLeftColor: colors.error || '#c00' }]}>
+            <Ionicons name="alert-circle" size={18} color={colors.error || '#c00'} />
+            <Text style={[styles.changedBannerText, { color: colors.error || '#c00' }]}>
+              {updateError}
             </Text>
           </View>
         )}
