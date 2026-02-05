@@ -32,6 +32,16 @@ export const getSaleOrderDetails = async (saleOrderId) => {
   return { order, lines };
 };
 
+/** Fetch all order lines for given order IDs in one call (for offline cache). */
+export const getSaleOrderLinesBatch = async (orderIds) => {
+  if (!orderIds?.length) return [];
+  const lines = await callOdoo("sale.order.line", "search_read", [[["order_id", "in", orderIds]]], {
+    fields: ["id", "order_id", "product_id", "product_uom_qty", "price_unit", "price_total"],
+    order: "order_id, id",
+  });
+  return Array.isArray(lines) ? lines : [];
+};
+
 /* ---------------- UPDATE QTY ---------------- */
 export const updateSaleOrderLineQty = (lineId, qty) =>
   callOdoo("sale.order.line", "write", [[lineId], { product_uom_qty: qty }]);

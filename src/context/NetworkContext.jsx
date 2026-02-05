@@ -1,11 +1,13 @@
 /**
  * Network connectivity context.
- * When coming back online: runs reconnect callback (e.g. push offline queue + sync) first,
- * then sets isOnline so screens refetch after backend is updated.
+ * - Initial state: null (unknown) until NetInfo resolves → avoids assuming online so cache is used first when offline.
+ * - When coming back online: runs reconnect callback (offline queue + sync) then sets isOnline so screens refetch.
+ * - Use isOnline === false or isOnline === null to prefer cache; use isOnline === true for API.
  */
 
 import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import NetInfo from '@react-native-community/netinfo';
+import { getDb } from '../database/database';
 
 const NetworkContext = createContext({
   isOnline: true,
@@ -19,8 +21,13 @@ export function useNetwork() {
   return ctx;
 }
 
+/** True only when we know we're online. False or null → treat as offline for data (use cache). */
+export function isDefinitelyOnline(isOnline) {
+  return isOnline === true;
+}
+
 export function NetworkProvider({ children }) {
-  const [isOnline, setIsOnline] = useState(true);
+  const [isOnline, setIsOnline] = useState(null);
   const [isSyncingAfterReconnect, setIsSyncingAfterReconnect] = useState(false);
   const reconnectCallbackRef = useRef(null);
 
@@ -29,6 +36,10 @@ export function NetworkProvider({ children }) {
     return () => {
       reconnectCallbackRef.current = null;
     };
+  }, []);
+
+  useEffect(() => {
+    getDb().catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -67,11 +78,13 @@ export function NetworkProvider({ children }) {
       });
     });
 
-    NetInfo.fetch().then((state) => {
-      const connected = state.isConnected === true;
-      const reachable = state.isInternetReachable;
-      setIsOnline(connected && (reachable === true || reachable === null));
-    }).catch(() => setIsOnline(false));
+    NetInfo.fetch()
+      .then((state) => {
+        const connected = state.isConnected === true;
+        const reachable = state.isInternetReachable;
+        setIsOnline(connected && (reachable === true || reachable === null));
+      })
+      .catch(() => setIsOnline(false));
 
     return () => unsubscribe();
   }, []);

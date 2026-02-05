@@ -8,9 +8,11 @@ export default function NetworkStatusIndicator() {
   const { isOnline, isSyncingAfterReconnect } = useNetwork();
   const color = isSyncingAfterReconnect
     ? '#eab308'
-    : isOnline
+    : isOnline === true
       ? '#22c55e'
-      : '#ef4444';
+      : isOnline === false
+        ? '#ef4444'
+        : '#94a3b8';
   return <View style={[styles.dot, { backgroundColor: color }]} />;
 }
 

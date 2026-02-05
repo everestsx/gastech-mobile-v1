@@ -7,7 +7,7 @@
 
 import { getCustomers } from './customer.service';
 import { getAllSaleOrders } from './saleOrder.service';
-import { getSaleOrderDetails, updateSaleOrderLineQty, confirmSaleOrder } from './saleOrderLine.service';
+import { getSaleOrderDetails, getSaleOrderLinesBatch, updateSaleOrderLineQty, confirmSaleOrder } from './saleOrderLine.service';
 import {
   getPickingBySaleOrder,
   getMoveLines,
@@ -18,6 +18,7 @@ import {
   loadCustomersFromCache,
   loadOrdersFromCache,
   loadOrderDetailsFromCache,
+  loadOrderFromListCache,
   persistCustomers,
   persistOrders,
   persistOrderDetails,
@@ -30,11 +31,45 @@ import {
 
 const MAX_QUEUE_RETRIES = 3;
 
+/** Only use API when definitely online (true). null/undefined/false → use cache. */
+function shouldUseApi(isOnline) {
+  return isOnline === true;
+}
+
+/** Persist order details for every order in the list so offline can open any order. */
+async function persistOrderDetailsForList(orders) {
+  if (!Array.isArray(orders) || orders.length === 0) return;
+  const orderIds = orders.map((o) => o.id).filter((id) => id != null);
+  if (orderIds.length === 0) return;
+  try {
+    const lines = await getSaleOrderLinesBatch(orderIds);
+    const byOrderId = {};
+    for (const line of lines || []) {
+      const oid = Array.isArray(line.order_id) ? line.order_id[0] : line.order_id;
+      if (oid == null) continue;
+      if (!byOrderId[oid]) byOrderId[oid] = [];
+      byOrderId[oid].push(line);
+    }
+    for (const order of orders) {
+      const id = order.id;
+      if (id == null) continue;
+      const orderLines = byOrderId[id] || [];
+      try {
+        await persistOrderDetails(id, order, orderLines);
+      } catch (e) {
+        // skip one order, continue with rest
+      }
+    }
+  } catch (e) {
+    console.warn('persistOrderDetailsForList failed:', e?.message);
+  }
+}
+
 /**
- * Get customers: online → API then save to cache, return data. Offline → read from cache (same shape as online).
+ * Get customers: online → API then save to cache, return data. Offline/unknown → read from cache (same shape as online).
  */
 export async function getCustomersData(isOnline) {
-  if (isOnline) {
+  if (shouldUseApi(isOnline)) {
     try {
       const data = await getCustomers();
       const list = Array.isArray(data) ? data : [];
@@ -66,15 +101,16 @@ function filterOrdersByVehicle(orders, vehicleId) {
 
 /**
  * Get sale orders: online → API then save to cache, return data (filtered by vehicle if vehicle user).
- * Offline → read from cache, filter by vehicle if vehicle user.
+ * Offline/unknown → read from cache, filter by vehicle if vehicle user.
  */
 export async function getOrdersData(isOnline, vehicleId = null) {
-  if (isOnline) {
+  if (shouldUseApi(isOnline)) {
     try {
       const data = await getAllSaleOrders();
       const list = Array.isArray(data) ? data : [];
       try {
         await persistOrders(list);
+        await persistOrderDetailsForList(list);
         await setLastSyncTime(new Date().toISOString());
       } catch (e) {
         // still return list; cache write failed
@@ -85,14 +121,14 @@ export async function getOrdersData(isOnline, vehicleId = null) {
     }
   }
   const cached = await loadOrdersFromCache();
-  return filterOrdersByVehicle(cached, vehicleId);
+  return filterOrdersByVehicle(cached || [], vehicleId);
 }
 
 /**
- * Get order details: online → API then cache; offline or API fail → cache.
+ * Get order details: online → API then cache; offline/unknown or API fail → cache.
  */
 export async function getOrderDetailsData(orderId, isOnline) {
-  if (isOnline) {
+  if (shouldUseApi(isOnline)) {
     try {
       const { order, lines } = await getSaleOrderDetails(orderId);
       try {
@@ -103,8 +139,11 @@ export async function getOrderDetailsData(orderId, isOnline) {
       console.warn('getOrderDetailsData API failed, using cache:', err?.message);
     }
   }
-  const cached = await loadOrderDetailsFromCache(orderId);
-  return cached || { order: null, lines: [] };
+  let cached = await loadOrderDetailsFromCache(orderId);
+  if (cached) return cached;
+  const orderFromList = await loadOrderFromListCache(orderId);
+  if (orderFromList) return { order: orderFromList, lines: [] };
+  return { order: null, lines: [] };
 }
 
 /**
@@ -114,7 +153,7 @@ export async function getOrderDetailsData(orderId, isOnline) {
  */
 export async function runFullSync(isOnline = true) {
   const results = { customers: 0, orders: 0, error: null };
-  if (isOnline === false) {
+  if (!shouldUseApi(isOnline)) {
     results.error = 'Offline';
     return results;
   }
@@ -125,11 +164,10 @@ export async function runFullSync(isOnline = true) {
     ]);
     const custList = Array.isArray(customers) ? customers : [];
     const orderList = Array.isArray(orders) ? orders : [];
-    await Promise.all([
-      persistCustomers(custList),
-      persistOrders(orderList),
-      setLastSyncTime(new Date().toISOString()),
-    ]);
+    await persistCustomers(custList);
+    await persistOrders(orderList);
+    await persistOrderDetailsForList(orderList);
+    await setLastSyncTime(new Date().toISOString());
     results.customers = custList.length;
     results.orders = orderList.length;
   } catch (err) {

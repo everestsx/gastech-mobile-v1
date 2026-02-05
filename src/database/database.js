@@ -71,18 +71,26 @@ async function initSchema(db) {
 
     CREATE INDEX IF NOT EXISTS idx_sale_orders_date ON sale_orders(date_order);
   `);
+    await pruneOrdersOlderThan(db, getCutoffDate(CACHE_HOURS));
   } catch (e) {
     console.warn('initSchema warning:', e?.message);
   }
 }
 
 /**
- * Returns ISO date string for (now - hours).
+ * Returns date string (YYYY-MM-DD HH:mm:ss) for (now - hours).
+ * Matches Odoo date_order format so string comparison works when filtering cached orders.
  */
 function getCutoffDate(hours = CACHE_HOURS) {
   const d = new Date();
   d.setHours(d.getHours() - hours);
-  return d.toISOString();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  const h = String(d.getHours()).padStart(2, '0');
+  const min = String(d.getMinutes()).padStart(2, '0');
+  const s = String(d.getSeconds()).padStart(2, '0');
+  return `${y}-${m}-${day} ${h}:${min}:${s}`;
 }
 
 /**
@@ -145,8 +153,9 @@ export async function saveSaleOrders(orders) {
 
   const run = async (d) => {
     for (const o of orders || []) {
-      const dateOrder = o.date_order ?? '';
-      if (dateOrder < cutoff) continue;
+      const raw = o.date_order ?? '';
+      const dateOrder = typeof raw === 'string' && raw.includes('T') ? raw.replace('T', ' ').slice(0, 19) : raw;
+      if (!dateOrder || dateOrder < cutoff) continue;
       const partnerId = Array.isArray(o.partner_id) ? o.partner_id[0] : o.partner_id;
       const orderLine = JSON.stringify(o.order_line || []);
       const payload = JSON.stringify(o);
@@ -242,6 +251,20 @@ export async function getOrderDetailsFromDb(orderId) {
       order: JSON.parse(row.order_payload),
       lines: JSON.parse(row.lines_payload),
     };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Get single order payload from list cache (sale_orders) by id. For offline fallback when details row missing.
+ */
+export async function getOrderFromListCache(orderId) {
+  try {
+    const db = await getDb();
+    const row = await db.getFirstAsync('SELECT payload FROM sale_orders WHERE id = ?', orderId);
+    if (!row?.payload) return null;
+    return JSON.parse(row.payload);
   } catch {
     return null;
   }

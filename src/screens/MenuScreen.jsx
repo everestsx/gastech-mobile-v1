@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
+import { useNetwork } from '../context/NetworkContext';
 import { spacing, borderRadius } from '../constants/theme';
 import {
   runSync,
@@ -21,6 +22,7 @@ import {
 
 export default function MenuScreen({ navigation }) {
   const { colors } = useTheme();
+  const { isOnline } = useNetwork();
   const [syncing, setSyncing] = useState(false);
   const [lastSync, setLastSync] = useState(null);
   const [user, setUser] = useState(null);
@@ -40,7 +42,7 @@ export default function MenuScreen({ navigation }) {
   const handleSync = async () => {
     setSyncing(true);
     try {
-      const result = await runSync();
+      const result = await runSync(isOnline === true);
       await refreshLastSync();
       if (result.error) {
         Alert.alert('Sync failed', result.error);

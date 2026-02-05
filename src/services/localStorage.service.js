@@ -7,6 +7,7 @@ import {
   getCustomersFromDb,
   getSaleOrdersFromDb,
   getOrderDetailsFromDb,
+  getOrderFromListCache,
   saveCustomers,
   saveSaleOrders,
   saveOrderDetails,
@@ -38,6 +39,15 @@ export async function loadOrdersFromCache() {
 export async function loadOrderDetailsFromCache(orderId) {
   try {
     return await getOrderDetailsFromDb(orderId);
+  } catch (e) {
+    return null;
+  }
+}
+
+/** Get order header from list cache when details row is missing (offline fallback). */
+export async function loadOrderFromListCache(orderId) {
+  try {
+    return await getOrderFromListCache(orderId);
   } catch (e) {
     return null;
   }

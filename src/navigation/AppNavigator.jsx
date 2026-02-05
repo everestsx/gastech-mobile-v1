@@ -257,14 +257,14 @@ export default function AppNavigator() {
     }
     const intervalMs = getSyncIntervalMs();
     const run = () => {
-      if (!isOnline) return;
-      runSync().catch(() => {});
+      if (isOnline !== true) return;
+      runSync(true).catch(() => {});
     };
 
     const sub = AppState.addEventListener('change', (nextState) => {
       if (nextState === 'active' && appStateRef.current !== 'active') {
         run();
-        if (isOnline) syncIntervalRef.current = setInterval(run, intervalMs);
+        if (isOnline === true) syncIntervalRef.current = setInterval(run, intervalMs);
       } else if (nextState !== 'active') {
         if (syncIntervalRef.current) {
           clearInterval(syncIntervalRef.current);
@@ -274,7 +274,7 @@ export default function AppNavigator() {
       appStateRef.current = nextState;
     });
 
-    if (AppState.currentState === 'active' && isOnline) {
+    if (AppState.currentState === 'active' && isOnline === true) {
       run();
       syncIntervalRef.current = setInterval(run, intervalMs);
     }

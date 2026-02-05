@@ -13,7 +13,7 @@ import { useTheme } from '../context/ThemeContext';
 import { useNetwork } from '../context/NetworkContext';
 import { useAuth } from '../context/AuthContext';
 import { spacing, borderRadius } from '../constants/theme';
-import { getCachedOrders, runSync } from '../services/sync.service';
+import { getCachedOrders, runSync, getLastSyncTime } from '../services/sync.service';
 import WeeklyLineChart from '../components/WeeklyLineChart';
 
 function formatCurrency(amount) {
@@ -28,17 +28,22 @@ export default function DashboardScreen({ navigation }) {
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
+  const [lastSync, setLastSync] = useState(null);
+  const [dataSource, setDataSource] = useState('live');
 
   const loadData = useCallback(async () => {
     try {
       const data = await getCachedOrders(isOnline, vehicleId);
       const next = Array.isArray(data) ? data : [];
       setOrders((prev) => {
-        if (!isOnline && next.length === 0 && prev.length > 0) return prev;
+        if (isOnline !== true && next.length === 0 && prev.length > 0) return prev;
         return next;
       });
+      setDataSource(isOnline === true ? 'live' : 'cached');
+      const syncTime = await getLastSyncTime();
+      setLastSync(syncTime || null);
     } catch (_) {
-      if (!isOnline) setOrders((prev) => prev);
+      if (isOnline !== true) setOrders((prev) => prev);
       else setOrders([]);
     } finally {
       setLoading(false);
@@ -50,6 +55,10 @@ export default function DashboardScreen({ navigation }) {
     loadData();
     return () => unsub?.();
   }, [loadData, navigation]);
+
+  useEffect(() => {
+    if (isOnline === true) loadData();
+  }, [isOnline, loadData]);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -264,6 +273,12 @@ export default function DashboardScreen({ navigation }) {
           ) : null}
         </View>
         <View style={styles.headerButtons}>
+          {dataSource === 'cached' && (
+            <View style={[styles.syncBtnTop, { marginRight: 4 }]}>
+              <Ionicons name="cloud-offline-outline" size={16} color={colors.primary} />
+              <Text style={[styles.syncBtnTopText, { fontSize: 12 }]}>Cached</Text>
+            </View>
+          )}
           <TouchableOpacity
             style={styles.dailyVisitBtnTop}
             onPress={() => navigation.navigate('DailyVisit')}
@@ -288,6 +303,14 @@ export default function DashboardScreen({ navigation }) {
         </View>
       </View>
 
+      {orders.length === 0 && isOnline !== true && (
+        <View style={[styles.totalsCard, { marginBottom: spacing.md }]}>
+          <Text style={styles.totalsLabel}>You're offline</Text>
+          <Text style={[styles.totalsValue, { fontSize: 14, fontWeight: '600', marginTop: 4 }]}>
+            Sync when online to see data here. {lastSync ? `Last sync: ${new Date(lastSync).toLocaleString()}` : ''}
+          </Text>
+        </View>
+      )}
       {/* 1. Daily Overview */}
       <Text style={styles.sectionTitle}>Daily Overview</Text>
       <View style={styles.metricsRow}>

@@ -3,8 +3,10 @@ import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Alert } fr
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing, borderRadius } from '../constants/theme';
 import { runSync, getLastSyncTime, getUserSession, logout, getSyncIntervalMinutes } from '../services/sync.service';
+import { useNetwork } from '../context/NetworkContext';
 
 export default function DrawerContent({ navigation }) {
+  const { isOnline } = useNetwork();
   const [syncing, setSyncing] = useState(false);
   const [lastSync, setLastSync] = useState(null);
   const [user, setUser] = useState(null);
@@ -24,7 +26,7 @@ export default function DrawerContent({ navigation }) {
   const handleSync = async () => {
     setSyncing(true);
     try {
-      const result = await runSync();
+      const result = await runSync(isOnline === true);
       await refreshLastSync();
       if (result.error) {
         Alert.alert('Sync failed', result.error);

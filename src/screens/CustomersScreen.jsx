@@ -85,11 +85,11 @@ export default function CustomersScreen({ navigation }) {
         next = next.filter((c) => partnerIds.has(c.id));
       }
       setCustomers((prev) => {
-        if (!isOnline && next.length === 0 && prev.length > 0) return prev;
+        if (isOnline !== true && next.length === 0 && prev.length > 0) return prev;
         return next;
       });
     } catch (_) {
-      if (!isOnline) setCustomers((prev) => prev);
+      if (isOnline !== true) setCustomers((prev) => prev);
       else setCustomers([]);
     } finally {
       setLoading(false);
@@ -101,6 +101,10 @@ export default function CustomersScreen({ navigation }) {
     loadCustomers();
     return () => unsub?.();
   }, [loadCustomers, navigation]);
+
+  useEffect(() => {
+    if (isOnline === true) loadCustomers();
+  }, [isOnline]);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -170,7 +174,11 @@ export default function CustomersScreen({ navigation }) {
         <View style={styles.empty}>
           <Ionicons name="people-outline" size={48} color={colors.textSecondary} />
           <Text style={styles.emptyText}>No customers yet</Text>
-          <Text style={styles.emptyHint}>Sync from Menu to load customers</Text>
+          <Text style={styles.emptyHint}>
+            {isOnline !== true
+              ? "You're offline. Sync when online to load customers."
+              : 'Sync from Menu to load customers'}
+          </Text>
         </View>
       }
     />

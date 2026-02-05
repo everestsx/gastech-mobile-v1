@@ -92,12 +92,12 @@ export default function SaleOrderListScreen({ route, navigation }) {
         list = list.filter((o) => o.partner_id?.[0] === customerId);
       }
       setOrders((prev) => {
-        if (!isOnline && list.length === 0 && prev.length > 0) return prev;
+        if (isOnline !== true && list.length === 0 && prev.length > 0) return prev;
         return list;
       });
     } catch (err) {
       console.error('Sale Order Error:', err);
-      if (!isOnline) setOrders((prev) => prev);
+      if (isOnline !== true) setOrders((prev) => prev);
       else setOrders([]);
     } finally {
       setLoading(false);
@@ -109,6 +109,10 @@ export default function SaleOrderListScreen({ route, navigation }) {
     loadOrders();
     return () => unsub?.();
   }, [loadOrders, navigation]);
+
+  useEffect(() => {
+    if (isOnline === true) loadOrders();
+  }, [isOnline]);
 
   const openDetails = (order) => {
     navigation.navigate('SaleOrderDetails', { saleOrderId: order.id });
@@ -189,6 +193,11 @@ export default function SaleOrderListScreen({ route, navigation }) {
             <Text style={styles.emptyText}>
               {activeTab === TAB_INVOICED ? 'No invoiced orders' : 'No orders to invoice'}
             </Text>
+            {isOnline !== true && (
+              <Text style={[styles.emptyText, { fontSize: 13, marginTop: 8 }]}>
+                You're offline. Sync when online to see orders.
+              </Text>
+            )}
           </View>
         }
         renderItem={({ item }) => (
