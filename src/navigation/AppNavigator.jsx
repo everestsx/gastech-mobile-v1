@@ -3,6 +3,7 @@ import { AppState, TouchableOpacity, View, Text, Image } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 
 import SplashScreen from '../screens/SplashScreen';
@@ -69,6 +70,9 @@ const MainStack = createNativeStackNavigator();
 
 function MainTabs() {
   const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
+  const tabBarHeight = 60;
+  const tabBarPaddingBottom = Math.max(6, insets.bottom);
   return (
     <Tab.Navigator
       screenOptions={{
@@ -76,9 +80,9 @@ function MainTabs() {
         tabBarActiveTintColor: colors.primary,
         tabBarInactiveTintColor: colors.textSecondary,
         tabBarStyle: {
-          paddingBottom: 6,
+          paddingBottom: tabBarPaddingBottom,
           paddingTop: 8,
-          height: 60,
+          height: tabBarHeight + insets.bottom,
           backgroundColor: colors.surface,
           borderTopColor: colors.border,
         },

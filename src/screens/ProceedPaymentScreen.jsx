@@ -10,6 +10,7 @@ import {
   TextInput,
   Image,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
@@ -36,6 +37,7 @@ const PAYMENT_BANK = 'bank';
 
 export default function ProceedPaymentScreen({ route, navigation }) {
   const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
   const { saleOrderId, total } = route.params;
   const [loading, setLoading] = useState(false);
   const [journalsLoading, setJournalsLoading] = useState(true);
@@ -190,7 +192,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
     () =>
       StyleSheet.create({
         container: { flex: 1, backgroundColor: colors.background },
-        content: { padding: spacing.md, paddingBottom: spacing.xl + 80 },
+        content: { padding: spacing.md, paddingBottom: spacing.xl + 80 + insets.bottom },
         title: { fontSize: 22, fontWeight: '800', color: colors.text, textAlign: 'center', marginBottom: spacing.lg },
         totalCard: {
           backgroundColor: colors.surface,
@@ -362,7 +364,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         payBtnDisabled: { backgroundColor: colors.textSecondary, opacity: 0.7 },
         btnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
       }),
-    [colors]
+    [colors, insets.bottom]
   );
 
   return (
@@ -386,7 +388,8 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           style={[styles.radioOption, paymentType === PAYMENT_CASH && styles.radioOptionSelected]}
           onPress={() => {
             setPaymentType(PAYMENT_CASH);
-            setSelectedBankId(null);
+            setSelectedJournalId(null);
+            setJournalSearch('');
           }}
           activeOpacity={0.8}
         >

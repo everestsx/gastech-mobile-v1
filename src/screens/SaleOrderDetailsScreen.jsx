@@ -2,7 +2,6 @@ import { useEffect, useState, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
-  FlatList,
   StyleSheet,
   TouchableOpacity,
   TextInput,
@@ -11,6 +10,7 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { getSaleOrderDetails } from '../services/saleOrderLine.service';
 import {
@@ -31,6 +31,7 @@ function formatCurrency(amount) {
 
 export default function SaleOrderDetailsScreen({ route, navigation }) {
   const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
   const { saleOrderId } = route.params;
 
   const [order, setOrder] = useState(null);
@@ -122,7 +123,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
         summaryValue: { fontSize: 14, fontWeight: '600', color: colors.text },
         summaryTotalLabel: { fontSize: 16, fontWeight: '700', color: colors.text },
         summaryTotalValue: { fontSize: 18, fontWeight: '800', color: colors.text },
-        bottomSpacer: { height: 200 },
+        bottomSpacer: { height: 200 + insets.bottom },
         bottomBar: {
           position: 'absolute',
           bottom: 0,
@@ -130,7 +131,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
           right: 0,
           backgroundColor: colors.surface,
           padding: spacing.md,
-          paddingBottom: spacing.md + 8,
+          paddingBottom: spacing.md + 8 + insets.bottom,
           borderTopLeftRadius: borderRadius.xl,
           borderTopRightRadius: borderRadius.xl,
           elevation: 8,
@@ -174,7 +175,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
         payBtnDisabled: { backgroundColor: colors.textSecondary, opacity: 0.8 },
         payBtnText: { fontSize: 16, fontWeight: '700', color: '#fff' },
       }),
-    [colors]
+    [colors, insets.bottom]
   );
 
   const loadDetails = useCallback(async () => {

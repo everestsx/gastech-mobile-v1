@@ -10,7 +10,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
-import { getAllSaleOrders } from '../services/saleOrder.service';
+import { getAllSaleOrders, getOrderLineTotalsForOrders } from '../services/saleOrder.service';
 import { getCachedOrders } from '../services/sync.service';
 import OrderCard from '../components/OrderCard';
 
@@ -53,24 +53,24 @@ export default function SaleOrderListScreen({ route, navigation }) {
 
   const loadOrders = useCallback(async () => {
     try {
-      const data = await getCachedOrders();
-      let list = Array.isArray(data) ? data : [];
+      let list = [];
+      try {
+        const data = await getCachedOrders();
+        list = Array.isArray(data) ? data : [];
+      } catch (_) {
+        const data = await getAllSaleOrders();
+        list = data || [];
+      }
       if (customerId != null) {
         list = list.filter((o) => o.partner_id?.[0] === customerId);
       }
-      setOrders(list);
-    } catch (_) {
-      try {
-        const data = await getAllSaleOrders();
-        let list = data || [];
-        if (customerId != null) {
-          list = list.filter((o) => o.partner_id?.[0] === customerId);
-        }
-        setOrders(list);
-      } catch (err) {
-        console.error('Sale Order Error:', err);
-        setOrders([]);
-      }
+      const totals = await getOrderLineTotalsForOrders(list);
+      setOrders(
+        list.map((o) => ({ ...o, totalQty: totals[o.id] != null ? totals[o.id] : null }))
+      );
+    } catch (err) {
+      console.error('Sale Order Error:', err);
+      setOrders([]);
     } finally {
       setLoading(false);
     }
