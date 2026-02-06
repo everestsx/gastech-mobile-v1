@@ -2,6 +2,7 @@
  * Local CRUD for stock_moves (Odoo stock.move mirror).
  */
 import { getDb } from './db.js';
+import { empty, num, numOrNull, iso } from './dbHelpers.js';
 
 function odooRel(idName) {
   if (Array.isArray(idName)) return { id: idName[0], name: idName[1] ?? null };
@@ -11,19 +12,19 @@ function odooRel(idName) {
 export async function upsertStockMoves(rows) {
   if (!rows?.length) return;
   const db = await getDb();
-  const now = new Date().toISOString();
+  const now = iso();
   await db.withTransactionAsync(async (tx) => {
     for (const r of rows) {
       const product = odooRel(r.product_id);
       await tx.runAsync(
         'INSERT OR REPLACE INTO stock_moves (id, picking_id, product_id, product_name, product_uom_qty, state, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
         [
-          r.id,
-          r.picking_id ?? null,
-          product.id ?? null,
-          product.name ?? null,
-          r.product_uom_qty ?? 0,
-          r.state ?? null,
+          r.id != null ? r.id : 0,
+          num(r.picking_id), // NOT NULL in schema; use 0 when missing
+          numOrNull(product.id),
+          empty(product.name),
+          num(r.product_uom_qty),
+          r.state != null && r.state !== '' ? r.state : null,
           now,
         ]
       );

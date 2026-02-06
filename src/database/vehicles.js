@@ -2,6 +2,7 @@
  * Local CRUD for vehicles (Odoo fleet.vehicle mirror).
  */
 import { getDb } from './db.js';
+import { empty, numOrNull, iso } from './dbHelpers.js';
 
 function odooRel(idName) {
   if (Array.isArray(idName)) return { id: idName[0], name: idName[1] ?? null };
@@ -11,13 +12,13 @@ function odooRel(idName) {
 export async function upsertVehicles(rows) {
   if (!rows?.length) return;
   const db = await getDb();
-  const now = new Date().toISOString();
+  const now = iso();
   await db.withTransactionAsync(async (tx) => {
     for (const r of rows) {
       const modelId = Array.isArray(r.model_id) ? r.model_id[0] : r.model_id;
       await tx.runAsync(
         `INSERT OR REPLACE INTO vehicles (id, name, license_plate, model_id, updated_at) VALUES (?, ?, ?, ?, ?)`,
-        [r.id, r.name ?? '', r.license_plate ?? null, modelId ?? null, now]
+        [r.id != null ? r.id : 0, empty(r.name), r.license_plate != null && r.license_plate !== '' ? r.license_plate : null, numOrNull(modelId), now]
       );
     }
   });

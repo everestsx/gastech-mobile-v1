@@ -2,6 +2,7 @@
  * Local CRUD for products (from Odoo product_id on lines/moves).
  */
 import { getDb } from './db.js';
+import { empty, iso } from './dbHelpers.js';
 
 function odooRel(idName) {
   if (Array.isArray(idName)) return { id: idName[0], name: idName[1] ?? null };
@@ -11,7 +12,7 @@ function odooRel(idName) {
 export async function upsertProducts(rows) {
   if (!rows?.length) return;
   const db = await getDb();
-  const now = new Date().toISOString();
+  const now = iso();
   await db.withTransactionAsync(async (tx) => {
     for (const r of rows) {
       const product = typeof r === 'object' && (r.id != null || r.product_id != null)
@@ -20,7 +21,7 @@ export async function upsertProducts(rows) {
       if (product.id == null) continue;
       await tx.runAsync(
         `INSERT OR REPLACE INTO products (id, name, updated_at) VALUES (?, ?, ?)`,
-        [product.id, product.name ?? '', now]
+        [product.id, empty(product.name), now]
       );
     }
   });

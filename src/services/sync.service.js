@@ -27,6 +27,17 @@ const KEYS = {
 
 const SYNC_INTERVAL_MS = 60 * 1000; // 1 minute auto-sync when online
 
+const LOG_TAG = '[Sync]';
+
+function log(step, detail = '') {
+  const msg = detail ? `${LOG_TAG} ${step} — ${detail}` : `${LOG_TAG} ${step}`;
+  console.log(msg);
+}
+
+function logWarn(step, err) {
+  console.warn(`${LOG_TAG} ${step}`, err?.message ?? err);
+}
+
 let _asyncStorage;
 async function getAsyncStorage() {
   if (!_asyncStorage) _asyncStorage = (await import('@react-native-async-storage/async-storage')).default;
@@ -165,16 +176,28 @@ export function getSyncIntervalMinutes() {
 export async function runSync() {
   const result = { customers: 0, orders: 0, orderLines: 0, pickings: 0, moves: 0, moveLines: 0, journals: 0, routes: 0, vehicles: 0, error: null };
   const syncAt = new Date().toISOString();
+  log('start', syncAt);
+
   try {
+    log('fetch', 'customers + orders');
     const [customers, orders] = await Promise.all([
-      getCustomers().catch(() => []),
-      getAllSaleOrders().catch(() => []),
+      getCustomers().catch((e) => {
+        logWarn('fetch customers', e);
+        return [];
+      }),
+      getAllSaleOrders().catch((e) => {
+        logWarn('fetch orders', e);
+        return [];
+      }),
     ]);
 
     result.customers = (customers || []).length;
     result.orders = (orders || []).length;
+    log('fetch', `customers=${result.customers} orders=${result.orders}`);
 
+    log('db', 'partners');
     await partnersDb.upsertPartners(customers || []);
+    log('db', 'sale_orders');
     await saleOrdersDb.upsertSaleOrders(orders || []);
 
     const orderIds = (orders || []).map((o) => o.id);
@@ -192,6 +215,7 @@ export async function runSync() {
         (o.order_line || []).forEach((id) => lineIds.push(id));
       });
       if (lineIds.length > 0) {
+        log('fetch', `order lines (${lineIds.length} ids)`);
         const lines = await callOdoo(
           'sale.order.line',
           'search_read',
@@ -207,8 +231,10 @@ export async function runSync() {
           const pid = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
           if (pid) productIds.add(pid);
         });
+        log('fetch', `orderLines=${result.orderLines}`);
       }
 
+      log('fetch', 'stock.picking');
       allPickings = await callOdoo(
         'stock.picking',
         'search_read',
@@ -216,6 +242,7 @@ export async function runSync() {
         { fields: ['id', 'name', 'sale_id', 'state', 'move_ids', 'backorder_ids'], limit: 500 }
       ) || [];
       result.pickings = allPickings.length;
+      log('fetch', `pickings=${result.pickings}`);
 
       for (const p of allPickings) {
         const moveIds = p.move_ids || (Array.isArray(p.move_ids) ? p.move_ids : []);
@@ -225,7 +252,7 @@ export async function runSync() {
           getStockMoveLinesByMoveIds(moveIds),
         ]);
         (moves || []).forEach((m) => {
-          allMoves.push(m);
+          allMoves.push({ ...m, picking_id: m.picking_id ?? p.id });
           const pid = Array.isArray(m.product_id) ? m.product_id[0] : m.product_id;
           if (pid) productIds.add(pid);
         });
@@ -233,24 +260,41 @@ export async function runSync() {
       }
       result.moves = allMoves.length;
       result.moveLines = allMoveLines.length;
+      log('fetch', `moves=${result.moves} moveLines=${result.moveLines}`);
     }
 
+    log('db', 'sale_order_lines');
     await saleOrderLinesDb.upsertSaleOrderLines(allLines);
+    log('db', 'stock_pickings');
     await stockPickingsDb.upsertStockPickings(allPickings);
+    log('db', 'stock_moves');
     await stockMovesDb.upsertStockMoves(allMoves);
+    log('db', 'stock_move_lines');
     await stockMoveLinesDb.upsertStockMoveLines(allMoveLines);
     if (productIds.size > 0) {
+      log('db', `products (${productIds.size})`);
       await productsDb.upsertProducts(Array.from(productIds).map((id) => ({ id, name: null })));
     }
 
+    log('fetch', 'journals + routes + vehicles');
     const [journals, routes, vehicles] = await Promise.all([
-      getJournals().catch(() => []),
-      getRoutes().catch(() => []),
-      getVehicles().catch(() => []),
+      getJournals().catch((e) => {
+        logWarn('fetch journals', e);
+        return [];
+      }),
+      getRoutes().catch((e) => {
+        logWarn('fetch routes', e);
+        return [];
+      }),
+      getVehicles().catch((e) => {
+        logWarn('fetch vehicles', e);
+        return [];
+      }),
     ]);
     result.journals = (journals || []).length;
     result.routes = (routes || []).length;
     result.vehicles = (vehicles || []).length;
+    log('db', 'journals + routes + vehicles');
     await journalsDb.upsertJournals(journals || []);
     await routesDb.upsertRoutes(routes || []);
     await vehiclesDb.upsertVehicles(vehicles || []);
@@ -263,9 +307,12 @@ export async function runSync() {
     });
     const storage = await getAsyncStorage();
     await storage.setItem(KEYS.LAST_SYNC, syncAt);
+    log('done', JSON.stringify(result));
     return result;
   } catch (err) {
     result.error = err?.message || 'Sync failed';
+    logWarn('error', err);
+    console.warn(`${LOG_TAG} error detail`, err);
     await syncLogDb.appendLog({
       sync_at: syncAt,
       status: 'error',

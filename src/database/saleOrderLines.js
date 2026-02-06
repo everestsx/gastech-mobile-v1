@@ -2,6 +2,7 @@
  * Local CRUD for sale_order_lines (Odoo sale.order.line mirror).
  */
 import { getDb } from './db.js';
+import { empty, num, numOrNull, iso } from './dbHelpers.js';
 
 function odooRel(idName) {
   if (Array.isArray(idName)) return { id: idName[0], name: idName[1] ?? null };
@@ -11,7 +12,7 @@ function odooRel(idName) {
 export async function upsertSaleOrderLines(rows) {
   if (!rows?.length) return;
   const db = await getDb();
-  const now = new Date().toISOString();
+  const now = iso();
   await db.withTransactionAsync(async (tx) => {
     for (const r of rows) {
       const orderId = Array.isArray(r.order_id) ? r.order_id[0] : r.order_id;
@@ -22,15 +23,15 @@ export async function upsertSaleOrderLines(rows) {
           price_unit, price_subtotal, price_total, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          r.id,
-          orderId ?? null,
-          product.id ?? null,
-          product.name ?? null,
-          r.name ?? null,
-          r.product_uom_qty ?? 0,
-          r.price_unit ?? 0,
-          r.price_subtotal ?? 0,
-          r.price_total ?? 0,
+          r.id != null ? r.id : 0,
+          numOrNull(orderId),
+          numOrNull(product.id),
+          empty(product.name),
+          empty(r.name),
+          num(r.product_uom_qty),
+          num(r.price_unit),
+          num(r.price_subtotal),
+          num(r.price_total),
           now,
         ]
       );

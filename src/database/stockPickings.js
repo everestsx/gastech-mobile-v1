@@ -2,15 +2,12 @@
  * Local CRUD for stock_pickings (Odoo stock.picking mirror).
  */
 import { getDb } from './db.js';
-
-function toJson(arr) {
-  return Array.isArray(arr) ? JSON.stringify(arr) : (arr ?? '[]');
-}
+import { empty, numOrNull, iso, jsonArr } from './dbHelpers.js';
 
 export async function upsertStockPickings(rows) {
   if (!rows?.length) return;
   const db = await getDb();
-  const now = new Date().toISOString();
+  const now = iso();
   await db.withTransactionAsync(async (tx) => {
     for (const r of rows) {
       const saleId = Array.isArray(r.sale_id) ? r.sale_id[0] : r.sale_id;
@@ -19,12 +16,12 @@ export async function upsertStockPickings(rows) {
           id, name, sale_id, state, move_ids, backorder_ids, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
         [
-          r.id,
-          r.name ?? null,
-          saleId ?? null,
-          r.state ?? null,
-          toJson(r.move_ids),
-          toJson(r.backorder_ids),
+          r.id != null ? r.id : 0,
+          r.name != null && r.name !== '' ? r.name : null,
+          numOrNull(saleId),
+          r.state != null && r.state !== '' ? r.state : null,
+          jsonArr(r.move_ids),
+          jsonArr(r.backorder_ids),
           now,
         ]
       );

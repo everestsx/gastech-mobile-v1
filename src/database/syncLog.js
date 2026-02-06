@@ -2,14 +2,15 @@
  * Sync history for dashboard (last sync time, status, counts, errors).
  */
 import { getDb } from './db.js';
+import { empty, iso } from './dbHelpers.js';
 
 export async function appendLog({ sync_at, status, message, counts }) {
   const db = await getDb();
-  const now = new Date().toISOString();
+  const now = iso();
   const countsStr = counts != null ? JSON.stringify(counts) : null;
   await db.runAsync(
     'INSERT INTO sync_log (sync_at, status, message, counts, created_at) VALUES (?, ?, ?, ?, ?)',
-    [sync_at ?? now, status ?? 'success', message ?? null, countsStr, now]
+    [sync_at != null && sync_at !== '' ? sync_at : now, empty(status) || 'success', message != null && message !== '' ? message : null, countsStr, now]
   );
 }
 

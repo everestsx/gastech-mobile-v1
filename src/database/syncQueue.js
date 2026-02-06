@@ -2,16 +2,16 @@
  * Pending actions to push to Odoo on sync (delivery updates, payments, etc.).
  */
 import { getDb } from './db.js';
+import { empty, iso } from './dbHelpers.js';
 
 export const ACTION_DELIVERY = 'delivery';
 export const ACTION_PAYMENT = 'payment';
 
 export async function enqueue(actionType, payload) {
   const db = await getDb();
-  const now = new Date().toISOString();
   const result = await db.runAsync(
     'INSERT INTO sync_queue (action_type, payload, created_at) VALUES (?, ?, ?)',
-    [actionType, JSON.stringify(payload), now]
+    [empty(actionType) || 'unknown', typeof payload === 'string' ? payload : JSON.stringify(payload ?? {}), iso()]
   );
   return result.lastInsertRowId;
 }
@@ -31,8 +31,7 @@ export async function getPending() {
 
 export async function markSynced(id) {
   const db = await getDb();
-  const now = new Date().toISOString();
-  await db.runAsync('UPDATE sync_queue SET synced_at = ? WHERE id = ?', [now, id]);
+  await db.runAsync('UPDATE sync_queue SET synced_at = ? WHERE id = ?', [iso(), id != null ? id : 0]);
 }
 
 export async function getPendingCount() {

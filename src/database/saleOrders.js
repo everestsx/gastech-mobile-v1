@@ -2,6 +2,7 @@
  * Local CRUD for sale_orders (Odoo sale.order mirror).
  */
 import { getDb } from './db.js';
+import { empty, num, numOrNull, iso, jsonArr } from './dbHelpers.js';
 
 function odooRel(idName) {
   if (Array.isArray(idName)) return { id: idName[0], name: idName[1] ?? null };
@@ -11,13 +12,13 @@ function odooRel(idName) {
 export async function upsertSaleOrders(rows) {
   if (!rows?.length) return;
   const db = await getDb();
-  const now = new Date().toISOString();
+  const now = iso();
+
   await db.withTransactionAsync(async (tx) => {
     for (const r of rows) {
       const partner = odooRel(r.partner_id);
       const route = odooRel(r.route_id);
       const vehicle = odooRel(r.vehicle_id);
-      const orderLine = Array.isArray(r.order_line) ? JSON.stringify(r.order_line) : (r.order_line ?? '[]');
       await tx.runAsync(
         `INSERT OR REPLACE INTO sale_orders (
           id, name, partner_id, partner_name, state, date_order,
@@ -25,23 +26,23 @@ export async function upsertSaleOrders(rows) {
           route_id, route_name, vehicle_id, vehicle_name, updated_at, payload
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          r.id,
-          r.name ?? '',
-          partner.id ?? null,
-          partner.name ?? null,
-          r.state ?? null,
-          r.date_order ?? null,
-          r.amount_total ?? 0,
-          r.amount_untaxed ?? 0,
-          r.amount_tax ?? 0,
-          r.invoice_status ?? null,
-          orderLine,
-          route.id ?? null,
-          route.name ?? null,
-          vehicle.id ?? null,
-          vehicle.name ?? null,
+          r.id != null ? r.id : 0,
+          empty(r.name),
+          numOrNull(partner.id),
+          empty(partner.name),
+          empty(r.state),
+          empty(r.date_order),
+          num(r.amount_total),
+          num(r.amount_untaxed),
+          num(r.amount_tax),
+          empty(r.invoice_status),
+          jsonArr(r.order_line),
+          numOrNull(route.id),
+          empty(route.name),
+          numOrNull(vehicle.id),
+          empty(vehicle.name),
           now,
-          '', // payload: satisfy NOT NULL if column exists (legacy schema)
+          empty(r.payload),
         ]
       );
     }
