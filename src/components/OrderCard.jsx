@@ -37,7 +37,7 @@ function getInvoiceStatusLabel(invoiceStatus) {
  * Reusable sale order card: order no, state badge, customer, amount with total qty below,
  * invoice status, date. Used by Daily Visit and Orders screens.
  */
-export default function OrderCard({ order, onPress }) {
+export default function OrderCard({ order, onPress, isDelivered }) {
   const { colors } = useTheme();
   const styles = useMemo(
     () =>
@@ -63,6 +63,7 @@ export default function OrderCard({ order, onPress }) {
         badgeSale: { backgroundColor: colors.success },
         badgeDraft: { backgroundColor: colors.warning },
         badgeCancel: { backgroundColor: colors.error },
+        badgeDelivered: { backgroundColor: colors.primary },
         badgeText: { fontSize: 11, fontWeight: '700', color: '#fff' },
         customer: { fontSize: 15, color: colors.textSecondary, marginVertical: 6 },
         amountBlock: { alignItems: 'flex-end' },
@@ -126,8 +127,10 @@ export default function OrderCard({ order, onPress }) {
     >
       <View style={styles.rowBetween}>
         <Text style={styles.orderNo}>{order.name}</Text>
-        <View style={[styles.badge, getStatusBadgeStyle(state)]}>
-          <Text style={styles.badgeText}>{String(state).toUpperCase()}</Text>
+        <View style={[styles.badge, isDelivered ? styles.badgeDelivered : getStatusBadgeStyle(state)]}>
+          <Text style={styles.badgeText}>
+            {isDelivered ? 'DELIVERED' : String(state).toUpperCase()}
+          </Text>
         </View>
       </View>
       <Text style={styles.customer} numberOfLines={1}>
@@ -139,7 +142,9 @@ export default function OrderCard({ order, onPress }) {
         <View style={styles.amountBlock}>
           <Text style={styles.amount}>{formatCurrency(order.amount_total)}</Text>
           <Text style={styles.totalQtyUnder}>
-            Total qty: {typeof totalQty === 'number' ? totalQty : totalQty}
+            {isDelivered
+              ? `Qty delivered: ${typeof totalQty === 'number' ? totalQty : totalQty}`
+              : `Total qty: ${typeof totalQty === 'number' ? totalQty : totalQty}`}
           </Text>
         </View>
       </View>

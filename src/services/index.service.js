@@ -41,7 +41,12 @@ export const callOdoo = async (model, method, domain = [], options = {}) => {
   });
 
   const json = await response.json();
-  return json.result || [];
+  if (json.error) {
+    const msg = json.error.data?.message || json.error.message || "Odoo error";
+    const debug = json.error.data?.debug;
+    throw new Error(debug ? `${msg}\n${debug}` : msg);
+  }
+  return json.result ?? [];
 };
 
 /**
@@ -72,5 +77,43 @@ export const callOdooArgs = async (model, method, positionalArgs) => {
   });
 
   const json = await response.json();
+  if (json.error) {
+    const msg = json.error.data?.message || json.error.message || "Odoo error";
+    const debug = json.error.data?.debug;
+    throw new Error(debug ? `${msg}\n${debug}` : msg);
+  }
+  return json.result;
+};
+
+/**
+ * Call Odoo with positional args and kwargs (e.g. wizard create_invoices with context).
+ * positionalArgs = array of method positional args (e.g. [[wizardId]]).
+ * kwargs = object passed as keyword arguments (e.g. { context: { active_model, active_ids } }).
+ */
+export const callOdooArgsKwargs = async (model, method, positionalArgs, kwargs = {}) => {
+  const args = USE_SESSION
+    ? [ODOO_DB, UID, null, model, method, positionalArgs, kwargs]
+    : [ODOO_DB, UID, API_KEY, model, method, positionalArgs, kwargs];
+
+  const payload = {
+    jsonrpc: "2.0",
+    method: "call",
+    params: { service: "object", method: "execute_kw", args },
+    id: Date.now(),
+  };
+
+  const response = await fetch(ODOO_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    credentials: USE_SESSION ? "include" : "omit",
+  });
+
+  const json = await response.json();
+  if (json.error) {
+    const msg = json.error.data?.message || json.error.message || "Odoo error";
+    const debug = json.error.data?.debug;
+    throw new Error(debug ? `${msg}\n${debug}` : msg);
+  }
   return json.result;
 };

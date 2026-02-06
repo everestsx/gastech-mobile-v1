@@ -25,9 +25,10 @@ import {
 } from '../services/delivery.service';
 import {
   getSaleOrderForPayment,
+  getSaleOrderInvoiceIds,
+  getInvoiceState,
   createAdvancePaymentWizard,
   createInvoicesFromWizard,
-  getSaleOrderInvoiceIds,
   postInvoice,
   createPayment,
 } from '../services/invoice.service';
@@ -38,7 +39,7 @@ const PAYMENT_BANK = 'bank';
 export default function ProceedPaymentScreen({ route, navigation }) {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
-  const { saleOrderId, total } = route.params;
+  const { saleOrderId, total, deliveryDone } = route.params || {};
   const [loading, setLoading] = useState(false);
   const [journalsLoading, setJournalsLoading] = useState(true);
   const [journals, setJournals] = useState([]);
@@ -108,36 +109,38 @@ export default function ProceedPaymentScreen({ route, navigation }) {
     try {
       setLoading(true);
 
-      await confirmSaleOrder(saleOrderId);
+      if (!deliveryDone) {
+        await confirmSaleOrder(saleOrderId);
 
-      const pickings = await getPickingBySaleOrder(saleOrderId);
-      if (!pickings?.length) {
-        throw new Error('No delivery order found');
-      }
-
-      const picking = pickings[0];
-      const moveIds = picking.move_ids ?? [];
-      const [moves, moveLines] =
-        moveIds.length > 0
-          ? await Promise.all([
-              getStockMovesByPickingId(picking.id),
-              getStockMoveLinesByMoveIds(moveIds),
-            ])
-          : [[], []];
-
-      const moveIdToQty = {};
-      (moves || []).forEach((m) => {
-        moveIdToQty[m.id] = m.product_uom_qty ?? 0;
-      });
-      for (const ml of moveLines || []) {
-        const moveId = Array.isArray(ml.move_id) ? ml.move_id[0] : ml.move_id;
-        const demandQty = moveId != null ? moveIdToQty[moveId] ?? 0 : 0;
-        if (demandQty > 0) {
-          await updateMoveLineQty(ml.id, demandQty);
+        const pickings = await getPickingBySaleOrder(saleOrderId);
+        if (!pickings?.length) {
+          throw new Error('No delivery order found');
         }
-      }
 
-      await validatePicking(picking.id);
+        const picking = pickings[0];
+        const moveIds = picking.move_ids ?? [];
+        const [moves, moveLines] =
+          moveIds.length > 0
+            ? await Promise.all([
+                getStockMovesByPickingId(picking.id),
+                getStockMoveLinesByMoveIds(moveIds),
+              ])
+            : [[], []];
+
+        const moveIdToQty = {};
+        (moves || []).forEach((m) => {
+          moveIdToQty[m.id] = m.product_uom_qty ?? 0;
+        });
+        for (const ml of moveLines || []) {
+          const moveId = Array.isArray(ml.move_id) ? ml.move_id[0] : ml.move_id;
+          const demandQty = moveId != null ? moveIdToQty[moveId] ?? 0 : 0;
+          if (demandQty > 0) {
+            await updateMoveLineQty(ml.id, demandQty);
+          }
+        }
+
+        await validatePicking(picking.id);
+      }
 
       const orderInfo = await getSaleOrderForPayment(saleOrderId);
       if (!orderInfo) throw new Error('Sale order not found');
@@ -146,20 +149,30 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         : orderInfo.partner_id;
       if (partnerId == null) throw new Error('Customer (partner) not found for payment');
       const orderName = orderInfo.name ?? `Order ${saleOrderId}`;
+      const amountToPay = Number(orderInfo.amount_total ?? total ?? 0);
+      if (amountToPay <= 0) throw new Error('Order total must be greater than zero');
 
-      const wizardId = await createAdvancePaymentWizard(saleOrderId);
-      if (wizardId == null) throw new Error('Could not create invoice wizard');
-
-      await createInvoicesFromWizard(wizardId, saleOrderId);
-      const invoiceIds = await getSaleOrderInvoiceIds(saleOrderId);
-      const invoiceId = Array.isArray(invoiceIds) ? invoiceIds[0] : invoiceIds;
-      if (invoiceId == null) throw new Error('No invoice created');
-
-      await postInvoice(invoiceId);
+      let invoiceId = null;
+      const existingInvoiceIds = orderInfo.invoice_ids ?? [];
+      if (existingInvoiceIds.length > 0) {
+        invoiceId = Array.isArray(existingInvoiceIds) ? existingInvoiceIds[0] : existingInvoiceIds;
+        const invState = await getInvoiceState(invoiceId).catch(() => ({}));
+        if (invState?.state === 'draft') {
+          await postInvoice(invoiceId);
+        }
+      } else {
+        const wizardId = await createAdvancePaymentWizard(saleOrderId);
+        if (wizardId == null) throw new Error('Could not create invoice wizard');
+        await createInvoicesFromWizard(wizardId, saleOrderId);
+        const invoiceIds = await getSaleOrderInvoiceIds(saleOrderId);
+        invoiceId = Array.isArray(invoiceIds) ? invoiceIds[0] : invoiceIds;
+        if (invoiceId == null) throw new Error('No invoice created');
+        await postInvoice(invoiceId);
+      }
 
       await createPayment({
         partnerId,
-        amount: total,
+        amount: amountToPay,
         currencyId: 1,
         journalId: selectedJournalId,
         date: new Date().toISOString().slice(0, 10),

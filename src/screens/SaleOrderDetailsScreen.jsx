@@ -12,11 +12,13 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { getSaleOrderDetails } from '../services/saleOrderLine.service';
+import { getSaleOrderDetails, updateSaleOrderLineQty } from '../services/saleOrderLine.service';
 import {
   getDeliveryDataForSaleOrder,
   buildProductIdToMoveLineIdMap,
+  buildProductIdToMoveIdMap,
   updateMoveLineQty,
+  updateStockMoveQty,
   validatePicking,
   createBackorderConfirmation,
   processBackorderConfirmation,
@@ -36,6 +38,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
 
   const [order, setOrder] = useState(null);
   const [lines, setLines] = useState([]);
+  const [isDelivered, setIsDelivered] = useState(false);
   const [modifyEnabled, setModifyEnabled] = useState(false);
   const [qtyChanged, setQtyChanged] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -190,9 +193,12 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
         }))
       );
       setQtyChanged(false);
+      const { picking } = await getDeliveryDataForSaleOrder(saleOrderId);
+      setIsDelivered(picking?.state === 'done');
     } catch (_) {
       setOrder(null);
       setLines([]);
+      setIsDelivered(false);
     } finally {
       setLoading(false);
     }
@@ -217,12 +223,12 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
 
   const changeQtyBy = useCallback((lineId, delta) => {
     setUpdateError(null);
+    const MAX_QTY = 9999;
     setLines((prev) =>
       prev.map((l) => {
         if (l.id !== lineId) return l;
         const current = parseFloat(l.newQty) || 0;
-        const maxQty = Number(l.product_uom_qty) ?? 0;
-        const next = Math.max(0, Math.min(maxQty, current + delta));
+        const next = Math.max(1, Math.min(MAX_QTY, current + delta));
         return { ...l, newQty: String(next) };
       })
     );
@@ -235,20 +241,44 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
     );
   }, [lines]);
 
-  /** Validate: 0 <= qty <= product_uom_qty for each line; return first error message or null */
+  /** Validate: each line qty >= 1 (upselling/downselling allowed; backorder only when partial). */
   const validateQuantities = useCallback(() => {
-    const maxQty = (l) => Number(l.product_uom_qty) ?? 0;
     for (const l of lines) {
       const qty = Number(l.newQty);
-      if (Number.isNaN(qty) || qty < 0) {
-        return `Quantity for "${l.product_id?.[1] ?? l.name}" must be a number >= 0`;
-      }
-      if (qty > maxQty(l)) {
-        return `Quantity for "${l.product_id?.[1] ?? l.name}" cannot exceed ordered quantity (${maxQty(l)})`;
+      if (Number.isNaN(qty) || qty < 1) {
+        return `Quantity for "${l.product_id?.[1] ?? l.name}" must be at least 1 (cannot be 0)`;
       }
     }
     return null;
   }, [lines]);
+
+  /** Apply qty_done (and demand when upselling) then validate. Backorder only when Odoo returns it (skipped for full delivery). */
+  const applyQtyDoneAndValidate = useCallback(
+    async (effectiveQtys) => {
+      const { picking, moves, moveLines } = await getDeliveryDataForSaleOrder(order.id);
+      if (!picking?.id) throw new Error('No delivery order found for this sale order. Confirm the order first.');
+      const productIdToMoveLineId = buildProductIdToMoveLineIdMap(moves, moveLines);
+      const productIdToMoveId = buildProductIdToMoveIdMap(moves);
+
+      for (let i = 0; i < lines.length; i++) {
+        const l = lines[i];
+        const newVal = effectiveQtys[i] != null ? Number(effectiveQtys[i]) : Number(l.newQty);
+        const productId = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
+        const orderQty = Number(l.product_uom_qty) ?? 0;
+        if (productId == null) continue;
+        if (newVal > orderQty) {
+          await updateSaleOrderLineQty(l.id, newVal);
+          const moveId = productIdToMoveId[productId];
+          if (moveId != null) await updateStockMoveQty(moveId, newVal);
+        }
+        const moveLineId = productIdToMoveLineId[productId];
+        if (moveLineId != null) await updateMoveLineQty(moveLineId, newVal);
+      }
+
+      await applyValidateAndBackorder(picking, order.id);
+    },
+    [order?.id, lines, applyValidateAndBackorder]
+  );
 
   const updateQty = async () => {
     if (!hasQtyChanges()) return;
@@ -260,44 +290,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
     setUpdateError(null);
     setUpdating(true);
     try {
-      const { picking, moves, moveLines } = await getDeliveryDataForSaleOrder(order.id);
-      if (!picking?.id) {
-        setUpdateError('No delivery order found for this sale order. Confirm the order first.');
-        return;
-      }
-      const productIdToMoveLineId = buildProductIdToMoveLineIdMap(moves, moveLines);
-
-      for (const l of lines) {
-        const productId = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
-        const moveLineId = productId != null ? productIdToMoveLineId[productId] : null;
-        const newVal = Number(l.newQty);
-        if (moveLineId != null) {
-          await updateMoveLineQty(moveLineId, newVal);
-        }
-      }
-
-      let validateResult = await validatePicking(picking.id);
-      if (validateResult !== true && validateResult != null) {
-        let backorderIds = [];
-        if (typeof validateResult === 'number') {
-          await processBackorderConfirmation(validateResult);
-        } else if (typeof validateResult === 'object') {
-          const pickIds = validateResult.pick_ids ?? validateResult.backorder_pick_ids;
-          if (Array.isArray(pickIds) && pickIds.length > 0) {
-            backorderIds = pickIds;
-          }
-        }
-        if (backorderIds.length === 0) {
-          const pickingsAgain = await getPickingBySaleOrder(order.id);
-          const currentPicking = pickingsAgain?.find((p) => p.id === picking.id) ?? picking;
-          backorderIds = currentPicking?.backorder_ids ?? [];
-        }
-        if (backorderIds.length > 0) {
-          const wizardId = await createBackorderConfirmation(backorderIds);
-          if (wizardId != null) await processBackorderConfirmation(wizardId);
-        }
-      }
-
+      await applyQtyDoneAndValidate(lines.map((l) => l.newQty));
       await loadDetails();
       setModifyEnabled(false);
       setQtyChanged(false);
@@ -308,6 +301,70 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
       setUpdating(false);
     }
   };
+
+  /** Validate picking. Backorder process only when Odoo returns backorder (full delivery => skip backorder). */
+  const applyValidateAndBackorder = useCallback(async (picking, saleOrderId) => {
+    const validateResult = await validatePicking(picking.id);
+    if (validateResult === true) return;
+    let backorderIds = [];
+    if (typeof validateResult === 'number') {
+      await processBackorderConfirmation(validateResult);
+      return;
+    }
+    if (validateResult != null && typeof validateResult === 'object') {
+      const pickIds = validateResult.pick_ids ?? validateResult.backorder_pick_ids;
+      if (Array.isArray(pickIds) && pickIds.length > 0) {
+        backorderIds = pickIds.map((p) => (Array.isArray(p) ? p[0] : p)).filter(Boolean);
+      }
+    }
+    if (backorderIds.length === 0 && saleOrderId != null) {
+      const pickingsAgain = await getPickingBySaleOrder(saleOrderId);
+      const currentPicking = pickingsAgain?.find((p) => p.id === picking.id) ?? picking;
+      backorderIds = currentPicking?.backorder_ids ?? [];
+    }
+    if (backorderIds.length > 0) {
+      const wizardId = await createBackorderConfirmation(backorderIds);
+      if (wizardId != null) await processBackorderConfirmation(wizardId);
+    }
+  }, []);
+
+  /** Proceed to payment: set qty_done (default full delivery when user didn't change qty), validate, then navigate. Backorder only when partial. */
+  const handleProceedToPayment = useCallback(async () => {
+    const noChanges = !hasQtyChanges();
+    if (!noChanges) {
+      const validationError = validateQuantities();
+      if (validationError) {
+        setUpdateError(validationError);
+        return;
+      }
+    }
+    setUpdateError(null);
+    setUpdating(true);
+    try {
+      const effectiveQtys = noChanges
+        ? lines.map((l) => Number(l.product_uom_qty) ?? 0)
+        : lines.map((l) => l.newQty);
+      await applyQtyDoneAndValidate(effectiveQtys);
+
+      const total =
+        !noChanges && lines.length
+          ? lines.reduce(
+              (sum, l) => sum + (Number(l.newQty) || 0) * (Number(l.price_unit) || 0),
+              0
+            )
+          : order.amount_total;
+
+      navigation.navigate('ProceedPayment', {
+        saleOrderId: order.id,
+        total: total ?? order.amount_total,
+        deliveryDone: true,
+      });
+    } catch (err) {
+      setUpdateError(err?.message ?? 'Delivery update failed. Please try again.');
+    } finally {
+      setUpdating(false);
+    }
+  }, [order, lines, validateQuantities, hasQtyChanges, applyQtyDoneAndValidate, navigation]);
 
   const renderItem = ({ item }) => {
     const qtyNum = Number(item.newQty);
@@ -333,7 +390,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
           </View>
           <View style={styles.qtyBlock}>
             <Text style={styles.lineLabel}>Quantity</Text>
-            {modifyEnabled ? (
+            {!isDelivered && modifyEnabled ? (
               <View style={styles.qtyControls}>
                 <TouchableOpacity
                   style={styles.qtyIconBtn}
@@ -391,7 +448,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
     );
   }
 
-  const canPay = !qtyChanged && !updating;
+  const canPay = !updating;
 
   return (
     <KeyboardAvoidingView
@@ -413,7 +470,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
           </Text>
         </View>
 
-        {qtyChanged && (
+        {!isDelivered && qtyChanged && (
           <View style={styles.changedBanner}>
             <Ionicons name="pencil" size={18} color={colors.warning} />
             <Text style={styles.changedBannerText}>
@@ -468,51 +525,64 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
         <View style={styles.bottomSpacer} />
       </ScrollView>
 
-      {/* Bottom bar: Enable modify (when off) or Update quantity (when on) */}
+      {/* Bottom bar: when delivered only "Proceed to payment"; otherwise modify + proceed */}
       <View style={styles.bottomBar}>
-        {modifyEnabled ? (
-          <TouchableOpacity
-            style={styles.updateBtn}
-            onPress={updateQty}
-            disabled={updating}
-            activeOpacity={0.8}
-          >
-            {updating ? (
-              <ActivityIndicator size="small" color="#fff" />
-            ) : (
-              <>
-                <Ionicons name="checkmark-circle-outline" size={20} color="#fff" />
-                <Text style={styles.updateBtnText}>Update quantity</Text>
-              </>
-            )}
-          </TouchableOpacity>
-        ) : (
-          <TouchableOpacity
-            style={styles.modifyBtn}
-            onPress={() => setModifyEnabled(true)}
-            activeOpacity={0.8}
-          >
-            <Ionicons name="create-outline" size={20} color={colors.primary} />
-            <Text style={styles.modifyBtnText} numberOfLines={1}>
-              Enable modify
-            </Text>
-          </TouchableOpacity>
+        {!isDelivered && (
+          modifyEnabled ? (
+            <TouchableOpacity
+              style={styles.updateBtn}
+              onPress={updateQty}
+              disabled={updating}
+              activeOpacity={0.8}
+            >
+              {updating ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <>
+                  <Ionicons name="checkmark-circle-outline" size={20} color="#fff" />
+                  <Text style={styles.updateBtnText}>Update quantity</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity
+              style={styles.modifyBtn}
+              onPress={() => setModifyEnabled(true)}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="create-outline" size={20} color={colors.primary} />
+              <Text style={styles.modifyBtnText} numberOfLines={1}>
+                Enable modify
+              </Text>
+            </TouchableOpacity>
+          )
         )}
 
         <TouchableOpacity
           style={[styles.payBtn, !canPay && styles.payBtnDisabled]}
-          onPress={() =>
-            canPay &&
-            navigation.navigate('ProceedPayment', {
-              saleOrderId: order.id,
-              total: order.amount_total,
-            })
-          }
+          onPress={() => {
+            if (!canPay) return;
+            if (isDelivered) {
+              navigation.navigate('ProceedPayment', {
+                saleOrderId: order.id,
+                total: order.amount_total,
+                deliveryDone: true,
+              });
+            } else {
+              handleProceedToPayment();
+            }
+          }}
           disabled={!canPay}
           activeOpacity={0.8}
         >
-          <Ionicons name="card-outline" size={22} color="#fff" />
-          <Text style={styles.payBtnText}>Proceed to payment</Text>
+          {!isDelivered && updating ? (
+            <ActivityIndicator size="small" color="#fff" />
+          ) : (
+            <>
+              <Ionicons name="card-outline" size={22} color="#fff" />
+              <Text style={styles.payBtnText}>Proceed to payment</Text>
+            </>
+          )}
         </TouchableOpacity>
       </View>
     </KeyboardAvoidingView>

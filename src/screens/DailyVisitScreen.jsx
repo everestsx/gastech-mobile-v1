@@ -12,6 +12,8 @@ import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
+import { getOrderLineTotalsForOrders } from '../services/saleOrder.service';
+import { getPickingsBySaleIds } from '../services/delivery.service';
 import { getCachedOrders } from '../services/sync.service';
 import OrderCard from '../components/OrderCard';
 
@@ -87,7 +89,29 @@ export default function DailyVisitScreen({ route, navigation }) {
       if (customerId != null) {
         filtered = filtered.filter((o) => o.partner_id?.[0] === customerId);
       }
-      setOrders(filtered);
+      if (filtered.length === 0) {
+        setOrders([]);
+        return;
+      }
+      const [totals, pickings] = await Promise.all([
+        getOrderLineTotalsForOrders(filtered),
+        getPickingsBySaleIds(filtered.map((o) => o.id)),
+      ]);
+      const saleIdToPickingState = {};
+      (pickings || []).forEach((p) => {
+        const saleId = Array.isArray(p.sale_id) ? p.sale_id[0] : p.sale_id;
+        if (saleId != null) {
+          if (p.state === 'done') saleIdToPickingState[saleId] = 'done';
+          else if (saleIdToPickingState[saleId] !== 'done') saleIdToPickingState[saleId] = p.state;
+        }
+      });
+      setOrders(
+        filtered.map((o) => ({
+          ...o,
+          totalQty: totals[o.id] != null ? totals[o.id] : null,
+          isDelivered: saleIdToPickingState[o.id] === 'done',
+        }))
+      );
     } catch (_) {
       setOrders([]);
     } finally {
@@ -104,8 +128,16 @@ export default function DailyVisitScreen({ route, navigation }) {
     if (date) setSelectedDate(date);
   };
 
-  const openOrder = (order) => {
-    navigation.navigate('SaleOrderDetails', { saleOrderId: order.id });
+  const onOrderPress = (order) => {
+    if (order.isDelivered) {
+      navigation.navigate('ProceedPayment', {
+        saleOrderId: order.id,
+        total: order.amount_total,
+        deliveryDone: true,
+      });
+    } else {
+      navigation.navigate('SaleOrderDetails', { saleOrderId: order.id });
+    }
   };
 
   const openQRScan = () => {
@@ -117,7 +149,7 @@ export default function DailyVisitScreen({ route, navigation }) {
   };
 
   const renderItem = ({ item }) => (
-    <OrderCard order={item} onPress={openOrder} />
+    <OrderCard order={item} onPress={onOrderPress} isDelivered={item.isDelivered} />
   );
 
   return (

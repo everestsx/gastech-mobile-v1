@@ -8,7 +8,7 @@ export const getCustomers = () =>
     [[["customer_rank", ">", 0]]],
     {
       fields: ["id", "name", "phone"],
-      limit: 20,
+      limit: 200,
     }
   );
 

@@ -12,6 +12,20 @@ export const getPickingBySaleOrder = (saleOrderId) =>
     }
   );
 
+/** Get picking state for multiple sale orders in one call. Returns list of { id, sale_id, state }. */
+export const getPickingsBySaleIds = (saleOrderIds) => {
+  if (!Array.isArray(saleOrderIds) || saleOrderIds.length === 0) return Promise.resolve([]);
+  return callOdoo(
+    "stock.picking",
+    "search_read",
+    [[["sale_id", "in", saleOrderIds]]],
+    {
+      fields: ["id", "sale_id", "state"],
+      limit: 500,
+    }
+  );
+};
+
 /** Get stock moves for a picking (to map products to move lines) */
 export const getStockMovesByPickingId = (pickingId) =>
   callOdoo(
@@ -43,6 +57,10 @@ export const getMoveLines = (ids) =>
 /** Update one stock.move.line qty_done */
 export const updateMoveLineQty = (lineId, qty) =>
   callOdoo("stock.move.line", "write", [[lineId], { qty_done: qty }]);
+
+/** Update stock.move demand (product_uom_qty) so delivery can accept higher qty_done */
+export const updateStockMoveQty = (moveId, qty) =>
+  callOdoo("stock.move", "write", [[moveId], { product_uom_qty: qty }]);
 
 /** Validate delivery order (picking). Returns true or backorder wizard info */
 export const validatePicking = (pickingId) =>
@@ -87,6 +105,19 @@ export const getDeliveryDataForSaleOrder = async (saleOrderId) => {
     getStockMoveLinesByMoveIds(moveIds),
   ]);
   return { picking, moves: moves ?? [], moveLines: moveLines ?? [] };
+};
+
+/**
+ * Build map: productId (number) -> stock.move id (for updating move demand).
+ * moves: [{ id, product_id: [id, name], ... }]
+ */
+export const buildProductIdToMoveIdMap = (moves) => {
+  const productIdToMoveId = {};
+  (moves || []).forEach((m) => {
+    const productId = Array.isArray(m.product_id) ? m.product_id[0] : m.product_id;
+    if (productId != null) productIdToMoveId[productId] = m.id;
+  });
+  return productIdToMoveId;
 };
 
 /**
