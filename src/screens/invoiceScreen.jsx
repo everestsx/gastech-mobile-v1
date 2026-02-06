@@ -13,7 +13,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Print from 'expo-print';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
-import { getSaleOrderDetails } from '../services/saleOrderLine.service';
+import { getSaleOrderDetailsFromDB } from '../services/sync.service';
 
 function formatCurrency(amount) {
   return `LKR ${Number(amount).toFixed(2)}`;
@@ -211,7 +211,7 @@ export default function InvoiceScreen({ route, navigation }) {
     }
     setLoading(true);
     try {
-      const data = await getSaleOrderDetails(saleOrderId);
+      const data = await getSaleOrderDetailsFromDB(saleOrderId);
       setOrder(data.order);
       setLines(data.lines ?? []);
     } catch (_) {

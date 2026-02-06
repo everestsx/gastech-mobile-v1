@@ -12,9 +12,11 @@ import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
-import { getOrderLineTotalsForOrders } from '../services/saleOrder.service';
-import { getPickingsBySaleIds } from '../services/delivery.service';
-import { getCachedOrders } from '../services/sync.service';
+import {
+  getCachedOrders,
+  getOrderLineTotalsFromDB,
+  getPickingsBySaleIdsFromDB,
+} from '../services/sync.service';
 import OrderCard from '../components/OrderCard';
 
 function formatDate(d) {
@@ -94,8 +96,8 @@ export default function DailyVisitScreen({ route, navigation }) {
         return;
       }
       const [totals, pickings] = await Promise.all([
-        getOrderLineTotalsForOrders(filtered),
-        getPickingsBySaleIds(filtered.map((o) => o.id)),
+        getOrderLineTotalsFromDB(filtered),
+        getPickingsBySaleIdsFromDB(filtered.map((o) => o.id)),
       ]);
       const saleIdToPickingState = {};
       (pickings || []).forEach((p) => {

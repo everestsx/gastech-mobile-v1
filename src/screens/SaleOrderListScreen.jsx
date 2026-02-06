@@ -10,9 +10,11 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
-import { getAllSaleOrders, getOrderLineTotalsForOrders } from '../services/saleOrder.service';
-import { getPickingsBySaleIds } from '../services/delivery.service';
-import { getCachedOrders } from '../services/sync.service';
+import {
+  getCachedOrders,
+  getOrderLineTotalsFromDB,
+  getPickingsBySaleIdsFromDB,
+} from '../services/sync.service';
 import OrderCard from '../components/OrderCard';
 
 const TAB_ALL = 'all';
@@ -112,20 +114,14 @@ export default function SaleOrderListScreen({ route, navigation }) {
 
   const loadOrders = useCallback(async () => {
     try {
-      let list = [];
-      try {
-        const data = await getCachedOrders();
-        list = Array.isArray(data) ? data : [];
-      } catch (_) {
-        const data = await getAllSaleOrders();
-        list = data || [];
-      }
+      const data = await getCachedOrders();
+      let list = Array.isArray(data) ? data : [];
       if (customerId != null) {
         list = list.filter((o) => o.partner_id?.[0] === customerId);
       }
       const [totals, pickings] = await Promise.all([
-        getOrderLineTotalsForOrders(list),
-        getPickingsBySaleIds(list.map((o) => o.id)),
+        getOrderLineTotalsFromDB(list),
+        getPickingsBySaleIdsFromDB(list.map((o) => o.id)),
       ]);
       const saleIdToPickingState = {};
       (pickings || []).forEach((p) => {

@@ -11,7 +11,13 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
-import { getCachedOrders, runSync } from '../services/sync.service';
+import {
+  getCachedOrders,
+  runSync,
+  getLastSyncTime,
+  getSyncLogRecent,
+  getSyncIntervalMinutes,
+} from '../services/sync.service';
 import WeeklyLineChart from '../components/WeeklyLineChart';
 
 function formatCurrency(amount) {
@@ -24,6 +30,9 @@ export default function DashboardScreen({ navigation }) {
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
+  const [lastSyncTime, setLastSyncTime] = useState(null);
+  const [syncLog, setSyncLog] = useState([]);
+  const [lastSyncResult, setLastSyncResult] = useState(null);
 
   const loadData = useCallback(async () => {
     try {
@@ -36,24 +45,54 @@ export default function DashboardScreen({ navigation }) {
     }
   }, []);
 
+  const loadSyncStatus = useCallback(async () => {
+    try {
+      const [time, log] = await Promise.all([
+        getLastSyncTime(),
+        getSyncLogRecent(10),
+      ]);
+      setLastSyncTime(time);
+      setSyncLog(log || []);
+    } catch (_) {}
+  }, []);
+
   useEffect(() => {
-    const unsub = navigation.addListener?.('focus', loadData);
+    const unsub = navigation.addListener?.('focus', () => {
+      loadData();
+      loadSyncStatus();
+    });
     loadData();
+    loadSyncStatus();
     return () => unsub?.();
-  }, [loadData, navigation]);
+  }, [loadData, loadSyncStatus, navigation]);
+
+  useEffect(() => {
+    const intervalMs = 60 * 1000;
+    const tid = setInterval(() => {
+      loadSyncStatus();
+      loadData();
+    }, intervalMs);
+    return () => clearInterval(tid);
+  }, [loadData, loadSyncStatus]);
 
   const onRefresh = async () => {
     setRefreshing(true);
     await loadData();
+    await loadSyncStatus();
     setRefreshing(false);
   };
 
   const onSync = async () => {
     if (syncing) return;
     setSyncing(true);
+    setLastSyncResult(null);
     try {
-      await runSync();
+      const result = await runSync();
+      setLastSyncResult(result);
       await loadData();
+      await loadSyncStatus();
+    } catch (err) {
+      setLastSyncResult({ error: err?.message || 'Sync failed' });
     } finally {
       setSyncing(false);
     }
@@ -209,6 +248,29 @@ export default function DashboardScreen({ navigation }) {
           marginBottom: 8,
         },
         actionLabel: { fontSize: 13, fontWeight: '600', color: colors.text },
+        syncStatusCard: {
+          backgroundColor: colors.surface,
+          borderRadius: borderRadius.md,
+          padding: spacing.sm,
+          marginBottom: spacing.md,
+          borderLeftWidth: 4,
+          borderLeftColor: colors.primary,
+        },
+        syncStatusText: { fontSize: 12, color: colors.textSecondary },
+        syncStatusTime: { fontSize: 13, fontWeight: '600', color: colors.text, marginTop: 2 },
+        syncError: { fontSize: 12, color: colors.error || '#c00', marginTop: 4 },
+        syncCounts: { fontSize: 11, color: colors.textSecondary, marginTop: 2 },
+        syncLogTitle: { fontSize: 14, fontWeight: '700', color: colors.text, marginBottom: 6 },
+        syncLogItem: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          paddingVertical: 6,
+          borderBottomWidth: 1,
+          borderBottomColor: colors.border,
+          gap: 8,
+        },
+        syncLogStatus: { width: 8, height: 8, borderRadius: 4 },
+        syncLogText: { fontSize: 12, color: colors.textSecondary, flex: 1 },
       }),
     [colors]
   );
@@ -258,6 +320,48 @@ export default function DashboardScreen({ navigation }) {
           </TouchableOpacity>
         </View>
       </View>
+
+      {/* Sync status */}
+      <View style={styles.syncStatusCard}>
+        <Text style={styles.syncStatusText}>
+          Last sync: {lastSyncTime ? new Date(lastSyncTime).toLocaleString() : 'Never'}
+        </Text>
+        {lastSyncResult && (
+          <>
+            {lastSyncResult.error ? (
+              <Text style={styles.syncError}>{lastSyncResult.error}</Text>
+            ) : (
+              <Text style={styles.syncCounts}>
+                Orders: {lastSyncResult.orders ?? 0} · Customers: {lastSyncResult.customers ?? 0} · Pickings: {lastSyncResult.pickings ?? 0}
+              </Text>
+            )}
+          </>
+        )}
+        <Text style={[styles.syncStatusText, { marginTop: 4 }]}>
+          Auto-sync every {getSyncIntervalMinutes()} min · Tap Sync to fetch from backend
+        </Text>
+      </View>
+
+      {/* Sync history */}
+      {syncLog.length > 0 && (
+        <View style={[styles.totalsCard, { marginBottom: spacing.md }]}>
+          <Text style={styles.syncLogTitle}>Sync history</Text>
+          {syncLog.slice(0, 5).map((entry) => (
+            <View key={entry.id} style={styles.syncLogItem}>
+              <View
+                style={[
+                  styles.syncLogStatus,
+                  { backgroundColor: entry.status === 'success' ? colors.success : colors.error || '#c00' },
+                ]}
+              />
+              <Text style={styles.syncLogText} numberOfLines={1}>
+                {new Date(entry.sync_at).toLocaleString()} — {entry.status}
+                {entry.message ? `: ${entry.message}` : ''}
+              </Text>
+            </View>
+          ))}
+        </View>
+      )}
 
       {/* 1. Daily Overview */}
       <Text style={styles.sectionTitle}>Daily Overview</Text>

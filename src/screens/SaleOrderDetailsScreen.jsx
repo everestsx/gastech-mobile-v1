@@ -12,9 +12,9 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { getSaleOrderDetails, updateSaleOrderLineQty } from '../services/saleOrderLine.service';
+import { updateSaleOrderLineQty } from '../services/saleOrderLine.service';
+import { getSaleOrderDetailsFromDB, getDeliveryDataFromDB } from '../services/sync.service';
 import {
-  getDeliveryDataForSaleOrder,
   buildProductIdToMoveLineIdMap,
   buildProductIdToMoveIdMap,
   updateMoveLineQty,
@@ -184,7 +184,13 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
   const loadDetails = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await getSaleOrderDetails(saleOrderId);
+      const data = await getSaleOrderDetailsFromDB(saleOrderId);
+      if (!data.order) {
+        setOrder(null);
+        setLines([]);
+        setIsDelivered(false);
+        return;
+      }
       setOrder(data.order);
       setLines(
         (data.lines || []).map((l) => ({
@@ -193,7 +199,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
         }))
       );
       setQtyChanged(false);
-      const { picking } = await getDeliveryDataForSaleOrder(saleOrderId);
+      const { picking } = await getDeliveryDataFromDB(saleOrderId);
       setIsDelivered(picking?.state === 'done');
     } catch (_) {
       setOrder(null);
@@ -255,7 +261,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
   /** Apply qty_done (and demand when upselling) then validate. Backorder only when Odoo returns it (skipped for full delivery). */
   const applyQtyDoneAndValidate = useCallback(
     async (effectiveQtys) => {
-      const { picking, moves, moveLines } = await getDeliveryDataForSaleOrder(order.id);
+      const { picking, moves, moveLines } = await getDeliveryDataFromDB(order.id);
       if (!picking?.id) throw new Error('No delivery order found for this sale order. Confirm the order first.');
       const productIdToMoveLineId = buildProductIdToMoveLineIdMap(moves, moveLines);
       const productIdToMoveId = buildProductIdToMoveIdMap(moves);
