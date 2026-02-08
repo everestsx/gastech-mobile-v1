@@ -19,6 +19,8 @@ import ScanQRCodeScreen from '../screens/ScanQRCodeScreen';
 import MenuScreen from '../screens/MenuScreen';
 import CustomersScreen from '../screens/CustomersScreen';
 import SettingsScreen from '../screens/SettingsScreen';
+import PlaceholderScreen from '../screens/PlaceholderScreen';
+import SyncHistoryScreen from '../screens/SyncHistoryScreen';
 
 import { useTheme } from '../context/ThemeContext';
 import { runSync, getSyncIntervalMs } from '../services/sync.service';
@@ -59,16 +61,6 @@ function MainTabs() {
         }}
       />
       <Tab.Screen
-        name="DailyVisit"
-        component={DailyVisitScreen}
-        options={{
-          tabBarLabel: 'Daily Visit',
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="calendar-outline" size={size} color={color} />
-          ),
-        }}
-      />
-      <Tab.Screen
         name="Orders"
         component={SaleOrderListScreen}
         options={{
@@ -78,13 +70,23 @@ function MainTabs() {
           ),
         }}
       />
-      <Tab.Screen
+      {/* <Tab.Screen
         name="Customers"
         component={CustomersScreen}
         options={{
           tabBarLabel: 'Customers',
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="people-outline" size={size} color={color} />
+          ),
+        }}
+      /> */}
+      <Tab.Screen
+        name="Menu"
+        component={MenuScreen}
+        options={{
+          tabBarLabel: 'Menu',
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="menu-outline" size={size} color={color} />
           ),
         }}
       />
@@ -94,7 +96,7 @@ function MainTabs() {
 
 function MainStackScreen() {
   const { colors } = useTheme();
-  const headerOrange = colors.warning ?? '#d97706';
+  const headerOrange = colors.warningLight ?? colors.warning ?? '#d97706';
   const headerScreenOptions = {
     headerShown: true,
     headerStyle: {
@@ -123,9 +125,31 @@ function MainStackScreen() {
         options={{ headerShown: false }}
       />
       <MainStack.Screen
-        name="Menu"
-        component={MenuScreen}
-        options={{ ...headerScreenOptions, title: 'Menu' }}
+        name="Customers"
+        component={CustomersScreen}
+        options={{ ...headerScreenOptions, title: 'My Customers' }}
+      />
+      <MainStack.Screen
+        name="DailyVisit"
+        component={DailyVisitScreen}
+        options={{ ...headerScreenOptions, title: 'Daily Visit' }}
+      />
+      <MainStack.Screen
+        name="MyStocks"
+        component={PlaceholderScreen}
+        initialParams={{ title: 'My Stocks' }}
+        options={{ ...headerScreenOptions, title: 'My Stocks' }}
+      />
+      <MainStack.Screen
+        name="MyCommissions"
+        component={PlaceholderScreen}
+        initialParams={{ title: 'My Commissions' }}
+        options={{ ...headerScreenOptions, title: 'My Commissions' }}
+      />
+      <MainStack.Screen
+        name="SyncHistory"
+        component={SyncHistoryScreen}
+        options={{ ...headerScreenOptions, title: 'Sync History' }}
       />
       <MainStack.Screen
         name="Settings"

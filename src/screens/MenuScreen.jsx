@@ -113,18 +113,59 @@ export default function MenuScreen({ navigation }) {
           <Ionicons name="sync-outline" size={24} color="#fff" />
         )}
         <Text style={styles.syncText}>
-          {syncing ? 'Syncing...' : 'Sync data'}
+          {syncing ? 'Syncing...' : 'Sync'}
         </Text>
       </TouchableOpacity>
 
-      <Text style={[styles.lastSync, { color: colors.textSecondary }]}>
-        {lastSync
-          ? `Last sync: ${lastSync.toLocaleString()}`
-          : 'Not synced yet'}
-      </Text>
-      <Text style={[styles.hint, { color: colors.textSecondary }]}>
-        Auto-sync runs every {intervalMin} minutes when app is open.
-      </Text>
+      <TouchableOpacity
+        style={[styles.menuItem, { backgroundColor: colors.surface, borderColor: colors.border }]}
+        onPress={() => navigation.navigate('DailyVisit')}
+        activeOpacity={0.8}
+      >
+        <Ionicons name="calendar-outline" size={24} color={colors.primary} />
+        <Text style={[styles.menuItemText, { color: colors.text }]}>Daily Visit</Text>
+        <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={[styles.menuItem, { backgroundColor: colors.surface, borderColor: colors.border }]}
+        onPress={() => navigation.navigate('Customers')}
+        activeOpacity={0.8}
+      >
+        <Ionicons name="people-outline" size={24} color={colors.primary} />
+        <Text style={[styles.menuItemText, { color: colors.text }]}>My Customers</Text>
+        <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={[styles.menuItem, { backgroundColor: colors.surface, borderColor: colors.border }]}
+        onPress={() => navigation.navigate('MyStocks')}
+        activeOpacity={0.8}
+      >
+        <Ionicons name="cube-outline" size={24} color={colors.primary} />
+        <Text style={[styles.menuItemText, { color: colors.text }]}>My Stocks</Text>
+        <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={[styles.menuItem, { backgroundColor: colors.surface, borderColor: colors.border }]}
+        onPress={() => navigation.navigate('MyCommissions')}
+        activeOpacity={0.8}
+      >
+        <Ionicons name="cash-outline" size={24} color={colors.primary} />
+        <Text style={[styles.menuItemText, { color: colors.text }]}>My Commissions</Text>
+        <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={[styles.menuItem, { backgroundColor: colors.surface, borderColor: colors.border }]}
+        onPress={() => navigation.navigate('SyncHistory')}
+        activeOpacity={0.8}
+      >
+        <Ionicons name="time-outline" size={24} color={colors.primary} />
+        <Text style={[styles.menuItemText, { color: colors.text }]}>Sync History</Text>
+        <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
+      </TouchableOpacity>
 
       <TouchableOpacity
         style={[styles.menuItem, { backgroundColor: colors.surface, borderColor: colors.border }]}
@@ -145,6 +186,15 @@ export default function MenuScreen({ navigation }) {
         <Text style={[styles.menuItemText, { color: colors.text }]}>Customer QR Generator</Text>
         <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
       </TouchableOpacity>
+
+      <Text style={[styles.lastSync, { color: colors.textSecondary }]}>
+        {lastSync
+          ? `Last sync: ${lastSync.toLocaleString()}`
+          : 'Not synced yet'}
+      </Text>
+      <Text style={[styles.hint, { color: colors.textSecondary }]}>
+        Auto-sync runs every {intervalMin} minutes when app is open.
+      </Text>
 
       <TouchableOpacity
         style={styles.logoutBtn}

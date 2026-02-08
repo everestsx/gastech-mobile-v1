@@ -4,20 +4,26 @@ import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { spacing } from '../constants/theme';
 
-const BAR_HEIGHT = 24;
-const BAR_GAP = 8;
-const LABEL_WIDTH = 36;
-const CHART_LEFT = LABEL_WIDTH + spacing.sm;
+const CHART_HEIGHT = 200;
+const BAR_GAP = 6;
+const MIN_BAR_WIDTH = 24;
+const LABEL_HEIGHT = 36;
 
 /**
- * Horizontal bar chart: Delivery Progress by Shop.
+ * Vertical bar chart: Delivery Progress by Shop.
  * data = [{ shopId, shopName?, delivered, pending }]
- * Green = delivered, Red = pending.
+ * Each shop = one bar: fully green (delivered) or fully red (pending), no mix.
  */
 export default function DeliveryProgressBarChart({ data = [], title = 'Delivery Progress by Shop' }) {
   const { colors } = useTheme();
   const { width: screenWidth } = useWindowDimensions();
-  const chartWidth = Math.max(screenWidth - spacing.md * 2 - CHART_LEFT, 200);
+  const chartWidth = Math.max(screenWidth - spacing.md * 2, 240);
+  const barWidth = Math.max(
+    MIN_BAR_WIDTH,
+    (chartWidth - (data.length + 1) * BAR_GAP) / Math.max(data.length, 1)
+  );
+  const totalBarWidth = data.length * (barWidth + BAR_GAP) + BAR_GAP;
+
   const maxVal = useMemo(() => {
     const max = Math.max(
       ...data.map((d) => (Number(d.delivered) || 0) + (Number(d.pending) || 0)),
@@ -75,6 +81,9 @@ export default function DeliveryProgressBarChart({ data = [], title = 'Delivery 
     );
   }
 
+  const successColor = colors.success ?? '#059669';
+  const errorColor = colors.error ?? '#dc2626';
+
   return (
     <View style={styles.card}>
       <View style={styles.titleRow}>
@@ -86,87 +95,91 @@ export default function DeliveryProgressBarChart({ data = [], title = 'Delivery 
         showsHorizontalScrollIndicator={false}
         contentContainerStyle={{ paddingRight: spacing.md }}
       >
-        <View style={{ width: chartWidth + CHART_LEFT, minWidth: screenWidth - spacing.md * 2 }}>
-          {data.map((row, i) => {
-            const delivered = Math.max(0, Number(row.delivered) || 0);
-            const pending = Math.max(0, Number(row.pending) || 0);
-            const total = delivered + pending || 1;
-            const deliveredW = (delivered / maxVal) * chartWidth;
-            const pendingW = (pending / maxVal) * chartWidth;
-            const label = row.shopName || row.shopId || `S${i + 1}`;
-            const shortLabel = String(label).replace(/^.*\s/, '').slice(0, 6) || `S${i + 1}`;
-            return (
-              <View
-                key={row.shopId || i}
-                style={{
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  marginBottom: BAR_GAP,
-                  height: BAR_HEIGHT,
-                }}
-              >
-                <Text
+        <View style={{ minWidth: Math.max(chartWidth, totalBarWidth) }}>
+          <View style={{ flexDirection: 'row', height: CHART_HEIGHT - LABEL_HEIGHT }}>
+            {data.map((row, i) => {
+              const delivered = Math.max(0, Number(row.delivered) || 0);
+              const pending = Math.max(0, Number(row.pending) || 0);
+              const total = delivered + pending || 0;
+              const isFullyDelivered = pending === 0 && total > 0;
+              const barColor = isFullyDelivered ? successColor : errorColor;
+              const barHeight = total > 0 ? Math.max(8, (total / maxVal) * (CHART_HEIGHT - LABEL_HEIGHT - 12)) : 0;
+              return (
+                <View
+                  key={row.shopId || i}
                   style={{
-                    width: LABEL_WIDTH,
-                    fontSize: 11,
-                    fontWeight: '600',
-                    color: colors.textSecondary,
+                    width: barWidth + BAR_GAP,
+                    height: CHART_HEIGHT - LABEL_HEIGHT,
+                    justifyContent: 'flex-end',
+                    alignItems: 'center',
+                    marginLeft: i === 0 ? BAR_GAP : 0,
                   }}
-                  numberOfLines={1}
                 >
-                  {shortLabel}
-                </Text>
-                <View style={{ flex: 1, flexDirection: 'row', height: BAR_HEIGHT - 2, borderRadius: 4, overflow: 'hidden' }}>
-                  {delivered > 0 && (
-                    <View
-                      style={{
-                        width: Math.max(2, deliveredW),
-                        backgroundColor: colors.success ?? '#059669',
-                        borderTopLeftRadius: 4,
-                        borderBottomLeftRadius: 4,
-                      }}
-                    />
-                  )}
-                  {pending > 0 && (
-                    <View
-                      style={{
-                        width: Math.max(2, pendingW),
-                        backgroundColor: colors.error ?? '#dc2626',
-                        borderTopRightRadius: 4,
-                        borderBottomRightRadius: 4,
-                      }}
-                    />
-                  )}
+                  <Text
+                    style={{
+                      fontSize: 11,
+                      fontWeight: '700',
+                      color: colors.text,
+                      marginBottom: 4,
+                    }}
+                  >
+                    {total}
+                  </Text>
+                  <View
+                    style={{
+                      width: barWidth,
+                      height: barHeight,
+                      backgroundColor: barColor,
+                      borderTopLeftRadius: 6,
+                      borderTopRightRadius: 6,
+                    }}
+                  />
                 </View>
-                <Text
+              );
+            })}
+          </View>
+          <View style={{ flexDirection: 'row', height: LABEL_HEIGHT, paddingLeft: BAR_GAP }}>
+            {data.map((row, i) => {
+              const label = row.shopName || row.shopId || `S${i + 1}`;
+              const shortLabel = String(label).length > 10 ? String(label).slice(0, 8) + '…' : String(label);
+              return (
+                <View
+                  key={`label-${row.shopId || i}`}
                   style={{
-                    width: 28,
-                    fontSize: 10,
-                    fontWeight: '700',
-                    color: colors.text,
-                    textAlign: 'right',
-                    marginLeft: 4,
+                    width: barWidth + BAR_GAP,
+                    alignItems: 'center',
+                    justifyContent: 'center',
                   }}
                 >
-                  {delivered + pending}
-                </Text>
-              </View>
-            );
-          })}
+                  <Text
+                    style={{
+                      fontSize: 10,
+                      fontWeight: '600',
+                      color: colors.textSecondary,
+                      textAlign: 'center',
+                    }}
+                    numberOfLines={2}
+                  >
+                    {shortLabel}
+                  </Text>
+                </View>
+              );
+            })}
+          </View>
         </View>
       </ScrollView>
       <Text style={styles.scrollHint}>← Swipe to see all shops →</Text>
       <View style={styles.legendRow}>
         <View style={styles.legendItem}>
-          <View style={[styles.legendBox, { backgroundColor: colors.success ?? '#059669' }]} />
-          <Text style={[styles.legendText, { color: colors.success ?? '#059669' }]}>
-            Delivered ({data.reduce((s, d) => s + (Number(d.delivered) || 0), 0)})
+          <View style={[styles.legendBox, { backgroundColor: successColor }]} />
+          <Text style={[styles.legendText, { color: successColor }]}>
+            Delivered ({data.filter((d) => (Number(d.pending) || 0) === 0 && ((Number(d.delivered) || 0) + (Number(d.pending) || 0)) > 0).length})
           </Text>
         </View>
         <View style={styles.legendItem}>
-          <View style={[styles.legendBox, { backgroundColor: colors.error ?? '#dc2626' }]} />
-          <Text style={[styles.legendText, { color: colors.error ?? '#dc2626' }]}>
-            Pending ({data.reduce((s, d) => s + (Number(d.pending) || 0), 0)})
+          <View style={[styles.legendBox, { backgroundColor: errorColor }]} />
+          <Text style={[styles.legendText, { color: errorColor }]}>
+            Pending ({data.filter((d) => (Number(d.pending) || 0) > 0).length})
           </Text>
         </View>
       </View>

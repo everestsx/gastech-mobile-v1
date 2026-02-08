@@ -37,6 +37,7 @@ export const darkColors = {
   border: '#374151',
   success: '#10b981',
   warning: '#f59e0b',
+  warningLight: '#f59e0b',
   error: '#ef4444',
   cash: '#10b981',
   cheque: '#f59e0b',

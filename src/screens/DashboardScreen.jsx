@@ -30,6 +30,16 @@ const COMMISSION_TARGET = 6000;
 const SHOPS_TARGET = 60;
 const GAS_TARGET = 6000;
 
+/** Sample data for Delivery Progress by Shop when no real data. */
+const SAMPLE_DELIVERY_BY_SHOP = [
+  { shopId: 'S1', shopName: 'ABC Gas Agency', delivered: 45, pending: 12 },
+  { shopId: 'S2', shopName: 'Green Valley Stores', delivered: 38, pending: 0 },
+  { shopId: 'S3', shopName: 'Metro Traders', delivered: 28, pending: 15 },
+  { shopId: 'S4', shopName: 'Sunrise Enterprises', delivered: 0, pending: 22 },
+  { shopId: 'S5', shopName: 'Central Gas Hub', delivered: 52, pending: 8 },
+  { shopId: 'S6', shopName: 'Corner Shop', delivered: 18, pending: 5 },
+];
+
 function formatCurrency(amount) {
   return `Rs. ${Number(amount).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
 }
@@ -38,8 +48,6 @@ function formatShort(amount) {
   if (n >= 1000) return `Rs. ${(n / 1000).toFixed(0)}K`;
   return `Rs. ${n}`;
 }
-
-const TOP_BAR_ORANGE = '#d97706';
 
 export default function DashboardScreen({ navigation }) {
   const insets = useSafeAreaInsets();
@@ -150,6 +158,7 @@ export default function DashboardScreen({ navigation }) {
 
   const routeFromOrder = todayOrders[0]?.route_id?.[1];
   const routeName = routeFromOrder || (routes[0]?.name) || '—';
+  const vehicleName = 'LPG Truck - TN 01 AB 1234';
   const commissionEarned = Math.round(totalSales * 0.1) || 0;
   const commissionPct = Math.min(100, Math.round((commissionEarned / COMMISSION_TARGET) * 100));
 
@@ -179,7 +188,8 @@ export default function DashboardScreen({ navigation }) {
       if (isDone) byPartner[key].delivered += qty;
       else byPartner[key].pending += qty;
     });
-    return Object.values(byPartner).filter((r) => r.delivered > 0 || r.pending > 0);
+    const real = Object.values(byPartner).filter((r) => r.delivered > 0 || r.pending > 0);
+    return real.length > 0 ? real : SAMPLE_DELIVERY_BY_SHOP;
   }, [todayOrders, lineTotalsByOrder, pickingStateBySaleId]);
 
   const styles = useMemo(
@@ -189,47 +199,23 @@ export default function DashboardScreen({ navigation }) {
         content: { paddingBottom: 100 },
         center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
         topBar: {
-          backgroundColor: colors.warningLight,
+          backgroundColor: colors.warningLight ?? colors.warning ?? '#d97706',
           paddingTop: spacing.lg,
           paddingHorizontal: spacing.md,
           paddingBottom: 28,
         },
-        profileRow: {
-          flexDirection: 'row',
-          alignItems: 'center',
-          marginBottom: spacing.md,
-          gap: 12,
-        },
-        profileCircle: {
-          width: 48,
-          height: 48,
-          borderRadius: 24,
-          backgroundColor: 'rgba(255,255,255,0.2)',
-          borderWidth: 3,
-          borderColor: '#fff',
-          alignItems: 'center',
-          justifyContent: 'center',
-          overflow: 'hidden',
-          shadowColor: '#000',
-          shadowOffset: { width: 0, height: 2 },
-          shadowOpacity: 0.25,
-          shadowRadius: 4,
-          elevation: 4,
-        },
-        profileCircleInner: { width: 42, height: 42, borderRadius: 21 },
-        profileName: { fontSize: 18, fontWeight: '700', color: '#fff', maxWidth: 180 },
         topBarRow: {
           flexDirection: 'row',
           justifyContent: 'space-between',
           alignItems: 'center',
         },
         topBarLeft: {
-          flexDirection: 'row',
-          alignItems: 'center',
-          flexWrap: 'wrap',
-          gap: 10,
+          flexDirection: 'column',
+          alignItems: 'flex-start',
+          gap: 6,
           flex: 1,
         },
+        vehicleName: { fontSize: 16, fontWeight: '700', color: '#fff' },
         dateRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
         dateText: { fontSize: 14, color: 'rgba(255,255,255,0.95)' },
         routePill: {
@@ -246,7 +232,7 @@ export default function DashboardScreen({ navigation }) {
         routePillText: { fontSize: 13, fontWeight: '600', color: 'rgba(255,255,255,0.95)' },
         headerButtons: {
           flexDirection: 'row',
-          alignItems: 'center',
+          alignItems: 'flex-end',
           gap: 8,
         },
         header: {
@@ -471,30 +457,13 @@ export default function DashboardScreen({ navigation }) {
         <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.primary]} />
       }
     >
-      {/* 1. Top bar: profile + name (Dashboard only), then date + route left, Daily Visit + Sync right */}
+      {/* 1. Top bar: date + route left, Sync then Daily Visit right (no profile) */}
       <View style={[styles.topBar, { paddingTop: spacing.lg + insets.top }]}>
-        <TouchableOpacity
-          style={styles.profileRow}
-          onPress={() => navigation.navigate('Menu')}
-          activeOpacity={0.9}
-        >
-          <View style={styles.profileCircle}>
-            {user?.avatarUri || user?.avatar ? (
-              <Image
-                source={{ uri: user.avatarUri || user.avatar }}
-                style={styles.profileCircleInner}
-                resizeMode="cover"
-              />
-            ) : (
-              <Ionicons name="person-outline" size={24} color="rgba(255,255,255,0.95)" />
-            )}
-          </View>
-          <Text style={styles.profileName} numberOfLines={1}>
-            {user?.name || user?.username || 'Driver'}
-          </Text>
-        </TouchableOpacity>
         <View style={styles.topBarRow}>
           <View style={styles.topBarLeft}>
+            <Text style={styles.vehicleName} numberOfLines={1}>
+              {vehicleName}
+            </Text>
             <View style={styles.dateRow}>
               <Ionicons name="calendar-outline" size={18} color="rgba(255,255,255,0.95)" />
               <Text style={styles.dateText}>{todayDateStr}</Text>
@@ -505,27 +474,27 @@ export default function DashboardScreen({ navigation }) {
             </View>
           </View>
           <View style={styles.headerButtons}>
-          <TouchableOpacity
-            style={styles.dailyVisitBtnTop}
-            onPress={() => navigation.navigate('DailyVisit')}
-            activeOpacity={0.8}
-          >
-            <Ionicons name="calendar-outline" size={20} color="#fff" />
-            <Text style={styles.dailyVisitBtnTopText}>Daily Visit</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.syncBtnTop}
-            onPress={onSync}
-            disabled={syncing}
-            activeOpacity={0.8}
-          >
-            {syncing ? (
-              <ActivityIndicator size="small" color="#fff" />
-            ) : (
-              <Ionicons name="sync-outline" size={20} color="#fff" />
-            )}
-            <Text style={styles.syncBtnTopText}>Sync</Text>
-          </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.syncBtnTop}
+              onPress={onSync}
+              disabled={syncing}
+              activeOpacity={0.8}
+            >
+              {syncing ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Ionicons name="sync-outline" size={20} color="#fff" />
+              )}
+              <Text style={styles.syncBtnTopText}>Sync</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.dailyVisitBtnTop}
+              onPress={() => navigation.navigate('DailyVisit')}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="calendar-outline" size={20} color="#fff" />
+              <Text style={styles.dailyVisitBtnTopText}>Visit</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </View>
@@ -582,18 +551,7 @@ export default function DashboardScreen({ navigation }) {
         <DeliveryProgressBarChart data={deliveryByShop} title="Delivery Progress by Shop" />
       </View>
 
-      {/* 6. Optional: Sync status */}
-      <View style={[styles.syncStatusCard, { marginHorizontal: spacing.md }]}>
-        <Text style={styles.syncStatusText}>
-          Last sync: {lastSyncTime ? new Date(lastSyncTime).toLocaleString() : 'Never'}
-        </Text>
-        {lastSyncResult?.error && <Text style={styles.syncError}>{lastSyncResult.error}</Text>}
-        <Text style={[styles.syncStatusText, { marginTop: 4 }]}>
-          Auto-sync every {getSyncIntervalMinutes()} min
-        </Text>
-      </View>
-
-      {/* 7. Configurable: Create Sales Order & Return */}
+      {/* 6. Configurable: Create Sales Order & Return */}
       {(showCreateSalesOrder || showReturnOrder) && (
         <View style={[styles.actionsRow, { paddingHorizontal: spacing.md, marginBottom: spacing.lg }]}>
           {showCreateSalesOrder && (
