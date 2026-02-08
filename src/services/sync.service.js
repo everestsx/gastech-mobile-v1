@@ -84,6 +84,15 @@ export async function getCachedOrders() {
   }
 }
 
+export async function getCachedRoutes() {
+  try {
+    return await routesDb.getAllRoutes();
+  } catch (e) {
+    console.warn('getCachedRoutes', e);
+    return [];
+  }
+}
+
 /** Sale order details from local DB (order + lines). Same shape as API. */
 export async function getSaleOrderDetailsFromDB(saleOrderId) {
   try {

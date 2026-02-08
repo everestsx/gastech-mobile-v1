@@ -18,6 +18,7 @@ export const lightColors = {
   warning: '#d97706',
   error: '#dc2626',
   cash: '#059669',
+  cheque: '#d97706',
   credit: '#6366f1',
 };
 
@@ -36,6 +37,7 @@ export const darkColors = {
   warning: '#f59e0b',
   error: '#ef4444',
   cash: '#10b981',
+  cheque: '#f59e0b',
   credit: '#818cf8',
 };
 

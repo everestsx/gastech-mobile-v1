@@ -13,20 +13,37 @@ import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
 import {
   getCachedOrders,
+  getCachedRoutes,
   runSync,
   getLastSyncTime,
   getSyncLogRecent,
   getSyncIntervalMinutes,
+  getUserSession,
+  getOrderLineTotalsFromDB,
+  getPickingsBySaleIdsFromDB,
 } from '../services/sync.service';
-import WeeklyLineChart from '../components/WeeklyLineChart';
+import DeliveryProgressBarChart from '../components/DeliveryProgressBarChart';
+
+const COMMISSION_TARGET = 6000;
+const SHOPS_TARGET = 60;
+const GAS_TARGET = 6000;
 
 function formatCurrency(amount) {
-  return `LKR ${Number(amount).toFixed(2)}`;
+  return `Rs. ${Number(amount).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
+}
+function formatShort(amount) {
+  const n = Number(amount) || 0;
+  if (n >= 1000) return `Rs. ${(n / 1000).toFixed(0)}K`;
+  return `Rs. ${n}`;
 }
 
 export default function DashboardScreen({ navigation }) {
   const { colors, showCreateSalesOrder, showReturnOrder } = useTheme();
   const [orders, setOrders] = useState([]);
+  const [user, setUser] = useState(null);
+  const [routes, setRoutes] = useState([]);
+  const [lineTotalsByOrder, setLineTotalsByOrder] = useState({});
+  const [pickingsBySaleId, setPickingsBySaleId] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -36,10 +53,27 @@ export default function DashboardScreen({ navigation }) {
 
   const loadData = useCallback(async () => {
     try {
-      const data = await getCachedOrders();
+      const [data, userData, routesData] = await Promise.all([
+        getCachedOrders(),
+        getUserSession(),
+        getCachedRoutes(),
+      ]);
       setOrders(Array.isArray(data) ? data : []);
+      setUser(userData || null);
+      setRoutes(Array.isArray(routesData) ? routesData : []);
+      const today = new Date().toISOString().split('T')[0];
+      const todayOrders = (Array.isArray(data) ? data : []).filter((o) => (o.date_order || '').startsWith(today));
+      const orderIds = todayOrders.map((o) => o.id);
+      const [totals, pickings] = await Promise.all([
+        getOrderLineTotalsFromDB(todayOrders),
+        orderIds.length ? getPickingsBySaleIdsFromDB(orderIds) : Promise.resolve([]),
+      ]);
+      setLineTotalsByOrder(totals || {});
+      setPickingsBySaleId(pickings || []);
     } catch (_) {
       setOrders([]);
+      setLineTotalsByOrder({});
+      setPickingsBySaleId([]);
     } finally {
       setLoading(false);
     }
@@ -101,24 +135,84 @@ export default function DashboardScreen({ navigation }) {
   const today = new Date().toISOString().split('T')[0];
   const todayOrders = orders.filter((o) => (o.date_order || '').startsWith(today));
   const totalSales = todayOrders.reduce((s, o) => s + (Number(o.amount_total) || 0), 0);
-  const cashTotal = todayOrders.reduce((s, o) => s + (Number(o.amount_total) || 0) * 0.6, 0);
-  const creditTotal = todayOrders.reduce((s, o) => s + (Number(o.amount_total) || 0) * 0.4, 0);
+  const cashTotal = todayOrders.reduce((s, o) => s + (Number(o.amount_total) || 0) * 0.5, 0);
+  const chequeTotal = todayOrders.reduce((s, o) => s + (Number(o.amount_total) || 0) * 0.25, 0);
+  const creditTotal = todayOrders.reduce((s, o) => s + (Number(o.amount_total) || 0) * 0.25, 0);
+  const collectionTotal = cashTotal + chequeTotal + creditTotal || 1;
+  const cashPct = Math.round((cashTotal / collectionTotal) * 100);
+  const chequePct = Math.round((chequeTotal / collectionTotal) * 100);
+  const creditPct = Math.round((creditTotal / collectionTotal) * 100);
 
-  const last7Days = [];
-  for (let i = 6; i >= 0; i--) {
-    const d = new Date();
-    d.setDate(d.getDate() - i);
-    const dayStr = d.toISOString().split('T')[0];
-    const dayOrders = orders.filter((o) => (o.date_order || '').startsWith(dayStr));
-    last7Days.push(dayOrders.reduce((s, o) => s + (Number(o.amount_total) || 0), 0));
-  }
+  const driverName = user?.name || user?.username || 'Driver';
+  const routeFromOrder = todayOrders[0]?.route_id?.[1];
+  const routeName = routeFromOrder || (routes[0]?.name) || '—';
+  const commissionEarned = Math.round(totalSales * 0.1) || 0;
+  const commissionPct = Math.min(100, Math.round((commissionEarned / COMMISSION_TARGET) * 100));
+
+  const shopsCompleted = todayOrders.length;
+  const shopsPct = Math.min(100, Math.round((shopsCompleted / SHOPS_TARGET) * 100));
+  const totalGasDelivered = Object.values(lineTotalsByOrder).reduce((s, q) => s + (Number(q) || 0), 0);
+  const gasPct = Math.min(100, Math.round((totalGasDelivered / GAS_TARGET) * 100));
+
+  const pickingStateBySaleId = useMemo(() => {
+    const map = {};
+    (pickingsBySaleId || []).forEach((p) => {
+      const sid = Array.isArray(p.sale_id) ? p.sale_id[0] : p.sale_id;
+      map[sid] = (p.state || '').toLowerCase();
+    });
+    return map;
+  }, [pickingsBySaleId]);
+
+  const deliveryByShop = useMemo(() => {
+    const byPartner = {};
+    todayOrders.forEach((o) => {
+      const partnerId = o.partner_id?.[0] ?? o.partner_id;
+      const partnerName = o.partner_id?.[1] ?? `Shop ${partnerId}`;
+      const key = partnerId ?? 'unknown';
+      if (!byPartner[key]) byPartner[key] = { shopId: `S${partnerId}`, shopName: partnerName, delivered: 0, pending: 0 };
+      const qty = Math.round(Number(lineTotalsByOrder[o.id]) || 0);
+      const isDone = (pickingStateBySaleId[o.id] || '') === 'done';
+      if (isDone) byPartner[key].delivered += qty;
+      else byPartner[key].pending += qty;
+    });
+    return Object.values(byPartner).filter((r) => r.delivered > 0 || r.pending > 0);
+  }, [todayOrders, lineTotalsByOrder, pickingStateBySaleId]);
 
   const styles = useMemo(
     () =>
       StyleSheet.create({
         container: { flex: 1, backgroundColor: colors.background },
-        content: { padding: spacing.md, paddingBottom: 100 },
+        content: { paddingBottom: 100 },
         center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+        topBar: {
+          backgroundColor: colors.primary,
+          paddingTop: spacing.lg,
+          paddingHorizontal: spacing.md,
+          paddingBottom: spacing.lg,
+        },
+        driverName: { fontSize: 24, fontWeight: '800', color: '#fff' },
+        dateRow: { flexDirection: 'row', alignItems: 'center', marginTop: 6, gap: 6 },
+        dateText: { fontSize: 14, color: 'rgba(255,255,255,0.95)' },
+        routePill: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          alignSelf: 'flex-start',
+          marginTop: 8,
+          paddingVertical: 6,
+          paddingHorizontal: 12,
+          borderRadius: 20,
+          backgroundColor: 'rgba(255,255,255,0.2)',
+          borderWidth: 1,
+          borderColor: 'rgba(255,255,255,0.5)',
+          gap: 6,
+        },
+        routePillText: { fontSize: 13, fontWeight: '600', color: '#fff' },
+        headerButtons: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 8,
+          marginTop: spacing.md,
+        },
         header: {
           flexDirection: 'row',
           justifyContent: 'space-between',
@@ -127,7 +221,6 @@ export default function DashboardScreen({ navigation }) {
         },
         greeting: { fontSize: 22, fontWeight: '800', color: colors.text },
         hint: { fontSize: 14, color: colors.textSecondary, marginTop: 2 },
-        headerButtons: { flexDirection: 'row', alignItems: 'center', gap: 8 },
         syncBtnTop: {
           backgroundColor: colors.primarySurface ?? colors.surface,
           borderRadius: borderRadius.md,
@@ -159,6 +252,49 @@ export default function DashboardScreen({ navigation }) {
           color: colors.text,
           marginBottom: spacing.sm,
         },
+        commissionCard: {
+          backgroundColor: colors.success ?? '#059669',
+          borderRadius: borderRadius.lg,
+          padding: spacing.lg,
+          marginHorizontal: spacing.md,
+          marginTop: spacing.md,
+          marginBottom: spacing.md,
+        },
+        commissionTitle: { fontSize: 12, fontWeight: '700', color: '#fff', letterSpacing: 0.5 },
+        commissionAmount: { fontSize: 28, fontWeight: '800', color: '#fff', marginTop: 4 },
+        commissionPct: { fontSize: 14, color: 'rgba(255,255,255,0.95)', marginTop: 4 },
+        collectionRow: {
+          flexDirection: 'row',
+          gap: spacing.sm,
+          paddingHorizontal: spacing.md,
+          marginBottom: spacing.md,
+        },
+        collectionCard: {
+          flex: 1,
+          backgroundColor: colors.surface,
+          borderRadius: borderRadius.lg,
+          padding: spacing.md,
+          borderWidth: 2,
+          alignItems: 'center',
+        },
+        collectionAmount: { fontSize: 18, fontWeight: '800', marginTop: 4 },
+        collectionLabel: { fontSize: 12, fontWeight: '700', color: colors.text, marginTop: 4 },
+        collectionPct: { fontSize: 12, fontWeight: '600', marginTop: 2 },
+        shopsGasRow: {
+          flexDirection: 'row',
+          gap: spacing.md,
+          paddingHorizontal: spacing.md,
+          marginBottom: spacing.md,
+        },
+        shopsGasCard: {
+          flex: 1,
+          backgroundColor: colors.surface,
+          borderRadius: borderRadius.lg,
+          padding: spacing.md,
+        },
+        shopsGasValue: { fontSize: 22, fontWeight: '800', color: colors.text },
+        shopsGasLabel: { fontSize: 11, fontWeight: '700', color: colors.textSecondary, marginTop: 4, letterSpacing: 0.3 },
+        shopsGasPct: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
         metricsRow: {
           flexDirection: 'row',
           gap: spacing.sm,
@@ -283,6 +419,13 @@ export default function DashboardScreen({ navigation }) {
     );
   }
 
+  const todayDateStr = new Date().toLocaleDateString('en-GB', {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  });
+
   return (
     <ScrollView
       style={styles.container}
@@ -291,10 +434,16 @@ export default function DashboardScreen({ navigation }) {
         <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.primary]} />
       }
     >
-      <View style={styles.header}>
-        <View>
-          <Text style={styles.greeting}>Hi, Driver</Text>
-          <Text style={styles.hint}>Your daily overview</Text>
+      {/* 1. Top bar: theme color, driver name, date with calendar, route pill, Daily Visit + Sync */}
+      <View style={styles.topBar}>
+        <Text style={styles.driverName}>{driverName}</Text>
+        <View style={styles.dateRow}>
+          <Ionicons name="calendar-outline" size={18} color="rgba(255,255,255,0.95)" />
+          <Text style={styles.dateText}>{todayDateStr}</Text>
+        </View>
+        <View style={styles.routePill}>
+          <Ionicons name="location-outline" size={16} color="#fff" />
+          <Text style={styles.routePillText}>Route: {routeName}</Text>
         </View>
         <View style={styles.headerButtons}>
           <TouchableOpacity
@@ -321,90 +470,72 @@ export default function DashboardScreen({ navigation }) {
         </View>
       </View>
 
-      {/* Sync status */}
-      <View style={styles.syncStatusCard}>
+      {/* 2. Commission card - green */}
+      <View style={styles.commissionCard}>
+        <Text style={styles.commissionTitle}>YOUR COMMISSION TODAY</Text>
+        <Text style={styles.commissionAmount}>
+          Rs. {commissionEarned.toLocaleString('en-IN')} / {COMMISSION_TARGET.toLocaleString('en-IN')}
+        </Text>
+        <Text style={styles.commissionPct}>{commissionPct}% of target achieved</Text>
+      </View>
+
+      {/* 3. Collection today - three cards: Cash, Cheque, Credit */}
+      <View style={styles.collectionRow}>
+        <View style={[styles.collectionCard, { borderColor: colors.cash ?? '#059669' }]}>
+          <Ionicons name="cash-outline" size={24} color={colors.cash ?? '#059669'} />
+          <Text style={[styles.collectionAmount, { color: colors.cash ?? '#059669' }]}>{formatShort(cashTotal)}</Text>
+          <Text style={styles.collectionLabel}>CASH</Text>
+          <Text style={[styles.collectionPct, { color: colors.cash ?? '#059669' }]}>{cashPct}%</Text>
+        </View>
+        <View style={[styles.collectionCard, { borderColor: colors.cheque ?? '#d97706' }]}>
+          <Ionicons name="document-text-outline" size={24} color={colors.cheque ?? '#d97706'} />
+          <Text style={[styles.collectionAmount, { color: colors.cheque ?? '#d97706' }]}>{formatShort(chequeTotal)}</Text>
+          <Text style={styles.collectionLabel}>CHEQUE</Text>
+          <Text style={[styles.collectionPct, { color: colors.cheque ?? '#d97706' }]}>{chequePct}%</Text>
+        </View>
+        <View style={[styles.collectionCard, { borderColor: colors.credit ?? '#6366f1' }]}>
+          <Ionicons name="card-outline" size={24} color={colors.credit ?? '#6366f1'} />
+          <Text style={[styles.collectionAmount, { color: colors.credit ?? '#6366f1' }]}>{formatShort(creditTotal)}</Text>
+          <Text style={styles.collectionLabel}>CREDIT</Text>
+          <Text style={[styles.collectionPct, { color: colors.credit ?? '#6366f1' }]}>{creditPct}%</Text>
+        </View>
+      </View>
+
+      {/* 4. Shops Completed & Total Gas Delivered */}
+      <View style={styles.shopsGasRow}>
+        <View style={styles.shopsGasCard}>
+          <Text style={[styles.shopsGasValue, { color: colors.primary }]}>{shopsCompleted}/{SHOPS_TARGET}</Text>
+          <Text style={styles.shopsGasLabel}>SHOPS COMPLETED</Text>
+          <Text style={styles.shopsGasPct}>{shopsPct}% Complete</Text>
+        </View>
+        <View style={styles.shopsGasCard}>
+          <Text style={[styles.shopsGasValue, { color: colors.warning ?? '#d97706' }]}>
+            {totalGasDelivered.toLocaleString('en-IN')}/{GAS_TARGET.toLocaleString('en-IN')}
+          </Text>
+          <Text style={styles.shopsGasLabel}>TOTAL GAS DELIVERED</Text>
+          <Text style={styles.shopsGasPct}>{gasPct}% Complete</Text>
+        </View>
+      </View>
+
+      {/* 5. Delivery Progress by Shop - bar chart */}
+      <View style={{ paddingHorizontal: spacing.md }}>
+        <DeliveryProgressBarChart data={deliveryByShop} title="Delivery Progress by Shop" />
+      </View>
+
+      {/* 6. Optional: Sync status */}
+      <View style={[styles.syncStatusCard, { marginHorizontal: spacing.md }]}>
         <Text style={styles.syncStatusText}>
           Last sync: {lastSyncTime ? new Date(lastSyncTime).toLocaleString() : 'Never'}
         </Text>
-        {lastSyncResult && (
-          <>
-            {lastSyncResult.error ? (
-              <Text style={styles.syncError}>{lastSyncResult.error}</Text>
-            ) : (
-              <Text style={styles.syncCounts}>
-                Orders: {lastSyncResult.orders ?? 0} · Customers: {lastSyncResult.customers ?? 0} · Pickings: {lastSyncResult.pickings ?? 0}
-              </Text>
-            )}
-          </>
-        )}
+        {lastSyncResult?.error && <Text style={styles.syncError}>{lastSyncResult.error}</Text>}
         <Text style={[styles.syncStatusText, { marginTop: 4 }]}>
-          Auto-sync every {getSyncIntervalMinutes()} min · Tap Sync to fetch from backend
+          Auto-sync every {getSyncIntervalMinutes()} min
         </Text>
       </View>
 
-      {/* Sync history */}
-      {syncLog.length > 0 && (
-        <View style={[styles.totalsCard, { marginBottom: spacing.md }]}>
-          <Text style={styles.syncLogTitle}>Sync history</Text>
-          {syncLog.slice(0, 5).map((entry) => (
-            <View key={entry.id} style={styles.syncLogItem}>
-              <View
-                style={[
-                  styles.syncLogStatus,
-                  { backgroundColor: entry.status === 'success' ? colors.success : colors.error || '#c00' },
-                ]}
-              />
-              <Text style={styles.syncLogText} numberOfLines={1}>
-                {new Date(entry.sync_at).toLocaleString()} — {entry.status}
-                {entry.message ? `: ${entry.message}` : ''}
-              </Text>
-            </View>
-          ))}
-        </View>
-      )}
-
-      {/* 1. Daily Overview */}
-      <Text style={styles.sectionTitle}>Daily Overview</Text>
-      <View style={styles.metricsRow}>
-        <View style={styles.metricCard}>
-          <Ionicons name="cart-outline" size={22} color={colors.primary} />
-          <Text style={styles.metricValue}>{todayOrders.length}</Text>
-          <Text style={styles.metricLabel}>Sales Orders</Text>
-        </View>
-        <View style={styles.metricCard}>
-          <Ionicons name="wallet-outline" size={22} color={colors.primary} />
-          <Text style={styles.metricValue}>{formatCurrency(cashTotal + creditTotal)}</Text>
-          <Text style={styles.metricLabel}>To Collect</Text>
-        </View>
-      </View>
-
-      {/* 2. Totals panel: Total Sales (label left, value right); Cash | Credit same alignment */}
-      <View style={styles.totalsCard}>
-        <View style={styles.totalSalesRow}>
-          <Text style={styles.totalsLabel}>Total Sales</Text>
-          <Text style={styles.totalsValue}>{formatCurrency(totalSales)}</Text>
-        </View>
-        <View style={styles.cashCreditRow}>
-          <View style={styles.halfBox}>
-            <Text style={styles.totalsLabel}>Cash</Text>
-            <Text style={styles.totalsValue}>{formatCurrency(cashTotal)}</Text>
-          </View>
-          <View style={styles.halfBox}>
-            <Text style={styles.totalsLabel}>Credit</Text>
-            <Text style={styles.totalsValue}>{formatCurrency(creditTotal)}</Text>
-          </View>
-        </View>
-      </View>
-
-      {/* 3. Weekly Sales chart */}
-      <View style={styles.chartCard}>
-        <Text style={styles.chartTitle}>Weekly Sales</Text>
-        <WeeklyLineChart data={last7Days} label="" />
-      </View>
-
-      {/* 4. Configurable: Create Sales Order & Return */}
+      {/* 7. Configurable: Create Sales Order & Return */}
       {(showCreateSalesOrder || showReturnOrder) && (
-        <View style={styles.actionsRow}>
+        <View style={[styles.actionsRow, { paddingHorizontal: spacing.md, marginBottom: spacing.lg }]}>
           {showCreateSalesOrder && (
             <TouchableOpacity
               style={styles.actionCard}
