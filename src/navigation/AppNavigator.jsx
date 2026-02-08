@@ -23,43 +23,74 @@ import SettingsScreen from '../screens/SettingsScreen';
 import { useTheme } from '../context/ThemeContext';
 import { runSync, getSyncIntervalMs, getUserSession } from '../services/sync.service';
 
-/** Modern header avatar: image or empty user icon. Tapping opens Menu. */
-function HeaderAvatar({ onPress }) {
-  const [user, setUser] = useState(null);
-  useEffect(() => {
-    getUserSession().then(setUser);
-  }, []);
-  const avatarUri = user?.avatarUri ?? user?.avatar ?? null;
+/** Profile circle: improved modern circle (image or empty user icon). */
+function ProfileCircle({ avatarUri, size = 48 }) {
+  const s = size;
+  const inner = s - 4;
   return (
-    <TouchableOpacity
-      onPress={onPress}
-      activeOpacity={0.85}
+    <View
       style={{
-        width: 40,
-        height: 40,
-        borderRadius: 20,
-        backgroundColor: 'rgba(255,255,255,0.15)',
-        borderWidth: 1.5,
-        borderColor: 'rgba(255,255,255,0.4)',
+        width: s,
+        height: s,
+        borderRadius: s / 2,
+        backgroundColor: 'rgba(255,255,255,0.2)',
+        borderWidth: 3,
+        borderColor: '#fff',
         alignItems: 'center',
         justifyContent: 'center',
         overflow: 'hidden',
         shadowColor: '#000',
-        shadowOffset: { width: 0, height: 1 },
-        shadowOpacity: 0.15,
-        shadowRadius: 2,
-        elevation: 2,
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.25,
+        shadowRadius: 4,
+        elevation: 4,
       }}
     >
       {avatarUri ? (
         <Image
           source={{ uri: avatarUri }}
-          style={{ width: 36, height: 36, borderRadius: 18 }}
+          style={{ width: inner, height: inner, borderRadius: inner / 2 }}
           resizeMode="cover"
         />
       ) : (
-        <Ionicons name="person-outline" size={22} color="rgba(255,255,255,0.9)" />
+        <Ionicons name="person-outline" size={s * 0.5} color="rgba(255,255,255,0.95)" />
       )}
+    </View>
+  );
+}
+
+/** Header left: profile circle + driver name. Tapping opens Profile. */
+function HeaderProfileWithName({ onPress }) {
+  const [user, setUser] = useState(null);
+  useEffect(() => {
+    getUserSession().then(setUser);
+  }, []);
+  const avatarUri = user?.avatarUri ?? user?.avatar ?? null;
+  const driverName = user?.name || user?.username || 'Driver';
+  return (
+    <TouchableOpacity
+      onPress={onPress}
+      activeOpacity={0.9}
+      style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingLeft: 16,
+        marginRight: 16,
+        gap: 12,
+      }}
+    >
+      <ProfileCircle avatarUri={avatarUri} size={48} />
+      <Text
+        style={{
+          fontSize: 18,
+          fontWeight: '700',
+          color: '#fff',
+          maxWidth: 160,
+        }}
+        numberOfLines={1}
+      >
+        {driverName}
+      </Text>
     </TouchableOpacity>
   );
 }
@@ -138,7 +169,7 @@ function MainStackScreen() {
   const headerScreenOptions = {
     headerShown: true,
     headerStyle: {
-      backgroundColor: colors.primary,
+      backgroundColor: colors.warning ?? '#d97706',
       elevation: 4,
       shadowColor: '#000',
       shadowOffset: { width: 0, height: 2 },
@@ -164,22 +195,9 @@ function MainStackScreen() {
           headerShown: true,
           ...headerScreenOptions,
           headerLeft: () => (
-            <View
-              style={{
-                flexDirection: 'row',
-                alignItems: 'center',
-                paddingLeft: 16,
-                marginRight: 16,
-              }}
-            >
-              <HeaderAvatar onPress={() => navigation.navigate('Menu')} />
-            </View>
+            <HeaderProfileWithName onPress={() => navigation.navigate('Menu')} />
           ),
-          headerTitle: () => (
-            <Text style={{ fontSize: 18, color: '#fff', fontWeight: '700' }} numberOfLines={1}>
-              GasTech
-            </Text>
-          ),
+          headerTitle: () => null,
         })}
       />
       <MainStack.Screen

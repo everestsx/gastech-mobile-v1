@@ -4,7 +4,7 @@
  */
 
 export const lightColors = {
-  primary: '#6366f1',
+  primary: '#ED5D1A',
   primaryDark: '#4f46e5',
   primaryLight: '#818cf8',
   primarySurface: '#e0e7ff',
@@ -16,6 +16,8 @@ export const lightColors = {
   border: '#e5e7eb',
   success: '#059669',
   warning: '#d97706',
+  warningDark: '#b45309',
+  warningLight: '#ED5D1A',
   error: '#dc2626',
   cash: '#059669',
   cheque: '#d97706',

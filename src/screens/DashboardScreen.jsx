@@ -7,6 +7,7 @@ import {
   ScrollView,
   RefreshControl,
   ActivityIndicator,
+  Image,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
@@ -143,7 +144,6 @@ export default function DashboardScreen({ navigation }) {
   const chequePct = Math.round((chequeTotal / collectionTotal) * 100);
   const creditPct = Math.round((creditTotal / collectionTotal) * 100);
 
-  const driverName = user?.name || user?.username || 'Driver';
   const routeFromOrder = todayOrders[0]?.route_id?.[1];
   const routeName = routeFromOrder || (routes[0]?.name) || '—';
   const commissionEarned = Math.round(totalSales * 0.1) || 0;
@@ -185,33 +185,41 @@ export default function DashboardScreen({ navigation }) {
         content: { paddingBottom: 100 },
         center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
         topBar: {
-          backgroundColor: colors.primary,
+          backgroundColor: colors.warningLight ?? '#d97706',
           paddingTop: spacing.lg,
           paddingHorizontal: spacing.md,
-          paddingBottom: spacing.lg,
+          paddingBottom: 28,
         },
-        driverName: { fontSize: 24, fontWeight: '800', color: '#fff' },
-        dateRow: { flexDirection: 'row', alignItems: 'center', marginTop: 6, gap: 6 },
+        topBarRow: {
+          flexDirection: 'row',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+        },
+        topBarLeft: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          flexWrap: 'wrap',
+          gap: 10,
+          flex: 1,
+        },
+        dateRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
         dateText: { fontSize: 14, color: 'rgba(255,255,255,0.95)' },
         routePill: {
           flexDirection: 'row',
           alignItems: 'center',
-          alignSelf: 'flex-start',
-          marginTop: 8,
           paddingVertical: 6,
           paddingHorizontal: 12,
           borderRadius: 20,
-          backgroundColor: 'rgba(255,255,255,0.2)',
+          backgroundColor: 'rgba(255,255,255,0.08)',
           borderWidth: 1,
-          borderColor: 'rgba(255,255,255,0.5)',
+          borderColor: 'rgba(255,255,255,0.4)',
           gap: 6,
         },
-        routePillText: { fontSize: 13, fontWeight: '600', color: '#fff' },
+        routePillText: { fontSize: 13, fontWeight: '600', color: 'rgba(255,255,255,0.95)' },
         headerButtons: {
           flexDirection: 'row',
           alignItems: 'center',
           gap: 8,
-          marginTop: spacing.md,
         },
         header: {
           flexDirection: 'row',
@@ -222,7 +230,7 @@ export default function DashboardScreen({ navigation }) {
         greeting: { fontSize: 22, fontWeight: '800', color: colors.text },
         hint: { fontSize: 14, color: colors.textSecondary, marginTop: 2 },
         syncBtnTop: {
-          backgroundColor: colors.primarySurface ?? colors.surface,
+          backgroundColor: 'transparent',
           borderRadius: borderRadius.md,
           paddingVertical: 8,
           paddingHorizontal: 12,
@@ -230,22 +238,22 @@ export default function DashboardScreen({ navigation }) {
           alignItems: 'center',
           justifyContent: 'center',
           gap: 6,
-          borderWidth: 1,
-          borderColor: colors.primary,
+          borderWidth: 1.5,
+          borderColor: 'rgba(255,255,255,0.9)',
         },
-        syncBtnTopText: { fontSize: 14, fontWeight: '700', color: colors.primary },
+        syncBtnTopText: { fontSize: 14, fontWeight: '700', color: '#fff' },
         dailyVisitBtnTop: {
-          backgroundColor: colors.primarySurface ?? colors.surface,
+          backgroundColor: 'transparent',
           borderRadius: borderRadius.md,
           paddingVertical: 8,
           paddingHorizontal: 12,
           flexDirection: 'row',
           alignItems: 'center',
           gap: 6,
-          borderWidth: 1,
-          borderColor: colors.primary,
+          borderWidth: 1.5,
+          borderColor: 'rgba(255,255,255,0.9)',
         },
-        dailyVisitBtnTopText: { fontSize: 14, fontWeight: '700', color: colors.primary },
+        dailyVisitBtnTopText: { fontSize: 14, fontWeight: '700', color: '#fff' },
         sectionTitle: {
           fontSize: 17,
           fontWeight: '700',
@@ -257,7 +265,7 @@ export default function DashboardScreen({ navigation }) {
           borderRadius: borderRadius.lg,
           padding: spacing.lg,
           marginHorizontal: spacing.md,
-          marginTop: spacing.md,
+          marginTop: -20,
           marginBottom: spacing.md,
         },
         commissionTitle: { fontSize: 12, fontWeight: '700', color: '#fff', letterSpacing: 0.5 },
@@ -277,6 +285,7 @@ export default function DashboardScreen({ navigation }) {
           borderWidth: 2,
           alignItems: 'center',
         },
+        collectionIcon: { width: 28, height: 28 },
         collectionAmount: { fontSize: 18, fontWeight: '800', marginTop: 4 },
         collectionLabel: { fontSize: 12, fontWeight: '700', color: colors.text, marginTop: 4 },
         collectionPct: { fontSize: 12, fontWeight: '600', marginTop: 2 },
@@ -434,24 +443,26 @@ export default function DashboardScreen({ navigation }) {
         <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.primary]} />
       }
     >
-      {/* 1. Top bar: theme color, driver name, date with calendar, route pill, Daily Visit + Sync */}
+      {/* 1. Top bar: date + route left, Daily Visit + Sync right (outline buttons) */}
       <View style={styles.topBar}>
-        <Text style={styles.driverName}>{driverName}</Text>
-        <View style={styles.dateRow}>
-          <Ionicons name="calendar-outline" size={18} color="rgba(255,255,255,0.95)" />
-          <Text style={styles.dateText}>{todayDateStr}</Text>
-        </View>
-        <View style={styles.routePill}>
-          <Ionicons name="location-outline" size={16} color="#fff" />
-          <Text style={styles.routePillText}>Route: {routeName}</Text>
-        </View>
-        <View style={styles.headerButtons}>
+        <View style={styles.topBarRow}>
+          <View style={styles.topBarLeft}>
+            <View style={styles.dateRow}>
+              <Ionicons name="calendar-outline" size={18} color="rgba(255,255,255,0.95)" />
+              <Text style={styles.dateText}>{todayDateStr}</Text>
+            </View>
+            <View style={styles.routePill}>
+              <Ionicons name="location-outline" size={16} color="rgba(255,255,255,0.95)" />
+              <Text style={styles.routePillText}>Route: {routeName}</Text>
+            </View>
+          </View>
+          <View style={styles.headerButtons}>
           <TouchableOpacity
             style={styles.dailyVisitBtnTop}
             onPress={() => navigation.navigate('DailyVisit')}
             activeOpacity={0.8}
           >
-            <Ionicons name="calendar-outline" size={20} color={colors.primary} />
+            <Ionicons name="calendar-outline" size={20} color="#fff" />
             <Text style={styles.dailyVisitBtnTopText}>Daily Visit</Text>
           </TouchableOpacity>
           <TouchableOpacity
@@ -461,12 +472,13 @@ export default function DashboardScreen({ navigation }) {
             activeOpacity={0.8}
           >
             {syncing ? (
-              <ActivityIndicator size="small" color={colors.primary} />
+              <ActivityIndicator size="small" color="#fff" />
             ) : (
-              <Ionicons name="sync-outline" size={20} color={colors.primary} />
+              <Ionicons name="sync-outline" size={20} color="#fff" />
             )}
             <Text style={styles.syncBtnTopText}>Sync</Text>
           </TouchableOpacity>
+          </View>
         </View>
       </View>
 
@@ -479,22 +491,22 @@ export default function DashboardScreen({ navigation }) {
         <Text style={styles.commissionPct}>{commissionPct}% of target achieved</Text>
       </View>
 
-      {/* 3. Collection today - three cards: Cash, Cheque, Credit */}
+      {/* 3. Collection today - three cards: Cash, Cheque, Credit (real image icons) */}
       <View style={styles.collectionRow}>
         <View style={[styles.collectionCard, { borderColor: colors.cash ?? '#059669' }]}>
-          <Ionicons name="cash-outline" size={24} color={colors.cash ?? '#059669'} />
+          <Image source={require('../../assets/images/cash.png')} style={styles.collectionIcon} resizeMode="contain" />
           <Text style={[styles.collectionAmount, { color: colors.cash ?? '#059669' }]}>{formatShort(cashTotal)}</Text>
           <Text style={styles.collectionLabel}>CASH</Text>
           <Text style={[styles.collectionPct, { color: colors.cash ?? '#059669' }]}>{cashPct}%</Text>
         </View>
         <View style={[styles.collectionCard, { borderColor: colors.cheque ?? '#d97706' }]}>
-          <Ionicons name="document-text-outline" size={24} color={colors.cheque ?? '#d97706'} />
+          <Image source={require('../../assets/images/cheque.png')} style={styles.collectionIcon} resizeMode="contain" />
           <Text style={[styles.collectionAmount, { color: colors.cheque ?? '#d97706' }]}>{formatShort(chequeTotal)}</Text>
           <Text style={styles.collectionLabel}>CHEQUE</Text>
           <Text style={[styles.collectionPct, { color: colors.cheque ?? '#d97706' }]}>{chequePct}%</Text>
         </View>
         <View style={[styles.collectionCard, { borderColor: colors.credit ?? '#6366f1' }]}>
-          <Ionicons name="card-outline" size={24} color={colors.credit ?? '#6366f1'} />
+          <Image source={require('../../assets/images/credit.png')} style={styles.collectionIcon} resizeMode="contain" />
           <Text style={[styles.collectionAmount, { color: colors.credit ?? '#6366f1' }]}>{formatShort(creditTotal)}</Text>
           <Text style={styles.collectionLabel}>CREDIT</Text>
           <Text style={[styles.collectionPct, { color: colors.credit ?? '#6366f1' }]}>{creditPct}%</Text>
