@@ -314,8 +314,11 @@ export default function DashboardScreen({ navigation }) {
           backgroundColor: colors.surface,
           borderRadius: borderRadius.lg,
           padding: spacing.md,
+          alignItems: 'center',
+          justifyContent: 'center',
         },
-        shopsGasValue: { fontSize: 22, fontWeight: '800', color: colors.text },
+        shopsGasValue: { fontSize: 28, fontWeight: '800', color: colors.text },
+        shopsGasTarget: { fontSize: 18, fontWeight: '700', color: colors.textSecondary },
         shopsGasLabel: { fontSize: 11, fontWeight: '700', color: colors.textSecondary, marginTop: 4, letterSpacing: 0.3 },
         shopsGasPct: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
         metricsRow: {
@@ -533,14 +536,20 @@ export default function DashboardScreen({ navigation }) {
       {/* 4. Shops Completed & Total Gas Delivered */}
       <View style={styles.shopsGasRow}>
         <View style={styles.shopsGasCard}>
-          <Text style={[styles.shopsGasValue, { color: colors.primary }]}>{shopsCompleted}/{SHOPS_TARGET}</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'baseline' }}>
+            <Text style={[styles.shopsGasValue, { color: colors.primary }]}>{shopsCompleted}</Text>
+            <Text style={[styles.shopsGasTarget, { color: colors.textSecondary }]}>/{SHOPS_TARGET}</Text>
+          </View>
           <Text style={styles.shopsGasLabel}>SHOPS COMPLETED</Text>
           <Text style={styles.shopsGasPct}>{shopsPct}% Complete</Text>
         </View>
         <View style={styles.shopsGasCard}>
-          <Text style={[styles.shopsGasValue, { color: colors.warning ?? '#d97706' }]}>
-            {totalGasDelivered.toLocaleString('en-IN')}/{GAS_TARGET.toLocaleString('en-IN')}
-          </Text>
+          <View style={{ flexDirection: 'row', alignItems: 'baseline' }}>
+            <Text style={[styles.shopsGasValue, { color: colors.warning ?? '#d97706' }]}>
+              {totalGasDelivered.toLocaleString('en-IN')}
+            </Text>
+            <Text style={[styles.shopsGasTarget, { color: colors.textSecondary }]}>/{GAS_TARGET.toLocaleString('en-IN')}</Text>
+          </View>
           <Text style={styles.shopsGasLabel}>TOTAL GAS DELIVERED</Text>
           <Text style={styles.shopsGasPct}>{gasPct}% Complete</Text>
         </View>
