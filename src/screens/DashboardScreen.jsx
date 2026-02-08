@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   Image,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
@@ -38,7 +39,10 @@ function formatShort(amount) {
   return `Rs. ${n}`;
 }
 
+const TOP_BAR_ORANGE = '#d97706';
+
 export default function DashboardScreen({ navigation }) {
+  const insets = useSafeAreaInsets();
   const { colors, showCreateSalesOrder, showReturnOrder } = useTheme();
   const [orders, setOrders] = useState([]);
   const [user, setUser] = useState(null);
@@ -185,11 +189,35 @@ export default function DashboardScreen({ navigation }) {
         content: { paddingBottom: 100 },
         center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
         topBar: {
-          backgroundColor: colors.warningLight ?? '#d97706',
+          backgroundColor: colors.warningLight,
           paddingTop: spacing.lg,
           paddingHorizontal: spacing.md,
           paddingBottom: 28,
         },
+        profileRow: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          marginBottom: spacing.md,
+          gap: 12,
+        },
+        profileCircle: {
+          width: 48,
+          height: 48,
+          borderRadius: 24,
+          backgroundColor: 'rgba(255,255,255,0.2)',
+          borderWidth: 3,
+          borderColor: '#fff',
+          alignItems: 'center',
+          justifyContent: 'center',
+          overflow: 'hidden',
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: 2 },
+          shadowOpacity: 0.25,
+          shadowRadius: 4,
+          elevation: 4,
+        },
+        profileCircleInner: { width: 42, height: 42, borderRadius: 21 },
+        profileName: { fontSize: 18, fontWeight: '700', color: '#fff', maxWidth: 180 },
         topBarRow: {
           flexDirection: 'row',
           justifyContent: 'space-between',
@@ -443,8 +471,28 @@ export default function DashboardScreen({ navigation }) {
         <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.primary]} />
       }
     >
-      {/* 1. Top bar: date + route left, Daily Visit + Sync right (outline buttons) */}
-      <View style={styles.topBar}>
+      {/* 1. Top bar: profile + name (Dashboard only), then date + route left, Daily Visit + Sync right */}
+      <View style={[styles.topBar, { paddingTop: spacing.lg + insets.top }]}>
+        <TouchableOpacity
+          style={styles.profileRow}
+          onPress={() => navigation.navigate('Menu')}
+          activeOpacity={0.9}
+        >
+          <View style={styles.profileCircle}>
+            {user?.avatarUri || user?.avatar ? (
+              <Image
+                source={{ uri: user.avatarUri || user.avatar }}
+                style={styles.profileCircleInner}
+                resizeMode="cover"
+              />
+            ) : (
+              <Ionicons name="person-outline" size={24} color="rgba(255,255,255,0.95)" />
+            )}
+          </View>
+          <Text style={styles.profileName} numberOfLines={1}>
+            {user?.name || user?.username || 'Driver'}
+          </Text>
+        </TouchableOpacity>
         <View style={styles.topBarRow}>
           <View style={styles.topBarLeft}>
             <View style={styles.dateRow}>

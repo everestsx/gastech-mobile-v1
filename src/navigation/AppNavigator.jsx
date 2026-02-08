@@ -1,5 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { AppState, TouchableOpacity, View, Text, Image } from 'react-native';
+import React, { useEffect, useRef } from 'react';
+import { AppState } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
@@ -21,79 +21,7 @@ import CustomersScreen from '../screens/CustomersScreen';
 import SettingsScreen from '../screens/SettingsScreen';
 
 import { useTheme } from '../context/ThemeContext';
-import { runSync, getSyncIntervalMs, getUserSession } from '../services/sync.service';
-
-/** Profile circle: improved modern circle (image or empty user icon). */
-function ProfileCircle({ avatarUri, size = 48 }) {
-  const s = size;
-  const inner = s - 4;
-  return (
-    <View
-      style={{
-        width: s,
-        height: s,
-        borderRadius: s / 2,
-        backgroundColor: 'rgba(255,255,255,0.2)',
-        borderWidth: 3,
-        borderColor: '#fff',
-        alignItems: 'center',
-        justifyContent: 'center',
-        overflow: 'hidden',
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.25,
-        shadowRadius: 4,
-        elevation: 4,
-      }}
-    >
-      {avatarUri ? (
-        <Image
-          source={{ uri: avatarUri }}
-          style={{ width: inner, height: inner, borderRadius: inner / 2 }}
-          resizeMode="cover"
-        />
-      ) : (
-        <Ionicons name="person-outline" size={s * 0.5} color="rgba(255,255,255,0.95)" />
-      )}
-    </View>
-  );
-}
-
-/** Header left: profile circle + driver name. Tapping opens Profile. */
-function HeaderProfileWithName({ onPress }) {
-  const [user, setUser] = useState(null);
-  useEffect(() => {
-    getUserSession().then(setUser);
-  }, []);
-  const avatarUri = user?.avatarUri ?? user?.avatar ?? null;
-  const driverName = user?.name || user?.username || 'Driver';
-  return (
-    <TouchableOpacity
-      onPress={onPress}
-      activeOpacity={0.9}
-      style={{
-        flexDirection: 'row',
-        alignItems: 'center',
-        paddingLeft: 16,
-        marginRight: 16,
-        gap: 12,
-      }}
-    >
-      <ProfileCircle avatarUri={avatarUri} size={48} />
-      <Text
-        style={{
-          fontSize: 18,
-          fontWeight: '700',
-          color: '#fff',
-          maxWidth: 160,
-        }}
-        numberOfLines={1}
-      >
-        {driverName}
-      </Text>
-    </TouchableOpacity>
-  );
-}
+import { runSync, getSyncIntervalMs } from '../services/sync.service';
 
 const RootStack = createNativeStackNavigator();
 const Tab = createBottomTabNavigator();
@@ -166,10 +94,11 @@ function MainTabs() {
 
 function MainStackScreen() {
   const { colors } = useTheme();
+  const headerOrange = colors.warning ?? '#d97706';
   const headerScreenOptions = {
     headerShown: true,
     headerStyle: {
-      backgroundColor: colors.warning ?? '#d97706',
+      backgroundColor: headerOrange,
       elevation: 4,
       shadowColor: '#000',
       shadowOffset: { width: 0, height: 2 },
@@ -191,14 +120,7 @@ function MainStackScreen() {
       <MainStack.Screen
         name="MainTabs"
         component={MainTabs}
-        options={({ navigation }) => ({
-          headerShown: true,
-          ...headerScreenOptions,
-          headerLeft: () => (
-            <HeaderProfileWithName onPress={() => navigation.navigate('Menu')} />
-          ),
-          headerTitle: () => null,
-        })}
+        options={{ headerShown: false }}
       />
       <MainStack.Screen
         name="Menu"
