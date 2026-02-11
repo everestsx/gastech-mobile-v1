@@ -3,11 +3,14 @@ import {
   View,
   Text,
   FlatList,
+  ScrollView,
   TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
+  Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
 import {
@@ -20,17 +23,32 @@ import OrderCard from '../components/OrderCard';
 const TAB_ALL = 'all';
 const TAB_TO_DELIVER = 'to_deliver';
 const TAB_DELIVERED = 'delivered';
+const TAB_INVOICED = 'invoiced';
+
+function formatDate(d) {
+  return d.toISOString().split('T')[0];
+}
+
+function isToday(d) {
+  const today = formatDate(new Date());
+  return formatDate(d) === today;
+}
 
 export default function SaleOrderListScreen({ route, navigation }) {
   const { colors } = useTheme();
   const customerId = route?.params?.customerId ?? null;
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState(TAB_ALL);
+  const [selectedDate, setSelectedDate] = useState(() => new Date());
+  const [showPicker, setShowPicker] = useState(false);
+  const [activeTab, setActiveTab] = useState(TAB_TO_DELIVER);
+
+  const isInvoiced = (o) => String(o.invoice_status || '') === 'invoiced';
 
   const filteredOrders = useMemo(() => {
     if (activeTab === TAB_TO_DELIVER) return orders.filter((o) => !o.isDelivered);
     if (activeTab === TAB_DELIVERED) return orders.filter((o) => o.isDelivered);
+    if (activeTab === TAB_INVOICED) return orders.filter(isInvoiced);
     return orders;
   }, [orders, activeTab]);
 
@@ -39,6 +57,7 @@ export default function SaleOrderListScreen({ route, navigation }) {
       [TAB_ALL]: orders.length,
       [TAB_TO_DELIVER]: orders.filter((o) => !o.isDelivered).length,
       [TAB_DELIVERED]: orders.filter((o) => o.isDelivered).length,
+      [TAB_INVOICED]: orders.filter(isInvoiced).length,
     }),
     [orders]
   );
@@ -53,37 +72,70 @@ export default function SaleOrderListScreen({ route, navigation }) {
           alignItems: 'center',
           justifyContent: 'space-between',
           paddingHorizontal: spacing.sm,
-          paddingVertical: spacing.md,
+          paddingTop: spacing.md,
+          paddingBottom: spacing.sm,
           backgroundColor: colors.surface,
           borderBottomWidth: 1,
           borderBottomColor: colors.border,
+        },
+        headerLeft: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          flex: 1,
+          minWidth: 0,
+        },
+        headerCenter: {
+          flex: 1,
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'center',
+          minWidth: 0,
+        },
+        headerRight: {
+          flex: 1,
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'flex-end',
+          minWidth: 0,
         },
         headerBtn: { padding: 4, minWidth: 40, alignItems: 'flex-start' },
         headerBtnRight: { alignItems: 'flex-end' },
-        screenTitle: {
-          flex: 1,
-          fontSize: 18,
-          fontWeight: '700',
-          color: colors.text,
-          textAlign: 'center',
-        },
-        tabsWrap: {
+        dateNav: {
           flexDirection: 'row',
-          paddingHorizontal: spacing.md,
-          paddingVertical: spacing.sm,
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 4,
+          paddingVertical: 4,
+          paddingHorizontal: 8,
+        },
+        dateNavText: { fontSize: 16, fontWeight: '600', color: colors.text },
+        dateNavDateTouch: { paddingVertical: 4, paddingHorizontal: 6 },
+        dateNavChevron: { padding: 4 },
+        dateNavChevronDisabled: { opacity: 0.35 },
+        doneDateBtn: {
+          padding: 10,
+          alignItems: 'center',
+          backgroundColor: colors.surface,
+        },
+        doneDateText: { fontSize: 16, fontWeight: '600', color: colors.primary },
+        tabsWrap: {
           backgroundColor: colors.surface,
           borderBottomWidth: 1,
           borderBottomColor: colors.border,
+        },
+        tabsScroll: {
+          flexDirection: 'row',
+          paddingHorizontal: spacing.md,
+          paddingVertical: spacing.sm,
           gap: spacing.sm,
         },
         tab: {
-          flex: 1,
           flexDirection: 'row',
           alignItems: 'center',
           justifyContent: 'center',
           gap: 6,
           paddingVertical: 10,
-          paddingHorizontal: spacing.sm,
+          paddingHorizontal: spacing.md,
           borderRadius: borderRadius.lg,
           backgroundColor: colors.background,
         },
@@ -113,9 +165,12 @@ export default function SaleOrderListScreen({ route, navigation }) {
   );
 
   const loadOrders = useCallback(async () => {
+    setLoading(true);
     try {
       const data = await getCachedOrders();
-      let list = Array.isArray(data) ? data : [];
+      const all = Array.isArray(data) ? data : [];
+      const dateStr = formatDate(selectedDate);
+      let list = all.filter((o) => (o.date_order || '').startsWith(dateStr));
       if (customerId != null) {
         list = list.filter((o) => o.partner_id?.[0] === customerId);
       }
@@ -144,13 +199,44 @@ export default function SaleOrderListScreen({ route, navigation }) {
     } finally {
       setLoading(false);
     }
-  }, [customerId]);
+  }, [customerId, selectedDate]);
+
+  useEffect(() => {
+    loadOrders();
+  }, [loadOrders]);
 
   useEffect(() => {
     const unsub = navigation.addListener?.('focus', loadOrders);
-    loadOrders();
     return () => unsub?.();
   }, [loadOrders, navigation]);
+
+  const canGoToNextDay = !isToday(selectedDate);
+
+  const goToPreviousDay = () => {
+    const d = new Date(selectedDate);
+    d.setDate(d.getDate() - 1);
+    setSelectedDate(d);
+  };
+
+  const goToNextDay = () => {
+    if (!canGoToNextDay) return;
+    const d = new Date(selectedDate);
+    d.setDate(d.getDate() + 1);
+    setSelectedDate(d);
+  };
+
+  const onDateChange = (event, date) => {
+    if (Platform.OS === 'android') setShowPicker(false);
+    if (date) setSelectedDate(date);
+  };
+
+  const onBackPress = () => {
+    if (customerId != null) {
+      navigation.navigate('Orders', { customerId: null });
+    } else {
+      navigation.navigate('Dashboard');
+    }
+  };
 
   const onOrderPress = (order) => {
     if (order.isDelivered) {
@@ -174,45 +260,73 @@ export default function SaleOrderListScreen({ route, navigation }) {
 
   return (
     <View style={styles.container}>
-      {/* Header: back, title, QR scan (same style as Daily Visit top bar) */}
+      {/* Header: back (to Dashboard), date navigator (center, tap = calendar), QR (right) */}
       <View style={styles.header}>
-        <TouchableOpacity
-          onPress={() => {
-            if (customerId != null) {
-              navigation.navigate('Orders', { customerId: null });
-            } else {
-              navigation.goBack();
-            }
-          }}
-          style={styles.headerBtn}
-        >
-          <Ionicons name="arrow-back" size={24} color={colors.primary} />
-        </TouchableOpacity>
-        <Text style={styles.screenTitle} numberOfLines={1}>
-          {customerId != null ? 'Orders (Customer)' : 'Sale Orders'}
-        </Text>
-        <TouchableOpacity
-          onPress={() => navigation.navigate('ScanQRCode')}
-          style={[styles.headerBtn, styles.headerBtnRight]}
-        >
-          <Ionicons name="qr-code-outline" size={28} color={colors.primary} />
-        </TouchableOpacity>
+        <View style={styles.headerLeft}>
+          <TouchableOpacity onPress={onBackPress} style={styles.headerBtn}>
+            <Ionicons name="arrow-back" size={24} color={colors.primary} />
+          </TouchableOpacity>
+        </View>
+        <View style={styles.headerCenter}>
+          <View style={styles.dateNav}>
+            <TouchableOpacity
+              onPress={goToPreviousDay}
+              style={styles.dateNavChevron}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="chevron-back" size={24} color={colors.primary} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.dateNavDateTouch}
+              onPress={() => setShowPicker(true)}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.dateNavText}>{formatDate(selectedDate)}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={goToNextDay}
+              disabled={!canGoToNextDay}
+              style={[styles.dateNavChevron, !canGoToNextDay && styles.dateNavChevronDisabled]}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="chevron-forward" size={24} color={colors.primary} />
+            </TouchableOpacity>
+          </View>
+        </View>
+        <View style={styles.headerRight}>
+          <TouchableOpacity
+            onPress={() => navigation.navigate('ScanQRCode')}
+            style={[styles.headerBtn, styles.headerBtnRight]}
+          >
+            <Ionicons name="qr-code-outline" size={28} color={colors.primary} />
+          </TouchableOpacity>
+        </View>
       </View>
 
-      {/* Tabs: All | To deliver | Delivered */}
-      <View style={styles.tabsWrap}>
-        <TouchableOpacity
-          style={[styles.tab, activeTab === TAB_ALL && styles.tabActive]}
-          onPress={() => setActiveTab(TAB_ALL)}
-          activeOpacity={0.8}
-        >
-          <Text style={[styles.tabText, activeTab === TAB_ALL && styles.tabTextActive]}>All</Text>
-          <View style={[styles.tabBadge, activeTab === TAB_ALL && styles.tabBadgeActive]}>
-            <Text style={[styles.tabBadgeText, activeTab === TAB_ALL && styles.tabBadgeTextActive]}>
-              {tabCounts[TAB_ALL]}
-            </Text>
-          </View>
+      {showPicker && (
+        <DateTimePicker
+          value={selectedDate}
+          mode="date"
+          display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+          onChange={(e, date) => {
+            onDateChange(e, date);
+            if (Platform.OS === 'ios') setShowPicker(false);
+          }}
+        />
+      )}
+      {showPicker && Platform.OS === 'ios' && (
+        <TouchableOpacity style={styles.doneDateBtn} onPress={() => setShowPicker(false)}>
+          <Text style={styles.doneDateText}>Done</Text>
         </TouchableOpacity>
+      )}
+
+      {/* Tabs: horizontally scrollable so filters are not squeezed */}
+      <View style={styles.tabsWrap}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.tabsScroll}
+        >
         <TouchableOpacity
           style={[styles.tab, activeTab === TAB_TO_DELIVER && styles.tabActive]}
           onPress={() => setActiveTab(TAB_TO_DELIVER)}
@@ -251,6 +365,38 @@ export default function SaleOrderListScreen({ route, navigation }) {
             </Text>
           </View>
         </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.tab, activeTab === TAB_INVOICED && styles.tabActive]}
+          onPress={() => setActiveTab(TAB_INVOICED)}
+          activeOpacity={0.8}
+        >
+          <Text style={[styles.tabText, activeTab === TAB_INVOICED && styles.tabTextActive]}>
+            Invoiced
+          </Text>
+          <View style={[styles.tabBadge, activeTab === TAB_INVOICED && styles.tabBadgeActive]}>
+            <Text
+              style={[
+                styles.tabBadgeText,
+                activeTab === TAB_INVOICED && styles.tabBadgeTextActive,
+              ]}
+            >
+              {tabCounts[TAB_INVOICED]}
+            </Text>
+          </View>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.tab, activeTab === TAB_ALL && styles.tabActive]}
+          onPress={() => setActiveTab(TAB_ALL)}
+          activeOpacity={0.8}
+        >
+          <Text style={[styles.tabText, activeTab === TAB_ALL && styles.tabTextActive]}>All</Text>
+          <View style={[styles.tabBadge, activeTab === TAB_ALL && styles.tabBadgeActive]}>
+            <Text style={[styles.tabBadgeText, activeTab === TAB_ALL && styles.tabBadgeTextActive]}>
+              {tabCounts[TAB_ALL]}
+            </Text>
+          </View>
+        </TouchableOpacity>
+        </ScrollView>
       </View>
 
       <FlatList
@@ -265,21 +411,25 @@ export default function SaleOrderListScreen({ route, navigation }) {
                   ? 'checkmark-done-outline'
                   : activeTab === TAB_TO_DELIVER
                     ? 'cube-outline'
-                    : 'document-text-outline'
+                    : activeTab === TAB_INVOICED
+                      ? 'receipt-outline'
+                      : 'document-text-outline'
               }
               size={48}
               color={colors.textSecondary}
             />
             <Text style={styles.emptyText}>
               {activeTab === TAB_ALL
-                ? 'No orders'
+                ? 'No orders for this date'
                 : activeTab === TAB_TO_DELIVER
                   ? 'No orders to deliver'
-                  : 'No delivered orders yet'}
+                  : activeTab === TAB_DELIVERED
+                    ? 'No delivered orders yet'
+                    : 'No invoiced orders for this date'}
             </Text>
             <Text style={styles.emptyHint}>
               {activeTab !== TAB_ALL
-                ? 'Switch to "All" to see every order'
+                ? 'Switch to "All" to see every order for this date'
                 : 'Orders will appear here after sync'}
             </Text>
           </View>

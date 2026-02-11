@@ -256,6 +256,11 @@ export default function DashboardScreen({ navigation }) {
           borderColor: 'rgba(255,255,255,0.9)',
         },
         syncBtnTopText: { fontSize: 14, fontWeight: '700', color: '#fff' },
+        lastSyncTimeText: {
+          fontSize: 11,
+          color: 'rgba(255,255,255,0.9)',
+          marginTop: 4,
+        },
         dailyVisitBtnTop: {
           backgroundColor: 'transparent',
           borderRadius: borderRadius.md,
@@ -477,27 +482,39 @@ export default function DashboardScreen({ navigation }) {
             </View>
           </View>
           <View style={styles.headerButtons}>
-            <TouchableOpacity
-              style={styles.syncBtnTop}
-              onPress={onSync}
-              disabled={syncing}
-              activeOpacity={0.8}
-            >
-              {syncing ? (
-                <ActivityIndicator size="small" color="#fff" />
-              ) : (
-                <Ionicons name="sync-outline" size={20} color="#fff" />
-              )}
-              <Text style={styles.syncBtnTopText}>Sync</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
+            <View style={{ alignItems: 'flex-end' }}>
+              <TouchableOpacity
+                style={styles.syncBtnTop}
+                onPress={onSync}
+                disabled={syncing}
+                activeOpacity={0.8}
+              >
+                {syncing ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Ionicons name="sync-outline" size={20} color="#fff" />
+                )}
+                <Text style={styles.syncBtnTopText}>Sync</Text>
+              </TouchableOpacity>
+              <Text style={styles.lastSyncTimeText} numberOfLines={1}>
+                {lastSyncTime
+                  ? new Date(lastSyncTime).toLocaleTimeString('en-IN', {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                      hour12: true,
+                    })
+                  : '—'}
+              </Text>
+            </View>
+            {/* //Daily Visit Keep Commented for now */}
+            {/* <TouchableOpacity
               style={styles.dailyVisitBtnTop}
-              onPress={() => navigation.navigate('DailyVisit')}
+              onPress={() => navigation.navigate('Orders', { customerId: null })}
               activeOpacity={0.8}
             >
               <Ionicons name="calendar-outline" size={20} color="#fff" />
               <Text style={styles.dailyVisitBtnTopText}>Visit</Text>
-            </TouchableOpacity>
+            </TouchableOpacity> */}
           </View>
         </View>
       </View>
