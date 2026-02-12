@@ -7,6 +7,7 @@ import {
   StyleSheet,
   ActivityIndicator,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
@@ -23,6 +24,7 @@ const TAB_DELIVERED = 'delivered';
 
 export default function SaleOrderListScreen({ route, navigation }) {
   const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
   const customerId = route?.params?.customerId ?? null;
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -46,19 +48,23 @@ export default function SaleOrderListScreen({ route, navigation }) {
   const styles = useMemo(
     () =>
       StyleSheet.create({
-        container: { flex: 1, backgroundColor: colors.background },
+        container: {
+          flex: 1,
+          backgroundColor: colors.background,
+          paddingTop: insets.top,
+        },
         center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
         header: {
           flexDirection: 'row',
           alignItems: 'center',
           justifyContent: 'space-between',
-          paddingHorizontal: spacing.sm,
-          paddingVertical: spacing.md,
+          paddingHorizontal: spacing.lg,
+          paddingVertical: spacing.lg,
           backgroundColor: colors.surface,
           borderBottomWidth: 1,
           borderBottomColor: colors.border,
         },
-        headerBtn: { padding: 4, minWidth: 40, alignItems: 'flex-start' },
+        headerBtn: { padding: spacing.sm, minWidth: 44, alignItems: 'flex-start' },
         headerBtnRight: { alignItems: 'flex-end' },
         screenTitle: {
           flex: 1,
@@ -66,24 +72,25 @@ export default function SaleOrderListScreen({ route, navigation }) {
           fontWeight: '700',
           color: colors.text,
           textAlign: 'center',
+          marginHorizontal: spacing.sm,
         },
         tabsWrap: {
           flexDirection: 'row',
           paddingHorizontal: spacing.md,
-          paddingVertical: spacing.sm,
+          paddingVertical: spacing.md,
           backgroundColor: colors.surface,
           borderBottomWidth: 1,
           borderBottomColor: colors.border,
-          gap: spacing.sm,
+          gap: spacing.md,
         },
         tab: {
           flex: 1,
           flexDirection: 'row',
           alignItems: 'center',
           justifyContent: 'center',
-          gap: 6,
-          paddingVertical: 10,
-          paddingHorizontal: spacing.sm,
+          gap: 8,
+          paddingVertical: 12,
+          paddingHorizontal: spacing.md,
           borderRadius: borderRadius.lg,
           backgroundColor: colors.background,
         },
@@ -93,9 +100,9 @@ export default function SaleOrderListScreen({ route, navigation }) {
         tabText: { fontSize: 14, fontWeight: '600', color: colors.text },
         tabTextActive: { color: '#fff' },
         tabBadge: {
-          minWidth: 22,
-          height: 22,
-          borderRadius: 11,
+          minWidth: 24,
+          height: 24,
+          borderRadius: 12,
           backgroundColor: colors.border,
           alignItems: 'center',
           justifyContent: 'center',
@@ -109,7 +116,7 @@ export default function SaleOrderListScreen({ route, navigation }) {
         emptyText: { fontSize: 16, color: colors.textSecondary, marginTop: 12 },
         emptyHint: { fontSize: 13, color: colors.textSecondary, marginTop: 6 },
       }),
-    [colors]
+    [colors, insets.top]
   );
 
   const loadOrders = useCallback(async () => {
@@ -166,7 +173,7 @@ export default function SaleOrderListScreen({ route, navigation }) {
 
   if (loading) {
     return (
-      <View style={styles.center}>
+      <View style={[styles.container, styles.center]}>
         <ActivityIndicator size="large" color={colors.primary} />
       </View>
     );

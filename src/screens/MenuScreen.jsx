@@ -17,6 +17,7 @@ import {
   getUserSession,
   logout,
   getSyncIntervalMinutes,
+  deleteLocalData,
 } from '../services/sync.service';
 
 export default function MenuScreen({ navigation }) {
@@ -53,6 +54,29 @@ export default function MenuScreen({ navigation }) {
     } finally {
       setSyncing(false);
     }
+  };
+
+  const handleDeleteLocalData = () => {
+    Alert.alert(
+      'Delete local data',
+      'This will remove all synced customers, orders, and other data from this device. Your login is not affected. Sync again to reload data from Odoo. Continue?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await deleteLocalData();
+              await refreshLastSync();
+              Alert.alert('Done', 'Local data deleted. Use Sync to load data from Odoo again.');
+            } catch (e) {
+              Alert.alert('Error', e?.message || 'Failed to delete local data.');
+            }
+          },
+        },
+      ]
+    );
   };
 
   const handleLogout = () => {
@@ -164,6 +188,16 @@ export default function MenuScreen({ navigation }) {
       >
         <Ionicons name="time-outline" size={24} color={colors.primary} />
         <Text style={[styles.menuItemText, { color: colors.text }]}>Sync History</Text>
+        <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={[styles.menuItem, { backgroundColor: colors.surface, borderColor: colors.border }]}
+        onPress={handleDeleteLocalData}
+        activeOpacity={0.8}
+      >
+        <Ionicons name="trash-outline" size={24} color={colors.error || '#dc2626'} />
+        <Text style={[styles.menuItemText, { color: colors.text }]}>Delete local data</Text>
         <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
       </TouchableOpacity>
 
