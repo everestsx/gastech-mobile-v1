@@ -172,6 +172,38 @@ export async function getSyncLogRecent(limit = 20) {
   }
 }
 
+/**
+ * Delete all local synced data from SQLite (partners, orders, pickings, etc.)
+ * and clear last-sync state. Does not remove user session.
+ * After this, running Sync again will repopulate from Odoo.
+ */
+export async function deleteLocalData() {
+  const { getDb } = await import('../database/db.js');
+  const db = await getDb();
+  const tables = [
+    'partners',
+    'sale_orders',
+    'sale_order_lines',
+    'products',
+    'stock_pickings',
+    'stock_moves',
+    'stock_move_lines',
+    'account_journals',
+    'routes',
+    'vehicles',
+    'sync_log',
+    'sync_queue',
+  ];
+  await db.withTransactionAsync(async (rawDb) => {
+    for (const table of tables) {
+      await rawDb.runAsync(`DELETE FROM ${table}`);
+    }
+  });
+  const storage = await getAsyncStorage();
+  await storage.removeItem(KEYS.LAST_SYNC);
+  log('deleteLocalData', 'all synced data cleared');
+}
+
 export function getSyncIntervalMs() {
   return SYNC_INTERVAL_MS;
 }
