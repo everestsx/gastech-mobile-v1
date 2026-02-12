@@ -7,10 +7,12 @@ import { empty, iso } from './dbHelpers.js';
 export async function appendLog({ sync_at, status, message, counts }) {
   const db = await getDb();
   const now = iso();
-  const countsStr = counts != null ? JSON.stringify(counts) : null;
+  const countsStr = counts != null && typeof counts === 'object' ? JSON.stringify(counts) : (typeof counts === 'string' ? counts : null);
+  const syncAtStr = sync_at != null && sync_at !== '' && typeof sync_at !== 'object' ? String(sync_at) : now;
+  const messageStr = message != null && message !== '' && typeof message !== 'object' ? String(message) : null;
   await db.runAsync(
     'INSERT INTO sync_log (sync_at, status, message, counts, created_at) VALUES (?, ?, ?, ?, ?)',
-    [sync_at != null && sync_at !== '' ? sync_at : now, empty(status) || 'success', message != null && message !== '' ? message : null, countsStr, now]
+    [syncAtStr, empty(status) || 'success', messageStr, countsStr, now]
   );
 }
 

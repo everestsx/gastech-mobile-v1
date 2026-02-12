@@ -19,12 +19,12 @@ export async function upsertStockMoves(rows) {
       await tx.runAsync(
         'INSERT OR REPLACE INTO stock_moves (id, picking_id, product_id, product_name, product_uom_qty, state, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
         [
-          r.id != null ? r.id : 0,
-          num(r.picking_id), // NOT NULL in schema; use 0 when missing
+          num(r.id),
+          num(r.picking_id),
           numOrNull(product.id),
           empty(product.name),
           num(r.product_uom_qty),
-          r.state != null && r.state !== '' ? r.state : null,
+          empty(r.state) || null,
           now,
         ]
       );

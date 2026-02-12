@@ -1,29 +1,37 @@
 /**
- * Shared null-safe helpers for all DB writes. Use so NOT NULL columns never receive null.
+ * Shared null-safe helpers for all DB writes.
+ * Never pass objects to SQLite — the native bridge (Kotlin) cannot convert them.
  */
 
-/** TEXT: never null — returns v or ''. */
+/** TEXT: never null, never object — returns string or ''. */
 export function empty(v) {
-  return v != null && v !== '' ? String(v) : '';
+  if (v == null || v === '' || typeof v === 'object') return '';
+  return String(v);
 }
 
-/** Number: never null — returns number or 0. */
+/** Number: never null — returns number or 0. Never pass object. */
 export function num(v) {
-  return v != null && !Number.isNaN(Number(v)) ? Number(v) : 0;
+  if (v == null || typeof v === 'object') return 0;
+  const n = Number(v);
+  return !Number.isNaN(n) ? n : 0;
 }
 
-/** Optional number: returns number or null. */
+/** Optional number: returns number or null. Never pass object. */
 export function numOrNull(v) {
-  return v != null && !Number.isNaN(Number(v)) ? Number(v) : null;
+  if (v == null || typeof v === 'object') return null;
+  const n = Number(v);
+  return !Number.isNaN(n) ? n : null;
 }
 
-/** ISO date string: never null — returns v or now. */
+/** ISO date string: never null. Never pass object (would become "[object Object]"). */
 export function iso(v) {
-  return v != null && v !== '' ? String(v) : new Date().toISOString();
+  if (v == null || v === '' || typeof v === 'object') return new Date().toISOString();
+  return String(v);
 }
 
 /** JSON array string: never null — returns JSON string or '[]'. */
 export function jsonArr(v) {
   if (v == null) return '[]';
-  return Array.isArray(v) ? JSON.stringify(v) : (typeof v === 'string' ? v : '[]');
+  if (typeof v === 'object') return Array.isArray(v) ? JSON.stringify(v) : '[]';
+  return typeof v === 'string' ? v : '[]';
 }

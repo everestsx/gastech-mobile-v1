@@ -2,7 +2,7 @@
  * Local CRUD for routes (Odoo route.master mirror).
  */
 import { getDb } from './db.js';
-import { empty, iso } from './dbHelpers.js';
+import { empty, num, iso } from './dbHelpers.js';
 
 export async function upsertRoutes(rows) {
   if (!rows?.length) return;
@@ -12,7 +12,7 @@ export async function upsertRoutes(rows) {
     for (const r of rows) {
       await tx.runAsync(
         'INSERT OR REPLACE INTO routes (id, name, updated_at) VALUES (?, ?, ?)',
-        [r.id != null ? r.id : 0, empty(r.name), now]
+        [num(r.id), empty(r.name), now]
       );
     }
   });
