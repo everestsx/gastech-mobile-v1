@@ -30,9 +30,11 @@ function buildInvoiceHtml(order, lines, paymentType, selectedBankName) {
   const customerName = order?.partner_id?.[1] ?? '—';
   const orderNo = order?.name ?? '—';
   const paymentLabel =
-    paymentType === 'bank' && selectedBankName
-      ? `Bank: ${selectedBankName}`
-      : 'Cash';
+    (paymentType === 'bank' || paymentType === 'check') && selectedBankName
+      ? `Check: ${selectedBankName}`
+      : paymentType === 'credit' && selectedBankName
+        ? `Credit: ${selectedBankName}`
+        : 'Cash';
 
   const rows =
     (lines || [])
@@ -246,9 +248,11 @@ export default function InvoiceScreen({ route, navigation }) {
   };
 
   const paymentLabel =
-    paymentType === 'bank' && selectedBankName
-      ? `Bank: ${selectedBankName}`
-      : 'Cash';
+    (paymentType === 'bank' || paymentType === 'check') && selectedBankName
+      ? `Check: ${selectedBankName}`
+      : paymentType === 'credit' && selectedBankName
+        ? `Credit: ${selectedBankName}`
+        : 'Cash';
 
   if (loading) {
     return (

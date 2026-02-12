@@ -34,18 +34,21 @@ import {
 } from '../services/invoice.service';
 
 const PAYMENT_CASH = 'cash';
-const PAYMENT_BANK = 'bank';
+const PAYMENT_CHECK = 'check';
+const PAYMENT_CREDIT = 'credit';
 
 export default function ProceedPaymentScreen({ route, navigation }) {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const { saleOrderId, total, deliveryDone } = route.params || {};
+  const orderTotal = Number(total) || 0;
   const [loading, setLoading] = useState(false);
   const [journalsLoading, setJournalsLoading] = useState(true);
   const [journals, setJournals] = useState([]);
   const [paymentType, setPaymentType] = useState(PAYMENT_CASH);
   const [selectedJournalId, setSelectedJournalId] = useState(null);
   const [journalSearch, setJournalSearch] = useState('');
+  const [cashAmount, setCashAmount] = useState('');
   const [deliveryPhotos, setDeliveryPhotos] = useState([]);
 
   const MAX_PHOTOS = 3;
@@ -58,7 +61,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
     () => (journals || []).filter((j) => j.type === 'bank'),
     [journals]
   );
-  const journalsForType = paymentType === PAYMENT_CASH ? cashJournals : bankJournals;
+  const journalsForType = paymentType === PAYMENT_CHECK ? bankJournals : paymentType === PAYMENT_CREDIT ? bankJournals : cashJournals;
   const filteredJournals = useMemo(() => {
     const q = (journalSearch || '').trim().toLowerCase();
     if (!q) return journalsForType;
@@ -70,16 +73,25 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   }, [journalSearch, journalsForType]);
 
   const selectedJournal =
-    selectedJournalId != null
-      ? journals.find((j) => j.id === selectedJournalId)
-      : null;
+    selectedJournalId != null ? journals.find((j) => j.id === selectedJournalId) : null;
   const isSelectedJournalValid =
     selectedJournal &&
-    ((paymentType === PAYMENT_CASH && selectedJournal.type === 'cash') ||
-     (paymentType === PAYMENT_BANK && selectedJournal.type === 'bank'));
+    ((paymentType === PAYMENT_CHECK || paymentType === PAYMENT_CREDIT) && selectedJournal.type === 'bank');
 
-  const paymentComplete = isSelectedJournalValid != null;
-  const canProceed = paymentComplete && deliveryPhotos.length >= 1;
+  const cashAmountNum = useMemo(() => {
+    const n = parseFloat(String(cashAmount).replace(/,/g, ''));
+    return Number.isFinite(n) && n >= 0 ? n : 0;
+  }, [cashAmount]);
+
+  const paymentComplete =
+    paymentType === PAYMENT_CASH
+      ? cashAmountNum > 0 && cashJournals.length > 0
+      : paymentType === PAYMENT_CHECK
+        ? !!isSelectedJournalValid
+        : paymentType === PAYMENT_CREDIT && bankJournals.length > 0;
+
+  const evidenceRequired = paymentType !== PAYMENT_CASH;
+  const canProceed = paymentComplete && (evidenceRequired ? deliveryPhotos.length >= 1 : true);
 
   const loadJournals = useCallback(async () => {
     setJournalsLoading(true);
@@ -98,14 +110,34 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   }, [loadJournals]);
 
   useEffect(() => {
-    if (!isSelectedJournalValid && selectedJournalId != null) {
-      setSelectedJournalId(null);
-      setJournalSearch('');
+    if (paymentType === PAYMENT_CHECK || paymentType === PAYMENT_CREDIT) {
+      if (!isSelectedJournalValid && selectedJournalId != null) {
+        setSelectedJournalId(null);
+        setJournalSearch('');
+      }
     }
   }, [paymentType, isSelectedJournalValid, selectedJournalId]);
 
+  const getJournalIdForPayment = () => {
+    if (paymentType === PAYMENT_CHECK && selectedJournalId != null) return selectedJournalId;
+    if (paymentType === PAYMENT_CREDIT) return bankJournals[0]?.id ?? selectedJournalId;
+    if (paymentType === PAYMENT_CASH) return cashJournals[0]?.id ?? null;
+    return null;
+  };
+
+  const getPaymentAmount = () => {
+    if (paymentType === PAYMENT_CASH) return cashAmountNum;
+    return orderTotal;
+  };
+
+  const getSelectedJournalName = () => {
+    if (paymentType === PAYMENT_CHECK || paymentType === PAYMENT_CREDIT) return selectedJournal?.name ?? (paymentType === PAYMENT_CREDIT ? bankJournals[0]?.name : null) ?? null;
+    return paymentType === PAYMENT_CASH ? cashJournals[0]?.name ?? null : null;
+  };
+
   const handleProceed = async () => {
-    if (!canProceed || !selectedJournalId) return;
+    const journalId = getJournalIdForPayment();
+    if (!canProceed || journalId == null) return;
     try {
       setLoading(true);
 
@@ -149,8 +181,8 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         : orderInfo.partner_id;
       if (partnerId == null) throw new Error('Customer (partner) not found for payment');
       const orderName = orderInfo.name ?? `Order ${saleOrderId}`;
-      const amountToPay = Number(orderInfo.amount_total ?? total ?? 0);
-      if (amountToPay <= 0) throw new Error('Order total must be greater than zero');
+      const amountToPay = getPaymentAmount();
+      if (amountToPay <= 0) throw new Error('Payment amount must be greater than zero');
 
       let invoiceId = null;
       const existingInvoiceIds = orderInfo.invoice_ids ?? [];
@@ -174,21 +206,22 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         partnerId,
         amount: amountToPay,
         currencyId: 1,
-        journalId: selectedJournalId,
+        journalId,
         date: new Date().toISOString().slice(0, 10),
         memo: `Payment for Invoice / Order ${orderName}`,
         invoiceId,
       });
 
-      const selectedJournalName = selectedJournal?.name ?? null;
+      const selectedJournalName = getSelectedJournalName();
 
       navigation.replace('InvoiceScreen', {
         saleOrderId,
         total,
         paymentType,
-        selectedBankId: paymentType === PAYMENT_BANK ? selectedJournalId : null,
+        selectedBankId: (paymentType === PAYMENT_CHECK || paymentType === PAYMENT_CREDIT) ? journalId : null,
         selectedBankName: selectedJournalName,
         deliveryPhotoUris: deliveryPhotos,
+        cashAmount: paymentType === PAYMENT_CASH ? cashAmountNum : undefined,
       });
     } catch (err) {
       console.error(err);
@@ -261,6 +294,33 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           borderRadius: 14,
         },
         photoHint: { fontSize: 12, color: colors.textSecondary, marginBottom: spacing.md, marginTop: -4 },
+        cashInputWrap: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          backgroundColor: colors.surface,
+          borderRadius: borderRadius.lg,
+          borderWidth: 2,
+          borderColor: colors.border,
+          paddingHorizontal: spacing.md,
+          marginBottom: spacing.lg,
+        },
+        cashInputIcon: { marginRight: spacing.sm },
+        cashInput: { flex: 1, fontSize: 16, color: colors.text, paddingVertical: 14 },
+        cashInputSuffix: { fontSize: 14, fontWeight: '600', color: colors.textSecondary, marginLeft: spacing.sm },
+        creditAmountWrap: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          backgroundColor: colors.surface,
+          borderRadius: borderRadius.lg,
+          borderWidth: 2,
+          borderColor: colors.border,
+          paddingVertical: spacing.md,
+          paddingHorizontal: spacing.lg,
+          marginBottom: spacing.lg,
+          opacity: 0.9,
+        },
+        creditAmountText: { flex: 1, fontSize: 18, fontWeight: '700', color: colors.text },
+        creditAmountHint: { fontSize: 11, color: colors.textSecondary },
         radioRow: { flexDirection: 'row', gap: spacing.md, marginBottom: spacing.lg },
         radioOption: {
           flex: 1,
@@ -268,8 +328,8 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           alignItems: 'center',
           justifyContent: 'center',
           gap: 8,
-          paddingVertical: 14,
-          paddingHorizontal: spacing.sm,
+          paddingVertical: 10,
+          paddingHorizontal: spacing.md,
           borderRadius: borderRadius.md,
           backgroundColor: colors.surface,
           borderWidth: 2,
@@ -394,148 +454,143 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         <Text style={styles.total}>LKR {Number(total).toFixed(2)}</Text>
       </View>
 
-      {/* Payment type: Cash | Bank */}
+      {/* Payment type: Cash | Check | Credit */}
       <Text style={styles.sectionLabel}>Payment method</Text>
       <View style={styles.radioRow}>
         <TouchableOpacity
           style={[styles.radioOption, paymentType === PAYMENT_CASH && styles.radioOptionSelected]}
-          onPress={() => {
-            setPaymentType(PAYMENT_CASH);
-            setSelectedJournalId(null);
-            setJournalSearch('');
-          }}
+          onPress={() => { setPaymentType(PAYMENT_CASH); setSelectedJournalId(null); setJournalSearch(''); }}
           activeOpacity={0.8}
         >
           <View style={[styles.radioCircle, paymentType === PAYMENT_CASH && styles.radioCircleSelected]}>
             {paymentType === PAYMENT_CASH && <View style={styles.radioDot} />}
           </View>
-          <Ionicons
-            name="cash-outline"
-            size={22}
-            color={paymentType === PAYMENT_CASH ? '#fff' : colors.text}
-          />
-          <Text style={[styles.radioLabel, paymentType === PAYMENT_CASH && styles.radioLabelSelected]}>
-            Cash
-          </Text>
+          <Ionicons name="cash-outline" size={22} color={paymentType === PAYMENT_CASH ? '#fff' : colors.text} />
+          <Text style={[styles.radioLabel, paymentType === PAYMENT_CASH && styles.radioLabelSelected]}>Cash</Text>
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={[styles.radioOption, paymentType === PAYMENT_BANK && styles.radioOptionSelected]}
-          onPress={() => setPaymentType(PAYMENT_BANK)}
+          style={[styles.radioOption, paymentType === PAYMENT_CHECK && styles.radioOptionSelected]}
+          onPress={() => { setPaymentType(PAYMENT_CHECK); setSelectedJournalId(null); setJournalSearch(''); }}
           activeOpacity={0.8}
         >
-          <View style={[styles.radioCircle, paymentType === PAYMENT_BANK && styles.radioCircleSelected]}>
-            {paymentType === PAYMENT_BANK && <View style={styles.radioDot} />}
+          <View style={[styles.radioCircle, paymentType === PAYMENT_CHECK && styles.radioCircleSelected]}>
+            {paymentType === PAYMENT_CHECK && <View style={styles.radioDot} />}
           </View>
-          <Ionicons
-            name="card-outline"
-            size={22}
-            color={paymentType === PAYMENT_BANK ? '#fff' : colors.text}
-          />
-          <Text style={[styles.radioLabel, paymentType === PAYMENT_BANK && styles.radioLabelSelected]}>
-            Bank
-          </Text>
+          <Ionicons name="card-outline" size={22} color={paymentType === PAYMENT_CHECK ? '#fff' : colors.text} />
+          <Text style={[styles.radioLabel, paymentType === PAYMENT_CHECK && styles.radioLabelSelected]}>Check</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.radioOption, paymentType === PAYMENT_CREDIT && styles.radioOptionSelected]}
+          onPress={() => { setPaymentType(PAYMENT_CREDIT); setSelectedJournalId(null); setJournalSearch(''); }}
+          activeOpacity={0.8}
+        >
+          <View style={[styles.radioCircle, paymentType === PAYMENT_CREDIT && styles.radioCircleSelected]}>
+            {paymentType === PAYMENT_CREDIT && <View style={styles.radioDot} />}
+          </View>
+          <Ionicons name="wallet-outline" size={22} color={paymentType === PAYMENT_CREDIT ? '#fff' : colors.text} />
+          <Text style={[styles.radioLabel, paymentType === PAYMENT_CREDIT && styles.radioLabelSelected]}>Credit</Text>
         </TouchableOpacity>
       </View>
 
-      {/* Journal list: required for both Cash and Bank (Odoo journals, type bank/cash only) */}
-      <Text style={styles.sectionLabel}>
-        Select journal ({paymentType === PAYMENT_CASH ? 'Cash' : 'Bank'}){' '}
-        <Text style={styles.requiredStar}>*</Text>
-      </Text>
-      {journalsLoading ? (
-        <View style={styles.bankList}>
-          <ActivityIndicator size="small" color={colors.primary} />
-          <Text style={styles.noBanksText}>Loading journals…</Text>
-        </View>
-      ) : selectedJournal && isSelectedJournalValid ? (
-        <View style={styles.selectedBankWrap}>
-          <TouchableOpacity
-            style={styles.bankCardSelectedOnly}
-            onPress={() => {}}
-            activeOpacity={1}
-          >
-            <View style={styles.bankIconWrapSmall}>
-              <Ionicons
-                name={paymentType === PAYMENT_CASH ? 'cash-outline' : 'card-outline'}
-                size={22}
-                color="#fff"
-              />
-            </View>
-            <Text style={styles.bankNameSelectedOnly} numberOfLines={1}>
-              {selectedJournal.name} {selectedJournal.code ? `(${selectedJournal.code})` : ''}
-            </Text>
-            <Ionicons name="checkmark-circle" size={20} color="#fff" />
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.changeBankBtn}
-            onPress={() => {
-              setSelectedJournalId(null);
-              setJournalSearch('');
-            }}
-            activeOpacity={0.8}
-          >
-            <Ionicons name="swap-horizontal-outline" size={18} color={colors.primary} />
-            <Text style={styles.changeBankText}>Change journal</Text>
-          </TouchableOpacity>
-        </View>
-      ) : (
+      {/* Dynamic content: Cash = amount input, Check = journal list, Credit = read-only remaining amount */}
+      {paymentType === PAYMENT_CASH && (
         <>
-          <View style={styles.searchWrap}>
-            <Ionicons name="search-outline" size={20} color={colors.textSecondary} />
+          <Text style={styles.sectionLabel}>Amount Paid <Text style={styles.requiredStar}>*</Text></Text>
+          <View style={styles.cashInputWrap}>
+            <Ionicons name="cash-outline" size={22} color={colors.primary} style={styles.cashInputIcon} />
             <TextInput
-              style={styles.searchInput}
-              value={journalSearch}
-              onChangeText={setJournalSearch}
-              placeholder={`Search ${paymentType === PAYMENT_CASH ? 'cash' : 'bank'} journals…`}
+              style={styles.cashInput}
+              value={cashAmount}
+              onChangeText={setCashAmount}
+              placeholder="Enter amount (e.g. 12000)"
               placeholderTextColor={colors.textSecondary}
-              returnKeyType="search"
+              keyboardType="decimal-pad"
             />
-            {journalSearch.length > 0 && (
-              <TouchableOpacity
-                onPress={() => setJournalSearch('')}
-                style={styles.searchClear}
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              >
-                <Ionicons name="close-circle" size={20} color={colors.textSecondary} />
-              </TouchableOpacity>
-            )}
-          </View>
-          <View style={styles.bankList}>
-            {filteredJournals.map((journal) => (
-              <TouchableOpacity
-                key={journal.id}
-                style={styles.bankCard}
-                onPress={() => setSelectedJournalId(journal.id)}
-                activeOpacity={0.8}
-              >
-                <View style={styles.bankIconWrap}>
-                  <Ionicons
-                    name={journal.type === 'cash' ? 'cash-outline' : 'card-outline'}
-                    size={24}
-                    color={colors.primary}
-                  />
-                </View>
-                <Text style={styles.bankName} numberOfLines={1}>
-                  {journal.name} {journal.code ? `(${journal.code})` : ''}
-                </Text>
-                <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
-              </TouchableOpacity>
-            ))}
-            {filteredJournals.length === 0 && (
-              <Text style={styles.noBanksText}>
-                {journalsForType.length === 0
-                  ? `No ${paymentType === PAYMENT_CASH ? 'cash' : 'bank'} journals in Odoo`
-                  : 'No journals match your search'}
-              </Text>
-            )}
+            <Text style={styles.cashInputSuffix}>LKR</Text>
           </View>
         </>
       )}
 
-      {/* Mandatory: Evidence of delivery photos (max 3) */}
+      {paymentType === PAYMENT_CHECK && (
+        <>
+          <Text style={styles.sectionLabel}>Select journal (Check) <Text style={styles.requiredStar}>*</Text></Text>
+          {journalsLoading ? (
+            <View style={styles.bankList}>
+              <ActivityIndicator size="small" color={colors.primary} />
+              <Text style={styles.noBanksText}>Loading journals…</Text>
+            </View>
+          ) : selectedJournal && isSelectedJournalValid ? (
+            <View style={styles.selectedBankWrap}>
+              <TouchableOpacity style={styles.bankCardSelectedOnly} onPress={() => {}} activeOpacity={1}>
+                <View style={styles.bankIconWrapSmall}>
+                  <Ionicons name="card-outline" size={22} color="#fff" />
+                </View>
+                <Text style={styles.bankNameSelectedOnly} numberOfLines={1}>
+                  {selectedJournal.name} {selectedJournal.code ? `(${selectedJournal.code})` : ''}
+                </Text>
+                <Ionicons name="checkmark-circle" size={20} color="#fff" />
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.changeBankBtn} onPress={() => { setSelectedJournalId(null); setJournalSearch(''); }} activeOpacity={0.8}>
+                <Ionicons name="swap-horizontal-outline" size={18} color={colors.primary} />
+                <Text style={styles.changeBankText}>Change journal</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <>
+              <View style={styles.searchWrap}>
+                <Ionicons name="search-outline" size={20} color={colors.textSecondary} />
+                <TextInput
+                  style={styles.searchInput}
+                  value={journalSearch}
+                  onChangeText={setJournalSearch}
+                  placeholder="Search check journals…"
+                  placeholderTextColor={colors.textSecondary}
+                  returnKeyType="search"
+                />
+                {journalSearch.length > 0 && (
+                  <TouchableOpacity onPress={() => setJournalSearch('')} style={styles.searchClear} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                    <Ionicons name="close-circle" size={20} color={colors.textSecondary} />
+                  </TouchableOpacity>
+                )}
+              </View>
+              <View style={styles.bankList}>
+                {filteredJournals.map((journal) => (
+                  <TouchableOpacity key={journal.id} style={styles.bankCard} onPress={() => setSelectedJournalId(journal.id)} activeOpacity={0.8}>
+                    <View style={styles.bankIconWrap}>
+                      <Ionicons name="card-outline" size={24} color={colors.primary} />
+                    </View>
+                    <Text style={styles.bankName} numberOfLines={1}>{journal.name} {journal.code ? `(${journal.code})` : ''}</Text>
+                    <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
+                  </TouchableOpacity>
+                ))}
+                {filteredJournals.length === 0 && (
+                  <Text style={styles.noBanksText}>
+                    {journalsForType.length === 0 ? 'No check journals in Odoo' : 'No journals match your search'}
+                  </Text>
+                )}
+              </View>
+            </>
+          )}
+        </>
+      )}
+
+      {paymentType === PAYMENT_CREDIT && (
+        <>
+          <Text style={styles.sectionLabel}>Credit amount (remaining)</Text>
+          <View style={styles.creditAmountWrap}>
+            <Ionicons name="wallet-outline" size={24} color={colors.textSecondary} />
+            <Text style={styles.creditAmountText}>LKR {orderTotal.toFixed(2)}</Text>
+            <Text style={styles.creditAmountHint}>Auto-filled • Not editable</Text>
+          </View>
+        </>
+      )}
+
+      {/* Evidence: required for Check/Credit; optional for Cash (no red star) */}
       <Text style={styles.sectionLabel}>
-        Evidence of delivery <Text style={styles.requiredStar}>*</Text>
+        Evidence of delivery
+        {evidenceRequired && <Text style={styles.requiredStar}> *</Text>}
         {deliveryPhotos.length > 0 && (
           <Text style={styles.photoCount}> ({deliveryPhotos.length}/{MAX_PHOTOS})</Text>
         )}
@@ -609,7 +664,9 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         </View>
       )}
       {deliveryPhotos.length === 0 && (
-        <Text style={styles.photoHint}>Attach at least 1 photo (max {MAX_PHOTOS}) as evidence of delivery</Text>
+        <Text style={styles.photoHint}>
+          {evidenceRequired ? `Attach at least 1 photo (max ${MAX_PHOTOS}) as evidence of delivery` : `Optional: attach up to ${MAX_PHOTOS} photos as evidence`}
+        </Text>
       )}
       {deliveryPhotos.length >= 1 && deliveryPhotos.length < MAX_PHOTOS && (
         <Text style={styles.photoHint}>You can add up to {MAX_PHOTOS - deliveryPhotos.length} more</Text>
