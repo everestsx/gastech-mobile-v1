@@ -17,6 +17,7 @@ import { spacing, borderRadius } from '../constants/theme';
 import {
   getCachedOrders,
   getOrderLineTotalsFromDB,
+  getOrderLinesByOrderIdsFromDB,
   getPickingsBySaleIdsFromDB,
 } from '../services/sync.service';
 import OrderCard from '../components/OrderCard';
@@ -180,9 +181,11 @@ export default function SaleOrderListScreen({ route, navigation }) {
       if (customerId != null) {
         list = list.filter((o) => o.partner_id?.[0] === customerId);
       }
-      const [totals, pickings] = await Promise.all([
+      const orderIds = list.map((o) => o.id);
+      const [totals, pickings, allLines] = await Promise.all([
         getOrderLineTotalsFromDB(list),
-        getPickingsBySaleIdsFromDB(list.map((o) => o.id)),
+        getPickingsBySaleIdsFromDB(orderIds),
+        getOrderLinesByOrderIdsFromDB(orderIds),
       ]);
       const saleIdToPickingState = {};
       (pickings || []).forEach((p) => {
@@ -192,11 +195,20 @@ export default function SaleOrderListScreen({ route, navigation }) {
           else if (saleIdToPickingState[saleId] !== 'done') saleIdToPickingState[saleId] = p.state;
         }
       });
+      const linesByOrderId = {};
+      (allLines || []).forEach((line) => {
+        const oid = Array.isArray(line.order_id) ? line.order_id[0] : line.order_id;
+        if (oid != null) {
+          if (!linesByOrderId[oid]) linesByOrderId[oid] = [];
+          linesByOrderId[oid].push(line);
+        }
+      });
       setOrders(
         list.map((o) => ({
           ...o,
           totalQty: totals[o.id] != null ? totals[o.id] : null,
           isDelivered: saleIdToPickingState[o.id] === 'done',
+          orderLines: linesByOrderId[o.id] || [],
         }))
       );
     } catch (err) {

@@ -156,6 +156,17 @@ export async function getOrderLineTotalsFromDB(orders) {
   }
 }
 
+/** Order lines by order id from DB (for list item-wise badges). Returns flat array; group by order_id in caller. */
+export async function getOrderLinesByOrderIdsFromDB(orderIds) {
+  if (!orderIds?.length) return [];
+  try {
+    return await saleOrderLinesDb.getSaleOrderLinesByOrderIds(orderIds);
+  } catch (e) {
+    console.warn('getOrderLinesByOrderIdsFromDB', e);
+    return [];
+  }
+}
+
 export async function getLastSyncTime() {
   try {
     return await syncLogDb.getLastSyncTime();

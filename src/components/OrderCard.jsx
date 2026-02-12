@@ -8,37 +8,62 @@ function formatCurrency(amount) {
   return `LKR ${Number(amount).toFixed(2)}`;
 }
 
+/** Format date_order (ISO or date string) for display. */
+function formatOrderDate(dateOrder) {
+  if (!dateOrder) return '—';
+  const str = String(dateOrder);
+  const datePart = str.split('T')[0] || str;
+  try {
+    const d = new Date(datePart);
+    if (Number.isNaN(d.getTime())) return datePart;
+    return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+  } catch {
+    return datePart;
+  }
+}
+
+/** Shortcode for product: first word or first 6 chars of name. */
+function productShortcode(name) {
+  if (!name || typeof name !== 'string') return 'Item';
+  const trimmed = name.trim();
+  const firstWord = trimmed.split(/\s+/)[0];
+  if (firstWord && firstWord.length <= 8) return firstWord;
+  return trimmed.slice(0, 6);
+}
+
 export function getOrderTotalQty(order) {
   if (order?.totalQty != null && order.totalQty !== '') {
     return order.totalQty;
   }
-  const lines = order?.order_line;
+  const lines = order?.orderLines || order?.order_line;
   if (Array.isArray(lines) && lines.length > 0) {
+    if (lines[0] && typeof lines[0].product_uom_qty === 'number') {
+      return lines.reduce((s, l) => s + (Number(l.product_uom_qty) || 0), 0);
+    }
     return lines.length;
   }
   return '—';
 }
 
-function getInvoiceStatusLabel(invoiceStatus) {
-  if (!invoiceStatus) return null;
-  switch (String(invoiceStatus)) {
-    case 'invoiced':
-      return 'Invoiced';
-    case 'to invoice':
-      return 'To invoice';
-    case 'no':
-      return 'No invoice';
-    default:
-      return invoiceStatus;
-  }
-}
-
 /**
- * Reusable sale order card: order no, state badge, customer, amount with total qty below,
- * invoice status, date. Used by Daily Visit and Orders screens.
+ * Order card: Customer name (bold), Order ID (normal), date below name.
+ * Top right: Order Type badge + Order Status badge (To Deliver / Invoiced / Delivered).
+ * Total amount; item-wise quantity badges (qty + shortcode) with color coding.
  */
-export default function OrderCard({ order, onPress, isDelivered }) {
+export default function OrderCard({ order, onPress, isDelivered, orderLines = [] }) {
   const { colors } = useTheme();
+
+  const ITEM_BADGE_COLORS = useMemo(
+    () => [
+      colors.primary,
+      colors.success ?? '#059669',
+      colors.warning ?? '#d97706',
+      colors.primaryLight ?? '#818cf8',
+      colors.secondary ?? '#4338ca',
+    ],
+    [colors]
+  );
+
   const styles = useMemo(
     () =>
       StyleSheet.create({
@@ -58,43 +83,40 @@ export default function OrderCard({ order, onPress, isDelivered }) {
           justifyContent: 'space-between',
           alignItems: 'center',
         },
-        orderNo: { fontSize: 16, fontWeight: '700', color: colors.text, marginBottom: 4 },
-        badge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
+        orderId: { fontSize: 14, fontWeight: '400', color: colors.textSecondary },
+        customerName: { fontSize: 16, fontWeight: '700', color: colors.text, flex: 1, marginTop: 2 },
+        badgesRight: { flexDirection: 'row', alignItems: 'center', gap: 14 },
+        badge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 10 },
         badgeSale: { backgroundColor: colors.success },
         badgeDraft: { backgroundColor: colors.warning },
         badgeCancel: { backgroundColor: colors.error },
-        badgeDelivered: { backgroundColor: colors.primary },
-        badgeText: { fontSize: 11, fontWeight: '700', color: '#fff' },
-        customer: { fontSize: 15, color: colors.textSecondary, marginTop: 6, marginBottom: 10 },
-        amountBlock: { alignItems: 'flex-end', marginTop: 4 },
+        badgeStatusToDeliver: { backgroundColor: '#93c5fd' },
+        badgeStatusInvoiced: { backgroundColor: colors.primarySurface || '#e0e7ff' },
+        badgeStatusDelivered: { backgroundColor: colors.primaryDark || colors.secondary || '#4f46e5' },
+        badgeText: { fontSize: 10, fontWeight: '700', color: '#fff' },
+        badgeStatusText: { fontSize: 12, fontWeight: '700', color: '#fff' },
+        badgeStatusTextInvoiced: { fontSize: 11, fontWeight: '600', color: colors.text },
+        dateAmountRow: { marginTop: 4 },
+        orderDate: { fontSize: 12, color: colors.textSecondary },
         amount: { fontSize: 16, fontWeight: '800', color: colors.primary },
-        totalQtyUnder: { fontSize: 12, color: colors.textSecondary, marginTop: 6 },
-        footer: {
+        qtyBadgesRow: {
           flexDirection: 'row',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          marginTop: spacing.md,
-          paddingTop: spacing.md,
-          borderTopWidth: 1,
-          borderTopColor: colors.border,
-        },
-        invoiceBadge: {
-          flexDirection: 'row',
+          flexWrap: 'wrap',
           alignItems: 'center',
           gap: 6,
-          paddingHorizontal: 10,
-          paddingVertical: 6,
-          borderRadius: 10,
+          marginTop: 4,
         },
-        invoiceBadgeInvoiced: { backgroundColor: colors.primarySurface || '#e0e7ff' },
-        invoiceBadgeToInvoice: { backgroundColor: colors.warning + '22' },
-        invoiceBadgeText: { fontSize: 11, fontWeight: '600', color: colors.text },
-        date: { fontSize: 12, color: colors.textSecondary, marginLeft: spacing.sm },
+        qtyBadge: {
+          paddingHorizontal: 8,
+          paddingVertical: 4,
+          borderRadius: 8,
+        },
+        qtyBadgeText: { fontSize: 11, fontWeight: '700', color: '#fff' },
       }),
     [colors]
   );
 
-  function getStatusBadgeStyle(state) {
+  function getOrderTypeBadgeStyle(state) {
     switch (state) {
       case 'sale':
         return styles.badgeSale;
@@ -106,18 +128,26 @@ export default function OrderCard({ order, onPress, isDelivered }) {
     }
   }
 
-  function getInvoiceBadgeStyle(invoiceStatus) {
-    return String(invoiceStatus) === 'invoiced'
-      ? styles.invoiceBadgeInvoiced
-      : styles.invoiceBadgeToInvoice;
+  function getOrderStatusLabel() {
+    if (isDelivered) return 'Delivered';
+    if (String(order?.invoice_status) === 'invoiced') return 'Invoiced';
+    return 'To Deliver';
   }
+
+  function getOrderStatusBadgeStyle() {
+    if (isDelivered) return styles.badgeStatusDelivered;
+    if (String(order?.invoice_status) === 'invoiced') return styles.badgeStatusInvoiced;
+    return styles.badgeStatusToDeliver;
+  }
+
+  const isStatusDarkText = String(order?.invoice_status) === 'invoiced';
 
   if (!order) return null;
 
   const state = order.state || 'draft';
-  const totalQty = getOrderTotalQty(order);
-  const invoiceStatus = order.invoice_status;
-  const invoiceLabel = getInvoiceStatusLabel(invoiceStatus);
+  const lines = Array.isArray(orderLines) && orderLines.length > 0
+    ? orderLines
+    : (order.orderLines || []);
 
   return (
     <TouchableOpacity
@@ -125,49 +155,60 @@ export default function OrderCard({ order, onPress, isDelivered }) {
       onPress={() => onPress?.(order)}
       activeOpacity={0.8}
     >
+      {/* Row 1: Order ID (left); Order Type + Order Status badges (right) */}
       <View style={styles.rowBetween}>
-        <Text style={styles.orderNo}>{order.name}</Text>
-        <View style={[styles.badge, isDelivered ? styles.badgeDelivered : getStatusBadgeStyle(state)]}>
-          <Text style={styles.badgeText}>
-            {isDelivered ? 'DELIVERED' : String(state).toUpperCase()}
-          </Text>
+        <Text style={styles.orderId} numberOfLines={1}>
+          {order.name || '—'}
+        </Text>
+        <View style={styles.badgesRight}>
+          <View style={[styles.badge, getOrderTypeBadgeStyle(state)]}>
+            <Text style={styles.badgeText}>{String(state).toUpperCase()}</Text>
+          </View>
+          <View style={[styles.badge, getOrderStatusBadgeStyle()]}>
+            <Text
+              style={isStatusDarkText ? styles.badgeStatusTextInvoiced : styles.badgeStatusText}
+            >
+              {getOrderStatusLabel()}
+            </Text>
+          </View>
         </View>
       </View>
-      <Text style={styles.customer} numberOfLines={1}>
+
+      {/* Row 2: Customer name (bold) */}
+      <Text style={styles.customerName} numberOfLines={1}>
         {order.partner_id?.[1] || '—'}
       </Text>
 
-      <View style={styles.rowBetween}>
-        <View />
-        <View style={styles.amountBlock}>
-          <Text style={styles.amount}>{formatCurrency(order.amount_total)}</Text>
-          <Text style={styles.totalQtyUnder}>
-            {isDelivered
-              ? `Qty delivered: ${typeof totalQty === 'number' ? totalQty : totalQty}`
-              : `Total qty: ${typeof totalQty === 'number' ? totalQty : totalQty}`}
-          </Text>
-        </View>
+      {/* Row 3: Order date (left); Total amount (right), horizontally aligned */}
+      <View style={[styles.rowBetween, styles.dateAmountRow]}>
+        <Text style={styles.orderDate}>{formatOrderDate(order.date_order)}</Text>
+        <Text style={styles.amount}>{formatCurrency(order.amount_total)}</Text>
       </View>
 
-      <View style={styles.footer}>
-        {invoiceLabel ? (
-          <View style={[styles.invoiceBadge, getInvoiceBadgeStyle(invoiceStatus)]}>
-            <Ionicons
-              name={invoiceStatus === 'invoiced' ? 'checkmark-circle' : 'document-text-outline'}
-              size={14}
-              color={colors.primary}
-            />
-            <Text style={styles.invoiceBadgeText}>{invoiceLabel}</Text>
+      {/* Item-wise quantity badges: just below top items, less margin */}
+      {lines.length > 0 ? (
+        <View style={styles.qtyBadgesRow}>
+          {lines.map((line, index) => {
+            const qty = Number(line.product_uom_qty) || 0;
+            const label = line.name || line.product_id?.[1] || 'Item';
+            const shortcode = productShortcode(label);
+            const bg = ITEM_BADGE_COLORS[index % ITEM_BADGE_COLORS.length];
+            return (
+              <View key={line.id || index} style={[styles.qtyBadge, { backgroundColor: bg }]}>
+                <Text style={styles.qtyBadgeText}>{qty} {shortcode}</Text>
+              </View>
+            );
+          })}
+        </View>
+      ) : (
+        <View style={styles.qtyBadgesRow}>
+          <View style={[styles.qtyBadge, { backgroundColor: colors.border }]}>
+            <Text style={[styles.qtyBadgeText, { color: colors.textSecondary }]}>
+              Qty: {getOrderTotalQty(order)}
+            </Text>
           </View>
-        ) : (
-          <View style={styles.invoiceBadge}>
-            <Text style={styles.invoiceBadgeText}>—</Text>
-          </View>
-        )}
-        {order.date_order ? (
-          <Text style={styles.date}>{order.date_order}</Text>
-        ) : null}
-      </View>
+        </View>
+      )}
     </TouchableOpacity>
   );
 }
