@@ -31,6 +31,15 @@ function formatCurrency(amount) {
   return `LKR ${Number(amount).toFixed(2)}`;
 }
 
+/** Format number with space as thousands separator (e.g. 12 000). */
+function formatWithSpace(amount) {
+  const n = Number(amount);
+  if (Number.isNaN(n)) return '0';
+  const [int, dec] = n.toFixed(2).split('.');
+  const withSpaces = int.replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+  return dec === '00' ? withSpaces : `${withSpaces}.${dec}`;
+}
+
 export default function SaleOrderDetailsScreen({ route, navigation }) {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
@@ -53,9 +62,20 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
         scroll: { flex: 1 },
         scrollContent: { padding: spacing.md, paddingBottom: 24 },
         errorText: { fontSize: 16, color: colors.textSecondary },
-        customerRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.md, paddingVertical: 4 },
+        customerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.md, paddingVertical: 4 },
+        customerLeft: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, flex: 1, minWidth: 0 },
         customerLabel: { fontSize: 14, fontWeight: '600', color: colors.textSecondary },
         customerName: { fontSize: 16, fontWeight: '600', color: colors.text, flex: 1 },
+        modifyUpdateBtn: {
+          paddingVertical: 6,
+          paddingHorizontal: 12,
+          borderRadius: borderRadius.md,
+          borderWidth: 1.5,
+          borderColor: colors.primary,
+        },
+        modifyUpdateBtnUpdate: { backgroundColor: colors.warning, borderColor: colors.warning },
+        modifyUpdateBtnText: { fontSize: 13, fontWeight: '700', color: colors.primary },
+        modifyUpdateBtnTextUpdate: { color: '#fff' },
         changedBanner: {
           flexDirection: 'row',
           alignItems: 'center',
@@ -72,6 +92,23 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
         sectionTitle: { fontSize: 16, fontWeight: '700', color: colors.text, marginBottom: spacing.sm },
         emptyLines: { padding: spacing.lg, alignItems: 'center' },
         emptyText: { fontSize: 15, color: colors.textSecondary },
+        grossTotalCard: {
+          backgroundColor: colors.surface,
+          padding: spacing.lg,
+          borderRadius: borderRadius.lg,
+          marginBottom: spacing.lg,
+          elevation: 2,
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: 2 },
+          shadowOpacity: 0.06,
+          shadowRadius: 4,
+        },
+        grossRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
+        grossTotalRow: { marginTop: 6, paddingTop: spacing.sm, borderTopWidth: 1, borderTopColor: colors.border, marginBottom: 0 },
+        grossLabel: { fontSize: 14, color: colors.textSecondary },
+        grossValue: { fontSize: 14, fontWeight: '600', color: colors.text },
+        grossTotalLabel: { fontSize: 16, fontWeight: '700', color: colors.text },
+        grossTotalValue: { fontSize: 22, fontWeight: '800', color: colors.primary },
         lineCard: {
           backgroundColor: colors.surface,
           padding: spacing.md,
@@ -83,49 +120,41 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
           shadowOpacity: 0.06,
           shadowRadius: 4,
         },
-        lineProductName: { fontSize: 16, fontWeight: '700', color: colors.text, marginBottom: spacing.sm },
-        qtyPriceRow: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', marginTop: 4, gap: spacing.md },
-        qtyBlock: { flex: 1, alignItems: 'flex-end' },
-        unitPriceBlock: { alignItems: 'flex-start', minWidth: 90 },
-        lineRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 },
-        lineTotalRow: { marginTop: spacing.sm, paddingTop: spacing.sm, borderTopWidth: 1, borderTopColor: colors.border },
-        lineLabel: { fontSize: 14, color: colors.textSecondary },
-        lineValue: { fontSize: 14, fontWeight: '600', color: colors.text },
+        lineProductName: { fontSize: 16, fontWeight: '700', color: colors.text, marginBottom: 8 },
+        lineOneRow: {
+          flexDirection: 'row',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          marginTop: 4,
+        },
+        lineLeftExpr: { fontSize: 15, fontWeight: '600', color: colors.text },
+        lineRightTotal: { fontSize: 15, fontWeight: '700', color: colors.primary },
         qtyInput: {
           fontSize: 16,
           fontWeight: '700',
           color: colors.text,
-          borderWidth: 1,
-          borderColor: colors.primary,
-          borderRadius: borderRadius.sm,
-          paddingVertical: 6,
-          paddingHorizontal: 10,
-          minWidth: 56,
-          width: 56,
+          borderWidth: 1.5,
+          borderColor: colors.border,
+          borderRadius: borderRadius.md,
+          paddingVertical: 8,
+          paddingHorizontal: 12,
+          minWidth: 52,
+          width: 52,
           textAlign: 'center',
+          backgroundColor: colors.background,
         },
-        qtyControls: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginTop: 2 },
-        qtyIconBtn: { padding: 8, alignItems: 'center', justifyContent: 'center' },
-        qtyValue: { fontSize: 16, fontWeight: '700', color: colors.text, marginTop: 2 },
-        lineTotalLabel: { fontSize: 14, fontWeight: '700', color: colors.text },
-        lineTotalValue: { fontSize: 16, fontWeight: '800', color: colors.primary },
-        summaryCard: {
-          backgroundColor: colors.surface,
-          padding: spacing.md,
-          borderRadius: borderRadius.lg,
-          marginTop: spacing.md,
-          elevation: 2,
-          shadowColor: '#000',
-          shadowOffset: { width: 0, height: 2 },
-          shadowOpacity: 0.06,
-          shadowRadius: 4,
+        qtyControls: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 8 },
+        qtyIconBtn: {
+          width: 40,
+          height: 40,
+          borderRadius: 20,
+          backgroundColor: colors.background,
+          alignItems: 'center',
+          justifyContent: 'center',
+          borderWidth: 1,
+          borderColor: colors.border,
         },
-        summaryRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
-        summaryTotalRow: { marginTop: 6, paddingTop: spacing.sm, borderTopWidth: 1, borderTopColor: colors.border, marginBottom: 0 },
-        summaryLabel: { fontSize: 14, color: colors.textSecondary },
-        summaryValue: { fontSize: 14, fontWeight: '600', color: colors.text },
-        summaryTotalLabel: { fontSize: 16, fontWeight: '700', color: colors.text },
-        summaryTotalValue: { fontSize: 18, fontWeight: '800', color: colors.text },
+        qtyValue: { fontSize: 16, fontWeight: '600', color: colors.text },
         bottomSpacer: { height: 200 + insets.bottom },
         bottomBar: {
           position: 'absolute',
@@ -142,30 +171,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
           shadowOffset: { width: 0, height: -2 },
           shadowOpacity: 0.08,
           shadowRadius: 6,
-          gap: spacing.sm,
         },
-        modifyBtn: {
-          flexDirection: 'row',
-          alignItems: 'center',
-          justifyContent: 'center',
-          gap: 8,
-          paddingVertical: 12,
-          borderRadius: borderRadius.md,
-          borderWidth: 2,
-          borderColor: colors.primary,
-          backgroundColor: 'transparent',
-        },
-        modifyBtnText: { fontSize: 15, fontWeight: '700', color: colors.primary },
-        updateBtn: {
-          flexDirection: 'row',
-          alignItems: 'center',
-          justifyContent: 'center',
-          gap: 8,
-          paddingVertical: 14,
-          borderRadius: borderRadius.md,
-          backgroundColor: colors.warning,
-        },
-        updateBtnText: { fontSize: 16, fontWeight: '700', color: '#fff' },
         payBtn: {
           flexDirection: 'row',
           alignItems: 'center',
@@ -376,9 +382,11 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
     const qtyNum = Number(item.newQty);
     const qtyChangedForLine =
       Number(item.newQty) !== Number(item.product_uom_qty);
+    const unitPrice = Number(item.price_unit) || 0;
     const displayLineTotal = qtyChangedForLine
-      ? (item.price_unit ?? 0) * (Number.isNaN(qtyNum) ? 0 : qtyNum)
+      ? unitPrice * (Number.isNaN(qtyNum) ? 0 : qtyNum)
       : (item.price_total ?? 0);
+    const qtyDisplay = Number.isNaN(qtyNum) ? 0 : qtyNum;
 
     return (
       <View style={styles.lineCard}>
@@ -386,54 +394,44 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
           {item.product_id?.[1] ?? '—'}
         </Text>
 
-        {/* Unit price (left) and Quantity (right) on one line */}
-        <View style={styles.qtyPriceRow}>
-          <View style={styles.unitPriceBlock}>
-            <Text style={styles.lineLabel}>Unit price</Text>
-            <Text style={styles.lineValue}>
-              {formatCurrency(item.price_unit ?? 0)}
-            </Text>
-          </View>
-          <View style={styles.qtyBlock}>
-            <Text style={styles.lineLabel}>Quantity</Text>
-            {!isDelivered && modifyEnabled ? (
-              <View style={styles.qtyControls}>
-                <TouchableOpacity
-                  style={styles.qtyIconBtn}
-                  onPress={() => changeQtyBy(item.id, -1)}
-                  activeOpacity={0.8}
-                >
-                  <Ionicons name="remove" size={24} color={colors.primary} />
-                </TouchableOpacity>
-                <TextInput
-                  style={styles.qtyInput}
-                  value={item.newQty}
-                  onChangeText={(text) => setLineQty(item.id, text)}
-                  keyboardType="decimal-pad"
-                  placeholder="0"
-                  placeholderTextColor={colors.textSecondary}
-                  selectTextOnFocus
-                />
-                <TouchableOpacity
-                  style={styles.qtyIconBtn}
-                  onPress={() => changeQtyBy(item.id, 1)}
-                  activeOpacity={0.8}
-                >
-                  <Ionicons name="add" size={24} color={colors.primary} />
-                </TouchableOpacity>
-              </View>
-            ) : (
-              <Text style={styles.qtyValue}>{item.newQty}</Text>
-            )}
-          </View>
+        {/* One line: qty × unit price (left)    line total (right), space-styled */}
+        <View style={styles.lineOneRow}>
+          <Text style={styles.lineLeftExpr} numberOfLines={1}>
+            {qtyDisplay} × {formatWithSpace(unitPrice)}
+          </Text>
+          <Text style={styles.lineRightTotal}>{formatWithSpace(displayLineTotal)}</Text>
         </View>
 
-        <View style={[styles.lineRow, styles.lineTotalRow]}>
-          <Text style={styles.lineTotalLabel}>Line total</Text>
-          <Text style={styles.lineTotalValue}>
-            {formatCurrency(displayLineTotal)}
-          </Text>
-        </View>
+        {/* Quantity modify: same behaviour, modern UI */}
+        {!isDelivered && modifyEnabled ? (
+          <View style={styles.qtyControls}>
+            <TouchableOpacity
+              style={styles.qtyIconBtn}
+              onPress={() => changeQtyBy(item.id, -1)}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="remove" size={22} color={colors.primary} />
+            </TouchableOpacity>
+            <TextInput
+              style={styles.qtyInput}
+              value={item.newQty}
+              onChangeText={(text) => setLineQty(item.id, text)}
+              keyboardType="decimal-pad"
+              placeholder="0"
+              placeholderTextColor={colors.textSecondary}
+              selectTextOnFocus
+            />
+            <TouchableOpacity
+              style={styles.qtyIconBtn}
+              onPress={() => changeQtyBy(item.id, 1)}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="add" size={22} color={colors.primary} />
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <Text style={[styles.qtyValue, { marginTop: 4 }]}>Qty: {item.newQty}</Text>
+        )}
       </View>
     );
   };
@@ -468,19 +466,45 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
-        {/* Customer - compact: left label + name */}
+        {/* Customer (left) + Modify / Update (top right) */}
         <View style={styles.customerRow}>
-          <Text style={styles.customerLabel}>Customer</Text>
-          <Text style={styles.customerName} numberOfLines={1}>
-            {order.partner_id?.[1] ?? '—'}
-          </Text>
+          <View style={styles.customerLeft}>
+            <Text style={styles.customerLabel}>Customer: </Text>
+            <Text style={styles.customerName} numberOfLines={1}>
+              {order.partner_id?.[1] ?? '—'}
+            </Text>
+          </View>
+          {!isDelivered && (
+            modifyEnabled ? (
+              <TouchableOpacity
+                style={[styles.modifyUpdateBtn, styles.modifyUpdateBtnUpdate]}
+                onPress={updateQty}
+                disabled={updating}
+                activeOpacity={0.8}
+              >
+                {updating ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Text style={[styles.modifyUpdateBtnText, styles.modifyUpdateBtnTextUpdate]}>Update</Text>
+                )}
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity
+                style={styles.modifyUpdateBtn}
+                onPress={() => setModifyEnabled(true)}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.modifyUpdateBtnText}>Modify</Text>
+              </TouchableOpacity>
+            )
+          )}
         </View>
 
         {!isDelivered && qtyChanged && (
           <View style={styles.changedBanner}>
             <Ionicons name="pencil" size={18} color={colors.warning} />
             <Text style={styles.changedBannerText}>
-              Quantities changed. Tap "Update quantity" to save.
+              Quantities changed. Tap "Update" (top right) to save.
             </Text>
           </View>
         )}
@@ -494,7 +518,40 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
           </View>
         )}
 
-        {/* Order lines */}
+        {/* Gross Total on top: Subtotal, Tax, Total (same as before) */}
+        <View style={styles.grossTotalCard}>
+          <View style={styles.grossRow}>
+            <Text style={styles.grossLabel}>Subtotal</Text>
+            <Text style={styles.grossValue}>
+              {formatCurrency(order.amount_untaxed)}
+            </Text>
+          </View>
+          <View style={styles.grossRow}>
+            <Text style={styles.grossLabel}>Tax</Text>
+            <Text style={styles.grossValue}>
+              {formatCurrency(order.amount_tax)}
+            </Text>
+          </View>
+          <View style={[styles.grossRow, styles.grossTotalRow]}>
+            <Text style={styles.grossTotalLabel}>
+              Total{qtyChanged ? ' (unsaved)' : ''}
+            </Text>
+            <Text style={styles.grossTotalValue}>
+              {formatCurrency(
+                qtyChanged && lines.length
+                  ? lines.reduce(
+                      (sum, l) =>
+                        sum +
+                        (Number(l.newQty) || 0) * (Number(l.price_unit) || 0),
+                      0
+                    )
+                  : order.amount_total
+              )}
+            </Text>
+          </View>
+        </View>
+
+        {/* Order lines below */}
         <Text style={styles.sectionTitle}>Order lines</Text>
         {lines.length === 0 ? (
           <View style={styles.emptyLines}>
@@ -506,64 +563,11 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
           ))
         )}
 
-        {/* Summary */}
-        <View style={styles.summaryCard}>
-          <View style={styles.summaryRow}>
-            <Text style={styles.summaryLabel}>Subtotal</Text>
-            <Text style={styles.summaryValue}>
-              {formatCurrency(order.amount_untaxed)}
-            </Text>
-          </View>
-          <View style={styles.summaryRow}>
-            <Text style={styles.summaryLabel}>Tax</Text>
-            <Text style={styles.summaryValue}>
-              {formatCurrency(order.amount_tax)}
-            </Text>
-          </View>
-          <View style={[styles.summaryRow, styles.summaryTotalRow]}>
-            <Text style={styles.summaryTotalLabel}>Total</Text>
-            <Text style={styles.summaryTotalValue}>
-              {formatCurrency(order.amount_total)}
-            </Text>
-          </View>
-        </View>
-
         <View style={styles.bottomSpacer} />
       </ScrollView>
 
-      {/* Bottom bar: when delivered only "Proceed to payment"; otherwise modify + proceed */}
+      {/* Bottom bar: only Proceed to payment */}
       <View style={styles.bottomBar}>
-        {!isDelivered && (
-          modifyEnabled ? (
-            <TouchableOpacity
-              style={styles.updateBtn}
-              onPress={updateQty}
-              disabled={updating}
-              activeOpacity={0.8}
-            >
-              {updating ? (
-                <ActivityIndicator size="small" color="#fff" />
-              ) : (
-                <>
-                  <Ionicons name="checkmark-circle-outline" size={20} color="#fff" />
-                  <Text style={styles.updateBtnText}>Update quantity</Text>
-                </>
-              )}
-            </TouchableOpacity>
-          ) : (
-            <TouchableOpacity
-              style={styles.modifyBtn}
-              onPress={() => setModifyEnabled(true)}
-              activeOpacity={0.8}
-            >
-              <Ionicons name="create-outline" size={20} color={colors.primary} />
-              <Text style={styles.modifyBtnText} numberOfLines={1}>
-                Enable modify
-              </Text>
-            </TouchableOpacity>
-          )
-        )}
-
         <TouchableOpacity
           style={[styles.payBtn, !canPay && styles.payBtnDisabled]}
           onPress={() => {

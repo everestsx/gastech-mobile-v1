@@ -159,7 +159,7 @@ function MainStackScreen() {
       <MainStack.Screen
         name="SaleOrderDetails"
         component={SaleOrderDetailsScreen}
-        options={{ ...headerScreenOptions, title: 'Order details' }}
+        options={{ ...headerScreenOptions, title: 'Order Details' }}
       />
       <MainStack.Screen
         name="ProceedPayment"
