@@ -19,7 +19,7 @@ function formatCurrency(amount) {
   return `LKR ${Number(amount).toFixed(2)}`;
 }
 
-function buildInvoiceHtml(order, lines, paymentType, selectedBankName) {
+function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSplit) {
   const date = order?.date_order
     ? new Date(order.date_order).toLocaleDateString('en-LK', {
         year: 'numeric',
@@ -30,11 +30,17 @@ function buildInvoiceHtml(order, lines, paymentType, selectedBankName) {
   const customerName = order?.partner_id?.[1] ?? '—';
   const orderNo = order?.name ?? '—';
   const paymentLabel =
-    (paymentType === 'bank' || paymentType === 'check') && selectedBankName
-      ? `Check: ${selectedBankName}`
-      : paymentType === 'credit' && selectedBankName
-        ? `Credit: ${selectedBankName}`
-        : 'Cash';
+    paymentType === 'split' && paymentSplit
+      ? [
+          paymentSplit.cash > 0 && `Cash ${formatCurrency(paymentSplit.cash)}`,
+          paymentSplit.check > 0 && `Check ${formatCurrency(paymentSplit.check)}`,
+          paymentSplit.credit > 0 && `Credit ${formatCurrency(paymentSplit.credit)}`,
+        ].filter(Boolean).join(' • ') || 'Payment'
+      : (paymentType === 'bank' || paymentType === 'check') && selectedBankName
+        ? `Check: ${selectedBankName}`
+        : paymentType === 'credit' && selectedBankName
+          ? `Credit: ${selectedBankName}`
+          : 'Cash';
 
   const rows =
     (lines || [])
@@ -102,6 +108,7 @@ export default function InvoiceScreen({ route, navigation }) {
     total,
     paymentType,
     selectedBankName,
+    paymentSplit,
   } = route.params ?? {};
 
   const [order, setOrder] = useState(null);
@@ -232,7 +239,7 @@ export default function InvoiceScreen({ route, navigation }) {
     if (!order) return;
     setPrinting(true);
     try {
-      const html = buildInvoiceHtml(order, lines, paymentType, selectedBankName);
+      const html = buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSplit);
       await Print.printAsync({
         html,
       });
@@ -248,11 +255,17 @@ export default function InvoiceScreen({ route, navigation }) {
   };
 
   const paymentLabel =
-    (paymentType === 'bank' || paymentType === 'check') && selectedBankName
-      ? `Check: ${selectedBankName}`
-      : paymentType === 'credit' && selectedBankName
-        ? `Credit: ${selectedBankName}`
-        : 'Cash';
+    paymentType === 'split' && paymentSplit
+      ? [
+          paymentSplit.cash > 0 && `Cash ${formatCurrency(paymentSplit.cash)}`,
+          paymentSplit.check > 0 && `Check ${formatCurrency(paymentSplit.check)}`,
+          paymentSplit.credit > 0 && `Credit ${formatCurrency(paymentSplit.credit)}`,
+        ].filter(Boolean).join(' • ') || 'Payment'
+      : (paymentType === 'bank' || paymentType === 'check') && selectedBankName
+        ? `Check: ${selectedBankName}`
+        : paymentType === 'credit' && selectedBankName
+          ? `Credit: ${selectedBankName}`
+          : 'Cash';
 
   if (loading) {
     return (

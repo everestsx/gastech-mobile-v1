@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback } from 'react';
+import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -49,7 +49,11 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   const [selectedJournalId, setSelectedJournalId] = useState(null);
   const [journalSearch, setJournalSearch] = useState('');
   const [cashAmount, setCashAmount] = useState('');
+  const [checkAmount, setCheckAmount] = useState('');
+  const [checkNumber, setCheckNumber] = useState('');
   const [deliveryPhotos, setDeliveryPhotos] = useState([]);
+  const [cashEditMode, setCashEditMode] = useState(false);
+  const cashInputRef = useRef(null);
 
   const MAX_PHOTOS = 3;
 
@@ -83,14 +87,25 @@ export default function ProceedPaymentScreen({ route, navigation }) {
     return Number.isFinite(n) && n >= 0 ? n : 0;
   }, [cashAmount]);
 
-  const paymentComplete =
-    paymentType === PAYMENT_CASH
-      ? cashAmountNum > 0 && cashJournals.length > 0
-      : paymentType === PAYMENT_CHECK
-        ? !!isSelectedJournalValid
-        : paymentType === PAYMENT_CREDIT && bankJournals.length > 0;
+  const checkAmountNum = useMemo(() => {
+    const n = parseFloat(String(checkAmount).replace(/,/g, ''));
+    return Number.isFinite(n) && n >= 0 ? n : 0;
+  }, [checkAmount]);
 
-  const evidenceRequired = paymentType !== PAYMENT_CASH;
+  const remainingAfterCash = orderTotal - cashAmountNum;
+  const creditAmountNum = useMemo(() => Math.max(0, orderTotal - cashAmountNum - checkAmountNum), [orderTotal, cashAmountNum, checkAmountNum]);
+  const totalEntered = cashAmountNum + checkAmountNum + creditAmountNum;
+  const hasAnyPayment = cashAmountNum > 0 || checkAmountNum > 0 || creditAmountNum > 0;
+
+  const checkNumberTrimmed = useMemo(() => (checkNumber != null ? String(checkNumber).trim() : ''), [checkNumber]);
+  const paymentComplete =
+    hasAnyPayment &&
+    totalEntered >= orderTotal &&
+    (cashAmountNum <= 0 || cashJournals.length > 0) &&
+    (checkAmountNum <= 0 || (!!isSelectedJournalValid && (selectedJournalId != null) && checkNumberTrimmed !== '')) &&
+    (creditAmountNum <= 0 || bankJournals.length > 0);
+
+  const evidenceRequired = checkAmountNum > 0 || creditAmountNum > 0;
   const canProceed = paymentComplete && (evidenceRequired ? deliveryPhotos.length >= 1 : true);
 
   const loadJournals = useCallback(async () => {
@@ -110,6 +125,27 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   }, [loadJournals]);
 
   useEffect(() => {
+    if (paymentType === PAYMENT_CASH && cashAmount === '' && orderTotal > 0) {
+      setCashAmount(orderTotal.toFixed(2));
+    }
+  }, [paymentType]);
+
+  // Auto-fill Check amount only when user opens the Check tab (Credit after Cash stays 0 for Check)
+  useEffect(() => {
+    if (paymentType === PAYMENT_CHECK) {
+      const remaining = Math.max(0, orderTotal - cashAmountNum);
+      setCheckAmount(remaining > 0 ? remaining.toFixed(2) : '0');
+    }
+  }, [paymentType, orderTotal, cashAmountNum]);
+
+  // When user leaves Check without entering check number, zero check amount so remaining balance recalculates for other options
+  useEffect(() => {
+    if (paymentType !== PAYMENT_CHECK && (checkNumber == null || String(checkNumber).trim() === '')) {
+      setCheckAmount('0');
+    }
+  }, [paymentType, checkNumber]);
+
+  useEffect(() => {
     if (paymentType === PAYMENT_CHECK || paymentType === PAYMENT_CREDIT) {
       if (!isSelectedJournalValid && selectedJournalId != null) {
         setSelectedJournalId(null);
@@ -118,26 +154,15 @@ export default function ProceedPaymentScreen({ route, navigation }) {
     }
   }, [paymentType, isSelectedJournalValid, selectedJournalId]);
 
-  const getJournalIdForPayment = () => {
-    if (paymentType === PAYMENT_CHECK && selectedJournalId != null) return selectedJournalId;
-    if (paymentType === PAYMENT_CREDIT) return bankJournals[0]?.id ?? selectedJournalId;
-    if (paymentType === PAYMENT_CASH) return cashJournals[0]?.id ?? null;
-    return null;
-  };
-
-  const getPaymentAmount = () => {
-    if (paymentType === PAYMENT_CASH) return cashAmountNum;
-    return orderTotal;
-  };
-
-  const getSelectedJournalName = () => {
-    if (paymentType === PAYMENT_CHECK || paymentType === PAYMENT_CREDIT) return selectedJournal?.name ?? (paymentType === PAYMENT_CREDIT ? bankJournals[0]?.name : null) ?? null;
-    return paymentType === PAYMENT_CASH ? cashJournals[0]?.name ?? null : null;
-  };
-
   const handleProceed = async () => {
-    const journalId = getJournalIdForPayment();
-    if (!canProceed || journalId == null) return;
+    if (!canProceed) return;
+    const cashJournalId = cashJournals[0]?.id ?? null;
+    const checkJournalId = selectedJournalId != null && isSelectedJournalValid ? selectedJournalId : null;
+    const creditJournalId = bankJournals[0]?.id ?? null;
+    const needsCash = cashAmountNum > 0 && cashJournalId != null;
+    const needsCheck = checkAmountNum > 0 && checkJournalId != null;
+    const needsCredit = creditAmountNum > 0 && creditJournalId != null;
+    if (!needsCash && !needsCheck && !needsCredit) return;
     try {
       setLoading(true);
 
@@ -181,8 +206,6 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         : orderInfo.partner_id;
       if (partnerId == null) throw new Error('Customer (partner) not found for payment');
       const orderName = orderInfo.name ?? `Order ${saleOrderId}`;
-      const amountToPay = getPaymentAmount();
-      if (amountToPay <= 0) throw new Error('Payment amount must be greater than zero');
 
       let invoiceId = null;
       const existingInvoiceIds = orderInfo.invoice_ids ?? [];
@@ -202,26 +225,52 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         await postInvoice(invoiceId);
       }
 
-      await createPayment({
-        partnerId,
-        amount: amountToPay,
-        currencyId: 1,
-        journalId,
-        date: new Date().toISOString().slice(0, 10),
-        memo: `Payment for Invoice / Order ${orderName}`,
-        invoiceId,
-      });
-
-      const selectedJournalName = getSelectedJournalName();
+      const dateStr = new Date().toISOString().slice(0, 10);
+      const baseMemo = `Payment for Invoice / Order ${orderName}`;
+      if (needsCash) {
+        await createPayment({
+          partnerId,
+          amount: cashAmountNum,
+          currencyId: 1,
+          journalId: cashJournalId,
+          date: dateStr,
+          memo: `${baseMemo} (Cash)`,
+          invoiceId,
+        });
+      }
+      if (needsCheck) {
+        await createPayment({
+          partnerId,
+          amount: checkAmountNum,
+          currencyId: 1,
+          journalId: checkJournalId,
+          date: dateStr,
+          memo: `${baseMemo} (Check${checkNumber ? ` #${checkNumber}` : ''})`,
+          invoiceId,
+        });
+      }
+      if (needsCredit) {
+        await createPayment({
+          partnerId,
+          amount: creditAmountNum,
+          currencyId: 1,
+          journalId: creditJournalId,
+          date: dateStr,
+          memo: `${baseMemo} (Credit)`,
+          invoiceId,
+        });
+      }
 
       navigation.replace('InvoiceScreen', {
         saleOrderId,
         total,
-        paymentType,
-        selectedBankId: (paymentType === PAYMENT_CHECK || paymentType === PAYMENT_CREDIT) ? journalId : null,
-        selectedBankName: selectedJournalName,
+        paymentType: 'split',
+        paymentSplit: { cash: cashAmountNum, check: checkAmountNum, credit: creditAmountNum },
+        selectedBankId: (needsCheck || needsCredit) ? (needsCheck ? checkJournalId : creditJournalId) : null,
+        selectedBankName: selectedJournal?.name ?? bankJournals[0]?.name ?? null,
         deliveryPhotoUris: deliveryPhotos,
-        cashAmount: paymentType === PAYMENT_CASH ? cashAmountNum : undefined,
+        cashAmount: cashAmountNum,
+        checkNumber: checkNumber || undefined,
       });
     } catch (err) {
       console.error(err);
@@ -294,7 +343,14 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           borderRadius: 14,
         },
         photoHint: { fontSize: 12, color: colors.textSecondary, marginBottom: spacing.md, marginTop: -4 },
+        cashRow: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          marginBottom: spacing.sm,
+        },
         cashInputWrap: {
+          flex: 1,
+          maxWidth: '50%',
           flexDirection: 'row',
           alignItems: 'center',
           backgroundColor: colors.surface,
@@ -302,11 +358,36 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           borderWidth: 2,
           borderColor: colors.border,
           paddingHorizontal: spacing.md,
-          marginBottom: spacing.lg,
         },
         cashInputIcon: { marginRight: spacing.sm },
         cashInput: { flex: 1, fontSize: 16, color: colors.text, paddingVertical: 14 },
         cashInputSuffix: { fontSize: 14, fontWeight: '600', color: colors.textSecondary, marginLeft: spacing.sm },
+        cashModifyBtn: {
+          width: 44,
+          height: 44,
+          marginLeft: spacing.sm,
+          alignItems: 'center',
+          justifyContent: 'center',
+          backgroundColor: colors.surface,
+          borderRadius: borderRadius.md,
+          borderWidth: 2,
+          borderColor: colors.border,
+        },
+        cashHint: { fontSize: 12, color: colors.textSecondary, marginBottom: spacing.lg },
+        checkAmountRow: { flexDirection: 'row', gap: spacing.md, marginTop: spacing.sm },
+        checkAmountWrap: { flex: 1 },
+        checkNumberWrap: { flex: 1 },
+        checkAmountLabel: { fontSize: 12, fontWeight: '600', color: colors.textSecondary, marginBottom: 4 },
+        checkAmountInput: {
+          backgroundColor: colors.background,
+          borderRadius: borderRadius.md,
+          borderWidth: 1,
+          borderColor: colors.border,
+          paddingVertical: 10,
+          paddingHorizontal: spacing.sm,
+          fontSize: 15,
+          color: colors.text,
+        },
         creditAmountWrap: {
           flexDirection: 'row',
           alignItems: 'center',
@@ -459,7 +540,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       <View style={styles.radioRow}>
         <TouchableOpacity
           style={[styles.radioOption, paymentType === PAYMENT_CASH && styles.radioOptionSelected]}
-          onPress={() => { setPaymentType(PAYMENT_CASH); setSelectedJournalId(null); setJournalSearch(''); }}
+          onPress={() => { setPaymentType(PAYMENT_CASH); setSelectedJournalId(null); setJournalSearch(''); setCashEditMode(false); }}
           activeOpacity={0.8}
         >
           <View style={[styles.radioCircle, paymentType === PAYMENT_CASH && styles.radioCircleSelected]}>
@@ -494,22 +575,45 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         </TouchableOpacity>
       </View>
 
-      {/* Dynamic content: Cash = amount input, Check = journal list, Credit = read-only remaining amount */}
+      {/* Dynamic content: Cash = amount (half width) + modify icon, Check = bank + amount/check#, Credit = remaining only */}
       {paymentType === PAYMENT_CASH && (
         <>
           <Text style={styles.sectionLabel}>Amount Paid <Text style={styles.requiredStar}>*</Text></Text>
-          <View style={styles.cashInputWrap}>
-            <Ionicons name="cash-outline" size={22} color={colors.primary} style={styles.cashInputIcon} />
-            <TextInput
-              style={styles.cashInput}
-              value={cashAmount}
-              onChangeText={setCashAmount}
-              placeholder="Enter amount (e.g. 12000)"
-              placeholderTextColor={colors.textSecondary}
-              keyboardType="decimal-pad"
-            />
-            <Text style={styles.cashInputSuffix}>LKR</Text>
+          <View style={styles.cashRow}>
+            <View style={styles.cashInputWrap}>
+              <Ionicons name="cash-outline" size={22} color={colors.primary} style={styles.cashInputIcon} />
+              <TextInput
+                ref={cashInputRef}
+                style={styles.cashInput}
+                value={cashAmount}
+                onChangeText={setCashAmount}
+                placeholder="Total amount"
+                placeholderTextColor={colors.textSecondary}
+                keyboardType="decimal-pad"
+              />
+              <Text style={styles.cashInputSuffix}>LKR</Text>
+            </View>
+            <TouchableOpacity
+              style={styles.cashModifyBtn}
+              onPress={() => {
+                if (cashEditMode) {
+                  setCashEditMode(false);
+                  cashInputRef.current?.blur();
+                } else {
+                  setCashEditMode(true);
+                  cashInputRef.current?.focus();
+                }
+              }}
+              activeOpacity={0.8}
+            >
+              <Ionicons
+                name={cashEditMode ? 'checkmark-circle' : 'pencil'}
+                size={22}
+                color={colors.primary}
+              />
+            </TouchableOpacity>
           </View>
+          <Text style={styles.cashHint}>Default: full total. You can pay less or more.</Text>
         </>
       )}
 
@@ -536,6 +640,30 @@ export default function ProceedPaymentScreen({ route, navigation }) {
                 <Ionicons name="swap-horizontal-outline" size={18} color={colors.primary} />
                 <Text style={styles.changeBankText}>Change journal</Text>
               </TouchableOpacity>
+              <Text style={[styles.sectionLabel, { marginTop: spacing.md }]}>Amount & Check number</Text>
+              <View style={styles.checkAmountRow}>
+                <View style={styles.checkAmountWrap}>
+                  <Text style={styles.checkAmountLabel}>Amount (LKR)</Text>
+                  <TextInput
+                    style={styles.checkAmountInput}
+                    value={checkAmount}
+                    onChangeText={setCheckAmount}
+                    placeholder="0"
+                    placeholderTextColor={colors.textSecondary}
+                    keyboardType="decimal-pad"
+                  />
+                </View>
+                <View style={styles.checkNumberWrap}>
+                  <Text style={styles.checkAmountLabel}>Check number <Text style={styles.requiredStar}>*</Text></Text>
+                  <TextInput
+                    style={styles.checkAmountInput}
+                    value={checkNumber}
+                    onChangeText={setCheckNumber}
+                    placeholder="Enter check number"
+                    placeholderTextColor={colors.textSecondary}
+                  />
+                </View>
+              </View>
             </View>
           ) : (
             <>
@@ -578,16 +706,16 @@ export default function ProceedPaymentScreen({ route, navigation }) {
 
       {paymentType === PAYMENT_CREDIT && (
         <>
-          <Text style={styles.sectionLabel}>Credit amount (remaining)</Text>
+          <Text style={styles.sectionLabel}>Credit amount (remaining after Cash & Check)</Text>
           <View style={styles.creditAmountWrap}>
             <Ionicons name="wallet-outline" size={24} color={colors.textSecondary} />
-            <Text style={styles.creditAmountText}>LKR {orderTotal.toFixed(2)}</Text>
+            <Text style={styles.creditAmountText}>LKR {creditAmountNum.toFixed(2)}</Text>
             <Text style={styles.creditAmountHint}>Auto-filled • Not editable</Text>
           </View>
         </>
       )}
 
-      {/* Evidence: required for Check/Credit; optional for Cash (no red star) */}
+      {/* Evidence of delivery: one common section below payment methods; required only if Check or Credit used */}
       <Text style={styles.sectionLabel}>
         Evidence of delivery
         {evidenceRequired && <Text style={styles.requiredStar}> *</Text>}
