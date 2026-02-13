@@ -53,6 +53,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   const [checkNumber, setCheckNumber] = useState('');
   const [deliveryPhotos, setDeliveryPhotos] = useState([]);
   const [cashEditMode, setCashEditMode] = useState(false);
+  const [cashAmountDraft, setCashAmountDraft] = useState('');
   const [checkAmountEditMode, setCheckAmountEditMode] = useState(false);
   const [checkNumberEditMode, setCheckNumberEditMode] = useState(false);
   const cashInputRef = useRef(null);
@@ -108,7 +109,11 @@ export default function ProceedPaymentScreen({ route, navigation }) {
     (creditAmountNum <= 0 || bankJournals.length > 0);
 
   const evidenceRequired = checkAmountNum > 0 || creditAmountNum > 0;
-  const canProceed = paymentComplete && (evidenceRequired ? deliveryPhotos.length >= 1 : true);
+  const hasUnconfirmedEdits = cashEditMode || checkAmountEditMode || checkNumberEditMode;
+  const canProceed =
+    paymentComplete &&
+    (evidenceRequired ? deliveryPhotos.length >= 1 : true) &&
+    !hasUnconfirmedEdits;
 
   const loadJournals = useCallback(async () => {
     setJournalsLoading(true);
@@ -131,6 +136,14 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       setCashAmount(orderTotal.toFixed(2));
     }
   }, [paymentType]);
+
+  // When leaving Cash tab without confirming, discard draft and exit edit mode
+  useEffect(() => {
+    if (paymentType !== PAYMENT_CASH) {
+      setCashEditMode(false);
+      setCashAmountDraft(cashAmount);
+    }
+  }, [paymentType, cashAmount]);
 
   // Auto-fill Check amount only when user opens Check tab and has not yet entered check number (persist once they have)
   useEffect(() => {
@@ -551,6 +564,12 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         },
         payBtnDisabled: { backgroundColor: colors.textSecondary, opacity: 0.7 },
         btnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
+        evidenceAssistText: {
+          fontSize: 13,
+          color: colors.primary,
+          textAlign: 'center',
+          marginBottom: spacing.sm,
+        },
       }),
     [colors, insets.bottom]
   );
@@ -572,7 +591,17 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       <View style={styles.radioRow}>
         <TouchableOpacity
           style={[styles.radioOption, paymentType === PAYMENT_CASH && styles.radioOptionSelected]}
-          onPress={() => { setPaymentType(PAYMENT_CASH); setSelectedJournalId(null); setJournalSearch(''); setCashEditMode(false); }}
+          onPress={() => {
+            if (hasUnconfirmedEdits) {
+              Alert.alert('Confirm edit first', 'Please confirm or cancel your current edit (tap the checkmark or stay on this option) before switching payment method.');
+              return;
+            }
+            setPaymentType(PAYMENT_CASH);
+            const checkConfirmed = checkNumberTrimmed !== '' && checkAmountNum > 0;
+            if (!checkConfirmed) { setSelectedJournalId(null); setJournalSearch(''); }
+            setCashEditMode(false);
+            setCashAmountDraft(cashAmount);
+          }}
           activeOpacity={0.8}
         >
           <View style={[styles.radioCircle, paymentType === PAYMENT_CASH && styles.radioCircleSelected]}>
@@ -584,7 +613,13 @@ export default function ProceedPaymentScreen({ route, navigation }) {
 
         <TouchableOpacity
           style={[styles.radioOption, paymentType === PAYMENT_CHECK && styles.radioOptionSelected]}
-          onPress={() => { setPaymentType(PAYMENT_CHECK); setSelectedJournalId(null); setJournalSearch(''); }}
+          onPress={() => {
+            if (hasUnconfirmedEdits) {
+              Alert.alert('Confirm edit first', 'Please confirm or cancel your current edit (tap the checkmark or stay on this option) before switching payment method.');
+              return;
+            }
+            setPaymentType(PAYMENT_CHECK);
+          }}
           activeOpacity={0.8}
         >
           <View style={[styles.radioCircle, paymentType === PAYMENT_CHECK && styles.radioCircleSelected]}>
@@ -596,7 +631,15 @@ export default function ProceedPaymentScreen({ route, navigation }) {
 
         <TouchableOpacity
           style={[styles.radioOption, paymentType === PAYMENT_CREDIT && styles.radioOptionSelected]}
-          onPress={() => { setPaymentType(PAYMENT_CREDIT); setSelectedJournalId(null); setJournalSearch(''); }}
+          onPress={() => {
+            if (hasUnconfirmedEdits) {
+              Alert.alert('Confirm edit first', 'Please confirm or cancel your current edit (tap the checkmark or stay on this option) before switching payment method.');
+              return;
+            }
+            setPaymentType(PAYMENT_CREDIT);
+            const checkConfirmed = checkNumberTrimmed !== '' && checkAmountNum > 0;
+            if (!checkConfirmed) { setSelectedJournalId(null); setJournalSearch(''); }
+          }}
           activeOpacity={0.8}
         >
           <View style={[styles.radioCircle, paymentType === PAYMENT_CREDIT && styles.radioCircleSelected]}>
@@ -617,11 +660,12 @@ export default function ProceedPaymentScreen({ route, navigation }) {
               <TextInput
                 ref={cashInputRef}
                 style={styles.cashInput}
-                value={cashAmount}
-                onChangeText={setCashAmount}
+                value={cashEditMode ? cashAmountDraft : cashAmount}
+                onChangeText={(t) => cashEditMode && setCashAmountDraft(t)}
                 placeholder="Total amount"
                 placeholderTextColor={colors.textSecondary}
                 keyboardType="decimal-pad"
+                editable={cashEditMode}
               />
               <Text style={styles.cashInputSuffix}>LKR</Text>
             </View>
@@ -629,9 +673,11 @@ export default function ProceedPaymentScreen({ route, navigation }) {
               style={styles.cashModifyBtn}
               onPress={() => {
                 if (cashEditMode) {
+                  setCashAmount(cashAmountDraft);
                   setCashEditMode(false);
                   cashInputRef.current?.blur();
                 } else {
+                  setCashAmountDraft(cashAmount);
                   setCashEditMode(true);
                   cashInputRef.current?.focus();
                 }
@@ -668,7 +714,18 @@ export default function ProceedPaymentScreen({ route, navigation }) {
                 </Text>
                 <Ionicons name="checkmark-circle" size={20} color="#fff" />
               </TouchableOpacity>
-              <TouchableOpacity style={styles.changeBankBtn} onPress={() => { setSelectedJournalId(null); setJournalSearch(''); }} activeOpacity={0.8}>
+              <TouchableOpacity
+                style={styles.changeBankBtn}
+                onPress={() => {
+                  setSelectedJournalId(null);
+                  setJournalSearch('');
+                  setCheckAmount('0');
+                  setCheckNumber('');
+                  setCheckAmountEditMode(true);
+                  setCheckNumberEditMode(true);
+                }}
+                activeOpacity={0.8}
+              >
                 <Ionicons name="swap-horizontal-outline" size={18} color={colors.primary} />
                 <Text style={styles.changeBankText}>Change Bank</Text>
               </TouchableOpacity>
@@ -861,6 +918,10 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       )}
 
       <View style={styles.bottomSpacer} />
+
+      {evidenceRequired && deliveryPhotos.length === 0 && (
+        <Text style={styles.evidenceAssistText}>Please update evidence of delivery to proceed</Text>
+      )}
 
       <TouchableOpacity
         style={[styles.payBtn, !canProceed && styles.payBtnDisabled]}
