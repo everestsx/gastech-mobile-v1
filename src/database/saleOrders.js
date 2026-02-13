@@ -49,11 +49,17 @@ export async function upsertSaleOrders(rows) {
   });
 }
 
-export async function getAllSaleOrders() {
+/**
+ * @param {number | null} [vehicleId] - When set, return only sale orders for this vehicle.
+ */
+export async function getAllSaleOrders(vehicleId = null) {
   const db = await getDb();
-  const rows = await db.getAllAsync(
-    `SELECT * FROM sale_orders ORDER BY date_order DESC LIMIT 500`
-  );
+  const sql =
+    vehicleId != null
+      ? `SELECT * FROM sale_orders WHERE vehicle_id = ? ORDER BY date_order DESC LIMIT 500`
+      : `SELECT * FROM sale_orders ORDER BY date_order DESC LIMIT 500`;
+  const args = vehicleId != null ? [vehicleId] : [];
+  const rows = await db.getAllAsync(sql, args);
   return (rows || []).map((row) => ({
     id: row.id,
     name: row.name,

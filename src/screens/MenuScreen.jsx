@@ -111,12 +111,12 @@ export default function MenuScreen({ navigation }) {
       >
         <View style={[styles.avatar, { backgroundColor: colors.primary }]}>
           <Text style={styles.avatarText}>
-            {(user?.username || 'U').charAt(0).toUpperCase()}
+            {(user?.isAdmin ? 'Admin' : user?.licensePlate || user?.vehicleName || 'V').charAt(0).toUpperCase()}
           </Text>
         </View>
         <View style={styles.profileInfo}>
           <Text style={[styles.profileName, { color: colors.text }]} numberOfLines={1}>
-            {user?.username || 'User'}
+            {user?.isAdmin ? 'Admin' : (user?.licensePlate || user?.vehicleName || 'Vehicle')}
           </Text>
           <Text style={[styles.profileHint, { color: colors.textSecondary }]}>
             Tap to open Settings

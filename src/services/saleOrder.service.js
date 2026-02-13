@@ -18,6 +18,8 @@ export const getAllSaleOrders = () =>
         "amount_total",
         "invoice_status",
         "order_line",
+        "route_id",
+        "vehicle_id",
       ],
       order: "date_order desc",
       limit: 50,

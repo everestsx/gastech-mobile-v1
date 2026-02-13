@@ -8,6 +8,8 @@ import { getStockMovesByPickingId, getStockMoveLinesByMoveIds } from './delivery
 import { getJournals } from './journal.service';
 import { getRoutes } from './route.service';
 import { getVehicles } from './vehicle.service';
+import { getStockLocationByVehicle } from './vehicleWarehouse.service';
+import { getVehicleInventoryByLocation } from './vehicleInventory.service';
 import * as partnersDb from '../database/partners.js';
 import * as saleOrdersDb from '../database/saleOrders.js';
 import * as saleOrderLinesDb from '../database/saleOrderLines.js';
@@ -17,6 +19,8 @@ import * as stockMoveLinesDb from '../database/stockMoveLines.js';
 import * as journalsDb from '../database/journals.js';
 import * as routesDb from '../database/routes.js';
 import * as vehiclesDb from '../database/vehicles.js';
+import * as vehicleWarehousesDb from '../database/vehicleWarehouses.js';
+import * as vehicleInventoriesDb from '../database/vehicleInventories.js';
 import * as productsDb from '../database/products.js';
 import * as syncLogDb from '../database/syncLog.js';
 
@@ -75,11 +79,32 @@ export async function getCachedCustomers() {
   }
 }
 
-export async function getCachedOrders() {
+/**
+ * @param {number | null} [vehicleId] - When set (vehicle login), return only orders for this vehicle.
+ */
+export async function getCachedOrders(vehicleId = null) {
   try {
-    return await saleOrdersDb.getAllSaleOrders();
+    return await saleOrdersDb.getAllSaleOrders(vehicleId);
   } catch (e) {
     console.warn('getCachedOrders', e);
+    return [];
+  }
+}
+
+export async function getCachedVehicles() {
+  try {
+    return await vehiclesDb.getAllVehicles();
+  } catch (e) {
+    console.warn('getCachedVehicles', e);
+    return [];
+  }
+}
+
+export async function getCachedVehicleInventory(vehicleId) {
+  try {
+    return await vehicleInventoriesDb.getVehicleInventoryByVehicleId(vehicleId);
+  } catch (e) {
+    console.warn('getCachedVehicleInventory', e);
     return [];
   }
 }
@@ -202,6 +227,8 @@ export async function deleteLocalData() {
     'account_journals',
     'routes',
     'vehicles',
+    'vehicle_warehouses',
+    'vehicle_inventories',
     'sync_log',
     'sync_queue',
   ];
@@ -226,7 +253,7 @@ export function getSyncIntervalMinutes() {
 // ---------- Sync: pull from Odoo and store in SQLite ----------
 
 export async function runSync() {
-  const result = { customers: 0, orders: 0, orderLines: 0, pickings: 0, moves: 0, moveLines: 0, journals: 0, routes: 0, vehicles: 0, error: null };
+  const result = { customers: 0, orders: 0, orderLines: 0, pickings: 0, moves: 0, moveLines: 0, journals: 0, routes: 0, vehicles: 0, vehicleWarehouses: 0, vehicleInventories: 0, error: null };
   const syncAt = new Date().toISOString();
   log('start', syncAt);
 
@@ -350,6 +377,49 @@ export async function runSync() {
     await journalsDb.upsertJournals(journals || []);
     await routesDb.upsertRoutes(routes || []);
     await vehiclesDb.upsertVehicles(vehicles || []);
+
+    const allVehicleWarehouses = [];
+    const allVehicleInventories = [];
+    const vehiclesList = vehicles || [];
+    for (const v of vehiclesList) {
+      const vehicleId = v.id;
+      const licensePlate = v.license_plate || (v.name || '').split('/').pop() || '';
+      if (!licensePlate) continue;
+      try {
+        log('fetch', `vehicle warehouse ${licensePlate}`);
+        const locations = await getStockLocationByVehicle(licensePlate).catch(() => []);
+        const loc = locations && locations[0] ? locations[0] : null;
+        if (loc) {
+          allVehicleWarehouses.push({
+            id: loc.id,
+            vehicle_id: vehicleId,
+            name: loc.name,
+            complete_name: loc.complete_name,
+          });
+          log('fetch', `vehicle inventory location ${loc.id}`);
+          const quants = await getVehicleInventoryByLocation(loc.id).catch(() => []);
+          (quants || []).forEach((q) => {
+            allVehicleInventories.push({
+              ...q,
+              location_id: loc.id,
+              vehicle_id: vehicleId,
+            });
+          });
+        }
+      } catch (e) {
+        logWarn(`vehicle ${vehicleId} warehouse/inventory`, e);
+      }
+    }
+    result.vehicleWarehouses = allVehicleWarehouses.length;
+    result.vehicleInventories = allVehicleInventories.length;
+    if (allVehicleWarehouses.length > 0) {
+      log('db', 'vehicle_warehouses');
+      await vehicleWarehousesDb.upsertVehicleWarehouses(allVehicleWarehouses);
+    }
+    if (allVehicleInventories.length > 0) {
+      log('db', 'vehicle_inventories');
+      await vehicleInventoriesDb.upsertVehicleInventories(allVehicleInventories);
+    }
 
     await syncLogDb.appendLog({
       sync_at: syncAt,
