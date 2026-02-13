@@ -293,7 +293,6 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
   );
 
   const updateQty = async () => {
-    if (!hasQtyChanges()) return;
     const validationError = validateQuantities();
     if (validationError) {
       setUpdateError(validationError);
@@ -396,10 +395,10 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
 
         {/* One line: qty × unit price (left)    line total (right), space-styled */}
         <View style={styles.lineOneRow}>
-          <Text style={styles.lineLeftExpr} numberOfLines={1}>
+          {/* <Text style={styles.lineLeftExpr} numberOfLines={1}>
             {qtyDisplay} × {formatWithSpace(unitPrice)}
           </Text>
-          <Text style={styles.lineRightTotal}>{formatWithSpace(displayLineTotal)}</Text>
+          <Text style={styles.lineRightTotal}>{formatWithSpace(displayLineTotal)}</Text> */}
         </View>
 
         {/* Quantity modify: same behaviour, modern UI */}
@@ -428,11 +427,17 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
             >
               <Ionicons name="add" size={22} color={colors.primary} />
             </TouchableOpacity>
+            <Text style={styles.lineLeftExpr}>x</Text>
+            <Text style={styles.lineRightTotal}> {formatWithSpace(displayLineTotal)}</Text>
           </View>
         ) : (
-          <Text style={[styles.qtyValue, { marginTop: 4 }]}>Qty: {item.newQty}</Text>
+          <View style={styles.lineOneRow}>
+          <Text style={[styles.qtyValue, { marginTop: 4 }]}>Qty: {item.newQty} × {formatWithSpace(unitPrice)}</Text>
+          <Text style={styles.lineRightTotal}>{formatWithSpace(displayLineTotal)}</Text>
+          </View>
         )}
       </View>
+
     );
   };
 
@@ -477,7 +482,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
           {!isDelivered && (
             modifyEnabled ? (
               <TouchableOpacity
-                style={[styles.modifyUpdateBtn, styles.modifyUpdateBtnUpdate]}
+                style={[styles.modifyUpdateBtn]}
                 onPress={updateQty}
                 disabled={updating}
                 activeOpacity={0.8}
@@ -485,7 +490,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
                 {updating ? (
                   <ActivityIndicator size="small" color="#fff" />
                 ) : (
-                  <Text style={[styles.modifyUpdateBtnText, styles.modifyUpdateBtnTextUpdate]}>Update</Text>
+                  <Text style={[styles.modifyUpdateBtnText]}>Update</Text>
                 )}
               </TouchableOpacity>
             ) : (
@@ -500,14 +505,14 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
           )}
         </View>
 
-        {!isDelivered && qtyChanged && (
+        {/* {!isDelivered && qtyChanged && (
           <View style={styles.changedBanner}>
             <Ionicons name="pencil" size={18} color={colors.warning} />
             <Text style={styles.changedBannerText}>
               Quantities changed. Tap "Update" (top right) to save.
             </Text>
           </View>
-        )}
+        )} */}
 
         {updateError != null && (
           <View style={[styles.changedBanner, { borderLeftColor: colors.error || '#c00' }]}>
@@ -518,12 +523,26 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
           </View>
         )}
 
-        {/* Gross Total on top: Subtotal, Tax, Total (same as before) */}
-        <View style={styles.grossTotalCard}>
+      
+
+        {/* Order lines below */}
+        <Text style={styles.sectionTitle}>Order lines</Text>
+        {lines.length === 0 ? (
+          <View style={styles.emptyLines}>
+            <Text style={styles.emptyText}>No line items</Text>
+          </View>
+        ) : (
+          lines.map((item) => (
+            <View key={item.id}>{renderItem({ item })}</View>
+          ))
+        )}
+
+          {/* Gross Total bottom: Subtotal, Tax, Total (same as before) */}
+          <View style={styles.grossTotalCard}>
           <View style={styles.grossRow}>
             <Text style={styles.grossLabel}>Subtotal</Text>
             <Text style={styles.grossValue}>
-              {formatCurrency(order.amount_untaxed)}
+              {formatCurrency(order.amount_total)}
             </Text>
           </View>
           <View style={styles.grossRow}>
@@ -544,24 +563,12 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
                         sum +
                         (Number(l.newQty) || 0) * (Number(l.price_unit) || 0),
                       0
-                    )
-                  : order.amount_total
+                    ) + order.amount_tax
+                  : order.amount_total + order.amount_tax
               )}
             </Text>
           </View>
         </View>
-
-        {/* Order lines below */}
-        <Text style={styles.sectionTitle}>Order lines</Text>
-        {lines.length === 0 ? (
-          <View style={styles.emptyLines}>
-            <Text style={styles.emptyText}>No line items</Text>
-          </View>
-        ) : (
-          lines.map((item) => (
-            <View key={item.id}>{renderItem({ item })}</View>
-          ))
-        )}
 
         <View style={styles.bottomSpacer} />
       </ScrollView>
@@ -569,7 +576,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
       {/* Bottom bar: only Proceed to payment */}
       <View style={styles.bottomBar}>
         <TouchableOpacity
-          style={[styles.payBtn, !canPay && styles.payBtnDisabled]}
+          style={[styles.payBtn, (!canPay || modifyEnabled || updating) && styles.payBtnDisabled]}
           onPress={() => {
             if (!canPay) return;
             if (isDelivered) {
@@ -582,17 +589,11 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
               handleProceedToPayment();
             }
           }}
-          disabled={!canPay}
+          disabled={modifyEnabled || updating}
           activeOpacity={0.8}
         >
-          {!isDelivered && updating ? (
-            <ActivityIndicator size="small" color="#fff" />
-          ) : (
-            <>
-              <Ionicons name="card-outline" size={22} color="#fff" />
-              <Text style={styles.payBtnText}>Proceed to payment</Text>
-            </>
-          )}
+          <Ionicons name="card-outline" size={22} color="#fff" />
+          <Text style={styles.payBtnText}>Proceed to payment</Text>
         </TouchableOpacity>
       </View>
     </KeyboardAvoidingView>

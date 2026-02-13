@@ -29,7 +29,7 @@ const KEYS = {
   LAST_SYNC: '@gastech_last_sync',
 };
 
-const SYNC_INTERVAL_MS = 60 * 1000; // 1 minute auto-sync when online
+const SYNC_INTERVAL_MS = 3600 * 1000; // 1 minute auto-sync when online
 
 const LOG_TAG = '[Sync]';
 

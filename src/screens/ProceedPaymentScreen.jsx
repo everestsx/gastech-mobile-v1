@@ -409,8 +409,8 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           alignItems: 'center',
           justifyContent: 'center',
           gap: 8,
-          paddingVertical: 10,
-          paddingHorizontal: spacing.md,
+          paddingVertical: 12,
+          paddingHorizontal: spacing.lg,
           borderRadius: borderRadius.md,
           backgroundColor: colors.surface,
           borderWidth: 2,
@@ -423,8 +423,8 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         },
         radioOptionSelected: { borderColor: colors.primary, backgroundColor: colors.primary },
         radioCircle: {
-          width: 20,
-          height: 20,
+          width: 18,
+          height: 18,
           borderRadius: 10,
           borderWidth: 2,
           borderColor: colors.textSecondary,
@@ -432,8 +432,8 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           justifyContent: 'center',
         },
         radioCircleSelected: { borderColor: '#fff' },
-        radioDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: '#fff' },
-        radioLabel: { fontSize: 16, fontWeight: '700', color: colors.text },
+        radioDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#fff' },
+        radioLabel: { fontSize: 14, fontWeight: '600', color: colors.text },
         radioLabelSelected: { color: '#fff' },
         searchWrap: {
           flexDirection: 'row',
@@ -652,6 +652,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
                     placeholderTextColor={colors.textSecondary}
                     keyboardType="decimal-pad"
                   />
+                  
                 </View>
                 <View style={styles.checkNumberWrap}>
                   <Text style={styles.checkAmountLabel}>Check number <Text style={styles.requiredStar}>*</Text></Text>

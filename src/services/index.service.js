@@ -55,6 +55,7 @@ export const callOdoo = async (model, method, domain = [], options = {}) => {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
     credentials: USE_SESSION ? 'include' : 'omit',
+    timeout: 30000,
   });
 
   const json = await response.json();
@@ -92,6 +93,7 @@ export const callOdooArgs = async (model, method, positionalArgs) => {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
     credentials: USE_SESSION ? 'include' : 'omit',
+    timeout: 30000,
   });
 
   const json = await response.json();
