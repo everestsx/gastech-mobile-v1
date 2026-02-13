@@ -3,20 +3,127 @@ import {
   View,
   Text,
   StyleSheet,
-  FlatList,
+  ScrollView,
   RefreshControl,
   ActivityIndicator,
+  useWindowDimensions,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
 import { getUserSession, getCachedVehicleInventory } from '../services/sync.service';
 
+const CARD_MIN_WIDTH = 160;
+const CARD_GAP = spacing.md;
+
+function StockCard({ item, colors, cardWidth, isLeft }) {
+  const qty = Number(item.quantity) || 0;
+  const available = Number(item.available_quantity) ?? qty;
+  const name = item.product_name || `Product ${item.product_id || ''}`.trim() || '—';
+  const lowStock = available <= 0;
+
+  return (
+    <View
+      style={[
+        styles.card,
+        { backgroundColor: colors.surface, borderColor: colors.border, width: cardWidth },
+        isLeft && { marginRight: CARD_GAP },
+      ]}
+    >
+      <View style={[styles.cardAccent, { backgroundColor: lowStock ? colors.error : colors.primary }]} />
+      <View style={styles.cardContent}>
+        <View style={styles.cardIconWrap}>
+          <Ionicons
+            name="cube-outline"
+            size={28}
+            color={lowStock ? colors.error : colors.primary}
+          />
+        </View>
+        <Text style={[styles.cardProductName, { color: colors.text }]} numberOfLines={2}>
+          {name}
+        </Text>
+        <View style={styles.cardQtyRow}>
+          <Text style={[styles.cardQtyValue, { color: colors.text }]}>{qty}</Text>
+          <Text style={[styles.cardQtyLabel, { color: colors.textSecondary }]}>On hand</Text>
+        </View>
+        <View style={[styles.badge, { backgroundColor: lowStock ? colors.error + '20' : colors.primarySurface }]}>
+          <Text style={[styles.badgeText, { color: lowStock ? colors.error : colors.primary }]}>
+            {available} available
+          </Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  card: {
+    borderRadius: borderRadius.lg,
+    borderWidth: 1,
+    overflow: 'hidden',
+    marginBottom: CARD_GAP,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
+  },
+  cardAccent: {
+    height: 4,
+    width: '100%',
+  },
+  cardContent: {
+    padding: spacing.md,
+  },
+  cardIconWrap: {
+    marginBottom: spacing.sm,
+  },
+  cardProductName: {
+    fontSize: 15,
+    fontWeight: '700',
+    marginBottom: spacing.sm,
+    minHeight: 40,
+  },
+  cardQtyRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: 6,
+    marginBottom: spacing.xs,
+  },
+  cardQtyValue: {
+    fontSize: 26,
+    fontWeight: '800',
+  },
+  cardQtyLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  badge: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 4,
+    borderRadius: borderRadius.sm,
+  },
+  badgeText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+});
+
 export default function VehicleStockScreen({ navigation }) {
   const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
+  const { width } = useWindowDimensions();
   const [user, setUser] = useState(null);
   const [inventory, setInventory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+
+  const numColumns = 2;
+  const horizontalGap = CARD_GAP;
+  const paddingH = spacing.lg;
+  const cardWidth = (width - paddingH * 2 - horizontalGap * (numColumns - 1)) / numColumns;
 
   const load = useCallback(async () => {
     const session = await getUserSession();
@@ -50,79 +157,92 @@ export default function VehicleStockScreen({ navigation }) {
     setRefreshing(false);
   }, [load]);
 
-  const styles = useMemo(
+  const screenStyles = useMemo(
     () =>
       StyleSheet.create({
         container: { flex: 1, backgroundColor: colors.background },
-        content: { flex: 1, padding: spacing.lg },
-        empty: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: spacing.xl },
-        emptyText: { fontSize: 16, color: colors.textSecondary, textAlign: 'center' },
-        hint: { fontSize: 14, color: colors.textSecondary, marginTop: 8, textAlign: 'center' },
-        card: {
-          backgroundColor: colors.surface,
-          borderRadius: borderRadius.md,
-          padding: spacing.md,
-          marginBottom: spacing.sm,
-          borderWidth: 1,
-          borderColor: colors.border,
+        content: {
+          padding: spacing.lg,
+          paddingBottom: spacing.xl + insets.bottom,
         },
-        productName: { fontSize: 16, fontWeight: '600', color: colors.text },
-        row: { flexDirection: 'row', marginTop: 6, gap: spacing.lg },
-        label: { fontSize: 14, color: colors.textSecondary },
-        value: { fontSize: 14, fontWeight: '600', color: colors.text },
+        empty: {
+          flex: 1,
+          justifyContent: 'center',
+          alignItems: 'center',
+          padding: spacing.xl,
+        },
+        emptyText: { fontSize: 18, fontWeight: '700', color: colors.text, textAlign: 'center' },
+        hint: { fontSize: 14, color: colors.textSecondary, marginTop: spacing.sm, textAlign: 'center', paddingHorizontal: spacing.lg },
+        grid: {
+          flexDirection: 'row',
+          flexWrap: 'wrap',
+        },
+        summaryBar: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          marginBottom: spacing.lg,
+          paddingVertical: spacing.sm,
+        },
+        summaryText: { fontSize: 14, color: colors.textSecondary, fontWeight: '600' },
+        summaryCount: { fontSize: 14, fontWeight: '800', color: colors.primary },
       }),
-    [colors]
+    [colors, insets.bottom]
   );
 
   if (loading) {
     return (
-      <View style={[styles.container, styles.empty]}>
+      <View style={[screenStyles.container, screenStyles.empty]}>
         <ActivityIndicator size="large" color={colors.primary} />
+        <Text style={[screenStyles.hint, { marginTop: spacing.md }]}>Loading vehicle stock…</Text>
       </View>
     );
   }
 
   if (user?.isAdmin !== false) {
     return (
-      <View style={[styles.container, styles.empty]}>
-        <Text style={styles.emptyText}>My Stocks</Text>
-        <Text style={styles.hint}>Log in as a vehicle to see that vehicle's product stock.</Text>
+      <View style={[screenStyles.container, screenStyles.empty]}>
+        <Ionicons name="cube-outline" size={56} color={colors.textSecondary} style={{ marginBottom: spacing.md }} />
+        <Text style={screenStyles.emptyText}>My Stocks</Text>
+        <Text style={screenStyles.hint}>Log in as a vehicle to see that vehicle's product stock.</Text>
       </View>
     );
   }
 
   if (inventory.length === 0) {
     return (
-      <View style={[styles.container, styles.empty]}>
-        <Text style={styles.emptyText}>No stock data for this vehicle</Text>
-        <Text style={styles.hint}>Sync to load vehicle inventory from the server.</Text>
+      <View style={[screenStyles.container, screenStyles.empty]}>
+        <Ionicons name="archive-outline" size={56} color={colors.textSecondary} style={{ marginBottom: spacing.md }} />
+        <Text style={screenStyles.emptyText}>No stock data for this vehicle</Text>
+        <Text style={screenStyles.hint}>Sync from the dashboard to load vehicle inventory from the server.</Text>
       </View>
     );
   }
 
   return (
-    <View style={styles.container}>
-      <FlatList
-        data={inventory}
-        keyExtractor={(item) => String(item.id)}
-        contentContainerStyle={styles.content}
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.primary]} />
-        }
-        renderItem={({ item }) => (
-          <View style={styles.card}>
-            <Text style={styles.productName}>{item.product_name || `Product ${item.product_id}`}</Text>
-            <View style={styles.row}>
-              <Text style={styles.label}>Quantity:</Text>
-              <Text style={styles.value}>{Number(item.quantity)}</Text>
-            </View>
-            <View style={styles.row}>
-              <Text style={styles.label}>Available:</Text>
-              <Text style={styles.value}>{Number(item.available_quantity)}</Text>
-            </View>
-          </View>
-        )}
-      />
-    </View>
+    <ScrollView
+      style={screenStyles.container}
+      contentContainerStyle={screenStyles.content}
+      refreshControl={
+        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.primary]} />
+      }
+      showsVerticalScrollIndicator={false}
+    >
+      <View style={screenStyles.summaryBar}>
+        <Text style={screenStyles.summaryText}>Item-wise stock</Text>
+        <Text style={screenStyles.summaryCount}>{inventory.length} product{inventory.length !== 1 ? 's' : ''}</Text>
+      </View>
+      <View style={screenStyles.grid}>
+        {inventory.map((item, index) => (
+          <StockCard
+            key={String(item.id)}
+            item={item}
+            colors={colors}
+            cardWidth={cardWidth}
+            isLeft={index % 2 === 0}
+          />
+        ))}
+      </View>
+    </ScrollView>
   );
 }
