@@ -23,7 +23,7 @@ export async function upsertSaleOrderLines(rows) {
           price_unit, price_subtotal, price_total, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          r.id != null ? r.id : 0,
+          num(r.id),
           numOrNull(orderId),
           numOrNull(product.id),
           empty(product.name),

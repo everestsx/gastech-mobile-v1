@@ -26,7 +26,7 @@ export async function upsertSaleOrders(rows) {
           route_id, route_name, vehicle_id, vehicle_name, updated_at, payload
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          r.id != null ? r.id : 0,
+          num(r.id),
           empty(r.name),
           numOrNull(partner.id),
           empty(partner.name),

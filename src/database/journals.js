@@ -2,7 +2,13 @@
  * Local CRUD for account_journals (Odoo account.journal - cash/bank).
  */
 import { getDb } from './db.js';
-import { empty, iso } from './dbHelpers.js';
+import { empty, num, iso } from './dbHelpers.js';
+
+function strOrNull(v) {
+  if (v == null || typeof v === 'object') return null;
+  const s = String(v).trim();
+  return s === '' ? null : s;
+}
 
 export async function upsertJournals(rows) {
   if (!rows?.length) return;
@@ -12,7 +18,7 @@ export async function upsertJournals(rows) {
     for (const r of rows) {
       await tx.runAsync(
         `INSERT OR REPLACE INTO account_journals (id, name, code, type, updated_at) VALUES (?, ?, ?, ?, ?)`,
-        [r.id != null ? r.id : 0, empty(r.name), r.code != null && r.code !== '' ? r.code : null, r.type != null && r.type !== '' ? r.type : null, now]
+        [num(r.id), empty(r.name), strOrNull(r.code), strOrNull(r.type), now]
       );
     }
   });

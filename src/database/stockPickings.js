@@ -2,7 +2,7 @@
  * Local CRUD for stock_pickings (Odoo stock.picking mirror).
  */
 import { getDb } from './db.js';
-import { empty, numOrNull, iso, jsonArr } from './dbHelpers.js';
+import { empty, num, numOrNull, iso, jsonArr } from './dbHelpers.js';
 
 export async function upsertStockPickings(rows) {
   if (!rows?.length) return;
@@ -16,10 +16,10 @@ export async function upsertStockPickings(rows) {
           id, name, sale_id, state, move_ids, backorder_ids, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
         [
-          r.id != null ? r.id : 0,
-          r.name != null && r.name !== '' ? r.name : null,
+          num(r.id),
+          empty(r.name) || null,
           numOrNull(saleId),
-          r.state != null && r.state !== '' ? r.state : null,
+          empty(r.state) || null,
           jsonArr(r.move_ids),
           jsonArr(r.backorder_ids),
           now,
