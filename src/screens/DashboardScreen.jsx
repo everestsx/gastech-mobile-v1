@@ -66,14 +66,16 @@ export default function DashboardScreen({ navigation }) {
 
   const loadData = useCallback(async () => {
     try {
-      const [data, userData, routesData] = await Promise.all([
-        getCachedOrders(),
+      const [userData, routesData] = await Promise.all([
         getUserSession(),
         getCachedRoutes(),
       ]);
-      setOrders(Array.isArray(data) ? data : []);
-      setUser(userData || null);
+      const user = userData || null;
+      setUser(user);
       setRoutes(Array.isArray(routesData) ? routesData : []);
+      const vehicleId = user?.isAdmin === false ? user.vehicleId : null;
+      const data = await getCachedOrders(vehicleId);
+      setOrders(Array.isArray(data) ? data : []);
       const today = new Date().toISOString().split('T')[0];
       const todayOrders = (Array.isArray(data) ? data : []).filter((o) => (o.date_order || '').startsWith(today));
       const orderIds = todayOrders.map((o) => o.id);
@@ -158,7 +160,9 @@ export default function DashboardScreen({ navigation }) {
 
   const routeFromOrder = todayOrders[0]?.route_id?.[1];
   const routeName = routeFromOrder || (routes[0]?.name) || '—';
-  const vehicleName = 'LPG Truck - TN 01 AB 1234';
+  const vehicleName = user?.isAdmin === false
+    ? (user.licensePlate || user.vehicleName || 'Vehicle')
+    : 'Admin';
   const commissionEarned = Math.round(totalSales * 0.1) || 0;
   const commissionPct = Math.min(100, Math.round((commissionEarned / COMMISSION_TARGET) * 100));
 

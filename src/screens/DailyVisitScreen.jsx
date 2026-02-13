@@ -16,6 +16,7 @@ import {
   getCachedOrders,
   getOrderLineTotalsFromDB,
   getPickingsBySaleIdsFromDB,
+  getUserSession,
 } from '../services/sync.service';
 import OrderCard from '../components/OrderCard';
 
@@ -84,7 +85,9 @@ export default function DailyVisitScreen({ route, navigation }) {
   const loadOrders = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await getCachedOrders();
+      const user = await getUserSession();
+      const vehicleId = user?.isAdmin === false ? user.vehicleId : null;
+      const data = await getCachedOrders(vehicleId);
       const all = Array.isArray(data) ? data : [];
       const dateStr = formatDate(selectedDate);
       let filtered = all.filter((o) => (o.date_order || '').startsWith(dateStr));

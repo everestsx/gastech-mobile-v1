@@ -20,6 +20,7 @@ import MenuScreen from '../screens/MenuScreen';
 import CustomersScreen from '../screens/CustomersScreen';
 import SettingsScreen from '../screens/SettingsScreen';
 import PlaceholderScreen from '../screens/PlaceholderScreen';
+import VehicleStockScreen from '../screens/VehicleStockScreen';
 import SyncHistoryScreen from '../screens/SyncHistoryScreen';
 
 import { useTheme } from '../context/ThemeContext';
@@ -136,8 +137,7 @@ function MainStackScreen() {
       />
       <MainStack.Screen
         name="MyStocks"
-        component={PlaceholderScreen}
-        initialParams={{ title: 'My Stocks' }}
+        component={VehicleStockScreen}
         options={{ ...headerScreenOptions, title: 'My Stocks' }}
       />
       <MainStack.Screen

@@ -166,6 +166,31 @@ async function runMigrations(db) {
     }
     await db.runAsync('PRAGMA user_version = 2');
   }
+
+  if (current < 3) {
+    await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS vehicle_warehouses (
+      id INTEGER PRIMARY KEY,
+      vehicle_id INTEGER,
+      name TEXT,
+      complete_name TEXT,
+      updated_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS vehicle_inventories (
+      id INTEGER PRIMARY KEY,
+      location_id INTEGER,
+      vehicle_id INTEGER,
+      product_id INTEGER,
+      product_name TEXT,
+      quantity REAL,
+      available_quantity REAL,
+      updated_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_vehicle_warehouses_vehicle_id ON vehicle_warehouses(vehicle_id);
+    CREATE INDEX IF NOT EXISTS idx_vehicle_inventories_vehicle_id ON vehicle_inventories(vehicle_id);
+    `);
+    await db.runAsync('PRAGMA user_version = 3');
+  }
 }
 
 /**
