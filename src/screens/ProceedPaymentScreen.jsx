@@ -53,6 +53,9 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   const [checkNumber, setCheckNumber] = useState('');
   const [deliveryPhotos, setDeliveryPhotos] = useState([]);
   const [cashEditMode, setCashEditMode] = useState(false);
+  const [cashAmountDraft, setCashAmountDraft] = useState('');
+  const [checkAmountEditMode, setCheckAmountEditMode] = useState(false);
+  const [checkNumberEditMode, setCheckNumberEditMode] = useState(false);
   const cashInputRef = useRef(null);
 
   const MAX_PHOTOS = 3;
@@ -106,7 +109,11 @@ export default function ProceedPaymentScreen({ route, navigation }) {
     (creditAmountNum <= 0 || bankJournals.length > 0);
 
   const evidenceRequired = checkAmountNum > 0 || creditAmountNum > 0;
-  const canProceed = paymentComplete && (evidenceRequired ? deliveryPhotos.length >= 1 : true);
+  const hasUnconfirmedEdits = cashEditMode || checkAmountEditMode || checkNumberEditMode;
+  const canProceed =
+    paymentComplete &&
+    (evidenceRequired ? deliveryPhotos.length >= 1 : true) &&
+    !hasUnconfirmedEdits;
 
   const loadJournals = useCallback(async () => {
     setJournalsLoading(true);
@@ -130,20 +137,40 @@ export default function ProceedPaymentScreen({ route, navigation }) {
     }
   }, [paymentType]);
 
-  // Auto-fill Check amount only when user opens the Check tab (Credit after Cash stays 0 for Check)
+  // When leaving Cash tab without confirming, discard draft and exit edit mode
+  useEffect(() => {
+    if (paymentType !== PAYMENT_CASH) {
+      setCashEditMode(false);
+      setCashAmountDraft(cashAmount);
+    }
+  }, [paymentType, cashAmount]);
+
+  // Auto-fill Check amount only when user opens Check tab and has not yet entered check number (persist once they have)
   useEffect(() => {
     if (paymentType === PAYMENT_CHECK) {
-      const remaining = Math.max(0, orderTotal - cashAmountNum);
-      setCheckAmount(remaining > 0 ? remaining.toFixed(2) : '0');
+      if (checkNumberTrimmed === '') {
+        const remaining = Math.max(0, orderTotal - cashAmountNum);
+        setCheckAmount(remaining > 0 ? remaining.toFixed(2) : '0');
+        setCheckAmountEditMode(true);
+        setCheckNumberEditMode(true);
+      }
     }
-  }, [paymentType, orderTotal, cashAmountNum]);
+  }, [paymentType, orderTotal, cashAmountNum, checkNumberTrimmed]);
 
-  // When user leaves Check without entering check number, zero check amount so remaining balance recalculates for other options
+  // When user leaves Check without amount or check number, zero check amount so balance goes to Credit
   useEffect(() => {
     if (paymentType !== PAYMENT_CHECK && (checkNumber == null || String(checkNumber).trim() === '')) {
       setCheckAmount('0');
     }
   }, [paymentType, checkNumber]);
+
+  // Reset check edit modes when leaving Check tab
+  useEffect(() => {
+    if (paymentType !== PAYMENT_CHECK) {
+      setCheckAmountEditMode(false);
+      setCheckNumberEditMode(false);
+    }
+  }, [paymentType]);
 
   useEffect(() => {
     if (paymentType === PAYMENT_CHECK || paymentType === PAYMENT_CREDIT) {
@@ -374,11 +401,31 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           borderColor: colors.border,
         },
         cashHint: { fontSize: 12, color: colors.textSecondary, marginBottom: spacing.lg },
-        checkAmountRow: { flexDirection: 'row', gap: spacing.md, marginTop: spacing.sm },
-        checkAmountWrap: { flex: 1 },
-        checkNumberWrap: { flex: 1 },
-        checkAmountLabel: { fontSize: 12, fontWeight: '600', color: colors.textSecondary, marginBottom: 4 },
+        checkAmountRow: {
+          flexDirection: 'row',
+          gap: spacing.md,
+          marginTop: spacing.sm,
+        },
+        checkAmountCol: { flex: 1 },
+        checkInputRow: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: spacing.sm,
+          marginTop: 4,
+        },
+        checkFieldBtn: {
+          width: 40,
+          height: 40,
+          alignItems: 'center',
+          justifyContent: 'center',
+          backgroundColor: colors.surface,
+          borderRadius: borderRadius.md,
+          borderWidth: 2,
+          borderColor: colors.border,
+        },
+        checkAmountLabel: { fontSize: 12, fontWeight: '600', color: colors.textSecondary },
         checkAmountInput: {
+          flex: 1,
           backgroundColor: colors.background,
           borderRadius: borderRadius.md,
           borderWidth: 1,
@@ -409,8 +456,8 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           alignItems: 'center',
           justifyContent: 'center',
           gap: 8,
-          paddingVertical: 10,
-          paddingHorizontal: spacing.md,
+          paddingVertical: 12,
+          paddingHorizontal: spacing.lg,
           borderRadius: borderRadius.md,
           backgroundColor: colors.surface,
           borderWidth: 2,
@@ -423,8 +470,8 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         },
         radioOptionSelected: { borderColor: colors.primary, backgroundColor: colors.primary },
         radioCircle: {
-          width: 20,
-          height: 20,
+          width: 18,
+          height: 18,
           borderRadius: 10,
           borderWidth: 2,
           borderColor: colors.textSecondary,
@@ -432,8 +479,8 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           justifyContent: 'center',
         },
         radioCircleSelected: { borderColor: '#fff' },
-        radioDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: '#fff' },
-        radioLabel: { fontSize: 16, fontWeight: '700', color: colors.text },
+        radioDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#fff' },
+        radioLabel: { fontSize: 14, fontWeight: '600', color: colors.text },
         radioLabelSelected: { color: '#fff' },
         searchWrap: {
           flexDirection: 'row',
@@ -517,6 +564,12 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         },
         payBtnDisabled: { backgroundColor: colors.textSecondary, opacity: 0.7 },
         btnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
+        evidenceAssistText: {
+          fontSize: 13,
+          color: colors.primary,
+          textAlign: 'center',
+          marginBottom: spacing.sm,
+        },
       }),
     [colors, insets.bottom]
   );
@@ -528,8 +581,6 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       showsVerticalScrollIndicator={false}
       keyboardShouldPersistTaps="handled"
     >
-      <Text style={styles.title}>Confirm Payment</Text>
-
       <View style={styles.totalCard}>
         <Text style={styles.totalLabel}>Total Amount</Text>
         <Text style={styles.total}>LKR {Number(total).toFixed(2)}</Text>
@@ -540,7 +591,17 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       <View style={styles.radioRow}>
         <TouchableOpacity
           style={[styles.radioOption, paymentType === PAYMENT_CASH && styles.radioOptionSelected]}
-          onPress={() => { setPaymentType(PAYMENT_CASH); setSelectedJournalId(null); setJournalSearch(''); setCashEditMode(false); }}
+          onPress={() => {
+            if (hasUnconfirmedEdits) {
+              Alert.alert('Confirm edit first', 'Please confirm or cancel your current edit (tap the checkmark or stay on this option) before switching payment method.');
+              return;
+            }
+            setPaymentType(PAYMENT_CASH);
+            const checkConfirmed = checkNumberTrimmed !== '' && checkAmountNum > 0;
+            if (!checkConfirmed) { setSelectedJournalId(null); setJournalSearch(''); }
+            setCashEditMode(false);
+            setCashAmountDraft(cashAmount);
+          }}
           activeOpacity={0.8}
         >
           <View style={[styles.radioCircle, paymentType === PAYMENT_CASH && styles.radioCircleSelected]}>
@@ -552,7 +613,13 @@ export default function ProceedPaymentScreen({ route, navigation }) {
 
         <TouchableOpacity
           style={[styles.radioOption, paymentType === PAYMENT_CHECK && styles.radioOptionSelected]}
-          onPress={() => { setPaymentType(PAYMENT_CHECK); setSelectedJournalId(null); setJournalSearch(''); }}
+          onPress={() => {
+            if (hasUnconfirmedEdits) {
+              Alert.alert('Confirm edit first', 'Please confirm or cancel your current edit (tap the checkmark or stay on this option) before switching payment method.');
+              return;
+            }
+            setPaymentType(PAYMENT_CHECK);
+          }}
           activeOpacity={0.8}
         >
           <View style={[styles.radioCircle, paymentType === PAYMENT_CHECK && styles.radioCircleSelected]}>
@@ -564,7 +631,15 @@ export default function ProceedPaymentScreen({ route, navigation }) {
 
         <TouchableOpacity
           style={[styles.radioOption, paymentType === PAYMENT_CREDIT && styles.radioOptionSelected]}
-          onPress={() => { setPaymentType(PAYMENT_CREDIT); setSelectedJournalId(null); setJournalSearch(''); }}
+          onPress={() => {
+            if (hasUnconfirmedEdits) {
+              Alert.alert('Confirm edit first', 'Please confirm or cancel your current edit (tap the checkmark or stay on this option) before switching payment method.');
+              return;
+            }
+            setPaymentType(PAYMENT_CREDIT);
+            const checkConfirmed = checkNumberTrimmed !== '' && checkAmountNum > 0;
+            if (!checkConfirmed) { setSelectedJournalId(null); setJournalSearch(''); }
+          }}
           activeOpacity={0.8}
         >
           <View style={[styles.radioCircle, paymentType === PAYMENT_CREDIT && styles.radioCircleSelected]}>
@@ -585,11 +660,12 @@ export default function ProceedPaymentScreen({ route, navigation }) {
               <TextInput
                 ref={cashInputRef}
                 style={styles.cashInput}
-                value={cashAmount}
-                onChangeText={setCashAmount}
+                value={cashEditMode ? cashAmountDraft : cashAmount}
+                onChangeText={(t) => cashEditMode && setCashAmountDraft(t)}
                 placeholder="Total amount"
                 placeholderTextColor={colors.textSecondary}
                 keyboardType="decimal-pad"
+                editable={cashEditMode}
               />
               <Text style={styles.cashInputSuffix}>LKR</Text>
             </View>
@@ -597,9 +673,11 @@ export default function ProceedPaymentScreen({ route, navigation }) {
               style={styles.cashModifyBtn}
               onPress={() => {
                 if (cashEditMode) {
+                  setCashAmount(cashAmountDraft);
                   setCashEditMode(false);
                   cashInputRef.current?.blur();
                 } else {
+                  setCashAmountDraft(cashAmount);
                   setCashEditMode(true);
                   cashInputRef.current?.focus();
                 }
@@ -636,32 +714,71 @@ export default function ProceedPaymentScreen({ route, navigation }) {
                 </Text>
                 <Ionicons name="checkmark-circle" size={20} color="#fff" />
               </TouchableOpacity>
-              <TouchableOpacity style={styles.changeBankBtn} onPress={() => { setSelectedJournalId(null); setJournalSearch(''); }} activeOpacity={0.8}>
+              <TouchableOpacity
+                style={styles.changeBankBtn}
+                onPress={() => {
+                  setSelectedJournalId(null);
+                  setJournalSearch('');
+                  setCheckAmount('0');
+                  setCheckNumber('');
+                  setCheckAmountEditMode(true);
+                  setCheckNumberEditMode(true);
+                }}
+                activeOpacity={0.8}
+              >
                 <Ionicons name="swap-horizontal-outline" size={18} color={colors.primary} />
-                <Text style={styles.changeBankText}>Change journal</Text>
+                <Text style={styles.changeBankText}>Change Bank</Text>
               </TouchableOpacity>
               <Text style={[styles.sectionLabel, { marginTop: spacing.md }]}>Amount & Check number</Text>
               <View style={styles.checkAmountRow}>
-                <View style={styles.checkAmountWrap}>
+                <View style={styles.checkAmountCol}>
                   <Text style={styles.checkAmountLabel}>Amount (LKR)</Text>
-                  <TextInput
-                    style={styles.checkAmountInput}
-                    value={checkAmount}
-                    onChangeText={setCheckAmount}
-                    placeholder="0"
-                    placeholderTextColor={colors.textSecondary}
-                    keyboardType="decimal-pad"
-                  />
+                  <View style={styles.checkInputRow}>
+                    <TextInput
+                      style={styles.checkAmountInput}
+                      value={checkAmount}
+                      onChangeText={setCheckAmount}
+                      placeholder="0"
+                      placeholderTextColor={colors.textSecondary}
+                      keyboardType="decimal-pad"
+                      editable={checkAmountEditMode}
+                    />
+                    <TouchableOpacity
+                      style={styles.checkFieldBtn}
+                      onPress={() => setCheckAmountEditMode((prev) => !prev)}
+                      activeOpacity={0.8}
+                    >
+                      <Ionicons
+                        name={checkAmountEditMode ? 'checkmark-circle' : 'pencil'}
+                        size={22}
+                        color={colors.primary}
+                      />
+                    </TouchableOpacity>
+                  </View>
                 </View>
-                <View style={styles.checkNumberWrap}>
+                <View style={styles.checkAmountCol}>
                   <Text style={styles.checkAmountLabel}>Check number <Text style={styles.requiredStar}>*</Text></Text>
-                  <TextInput
-                    style={styles.checkAmountInput}
-                    value={checkNumber}
-                    onChangeText={setCheckNumber}
-                    placeholder="Enter check number"
-                    placeholderTextColor={colors.textSecondary}
-                  />
+                  <View style={styles.checkInputRow}>
+                    <TextInput
+                      style={styles.checkAmountInput}
+                      value={checkNumber}
+                      onChangeText={setCheckNumber}
+                      placeholder="Check #"
+                      placeholderTextColor={colors.textSecondary}
+                      editable={checkNumberEditMode}
+                    />
+                    <TouchableOpacity
+                      style={styles.checkFieldBtn}
+                      onPress={() => setCheckNumberEditMode((prev) => !prev)}
+                      activeOpacity={0.8}
+                    >
+                      <Ionicons
+                        name={checkNumberEditMode ? 'checkmark-circle' : 'pencil'}
+                        size={22}
+                        color={colors.primary}
+                      />
+                    </TouchableOpacity>
+                  </View>
                 </View>
               </View>
             </View>
@@ -801,6 +918,10 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       )}
 
       <View style={styles.bottomSpacer} />
+
+      {evidenceRequired && deliveryPhotos.length === 0 && (
+        <Text style={styles.evidenceAssistText}>Please update evidence of delivery to proceed</Text>
+      )}
 
       <TouchableOpacity
         style={[styles.payBtn, !canProceed && styles.payBtnDisabled]}
