@@ -260,7 +260,10 @@ export default function SaleOrderListScreen({ route, navigation }) {
   };
 
   const onOrderPress = (order) => {
-    if (order.isDelivered) {
+    const isInvoiced = String(order?.invoice_status || '') === 'invoiced';
+    if (isInvoiced) {
+      navigation.navigate('InvoiceScreen', { saleOrderId: order.id });
+    } else if (order.isDelivered) {
       navigation.navigate('ProceedPayment', {
         saleOrderId: order.id,
         total: order.amount_total,

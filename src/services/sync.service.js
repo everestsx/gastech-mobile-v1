@@ -4,6 +4,7 @@
  */
 import { getCustomers } from './customer.service';
 import { getAllSaleOrders } from './saleOrder.service';
+import { getAllProducts } from './product.service';
 import { getStockMovesByPickingId, getStockMoveLinesByMoveIds } from './delivery.service';
 import { getJournals } from './journal.service';
 import { getRoutes } from './route.service';
@@ -351,8 +352,19 @@ export async function runSync() {
     log('db', 'stock_move_lines');
     await stockMoveLinesDb.upsertStockMoveLines(allMoveLines);
     if (productIds.size > 0) {
-      log('db', `products (${productIds.size})`);
-      await productsDb.upsertProducts(Array.from(productIds).map((id) => ({ id, name: null })));
+      try {
+        log('fetch', 'product.product');
+        const products = await getAllProducts();
+        if (products?.length) {
+          log('db', `products (${products.length})`);
+          await productsDb.upsertProducts(products);
+        } else {
+          await productsDb.upsertProducts(Array.from(productIds).map((id) => ({ id, name: null })));
+        }
+      } catch (e) {
+        logWarn('fetch products', e);
+        await productsDb.upsertProducts(Array.from(productIds).map((id) => ({ id, name: null })));
+      }
     }
 
     log('fetch', 'journals + routes + vehicles');

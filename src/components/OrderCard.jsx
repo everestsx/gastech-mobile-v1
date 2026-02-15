@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
+import { getProductDisplayName } from '../utils/productDisplay';
 
 function formatCurrency(amount) {
   return `LKR ${Number(amount).toFixed(2)}`;
@@ -20,15 +21,6 @@ function formatOrderDate(dateOrder) {
   } catch {
     return datePart;
   }
-}
-
-/** Shortcode for product: first word or first 6 chars of name. */
-function productShortcode(name) {
-  if (!name || typeof name !== 'string') return 'Item';
-  const trimmed = name.trim();
-  const firstWord = trimmed.split(/\s+/)[0];
-  if (firstWord && firstWord.length <= 8) return firstWord;
-  return trimmed.slice(0, 6);
 }
 
 export function getOrderTotalQty(order) {
@@ -103,13 +95,15 @@ export default function OrderCard({ order, onPress, isDelivered, orderLines = []
           flexDirection: 'row',
           flexWrap: 'wrap',
           alignItems: 'center',
+          alignContent: 'flex-start',
           gap: 6,
           marginTop: 4,
         },
         qtyBadge: {
-          paddingHorizontal: 8,
-          paddingVertical: 4,
+          paddingHorizontal: 10,
+          paddingVertical: 5,
           borderRadius: 8,
+          flexShrink: 0,
         },
         qtyBadgeText: { fontSize: 11, fontWeight: '700', color: '#fff' },
       }),
@@ -190,12 +184,12 @@ export default function OrderCard({ order, onPress, isDelivered, orderLines = []
         <View style={styles.qtyBadgesRow}>
           {lines.map((line, index) => {
             const qty = Number(line.product_uom_qty) || 0;
-            const label = line.name || line.product_id?.[1] || 'Item';
-            const shortcode = productShortcode(label);
+            const rawLabel = line.product_id?.[1] || line.name || 'Item';
+            const displayName = getProductDisplayName(rawLabel) || 'Item';
             const bg = ITEM_BADGE_COLORS[index % ITEM_BADGE_COLORS.length];
             return (
               <View key={line.id || index} style={[styles.qtyBadge, { backgroundColor: bg }]}>
-                <Text style={styles.qtyBadgeText}>{qty} {shortcode}</Text>
+                <Text style={styles.qtyBadgeText}>{qty} {displayName}</Text>
               </View>
             );
           })}

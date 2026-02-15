@@ -40,7 +40,7 @@ function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSp
         ? `Check: ${selectedBankName}`
         : paymentType === 'credit' && selectedBankName
           ? `Credit: ${selectedBankName}`
-          : 'Cash';
+          : (!paymentType && !selectedBankName && !paymentSplit) ? 'Invoiced' : 'Cash';
 
   const rows =
     (lines || [])
@@ -265,7 +265,7 @@ export default function InvoiceScreen({ route, navigation }) {
         ? `Check: ${selectedBankName}`
         : paymentType === 'credit' && selectedBankName
           ? `Credit: ${selectedBankName}`
-          : 'Cash';
+          : (paymentType != null || selectedBankName != null || paymentSplit != null) ? 'Cash' : 'Invoiced';
 
   if (loading) {
     return (

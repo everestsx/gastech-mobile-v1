@@ -33,3 +33,14 @@ export async function getProductById(id) {
   const row = await db.getFirstAsync('SELECT * FROM products WHERE id = ?', [id]);
   return row ? { id: row.id, name: row.name } : null;
 }
+
+/** @returns {Promise<Record<number, string>>} Map product id -> name for display (e.g. sale order cards). */
+export async function getProductsMap() {
+  const db = await getDb();
+  const rows = await db.getAllAsync('SELECT id, name FROM products');
+  const map = {};
+  (rows || []).forEach((r) => {
+    if (r.id != null) map[r.id] = r.name ?? '';
+  });
+  return map;
+}

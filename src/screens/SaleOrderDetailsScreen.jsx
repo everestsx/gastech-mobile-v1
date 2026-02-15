@@ -26,6 +26,7 @@ import {
 } from '../services/delivery.service';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
+import { getProductDisplayName } from '../utils/productDisplay';
 
 function formatCurrency(amount) {
   return `LKR ${Number(amount).toFixed(2)}`;
@@ -258,7 +259,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
     for (const l of lines) {
       const qty = Number(l.newQty);
       if (Number.isNaN(qty) || qty < 1) {
-        return `Quantity for "${l.product_id?.[1] ?? l.name}" must be at least 1 (cannot be 0)`;
+        return `Quantity for "${getProductDisplayName(l.product_id?.[1] ?? l.name ?? '')}" must be at least 1 (cannot be 0)`;
       }
     }
     return null;
@@ -390,7 +391,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
     return (
       <View style={styles.lineCard}>
         <Text style={styles.lineProductName} numberOfLines={2}>
-          {item.product_id?.[1] ?? '—'}
+          {getProductDisplayName(item.product_id?.[1] ?? '') || '—'}
         </Text>
 
         {/* One line: qty × unit price (left)    line total (right), space-styled */}

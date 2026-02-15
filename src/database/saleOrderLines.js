@@ -3,6 +3,7 @@
  */
 import { getDb } from './db.js';
 import { empty, num, numOrNull, iso } from './dbHelpers.js';
+import { getProductsMap } from './products.js';
 
 function odooRel(idName) {
   if (Array.isArray(idName)) return { id: idName[0], name: idName[1] ?? null };
@@ -47,14 +48,18 @@ export async function getSaleOrderLinesByOrderIds(orderIds) {
     `SELECT * FROM sale_order_lines WHERE order_id IN (${placeholders}) ORDER BY id`,
     orderIds
   );
-  return (rows || []).map((row) => ({
-    id: row.id,
-    order_id: [row.order_id, null],
-    product_id: [row.product_id, row.product_name ?? ''],
-    name: row.name,
-    product_uom_qty: row.product_uom_qty,
-    price_unit: row.price_unit,
-    price_subtotal: row.price_subtotal,
-    price_total: row.price_total,
-  }));
+  const productNames = await getProductsMap();
+  return (rows || []).map((row) => {
+    const productName = (row.product_name && String(row.product_name).trim()) || productNames[row.product_id] || '';
+    return {
+      id: row.id,
+      order_id: [row.order_id, null],
+      product_id: [row.product_id, productName],
+      name: row.name,
+      product_uom_qty: row.product_uom_qty,
+      price_unit: row.price_unit,
+      price_subtotal: row.price_subtotal,
+      price_total: row.price_total,
+    };
+  });
 }
