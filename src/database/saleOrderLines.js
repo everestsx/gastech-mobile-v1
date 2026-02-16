@@ -63,3 +63,20 @@ export async function getSaleOrderLinesByOrderIds(orderIds) {
     };
   });
 }
+
+/**
+ * Update one sale order line quantity locally (offline). Recomputes price_subtotal and price_total.
+ */
+export async function updateSaleOrderLineQtyLocal(lineId, qty) {
+  const db = await getDb();
+  const qtyNum = num(qty);
+  const row = await db.getFirstAsync('SELECT id, price_unit FROM sale_order_lines WHERE id = ?', [num(lineId)]);
+  if (!row) return;
+  const priceUnit = num(row.price_unit);
+  const priceSubtotal = qtyNum * priceUnit;
+  const priceTotal = priceSubtotal; // tax can be applied at order level
+  await db.runAsync(
+    `UPDATE sale_order_lines SET product_uom_qty = ?, price_subtotal = ?, price_total = ?, updated_at = ? WHERE id = ?`,
+    [qtyNum, priceSubtotal, priceTotal, iso(), num(lineId)]
+  );
+}

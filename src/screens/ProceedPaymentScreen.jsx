@@ -15,23 +15,9 @@ import * as ImagePicker from 'expo-image-picker';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
-import { confirmSaleOrder, getJournals } from '../services/saleOrderLine.service';
-import {
-  getPickingBySaleOrder,
-  getStockMovesByPickingId,
-  getStockMoveLinesByMoveIds,
-  updateMoveLineQty,
-  validatePicking,
-} from '../services/delivery.service';
-import {
-  getSaleOrderForPayment,
-  getSaleOrderInvoiceIds,
-  getInvoiceState,
-  createAdvancePaymentWizard,
-  createInvoicesFromWizard,
-  postInvoice,
-  createPayment,
-} from '../services/invoice.service';
+import { getCachedJournals, getSaleOrderDetailsFromDB } from '../services/sync.service';
+import * as saleOrdersDb from '../database/saleOrders.js';
+import * as syncQueueDb from '../database/syncQueue.js';
 
 const PAYMENT_CASH = 'cash';
 const PAYMENT_CHECK = 'check';
@@ -118,7 +104,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   const loadJournals = useCallback(async () => {
     setJournalsLoading(true);
     try {
-      const list = await getJournals();
+      const list = await getCachedJournals();
       setJournals(Array.isArray(list) ? list : []);
     } catch (_) {
       setJournals([]);
@@ -193,100 +179,40 @@ export default function ProceedPaymentScreen({ route, navigation }) {
     try {
       setLoading(true);
 
-      if (!deliveryDone) {
-        await confirmSaleOrder(saleOrderId);
-
-        const pickings = await getPickingBySaleOrder(saleOrderId);
-        if (!pickings?.length) {
-          throw new Error('No delivery order found');
-        }
-
-        const picking = pickings[0];
-        const moveIds = picking.move_ids ?? [];
-        const [moves, moveLines] =
-          moveIds.length > 0
-            ? await Promise.all([
-                getStockMovesByPickingId(picking.id),
-                getStockMoveLinesByMoveIds(moveIds),
-              ])
-            : [[], []];
-
-        const moveIdToQty = {};
-        (moves || []).forEach((m) => {
-          moveIdToQty[m.id] = m.product_uom_qty ?? 0;
-        });
-        for (const ml of moveLines || []) {
-          const moveId = Array.isArray(ml.move_id) ? ml.move_id[0] : ml.move_id;
-          const demandQty = moveId != null ? moveIdToQty[moveId] ?? 0 : 0;
-          if (demandQty > 0) {
-            await updateMoveLineQty(ml.id, demandQty);
-          }
-        }
-
-        await validatePicking(picking.id);
-      }
-
-      const orderInfo = await getSaleOrderForPayment(saleOrderId);
+      const data = await getSaleOrderDetailsFromDB(saleOrderId);
+      const orderInfo = data?.order;
       if (!orderInfo) throw new Error('Sale order not found');
       const partnerId = Array.isArray(orderInfo.partner_id)
         ? orderInfo.partner_id[0]
         : orderInfo.partner_id;
-      if (partnerId == null) throw new Error('Customer (partner) not found for payment');
       const orderName = orderInfo.name ?? `Order ${saleOrderId}`;
 
-      let invoiceId = null;
-      const existingInvoiceIds = orderInfo.invoice_ids ?? [];
-      if (existingInvoiceIds.length > 0) {
-        invoiceId = Array.isArray(existingInvoiceIds) ? existingInvoiceIds[0] : existingInvoiceIds;
-        const invState = await getInvoiceState(invoiceId).catch(() => ({}));
-        if (invState?.state === 'draft') {
-          await postInvoice(invoiceId);
-        }
-      } else {
-        const wizardId = await createAdvancePaymentWizard(saleOrderId);
-        if (wizardId == null) throw new Error('Could not create invoice wizard');
-        await createInvoicesFromWizard(wizardId, saleOrderId);
-        const invoiceIds = await getSaleOrderInvoiceIds(saleOrderId);
-        invoiceId = Array.isArray(invoiceIds) ? invoiceIds[0] : invoiceIds;
-        if (invoiceId == null) throw new Error('No invoice created');
-        await postInvoice(invoiceId);
-      }
+      await saleOrdersDb.updateSaleOrderInvoiceStatusLocal(saleOrderId, 'invoiced');
 
-      const dateStr = new Date().toISOString().slice(0, 10);
-      const baseMemo = `Payment for Invoice / Order ${orderName}`;
+      const payments = [];
       if (needsCash) {
-        await createPayment({
-          partnerId,
-          amount: cashAmountNum,
-          currencyId: 1,
-          journalId: cashJournalId,
-          date: dateStr,
-          memo: `${baseMemo} (Cash)`,
-          invoiceId,
-        });
+        payments.push({ type: 'cash', amount: cashAmountNum, journalId: cashJournalId });
       }
       if (needsCheck) {
-        await createPayment({
-          partnerId,
+        payments.push({
+          type: 'check',
           amount: checkAmountNum,
-          currencyId: 1,
           journalId: checkJournalId,
-          date: dateStr,
-          memo: `${baseMemo} (Check${checkNumber ? ` #${checkNumber}` : ''})`,
-          invoiceId,
+          checkNumber: checkNumberTrimmed || undefined,
         });
       }
       if (needsCredit) {
-        await createPayment({
-          partnerId,
-          amount: creditAmountNum,
-          currencyId: 1,
-          journalId: creditJournalId,
-          date: dateStr,
-          memo: `${baseMemo} (Credit)`,
-          invoiceId,
-        });
+        payments.push({ type: 'credit', amount: creditAmountNum, journalId: creditJournalId });
       }
+
+      await syncQueueDb.enqueue(syncQueueDb.ACTION_PAYMENT, {
+        saleOrderId,
+        partnerId,
+        orderName,
+        total: orderTotal,
+        payments,
+        deliveryPhotoUris: deliveryPhotos,
+      });
 
       navigation.replace('InvoiceScreen', {
         saleOrderId,
@@ -303,7 +229,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       console.error(err);
       Alert.alert(
         'Error',
-        err?.message || 'Failed to complete delivery and payment'
+        err?.message || 'Failed to save payment (will sync when online)'
       );
     } finally {
       setLoading(false);

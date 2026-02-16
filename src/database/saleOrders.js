@@ -105,3 +105,38 @@ function safeParseJson(str, fallback) {
     return fallback;
   }
 }
+
+/**
+ * Recompute sale order amounts from its lines (offline). Updates amount_untaxed, amount_tax, amount_total.
+ */
+export async function updateSaleOrderAmountsFromLines(orderId) {
+  const db = await getDb();
+  const lineRows = await db.getAllAsync(
+    'SELECT price_subtotal, price_total FROM sale_order_lines WHERE order_id = ?',
+    [num(orderId)]
+  );
+  let amountUntaxed = 0;
+  let amountTax = 0;
+  (lineRows || []).forEach((r) => {
+    const sub = num(r.price_subtotal);
+    const total = num(r.price_total);
+    amountUntaxed += sub;
+    amountTax += total - sub;
+  });
+  const amountTotal = amountUntaxed + amountTax;
+  await db.runAsync(
+    `UPDATE sale_orders SET amount_untaxed = ?, amount_tax = ?, amount_total = ?, updated_at = ? WHERE id = ?`,
+    [amountUntaxed, amountTax, amountTotal, iso(), num(orderId)]
+  );
+}
+
+/**
+ * Update sale order invoice_status locally (offline). e.g. 'invoiced'.
+ */
+export async function updateSaleOrderInvoiceStatusLocal(orderId, invoiceStatus) {
+  const db = await getDb();
+  await db.runAsync(
+    `UPDATE sale_orders SET invoice_status = ?, updated_at = ? WHERE id = ?`,
+    [empty(invoiceStatus) || 'invoiced', iso(), num(orderId)]
+  );
+}

@@ -24,6 +24,7 @@ import * as vehicleWarehousesDb from '../database/vehicleWarehouses.js';
 import * as vehicleInventoriesDb from '../database/vehicleInventories.js';
 import * as productsDb from '../database/products.js';
 import * as syncLogDb from '../database/syncLog.js';
+import * as syncQueueDb from '../database/syncQueue.js';
 
 const KEYS = {
   USER: '@gastech_user',
@@ -209,6 +210,135 @@ export async function getSyncLogRecent(limit = 20) {
   }
 }
 
+/** Journals from local DB (for offline payment screen). */
+export async function getCachedJournals() {
+  try {
+    return await journalsDb.getAllJournals();
+  } catch (e) {
+    console.warn('getCachedJournals', e);
+    return [];
+  }
+}
+
+/** Process pending sync queue: push delivery and payment actions to Odoo. Run at start of runSync. */
+async function processSyncQueue() {
+  const pending = await syncQueueDb.getPending();
+  if (!pending.length) return;
+  log('queue', `processing ${pending.length} pending`);
+  const delivery = pending.filter((p) => p.action_type === syncQueueDb.ACTION_DELIVERY);
+  const payment = pending.filter((p) => p.action_type === syncQueueDb.ACTION_PAYMENT);
+  const {
+    updateSaleOrderLineQty,
+    confirmSaleOrder,
+  } = await import('./saleOrderLine.service');
+  const {
+    getPickingBySaleOrder,
+    getStockMovesByPickingId,
+    getStockMoveLinesByMoveIds,
+    updateMoveLineQty,
+    updateStockMoveQty,
+    validatePicking,
+    createBackorderConfirmation,
+    processBackorderConfirmation,
+  } = await import('./delivery.service');
+  const {
+    getSaleOrderForPayment,
+    getSaleOrderInvoiceIds,
+    getInvoiceState,
+    createAdvancePaymentWizard,
+    createInvoicesFromWizard,
+    postInvoice,
+    createPayment,
+  } = await import('./invoice.service');
+
+  for (const item of delivery) {
+    try {
+      const p = item.payload || {};
+      const saleOrderId = p.saleOrderId ?? p.sale_id;
+      const pickingId = p.pickingId ?? p.picking_id;
+      const orderLineUpdates = p.orderLineUpdates || [];
+      const moveUpdates = p.moveUpdates || [];
+      const moveLineUpdates = p.moveLineUpdates || [];
+
+      for (const u of orderLineUpdates) {
+        await updateSaleOrderLineQty(u.lineId, u.product_uom_qty);
+      }
+      for (const u of moveUpdates) {
+        await updateStockMoveQty(u.moveId, u.product_uom_qty);
+      }
+      for (const u of moveLineUpdates) {
+        await updateMoveLineQty(u.moveLineId, u.qty_done);
+      }
+      if (pickingId != null) {
+        const validateResult = await validatePicking(pickingId);
+        if (validateResult != null && typeof validateResult === 'object') {
+          const pickIds = validateResult.pick_ids ?? validateResult.backorder_pick_ids ?? [];
+          const ids = (Array.isArray(pickIds) ? pickIds : []).map((id) => (Array.isArray(id) ? id[0] : id)).filter(Boolean);
+          if (ids.length > 0) {
+            const wizardId = await createBackorderConfirmation(ids);
+            if (wizardId != null) await processBackorderConfirmation(wizardId);
+          }
+        }
+      }
+      await syncQueueDb.markSynced(item.id);
+      log('queue', `delivery synced id=${item.id}`);
+    } catch (e) {
+      logWarn('queue delivery', e);
+    }
+  }
+
+  for (const item of payment) {
+    try {
+      const p = item.payload || {};
+      const saleOrderId = p.saleOrderId ?? p.sale_id;
+      const payments = p.payments || [];
+      const orderName = p.orderName ?? `Order ${saleOrderId}`;
+
+      const orderInfo = await getSaleOrderForPayment(saleOrderId);
+      if (!orderInfo) {
+        logWarn('queue payment', new Error('Sale order not found'));
+        continue;
+      }
+      const partnerId = Array.isArray(orderInfo.partner_id) ? orderInfo.partner_id[0] : orderInfo.partner_id;
+      if (partnerId == null) continue;
+
+      let invoiceId = null;
+      const existingInvoiceIds = orderInfo.invoice_ids ?? [];
+      if (existingInvoiceIds.length > 0) {
+        invoiceId = Array.isArray(existingInvoiceIds) ? existingInvoiceIds[0] : existingInvoiceIds;
+        const invState = await getInvoiceState(invoiceId).catch(() => ({}));
+        if (invState?.state === 'draft') await postInvoice(invoiceId);
+      } else {
+        const wizardId = await createAdvancePaymentWizard(saleOrderId);
+        if (wizardId == null) continue;
+        await createInvoicesFromWizard(wizardId, saleOrderId);
+        const invoiceIds = await getSaleOrderInvoiceIds(saleOrderId);
+        invoiceId = Array.isArray(invoiceIds) ? invoiceIds[0] : invoiceIds;
+        if (invoiceId != null) await postInvoice(invoiceId);
+      }
+      const dateStr = new Date().toISOString().slice(0, 10);
+      const baseMemo = `Payment for Invoice / Order ${orderName}`;
+      for (const pm of payments) {
+        const amount = Number(pm.amount);
+        if (!amount || !pm.journalId) continue;
+        await createPayment({
+          partnerId,
+          amount,
+          currencyId: 1,
+          journalId: pm.journalId,
+          date: dateStr,
+          memo: `${baseMemo} (${pm.type || 'payment'})${pm.checkNumber ? ` #${pm.checkNumber}` : ''}`,
+          invoiceId,
+        });
+      }
+      await syncQueueDb.markSynced(item.id);
+      log('queue', `payment synced id=${item.id}`);
+    } catch (e) {
+      logWarn('queue payment', e);
+    }
+  }
+}
+
 /**
  * Delete all local synced data from SQLite (partners, orders, pickings, etc.)
  * and clear last-sync state. Does not remove user session.
@@ -259,6 +389,7 @@ export async function runSync() {
   log('start', syncAt);
 
   try {
+    await processSyncQueue();
     log('fetch', 'customers + orders');
     const [customers, orders] = await Promise.all([
       getCustomers().catch((e) => {

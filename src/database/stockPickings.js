@@ -68,3 +68,14 @@ function safeParseJson(str, fallback) {
     return fallback;
   }
 }
+
+/**
+ * Update picking state locally (offline). e.g. 'done' after delivery validation.
+ */
+export async function updatePickingStateLocal(pickingId, state) {
+  const db = await getDb();
+  await db.runAsync(
+    'UPDATE stock_pickings SET state = ?, updated_at = ? WHERE id = ?',
+    [empty(state) || 'done', iso(), num(pickingId)]
+  );
+}

@@ -12,17 +12,16 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { updateSaleOrderLineQty } from '../services/saleOrderLine.service';
 import { getSaleOrderDetailsFromDB, getDeliveryDataFromDB } from '../services/sync.service';
+import * as saleOrderLinesDb from '../database/saleOrderLines.js';
+import * as saleOrdersDb from '../database/saleOrders.js';
+import * as stockMoveLinesDb from '../database/stockMoveLines.js';
+import * as stockMovesDb from '../database/stockMoves.js';
+import * as stockPickingsDb from '../database/stockPickings.js';
+import * as syncQueueDb from '../database/syncQueue.js';
 import {
   buildProductIdToMoveLineIdMap,
   buildProductIdToMoveIdMap,
-  updateMoveLineQty,
-  updateStockMoveQty,
-  validatePicking,
-  createBackorderConfirmation,
-  processBackorderConfirmation,
-  getPickingBySaleOrder,
 } from '../services/delivery.service';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
@@ -265,13 +264,17 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
     return null;
   }, [lines]);
 
-  /** Apply qty_done (and demand when upselling) then validate. Backorder only when Odoo returns it (skipped for full delivery). */
+  /** Apply qty updates locally (offline DB) and enqueue for sync. No Odoo calls. */
   const applyQtyDoneAndValidate = useCallback(
-    async (effectiveQtys) => {
+    async (effectiveQtys, markDeliveryDone = false) => {
       const { picking, moves, moveLines } = await getDeliveryDataFromDB(order.id);
       if (!picking?.id) throw new Error('No delivery order found for this sale order. Confirm the order first.');
       const productIdToMoveLineId = buildProductIdToMoveLineIdMap(moves, moveLines);
       const productIdToMoveId = buildProductIdToMoveIdMap(moves);
+
+      const orderLineUpdates = [];
+      const moveUpdates = [];
+      const moveLineUpdates = [];
 
       for (let i = 0; i < lines.length; i++) {
         const l = lines[i];
@@ -279,18 +282,39 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
         const productId = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
         const orderQty = Number(l.product_uom_qty) ?? 0;
         if (productId == null) continue;
+
+        await saleOrderLinesDb.updateSaleOrderLineQtyLocal(l.id, newVal);
+        orderLineUpdates.push({ lineId: l.id, product_uom_qty: newVal });
+
         if (newVal > orderQty) {
-          await updateSaleOrderLineQty(l.id, newVal);
           const moveId = productIdToMoveId[productId];
-          if (moveId != null) await updateStockMoveQty(moveId, newVal);
+          if (moveId != null) {
+            await stockMovesDb.updateStockMoveQtyLocal(moveId, newVal);
+            moveUpdates.push({ moveId, product_uom_qty: newVal });
+          }
         }
         const moveLineId = productIdToMoveLineId[productId];
-        if (moveLineId != null) await updateMoveLineQty(moveLineId, newVal);
+        if (moveLineId != null) {
+          await stockMoveLinesDb.updateMoveLineQtyLocal(moveLineId, newVal);
+          moveLineUpdates.push({ moveLineId, qty_done: newVal });
+        }
       }
 
-      await applyValidateAndBackorder(picking, order.id);
+      await saleOrdersDb.updateSaleOrderAmountsFromLines(order.id);
+
+      if (markDeliveryDone && picking?.id) {
+        await stockPickingsDb.updatePickingStateLocal(picking.id, 'done');
+      }
+
+      await syncQueueDb.enqueue(syncQueueDb.ACTION_DELIVERY, {
+        saleOrderId: order.id,
+        pickingId: picking?.id,
+        orderLineUpdates,
+        moveUpdates,
+        moveLineUpdates,
+      });
     },
-    [order?.id, lines, applyValidateAndBackorder]
+    [order?.id, lines]
   );
 
   const updateQty = async () => {
@@ -302,7 +326,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
     setUpdateError(null);
     setUpdating(true);
     try {
-      await applyQtyDoneAndValidate(lines.map((l) => l.newQty));
+      await applyQtyDoneAndValidate(lines.map((l) => l.newQty), false);
       await loadDetails();
       setModifyEnabled(false);
       setQtyChanged(false);
@@ -314,33 +338,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
     }
   };
 
-  /** Validate picking. Backorder process only when Odoo returns backorder (full delivery => skip backorder). */
-  const applyValidateAndBackorder = useCallback(async (picking, saleOrderId) => {
-    const validateResult = await validatePicking(picking.id);
-    if (validateResult === true) return;
-    let backorderIds = [];
-    if (typeof validateResult === 'number') {
-      await processBackorderConfirmation(validateResult);
-      return;
-    }
-    if (validateResult != null && typeof validateResult === 'object') {
-      const pickIds = validateResult.pick_ids ?? validateResult.backorder_pick_ids;
-      if (Array.isArray(pickIds) && pickIds.length > 0) {
-        backorderIds = pickIds.map((p) => (Array.isArray(p) ? p[0] : p)).filter(Boolean);
-      }
-    }
-    if (backorderIds.length === 0 && saleOrderId != null) {
-      const pickingsAgain = await getPickingBySaleOrder(saleOrderId);
-      const currentPicking = pickingsAgain?.find((p) => p.id === picking.id) ?? picking;
-      backorderIds = currentPicking?.backorder_ids ?? [];
-    }
-    if (backorderIds.length > 0) {
-      const wizardId = await createBackorderConfirmation(backorderIds);
-      if (wizardId != null) await processBackorderConfirmation(wizardId);
-    }
-  }, []);
-
-  /** Proceed to payment: set qty_done (default full delivery when user didn't change qty), validate, then navigate. Backorder only when partial. */
+  /** Proceed to payment: save qtys locally, mark delivery done, enqueue, then navigate. */
   const handleProceedToPayment = useCallback(async () => {
     const noChanges = !hasQtyChanges();
     if (!noChanges) {
@@ -356,7 +354,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
       const effectiveQtys = noChanges
         ? lines.map((l) => Number(l.product_uom_qty) ?? 0)
         : lines.map((l) => l.newQty);
-      await applyQtyDoneAndValidate(effectiveQtys);
+      await applyQtyDoneAndValidate(effectiveQtys, true);
 
       const total =
         !noChanges && lines.length

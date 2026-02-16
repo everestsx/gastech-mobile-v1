@@ -45,3 +45,14 @@ export async function getStockMovesByPickingId(pickingId) {
     state: row.state,
   }));
 }
+
+/**
+ * Update stock move demand (product_uom_qty) locally (offline). Used when upselling.
+ */
+export async function updateStockMoveQtyLocal(moveId, qty) {
+  const db = await getDb();
+  await db.runAsync(
+    'UPDATE stock_moves SET product_uom_qty = ?, updated_at = ? WHERE id = ?',
+    [num(qty), iso(), num(moveId)]
+  );
+}

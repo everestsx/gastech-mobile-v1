@@ -1,10 +1,13 @@
 /**
  * Pending actions to push to Odoo on sync (delivery updates, payments, etc.).
+ * Offline-first: all local updates are persisted and queued here; runSync processes the queue.
  */
 import { getDb } from './db.js';
 import { empty, num, iso } from './dbHelpers.js';
 
+/** Delivery + order line updates: qtys, validate picking. Payload: { saleOrderId, pickingId, orderLineUpdates, moveUpdates, moveLineUpdates } */
 export const ACTION_DELIVERY = 'delivery';
+/** Payment: create invoice and payments. Payload: { saleOrderId, partnerId, orderName, total, payments[], deliveryPhotoUris? } */
 export const ACTION_PAYMENT = 'payment';
 
 export async function enqueue(actionType, payload) {
