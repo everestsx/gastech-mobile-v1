@@ -105,6 +105,7 @@ export default function DashboardScreen({ navigation }) {
     } catch (_) {}
   }, []);
 
+  // Load on mount and every time screen gains focus (e.g. after login or tab switch)
   useEffect(() => {
     const unsub = navigation.addListener?.('focus', () => {
       loadData();
@@ -114,6 +115,15 @@ export default function DashboardScreen({ navigation }) {
     loadSyncStatus();
     return () => unsub?.();
   }, [loadData, loadSyncStatus, navigation]);
+
+  // Short delayed reload on first mount so dashboard amounts update immediately after first-time login
+  useEffect(() => {
+    const t = setTimeout(() => {
+      loadData();
+      loadSyncStatus();
+    }, 200);
+    return () => clearTimeout(t);
+  }, [loadData, loadSyncStatus]);
 
   useEffect(() => {
     const intervalMs = 60 * 1000;

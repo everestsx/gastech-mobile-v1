@@ -15,7 +15,8 @@ import { Ionicons } from '@expo/vector-icons';
 import AppLogo from '../components/AppLogo';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
-import { getCachedVehicles, runSync, saveUserSession } from '../services/sync.service';
+import { getCachedVehicles, runSync, saveUserSession, getUserSession } from '../services/sync.service';
+import { getDb } from '../database/db';
 
 const ADMIN_OPTION = { id: 'admin', name: 'Admin', license_plate: null, isAdmin: true };
 
@@ -135,6 +136,17 @@ export default function LoginScreen({ navigation }) {
           vehicleName: selected.name,
           licensePlate: selected.license_plate || (selected.name || '').split('/').pop() || '',
         });
+      }
+      // Verify session was persisted so Dashboard reads correct user on first load
+      const saved = await getUserSession();
+      if (!saved) {
+        throw new Error('Session could not be saved. Please try again.');
+      }
+      // Ensure DB is ready before Main so Dashboard amounts load immediately
+      try {
+        await getDb();
+      } catch (_) {
+        // Continue; DB may already be open from Splash
       }
       navigation.replace('Main');
     } catch (err) {
