@@ -51,6 +51,7 @@ async function runMigrations(db) {
     CREATE TABLE IF NOT EXISTS partners (
       id INTEGER PRIMARY KEY,
       name TEXT,
+      city TEXT,
       phone TEXT,
       updated_at TEXT
     );
@@ -190,6 +191,22 @@ async function runMigrations(db) {
     CREATE INDEX IF NOT EXISTS idx_vehicle_inventories_vehicle_id ON vehicle_inventories(vehicle_id);
     `);
     await db.runAsync('PRAGMA user_version = 3');
+  }
+
+  if (current < 4) {
+    try {
+
+      const info = await db.getAllAsync('PRAGMA table_info(partners)');
+      const hasCity = (info || []).some((c) => c.name === 'city');
+
+      if (!hasCity) {
+        await db.runAsync('ALTER TABLE partners ADD COLUMN city TEXT');
+        console.log("[Migration] Added city column to partners table");
+      }
+    } catch (e) {
+      console.warn("[Migration] Error adding city column:", e);
+    }
+    await db.runAsync('PRAGMA user_version = 4');
   }
 }
 
