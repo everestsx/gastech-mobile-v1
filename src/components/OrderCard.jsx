@@ -189,7 +189,7 @@ export default function OrderCard({ order, onPress, isDelivered, orderLines = []
             const bg = ITEM_BADGE_COLORS[index % ITEM_BADGE_COLORS.length];
             return (
               <View key={line.id || index} style={[styles.qtyBadge, { backgroundColor: bg }]}>
-                <Text style={styles.qtyBadgeText}>{qty} {displayName}</Text>
+                <Text style={styles.qtyBadgeText}>{qty} * {displayName}</Text>
               </View>
             );
           })}

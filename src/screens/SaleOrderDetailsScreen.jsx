@@ -9,6 +9,7 @@ import {
   ScrollView,
   KeyboardAvoidingView,
   Platform,
+  Image,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -26,6 +27,7 @@ import {
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
 import { getProductDisplayName } from '../utils/productDisplay';
+import { getProductImageSource } from '../utils/gasImage';
 
 function formatCurrency(amount) {
     const n = Number(amount);
@@ -129,6 +131,36 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
           shadowOffset: { width: 0, height: 2 },
           shadowOpacity: 0.06,
           shadowRadius: 4,
+          overflow: 'hidden',
+        },
+        lineCardWithImage: {
+          borderTopRightRadius: borderRadius.xl + 8,
+          borderBottomRightRadius: borderRadius.xl + 8,
+        },
+        lineCardInnerRow: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: spacing.md,
+        },
+        lineCardLeft: { flex: 1, minWidth: 0 },
+        lineCardImageWrap: {
+          width: 64,
+          height: 64,
+          borderRadius: 32,
+          overflow: 'hidden',
+          backgroundColor: colors.background,
+          borderWidth: 2,
+          borderColor: colors.border,
+          elevation: 2,
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: 1 },
+          shadowOpacity: 0.08,
+          shadowRadius: 3,
+        },
+        lineCardImage: {
+          width: '100%',
+          height: '100%',
+          resizeMode: 'contain',
         },
         lineProductName: { fontSize: 16, fontWeight: '700', color: colors.text, marginBottom: 8 },
         lineOneRow: {
@@ -411,59 +443,62 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
     const displayLineTotal = qtyChangedForLine
       ? unitPrice * (Number.isNaN(qtyNum) ? 0 : qtyNum)
       : (item.price_total ?? 0);
-    const qtyDisplay = Number.isNaN(qtyNum) ? 0 : qtyNum;
+    const productName = item.product_id?.[1] ?? item.name ?? '';
+    const imageSource = getProductImageSource(productName);
 
     return (
-      <View style={styles.lineCard}>
-        <Text style={styles.lineProductName} numberOfLines={2}>
-          {getProductDisplayName(item.product_id?.[1] ?? '') || '—'}
-        </Text>
+      <View style={[styles.lineCard, imageSource != null && styles.lineCardWithImage]}>
+        <View style={styles.lineCardInnerRow}>
+          <View style={styles.lineCardLeft}>
+            <Text style={styles.lineProductName} numberOfLines={2}>
+              {getProductDisplayName(productName) || '—'}
+            </Text>
 
-        {/* One line: qty × unit price (left)    line total (right), space-styled */}
-        <View style={styles.lineOneRow}>
-          {/* <Text style={styles.lineLeftExpr} numberOfLines={1}>
-            {qtyDisplay} × {formatWithSpace(unitPrice)}
-          </Text>
-          <Text style={styles.lineRightTotal}>{formatWithSpace(displayLineTotal)}</Text> */}
+            {/* Quantity modify: same behaviour, modern UI */}
+            {!isDelivered && modifyEnabled ? (
+              <View style={styles.qtyControls}>
+                <TouchableOpacity
+                  style={styles.qtyIconBtn}
+                  onPress={() => changeQtyBy(item.id, -1)}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="remove" size={22} color={colors.primary} />
+                </TouchableOpacity>
+                <TextInput
+                  style={styles.qtyInput}
+                  value={item.newQty}
+                  onChangeText={(text) => setLineQty(item.id, text)}
+                  keyboardType="decimal-pad"
+                  placeholder="0"
+                  placeholderTextColor={colors.textSecondary}
+                  selectTextOnFocus
+                />
+                <TouchableOpacity
+                  style={styles.qtyIconBtn}
+                  onPress={() => changeQtyBy(item.id, 1)}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="add" size={22} color={colors.primary} />
+                </TouchableOpacity>
+                <Text style={styles.lineLeftExpr}>x</Text>
+                <Text style={styles.lineRightTotal}> {formatCurrency(displayLineTotal)}</Text>
+              </View>
+            ) : (
+              <View style={styles.lineOneRow}>
+                <Text style={[styles.qtyValue, { marginTop: 4 }]}>Qty: {item.newQty} × {formatCurrency(unitPrice)}</Text>
+                <Text style={styles.lineRightTotal}>{formatCurrency(displayLineTotal)}</Text>
+              </View>
+            )}
+          </View>
+
+          {/* Right side: circular gas image (professional order-line look) */}
+          {imageSource != null && (
+            <View style={styles.lineCardImageWrap}>
+              <Image source={imageSource} style={styles.lineCardImage} />
+            </View>
+          )}
         </View>
-
-        {/* Quantity modify: same behaviour, modern UI */}
-        {!isDelivered && modifyEnabled ? (
-          <View style={styles.qtyControls}>
-            <TouchableOpacity
-              style={styles.qtyIconBtn}
-              onPress={() => changeQtyBy(item.id, -1)}
-              activeOpacity={0.8}
-            >
-              <Ionicons name="remove" size={22} color={colors.primary} />
-            </TouchableOpacity>
-            <TextInput
-              style={styles.qtyInput}
-              value={item.newQty}
-              onChangeText={(text) => setLineQty(item.id, text)}
-              keyboardType="decimal-pad"
-              placeholder="0"
-              placeholderTextColor={colors.textSecondary}
-              selectTextOnFocus
-            />
-            <TouchableOpacity
-              style={styles.qtyIconBtn}
-              onPress={() => changeQtyBy(item.id, 1)}
-              activeOpacity={0.8}
-            >
-              <Ionicons name="add" size={22} color={colors.primary} />
-            </TouchableOpacity>
-            <Text style={styles.lineLeftExpr}>x</Text>
-            <Text style={styles.lineRightTotal}> {formatCurrency(displayLineTotal)}</Text>
-          </View>
-        ) : (
-          <View style={styles.lineOneRow}>
-          <Text style={[styles.qtyValue, { marginTop: 4 }]}>Qty: {item.newQty} × {formatCurrency(unitPrice)}</Text>
-          <Text style={styles.lineRightTotal}>{formatCurrency(displayLineTotal)}</Text>
-          </View>
-        )}
       </View>
-
     );
   };
 
