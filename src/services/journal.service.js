@@ -1,8 +1,9 @@
 import { callOdoo } from "./index.service";
 
 /**
- * Get payment journals only: type bank and cash from Odoo (account.journal).
- * Use for payment method selection (Cash / Bank) on payment screen.
+ * Get payment journals: type bank and cash from Odoo (account.journal).
+ * App binds by name: "Cash" for cash method, "Cheque" for check (user selects Sri Lankan bank in UI).
+ * Bank-type journals used for Credit. Sync stores these for offline payment screen.
  */
 export const getJournals = () =>
   callOdoo(
