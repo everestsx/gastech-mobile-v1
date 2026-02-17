@@ -28,18 +28,29 @@ import { spacing, borderRadius } from '../constants/theme';
 import { getProductDisplayName } from '../utils/productDisplay';
 
 function formatCurrency(amount) {
-  return `LKR ${Number(amount).toFixed(2)}`;
-}
+    const n = Number(amount);
+    if (Number.isNaN(n)) return 'Rs 0.00';
 
+    const parts = n.toFixed(2).split('.');
+    parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+
+    return `Rs ${parts.join('.')}`;
+}
 /** Format number with space as thousands separator (e.g. 12 000). */
-function formatWithSpace(amount) {
-  const n = Number(amount);
-  if (Number.isNaN(n)) return '0';
-  const [int, dec] = n.toFixed(2).split('.');
-  const withSpaces = int.replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
-  return dec === '00' ? withSpaces : `${withSpaces}.${dec}`;
+// function formatWithSpace(amount) {
+//   const n = Number(amount);
+//   if (Number.isNaN(n)) return '0';
+//   const [int, dec] = n.toFixed(2).split('.');
+//   const withSpaces = int.replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+//   return dec === '00' ? withSpaces : `${withSpaces}.${dec}`;
+// }
+function formatWithComma(amount) {
+    const n = Number(amount);
+    if (Number.isNaN(n)) return '0.00';
+    const parts = n.toFixed(2).split('.');
+    parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    return parts.join('.');
 }
-
 export default function SaleOrderDetailsScreen({ route, navigation }) {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
@@ -63,7 +74,6 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
         scrollContent: { padding: spacing.md, paddingBottom: 24 },
         errorText: { fontSize: 16, color: colors.textSecondary },
         customerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.md, paddingVertical: 4 },
-        customerLeft: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, flex: 1, minWidth: 0 },
         customerLabel: { fontSize: 14, fontWeight: '600', color: colors.textSecondary },
         customerName: { fontSize: 16, fontWeight: '600', color: colors.text, flex: 1 },
         modifyUpdateBtn: {
@@ -183,6 +193,23 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
         },
         payBtnDisabled: { backgroundColor: colors.textSecondary, opacity: 0.8 },
         payBtnText: { fontSize: 16, fontWeight: '700', color: '#fff' },
+
+          customerLeft: {
+              flexDirection: 'row',
+              alignItems: 'flex-start',
+              gap: spacing.sm,
+              flex: 1,
+              minWidth: 0,
+          },
+          addressRow: {
+              flexDirection: 'row',
+              marginTop: 1,
+          },
+          addressText: {
+              color: colors.textSecondary,
+              lineHeight: 16,
+              flex: 1,
+          },
       }),
     [colors, insets.bottom]
   );
@@ -427,12 +454,12 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
               <Ionicons name="add" size={22} color={colors.primary} />
             </TouchableOpacity>
             <Text style={styles.lineLeftExpr}>x</Text>
-            <Text style={styles.lineRightTotal}> {formatWithSpace(displayLineTotal)}</Text>
+            <Text style={styles.lineRightTotal}> {formatCurrency(displayLineTotal)}</Text>
           </View>
         ) : (
           <View style={styles.lineOneRow}>
-          <Text style={[styles.qtyValue, { marginTop: 4 }]}>Qty: {item.newQty} × {formatWithSpace(unitPrice)}</Text>
-          <Text style={styles.lineRightTotal}>{formatWithSpace(displayLineTotal)}</Text>
+          <Text style={[styles.qtyValue, { marginTop: 4 }]}>Qty: {item.newQty} × {formatCurrency(unitPrice)}</Text>
+          <Text style={styles.lineRightTotal}>{formatCurrency(displayLineTotal)}</Text>
           </View>
         )}
       </View>
@@ -471,38 +498,49 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
         keyboardShouldPersistTaps="handled"
       >
         {/* Customer (left) + Modify / Update (top right) */}
-        <View style={styles.customerRow}>
-          <View style={styles.customerLeft}>
-            <Text style={styles.customerLabel}>Customer: </Text>
-            <Text style={styles.customerName} numberOfLines={1}>
-              {order.partner_id?.[1] ?? '—'}
-            </Text>
+          <View style={styles.customerRow}>
+              <View style={styles.customerLeft}>
+                  <View style={{ flex: 1 }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.sm }}>
+                          <Text style={styles.customerName} numberOfLines={1}>
+                              {order.partner_id?.[1] ?? '—'}
+                          </Text>
+                      </View>
+                      {(order.city) && (
+                          <View style={styles.addressRow}>
+                              <Text style={styles.addressText}>
+                                  {order.city}
+                              </Text>
+                          </View>
+                      )}
+                  </View>
+              </View>
+
+              {!isDelivered && (
+                  modifyEnabled ? (
+                      <TouchableOpacity
+                          style={[styles.modifyUpdateBtn]}
+                          onPress={updateQty}
+                          disabled={updating}
+                          activeOpacity={0.8}
+                      >
+                          {updating ? (
+                              <ActivityIndicator size="small" color={colors.primary} />
+                          ) : (
+                              <Text style={[styles.modifyUpdateBtnText]}>Update</Text>
+                          )}
+                      </TouchableOpacity>
+                  ) : (
+                      <TouchableOpacity
+                          style={styles.modifyUpdateBtn}
+                          onPress={() => setModifyEnabled(true)}
+                          activeOpacity={0.8}
+                      >
+                          <Text style={styles.modifyUpdateBtnText}>Modify</Text>
+                      </TouchableOpacity>
+                  )
+              )}
           </View>
-          {!isDelivered && (
-            modifyEnabled ? (
-              <TouchableOpacity
-                style={[styles.modifyUpdateBtn]}
-                onPress={updateQty}
-                disabled={updating}
-                activeOpacity={0.8}
-              >
-                {updating ? (
-                  <ActivityIndicator size="small" color="#fff" />
-                ) : (
-                  <Text style={[styles.modifyUpdateBtnText]}>Update</Text>
-                )}
-              </TouchableOpacity>
-            ) : (
-              <TouchableOpacity
-                style={styles.modifyUpdateBtn}
-                onPress={() => setModifyEnabled(true)}
-                activeOpacity={0.8}
-              >
-                <Text style={styles.modifyUpdateBtnText}>Modify</Text>
-              </TouchableOpacity>
-            )
-          )}
-        </View>
 
         {/* {!isDelivered && qtyChanged && (
           <View style={styles.changedBanner}>

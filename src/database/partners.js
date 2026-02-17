@@ -17,8 +17,8 @@ export async function upsertPartners(rows) {
   await db.withTransactionAsync(async (tx) => {
     for (const r of rows) {
       await tx.runAsync(
-        `INSERT OR REPLACE INTO partners (id, name, phone, updated_at) VALUES (?, ?, ?, ?)`,
-        [num(r.id), empty(r.name), strOrNull(r.phone), iso()]
+        `INSERT OR REPLACE INTO partners (id, name, phone, city, updated_at) VALUES (?, ?, ?, ?, ?)`,
+        [num(r.id), empty(r.name), strOrNull(r.phone),strOrNull(r.city), iso()]
       );
     }
   });
@@ -27,11 +27,12 @@ export async function upsertPartners(rows) {
 export async function getAllPartners() {
   const db = await getDb();
   const rows = await db.getAllAsync(
-    `SELECT id, name, phone FROM partners ORDER BY name ASC`
+    `SELECT id, name, phone,city FROM partners ORDER BY name ASC`
   );
   return (rows || []).map((row) => ({
     id: row.id,
     name: row.name,
     phone: row.phone,
+    city: row.city,
   }));
 }

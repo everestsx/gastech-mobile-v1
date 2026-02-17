@@ -78,24 +78,27 @@ export async function getAllSaleOrders(vehicleId = null) {
 
 export async function getSaleOrderById(id) {
   const db = await getDb();
-  const row = await db.getFirstAsync('SELECT * FROM sale_orders WHERE id = ?', [id]);
-  if (!row) return null;
-  return {
-    id: row.id,
-    name: row.name,
-    partner_id: row.partner_id != null ? [row.partner_id, row.partner_name ?? ''] : null,
-    state: row.state,
-    date_order: row.date_order,
-    amount_total: row.amount_total,
-    amount_untaxed: row.amount_untaxed,
-    amount_tax: row.amount_tax,
-    invoice_status: row.invoice_status,
-    order_line: safeParseJson(row.order_line, []),
-    route_id: row.route_id != null ? [row.route_id, row.route_name ?? ''] : null,
-    vehicle_id: row.vehicle_id != null ? [row.vehicle_id, row.vehicle_name ?? ''] : null,
-  };
-}
+  try {
+    const row = await db.getFirstAsync(`
+      SELECT so.*, p.city as partner_city 
+      FROM sale_orders so
+      LEFT JOIN partners p ON so.partner_id = p.id
+      WHERE so.id = ?
+    `, [id]);
 
+    if (!row) return null;
+
+    return {
+      ...row,
+      city: row.partner_city || '',
+      partner_id: row.partner_id != null ? [row.partner_id, row.partner_name ?? ''] : null,
+      order_line: safeParseJson(row.order_line, []),
+    };
+  } catch (e) {
+    console.warn("SQL Error in getSaleOrderById:", e);
+    return await db.getFirstAsync('SELECT * FROM sale_orders WHERE id = ?', [id]);
+  }
+}
 function safeParseJson(str, fallback) {
   if (str == null || str === '') return fallback;
   try {
