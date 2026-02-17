@@ -50,8 +50,8 @@ export default function SaleOrderListScreen({ route, navigation }) {
   const isInvoiced = (o) => String(o.invoice_status || '') === 'invoiced';
 
   const filteredOrders = useMemo(() => {
-    if (activeTab === TAB_TO_DELIVER) return orders.filter((o) => !o.isDelivered);
-    if (activeTab === TAB_DELIVERED) return orders.filter((o) => o.isDelivered);
+    if (activeTab === TAB_TO_DELIVER) return orders.filter((o) => !o.isDelivered && !isInvoiced(o));
+    if (activeTab === TAB_DELIVERED) return orders.filter((o) => o.isDelivered && !isInvoiced(o));
     if (activeTab === TAB_INVOICED) return orders.filter(isInvoiced);
     return orders;
   }, [orders, activeTab]);
