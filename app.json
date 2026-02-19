@@ -4,13 +4,13 @@
     "slug": "GasTechMobile",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/images/AppIcon.png",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
     "splash": {
-      "image": "./assets/splash-icon.png",
+      "image": "./assets/images/AppLogo.png",
       "resizeMode": "contain",
-      "backgroundColor": "#1e5aa8"
+      "backgroundColor": "#ED5D1A"
     },
     "ios": {
       "supportsTablet": true
@@ -18,8 +18,8 @@
     "android": {
       "package": "com.gastech.mobile",
       "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#1e5aa8"
+        "foregroundImage": "./assets/images/AppIcon.png",
+        "backgroundColor": "#ED5D1A"
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false

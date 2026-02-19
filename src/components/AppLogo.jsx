@@ -7,12 +7,12 @@ import { colors } from '../constants/theme';
  * To use your own logo: add your image to assets/logo.png and uncomment
  * the Image block below (and remove the placeholder View).
  */
-const LOGO_SOURCE = require('../../assets/images/app_logo.png');
+const LOGO_SOURCE = require('../../assets/images/AppLogo.png');
 
 export default function AppLogo({ size = 120,useImage = false }) {
   if (useImage) {
     try {
-      const logo = require('../../assets/images/app_logo.png');
+      const logo = require('../../assets/images/AppLogo.png');
       return (
         <View style={styles.wrapper}>
           <Image
