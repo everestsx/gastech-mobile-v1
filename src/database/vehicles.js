@@ -15,20 +15,20 @@ function strOrNull(v) {
   return s === '' ? null : s;
 }
 
-export async function upsertVehicles(rows) {
-  if (!rows?.length) return;
-  const db = await getDb();
-  const now = iso();
-  await db.withTransactionAsync(async (tx) => {
-    for (const r of rows) {
-      const modelId = Array.isArray(r.model_id) ? r.model_id[0] : r.model_id;
-      await tx.runAsync(
-        `INSERT OR REPLACE INTO vehicles (id, name, license_plate, model_id, updated_at) VALUES (?, ?, ?, ?, ?)`,
-        [num(r.id), empty(r.name), strOrNull(r.license_plate), numOrNull(modelId), now]
-      );
-    }
-  });
-}
+// export async function upsertVehicles(rows) {
+//   if (!rows?.length) return;
+//   const db = await getDb();
+//   const now = iso();
+//   await db.withTransactionAsync(async (tx) => {
+//     for (const r of rows) {
+//       const modelId = Array.isArray(r.model_id) ? r.model_id[0] : r.model_id;
+//       await tx.runAsync(
+//         `INSERT OR REPLACE INTO vehicles (id, name, license_plate, model_id, updated_at) VALUES (?, ?, ?, ?, ?)`,
+//         [num(r.id), empty(r.name), strOrNull(r.license_plate), numOrNull(modelId), now]
+//       );
+//     }
+//   });
+// }
 
 export async function getAllVehicles() {
   const db = await getDb();
@@ -41,4 +41,19 @@ export async function getAllVehicles() {
     license_plate: row.license_plate,
     model_id: row.model_id != null ? [row.model_id, null] : null,
   }));
+}
+
+export async function upsertVehicles(rows) {
+  if (!rows?.length) return;
+  const db = await getDb();
+  await db.withTransactionAsync(async (tx) => {
+    for (const r of rows) {
+      // Logic: If it's a new vehicle, give it '1234' as a default local password
+      await tx.runAsync(
+          `INSERT OR REPLACE INTO vehicles (id, name, license_plate, password, updated_at) 
+         VALUES (?, ?, ?, COALESCE((SELECT password FROM vehicles WHERE id = ?), '1234'), ?)`,
+          [r.id, r.name, r.license_plate, r.id, new Date().toISOString()]
+      );
+    }
+  });
 }
