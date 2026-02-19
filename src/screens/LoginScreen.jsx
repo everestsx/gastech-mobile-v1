@@ -379,7 +379,7 @@ export default function LoginScreen({ navigation }) {
             {syncing && (
                 <View style={styles.syncIndicator}>
                   <ActivityIndicator size="small" color={colors.primary} />
-                  <Text style={{ fontSize: 12, color: colors.textSecondary }}>Refreshing fleet data...</Text>
+                  {/*<Text style={{ fontSize: 12, color: colors.textSecondary }}>Refreshing fleet data...</Text>*/}
                 </View>
             )}
           </View>
