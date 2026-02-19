@@ -29,7 +29,7 @@ export default function SplashScreenComponent({ navigation }) {
   if (!ready) {
     return (
       <View style={styles.container}>
-        <AppLogo size={140} useImage={true} />
+        <AppLogo size={240} useImage={true} />
       </View>
     );
   }
