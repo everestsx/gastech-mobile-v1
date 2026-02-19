@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -8,12 +8,13 @@ import {
   ActivityIndicator,
   Alert,
   Platform,
+  Animated,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Print from 'expo-print';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
-import { getSaleOrderDetailsFromDB } from '../services/sync.service';
+import { getSaleOrderDetailsFromDB, runSync } from '../services/sync.service';
 
 function formatCurrency(amount) {
   return `LKR ${Number(amount).toFixed(2)}`;
@@ -115,6 +116,9 @@ export default function InvoiceScreen({ route, navigation }) {
   const [lines, setLines] = useState([]);
   const [loading, setLoading] = useState(true);
   const [printing, setPrinting] = useState(false);
+  const [doneState, setDoneState] = useState(null);
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const scaleAnim = useRef(new Animated.Value(0.9)).current;
 
   const styles = useMemo(
     () =>
@@ -209,6 +213,50 @@ export default function InvoiceScreen({ route, navigation }) {
         printerNoteText: { fontSize: 12, color: colors.textSecondary, lineHeight: 18 },
         doneBtn: { paddingVertical: 14, alignItems: 'center' },
         doneBtnText: { fontSize: 16, fontWeight: '700', color: colors.primary },
+        syncOverlay: {
+          ...StyleSheet.absoluteFillObject,
+          backgroundColor: 'rgba(0,0,0,0.5)',
+          justifyContent: 'center',
+          alignItems: 'center',
+          padding: spacing.xl,
+        },
+        syncCard: {
+          backgroundColor: colors.surface,
+          borderRadius: borderRadius.xl,
+          padding: spacing.xl * 1.5,
+          alignItems: 'center',
+          minWidth: 280,
+          maxWidth: 320,
+          elevation: 8,
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: 4 },
+          shadowOpacity: 0.15,
+          shadowRadius: 12,
+        },
+        syncIconWrap: {
+          width: 72,
+          height: 72,
+          borderRadius: 36,
+          backgroundColor: colors.background,
+          justifyContent: 'center',
+          alignItems: 'center',
+          marginBottom: spacing.lg,
+        },
+        syncTitle: { fontSize: 18, fontWeight: '800', color: colors.text, marginBottom: spacing.sm, textAlign: 'center' },
+        syncSub: { fontSize: 14, color: colors.textSecondary, textAlign: 'center', lineHeight: 20 },
+        creditStepsCard: {
+          backgroundColor: colors.surface,
+          borderRadius: borderRadius.lg,
+          padding: spacing.lg,
+          marginBottom: spacing.lg,
+          borderWidth: 1,
+          borderColor: colors.border,
+        },
+        creditStepsTitle: { fontSize: 14, fontWeight: '700', color: colors.text, marginBottom: spacing.sm },
+        creditStepRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 6, gap: 8 },
+        creditStepCheck: { fontSize: 16 },
+        creditStepText: { fontSize: 13, color: colors.text, flex: 1 },
+        creditStepNote: { fontSize: 12, color: colors.textSecondary, marginTop: 4, fontStyle: 'italic' },
       }),
     [colors]
   );
@@ -234,6 +282,38 @@ export default function InvoiceScreen({ route, navigation }) {
   useEffect(() => {
     loadInvoice();
   }, [loadInvoice]);
+
+  useEffect(() => {
+    if (!saleOrderId) return;
+    runSync().catch((err) => console.warn('InvoiceScreen background sync', err?.message ?? err));
+  }, [saleOrderId]);
+
+  const handleDone = useCallback(async () => {
+    setDoneState('syncing');
+    Animated.parallel([
+      Animated.timing(fadeAnim, { toValue: 1, duration: 200, useNativeDriver: true }),
+      Animated.spring(scaleAnim, { toValue: 1, useNativeDriver: true, friction: 8 }),
+    ]).start();
+    try {
+      await runSync();
+      setDoneState('success');
+      Animated.timing(fadeAnim, { toValue: 1, duration: 150, useNativeDriver: true }).start();
+      setTimeout(() => {
+        navigation.reset({
+          index: 0,
+          routes: [{ name: 'Main', params: { screen: 'Dashboard' } }],
+        });
+      }, 1200);
+    } catch (err) {
+      setDoneState('offline');
+      setTimeout(() => {
+        navigation.reset({
+          index: 0,
+          routes: [{ name: 'Main', params: { screen: 'Dashboard' } }],
+        });
+      }, 1800);
+    }
+  }, [fadeAnim, scaleAnim, navigation]);
 
   const handlePrint = async () => {
     if (!order) return;
@@ -266,6 +346,8 @@ export default function InvoiceScreen({ route, navigation }) {
         : paymentType === 'credit' && selectedBankName
           ? `Credit: ${selectedBankName}`
           : (paymentType != null || selectedBankName != null || paymentSplit != null) ? 'Cash' : 'Invoiced';
+
+  const hasCreditPayment = (paymentSplit?.credit ?? 0) > 0 || paymentType === 'credit';
 
   if (loading) {
     return (
@@ -350,6 +432,24 @@ export default function InvoiceScreen({ route, navigation }) {
         </View>
       </View>
 
+      {/* Credit payment: Create invoice → Post invoice → Customer account */}
+      {hasCreditPayment && (
+        <View style={styles.creditStepsCard}>
+          <Text style={styles.creditStepsTitle}>Credit payment flow</Text>
+          <View style={styles.creditStepRow}>
+            <Ionicons name="checkmark-circle" size={20} color={colors.primary} style={styles.creditStepCheck} />
+            <Text style={styles.creditStepText}>Create invoice</Text>
+          </View>
+          <View style={styles.creditStepRow}>
+            <Ionicons name="checkmark-circle" size={20} color={colors.primary} style={styles.creditStepCheck} />
+            <Text style={styles.creditStepText}>Post invoice</Text>
+          </View>
+          <Text style={styles.creditStepNote}>
+            Then it automatically appears in the customer account (receivable). When the customer pays later, record the payment against this invoice in Odoo.
+          </Text>
+        </View>
+      )}
+
       {/* Print invoice button */}
       <TouchableOpacity
         style={styles.printBtn}
@@ -384,16 +484,48 @@ export default function InvoiceScreen({ route, navigation }) {
 
       <TouchableOpacity
         style={styles.doneBtn}
-        onPress={() =>
-          navigation.reset({
-            index: 0,
-            routes: [{ name: 'Main', params: { screen: 'Dashboard' } }],
-          })
-        }
+        onPress={handleDone}
+        disabled={!!doneState}
         activeOpacity={0.8}
       >
         <Text style={styles.doneBtnText}>Done</Text>
       </TouchableOpacity>
+
+      {doneState && (
+        <Animated.View
+          style={[
+            styles.syncOverlay,
+            {
+              opacity: fadeAnim,
+            },
+          ]}
+          pointerEvents="box-only"
+        >
+          <Animated.View style={[styles.syncCard, { transform: [{ scale: scaleAnim }] }]}>
+            <View style={styles.syncIconWrap}>
+              {doneState === 'syncing' && (
+                <ActivityIndicator size="large" color={colors.primary} />
+              )}
+              {doneState === 'success' && (
+                <Ionicons name="checkmark-circle" size={48} color={colors.primary} />
+              )}
+              {doneState === 'offline' && (
+                <Ionicons name="cloud-offline-outline" size={48} color={colors.textSecondary} />
+              )}
+            </View>
+            <Text style={styles.syncTitle}>
+              {doneState === 'syncing' && 'Syncing your payment'}
+              {doneState === 'success' && 'All synced!'}
+              {doneState === 'offline' && 'Saved locally'}
+            </Text>
+            <Text style={styles.syncSub}>
+              {doneState === 'syncing' && 'Pushing to server…'}
+              {doneState === 'success' && 'Taking you to dashboard…'}
+              {doneState === 'offline' && 'Will sync when you\'re back online.'}
+            </Text>
+          </Animated.View>
+        </Animated.View>
+      )}
     </ScrollView>
   );
 }

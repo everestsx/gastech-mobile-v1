@@ -18,6 +18,7 @@ import { spacing, borderRadius } from '../constants/theme';
 import { getCachedJournals, getSaleOrderDetailsFromDB } from '../services/sync.service';
 import * as saleOrdersDb from '../database/saleOrders.js';
 import * as syncQueueDb from '../database/syncQueue.js';
+import { JOURNAL_CODE_CASH, JOURNAL_CODE_CHEQUE } from '../constants/journals';
 
 const PAYMENT_CASH = 'cash';
 const PAYMENT_CHECK = 'check';
@@ -50,11 +51,25 @@ export default function ProceedPaymentScreen({ route, navigation }) {
     () => (journals || []).filter((j) => j.type === 'cash'),
     [journals]
   );
+  const cashJournalPreferred = useMemo(
+    () => cashJournals.find((j) => (j.code || '').toUpperCase() === JOURNAL_CODE_CASH) || cashJournals[0],
+    [cashJournals]
+  );
+  const chequeJournals = useMemo(
+    () =>
+      (journals || []).filter(
+        (j) =>
+          (j.code || '').toUpperCase() === JOURNAL_CODE_CHEQUE ||
+          (j.name || '').toLowerCase().includes('cheque')
+      ),
+    [journals]
+  );
   const bankJournals = useMemo(
     () => (journals || []).filter((j) => j.type === 'bank'),
     [journals]
   );
-  const journalsForType = paymentType === PAYMENT_CHECK ? bankJournals : paymentType === PAYMENT_CREDIT ? bankJournals : cashJournals;
+  const journalsForType =
+    paymentType === PAYMENT_CHECK ? chequeJournals : paymentType === PAYMENT_CREDIT ? [] : cashJournals;
   const filteredJournals = useMemo(() => {
     const q = (journalSearch || '').trim().toLowerCase();
     if (!q) return journalsForType;
@@ -69,7 +84,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
     selectedJournalId != null ? journals.find((j) => j.id === selectedJournalId) : null;
   const isSelectedJournalValid =
     selectedJournal &&
-    ((paymentType === PAYMENT_CHECK || paymentType === PAYMENT_CREDIT) && selectedJournal.type === 'bank');
+    (paymentType === PAYMENT_CHECK && (selectedJournal.code?.toUpperCase() === JOURNAL_CODE_CHEQUE || (selectedJournal.name || '').toLowerCase().includes('cheque')));
 
   const cashAmountNum = useMemo(() => {
     const n = parseFloat(String(cashAmount).replace(/,/g, ''));
@@ -90,9 +105,9 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   const paymentComplete =
     hasAnyPayment &&
     totalEntered >= orderTotal &&
-    (cashAmountNum <= 0 || cashJournals.length > 0) &&
+    (cashAmountNum <= 0 || (cashJournalPreferred != null)) &&
     (checkAmountNum <= 0 || (!!isSelectedJournalValid && (selectedJournalId != null) && checkNumberTrimmed !== '')) &&
-    (creditAmountNum <= 0 || bankJournals.length > 0);
+    (creditAmountNum <= 0 || true);
 
   const evidenceRequired = checkAmountNum > 0 || creditAmountNum > 0;
   const hasUnconfirmedEdits = cashEditMode || checkAmountEditMode || checkNumberEditMode;
@@ -159,22 +174,24 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   }, [paymentType]);
 
   useEffect(() => {
-    if (paymentType === PAYMENT_CHECK || paymentType === PAYMENT_CREDIT) {
+    if (paymentType === PAYMENT_CHECK) {
       if (!isSelectedJournalValid && selectedJournalId != null) {
         setSelectedJournalId(null);
         setJournalSearch('');
       }
+      if (chequeJournals.length === 1 && selectedJournalId !== chequeJournals[0]?.id) {
+        setSelectedJournalId(chequeJournals[0].id);
+      }
     }
-  }, [paymentType, isSelectedJournalValid, selectedJournalId]);
+  }, [paymentType, isSelectedJournalValid, selectedJournalId, chequeJournals]);
 
   const handleProceed = async () => {
     if (!canProceed) return;
-    const cashJournalId = cashJournals[0]?.id ?? null;
+    const cashJournalId = cashJournalPreferred?.id ?? null;
     const checkJournalId = selectedJournalId != null && isSelectedJournalValid ? selectedJournalId : null;
-    const creditJournalId = bankJournals[0]?.id ?? null;
     const needsCash = cashAmountNum > 0 && cashJournalId != null;
     const needsCheck = checkAmountNum > 0 && checkJournalId != null;
-    const needsCredit = creditAmountNum > 0 && creditJournalId != null;
+    const needsCredit = creditAmountNum > 0;
     if (!needsCash && !needsCheck && !needsCredit) return;
     try {
       setLoading(true);
@@ -190,20 +207,23 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       await saleOrdersDb.updateSaleOrderInvoiceStatusLocal(saleOrderId, 'invoiced');
 
       const payments = [];
-      if (needsCash) {
+      let paymentSplit = { cash: 0, check: 0, credit: 0 };
+      if (paymentType === PAYMENT_CASH && needsCash) {
         payments.push({ type: 'cash', amount: cashAmountNum, journalId: cashJournalId });
-      }
-      if (needsCheck) {
+        paymentSplit = { cash: cashAmountNum, check: 0, credit: 0 };
+      } else if (paymentType === PAYMENT_CHECK && needsCheck) {
         payments.push({
           type: 'check',
           amount: checkAmountNum,
           journalId: checkJournalId,
           checkNumber: checkNumberTrimmed || undefined,
         });
+        paymentSplit = { cash: 0, check: checkAmountNum, credit: 0 };
+      } else if (paymentType === PAYMENT_CREDIT && needsCredit) {
+        payments.push({ type: 'credit', amount: creditAmountNum });
+        paymentSplit = { cash: 0, check: 0, credit: creditAmountNum };
       }
-      if (needsCredit) {
-        payments.push({ type: 'credit', amount: creditAmountNum, journalId: creditJournalId });
-      }
+      if (payments.length === 0) return;
 
       await syncQueueDb.enqueue(syncQueueDb.ACTION_PAYMENT, {
         saleOrderId,
@@ -218,12 +238,12 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         saleOrderId,
         total,
         paymentType: 'split',
-        paymentSplit: { cash: cashAmountNum, check: checkAmountNum, credit: creditAmountNum },
-        selectedBankId: (needsCheck || needsCredit) ? (needsCheck ? checkJournalId : creditJournalId) : null,
-        selectedBankName: selectedJournal?.name ?? bankJournals[0]?.name ?? null,
+        paymentSplit,
+        selectedBankId: needsCheck ? checkJournalId : null,
+        selectedBankName: selectedJournal?.name ?? (needsCheck ? null : undefined),
         deliveryPhotoUris: deliveryPhotos,
-        cashAmount: cashAmountNum,
-        checkNumber: checkNumber || undefined,
+        cashAmount: paymentSplit.cash,
+        checkNumber: paymentType === PAYMENT_CHECK ? (checkNumber || undefined) : undefined,
       });
     } catch (err) {
       console.error(err);
@@ -738,7 +758,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
                 ))}
                 {filteredJournals.length === 0 && (
                   <Text style={styles.noBanksText}>
-                    {journalsForType.length === 0 ? 'No check journals in Odoo' : 'No journals match your search'}
+                    {journalsForType.length === 0 ? 'No Cheque journal (CSH5) in Odoo' : 'No journals match your search'}
                   </Text>
                 )}
               </View>

@@ -302,6 +302,8 @@ async function processSyncQueue() {
       const partnerId = Array.isArray(orderInfo.partner_id) ? orderInfo.partner_id[0] : orderInfo.partner_id;
       if (partnerId == null) continue;
 
+      // Create invoice (if needed) and post it. For credit payments this is enough: the posted invoice
+      // updates the customer account (receivable); no separate account.payment is created.
       let invoiceId = null;
       const existingInvoiceIds = orderInfo.invoice_ids ?? [];
       if (existingInvoiceIds.length > 0) {
@@ -319,6 +321,9 @@ async function processSyncQueue() {
       const dateStr = new Date().toISOString().slice(0, 10);
       const baseMemo = `Payment for Invoice / Order ${orderName}`;
       for (const pm of payments) {
+        // Credit: no account.payment is created. The posted invoice above already created the receivable
+        // on the customer account; the amount appears there until the customer pays (record payment in Odoo).
+        if (pm.type === 'credit') continue;
         const amount = Number(pm.amount);
         if (!amount || !pm.journalId) continue;
         await createPayment({
@@ -330,6 +335,33 @@ async function processSyncQueue() {
           memo: `${baseMemo} (${pm.type || 'payment'})${pm.checkNumber ? ` #${pm.checkNumber}` : ''}`,
           invoiceId,
         });
+      }
+      const deliveryPhotoUris = p.deliveryPhotoUris || [];
+      if (deliveryPhotoUris.length > 0) {
+        try {
+          const FileSystem = (await import('expo-file-system')).default;
+          const { uploadProofAndPostToChatter } = await import('./proofAttachment.service.js');
+          for (let i = 0; i < deliveryPhotoUris.length; i++) {
+            const uri = deliveryPhotoUris[i];
+            if (!uri || typeof uri !== 'string') continue;
+            try {
+              const base64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
+              if (base64) {
+                const ext = (uri.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg';
+                const filename = `payment_proof_${i + 1}.${ext}`;
+                const soId = typeof saleOrderId === 'number' ? saleOrderId : parseInt(saleOrderId, 10);
+                if (!Number.isNaN(soId)) {
+                  await uploadProofAndPostToChatter(soId, base64, filename);
+                  log('queue', `proof photo ${i + 1} posted to SO ${soId}`);
+                }
+              }
+            } catch (photoErr) {
+              logWarn('queue payment proof photo', photoErr);
+            }
+          }
+        } catch (proofErr) {
+          logWarn('queue payment proof upload', proofErr);
+        }
       }
       await syncQueueDb.markSynced(item.id);
       log('queue', `payment synced id=${item.id}`);
