@@ -228,6 +228,12 @@ async function runMigrations(db) {
     await db.execAsync(`ALTER TABLE vehicles ADD COLUMN password TEXT;`);
     await db.runAsync('PRAGMA user_version = 5');
   }
+
+
+  if (current < 5) {
+    await db.execAsync(`ALTER TABLE vehicles ADD COLUMN password TEXT;`);
+    await db.runAsync('PRAGMA user_version = 5');
+  }
 }
 
 /**
