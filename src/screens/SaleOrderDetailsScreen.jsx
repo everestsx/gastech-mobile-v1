@@ -101,7 +101,13 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
           marginBottom: spacing.md,
         },
         changedBannerText: { fontSize: 13, fontWeight: '600', color: colors.warning, flex: 1 },
-        sectionTitle: { fontSize: 16, fontWeight: '700', color: colors.text, marginBottom: spacing.sm },
+        sectionTitle: { fontSize: 16, fontWeight: '700', color: colors.text },
+        orderLinesHeaderRow: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          marginBottom: spacing.sm,
+        },
         emptyLines: { padding: spacing.lg, alignItems: 'center' },
         emptyText: { fontSize: 15, color: colors.textSecondary },
         grossTotalCard: {
@@ -156,6 +162,8 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
           shadowOffset: { width: 0, height: 1 },
           shadowOpacity: 0.08,
           shadowRadius: 3,
+          justifyContent: 'center',
+          alignItems: 'center',
         },
         lineCardImage: {
           width: '100%',
@@ -447,8 +455,14 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
     const imageSource = getProductImageSource(productName);
 
     return (
-      <View style={[styles.lineCard, imageSource != null && styles.lineCardWithImage]}>
+      <View style={[styles.lineCard]}>
         <View style={styles.lineCardInnerRow}>
+           {/* Left side: circular gas image (professional order-line look) */}
+           {imageSource != null && (
+            <View style={styles.lineCardImageWrap}>
+              <Image source={imageSource} style={styles.lineCardImage} />
+            </View>
+          )}
           <View style={styles.lineCardLeft}>
             <Text style={styles.lineProductName} numberOfLines={2}>
               {getProductDisplayName(productName) || '—'}
@@ -491,12 +505,6 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
             )}
           </View>
 
-          {/* Right side: circular gas image (professional order-line look) */}
-          {imageSource != null && (
-            <View style={styles.lineCardImageWrap}>
-              <Image source={imageSource} style={styles.lineCardImage} />
-            </View>
-          )}
         </View>
       </View>
     );
@@ -532,7 +540,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
-        {/* Customer (left) + Modify / Update (top right) */}
+        {/* Customer (left only; Modify is with Order lines) */}
           <View style={styles.customerRow}>
               <View style={styles.customerLeft}>
                   <View style={{ flex: 1 }}>
@@ -550,31 +558,6 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
                       )}
                   </View>
               </View>
-
-              {!isDelivered && (
-                  modifyEnabled ? (
-                      <TouchableOpacity
-                          style={[styles.modifyUpdateBtn]}
-                          onPress={updateQty}
-                          disabled={updating}
-                          activeOpacity={0.8}
-                      >
-                          {updating ? (
-                              <ActivityIndicator size="small" color={colors.primary} />
-                          ) : (
-                              <Text style={[styles.modifyUpdateBtnText]}>Update</Text>
-                          )}
-                      </TouchableOpacity>
-                  ) : (
-                      <TouchableOpacity
-                          style={styles.modifyUpdateBtn}
-                          onPress={() => setModifyEnabled(true)}
-                          activeOpacity={0.8}
-                      >
-                          <Text style={styles.modifyUpdateBtnText}>Modify</Text>
-                      </TouchableOpacity>
-                  )
-              )}
           </View>
 
         {/* {!isDelivered && qtyChanged && (
@@ -597,8 +580,34 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
 
       
 
-        {/* Order lines below */}
-        <Text style={styles.sectionTitle}>Order lines</Text>
+        {/* Order lines: title (left) + Modify / Update (right) */}
+        <View style={styles.orderLinesHeaderRow}>
+          <Text style={styles.sectionTitle}>Order lines</Text>
+          {!isDelivered && (
+            modifyEnabled ? (
+              <TouchableOpacity
+                style={[styles.modifyUpdateBtn]}
+                onPress={updateQty}
+                disabled={updating}
+                activeOpacity={0.8}
+              >
+                {updating ? (
+                  <ActivityIndicator size="small" color={colors.primary} />
+                ) : (
+                  <Text style={[styles.modifyUpdateBtnText]}>Update</Text>
+                )}
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity
+                style={styles.modifyUpdateBtn}
+                onPress={() => setModifyEnabled(true)}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.modifyUpdateBtnText}>Modify</Text>
+              </TouchableOpacity>
+            )
+          )}
+        </View>
         {lines.length === 0 ? (
           <View style={styles.emptyLines}>
             <Text style={styles.emptyText}>No line items</Text>
