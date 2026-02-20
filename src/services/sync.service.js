@@ -587,12 +587,15 @@ export async function runSync() {
     return result;
   }
 }
+
 export async function syncVehiclesOnly() {
   try {
     const { getVehicles } = await import('./vehicle.service');
-    const vehicles = await getVehicles(); // Odoo call
+    const vehicles = await getVehicles();
+
     if (vehicles && vehicles.length > 0) {
-      await partnersDb.upsertVehicles(vehicles); // Save to SQLite
+
+      await vehiclesDb.upsertVehicles(vehicles);
       return true;
     }
   } catch (e) {
