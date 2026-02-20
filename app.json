@@ -22,17 +22,32 @@
         "backgroundColor": "#ED5D1A"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.CAMERA"
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      ["expo-camera", { "cameraPermission": "Allow GasTech to scan customer QR codes" }]
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow GasTech to scan customer QR codes"
+        }
+      ]
     ],
     "extra": {
       "eas": {
-        "projectId": "9521d75d-13dc-49e5-8793-2022463e75c5"
+        "projectId": "352e0e00-e9cb-457f-91d1-90c7bf324a91"
+      }
+    },
+    "build": {
+      "preview": {
+        "android": {
+          "buildType": "apk"
+        }
       }
     }
   }
