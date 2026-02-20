@@ -3,6 +3,7 @@ import {
   View,
   Text,
   FlatList,
+  ScrollView,
   TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
@@ -22,7 +23,9 @@ import {
 } from '../services/sync.service';
 import OrderCard from '../components/OrderCard';
 
-const TAB_TO_DELIVER = 'to_deliver';
+const TAB_CASH = 'cash';
+const TAB_CHEQUE = 'cheque';
+const TAB_CREDIT = 'credit';
 
 function formatDate(d) {
   return d.toISOString().split('T')[0];
@@ -33,18 +36,34 @@ function isToday(d) {
   return formatDate(d) === today;
 }
 
-export default function SaleOrderListScreen({ route, navigation }) {
+export default function DeliveredOrdersScreen({ route, navigation }) {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
-  const customerId = route?.params?.customerId ?? null;
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedDate, setSelectedDate] = useState(() => new Date());
   const [showPicker, setShowPicker] = useState(false);
-  // Orders tab: only not-delivered orders (to deliver)
-  const filteredOrders = useMemo(
-    () => orders.filter((o) => !o.isDelivered),
+  const [activeTab, setActiveTab] = useState(TAB_CASH);
+
+  const deliveredOrders = useMemo(
+    () => orders.filter((o) => o.isDelivered),
     [orders]
+  );
+
+  const filteredOrders = useMemo(() => {
+    if (activeTab === TAB_CASH) return deliveredOrders.filter((o) => (o.payment_type || '').toLowerCase() === 'cash');
+    if (activeTab === TAB_CHEQUE) return deliveredOrders.filter((o) => (o.payment_type || '').toLowerCase() === 'cheque');
+    if (activeTab === TAB_CREDIT) return deliveredOrders.filter((o) => (o.payment_type || '').toLowerCase() === 'credit');
+    return deliveredOrders;
+  }, [deliveredOrders, activeTab]);
+
+  const tabCounts = useMemo(
+    () => ({
+      [TAB_CASH]: deliveredOrders.filter((o) => (o.payment_type || '').toLowerCase() === 'cash').length,
+      [TAB_CHEQUE]: deliveredOrders.filter((o) => (o.payment_type || '').toLowerCase() === 'cheque').length,
+      [TAB_CREDIT]: deliveredOrders.filter((o) => (o.payment_type || '').toLowerCase() === 'credit').length,
+    }),
+    [deliveredOrders]
   );
 
   const styles = useMemo(
@@ -67,12 +86,7 @@ export default function SaleOrderListScreen({ route, navigation }) {
           borderBottomWidth: 1,
           borderBottomColor: colors.border,
         },
-        headerLeft: {
-          flexDirection: 'row',
-          alignItems: 'center',
-          flex: 1,
-          minWidth: 0,
-        },
+        headerLeft: { flex: 1, minWidth: 0 },
         headerCenter: {
           flex: 1,
           flexDirection: 'row',
@@ -80,15 +94,7 @@ export default function SaleOrderListScreen({ route, navigation }) {
           justifyContent: 'center',
           minWidth: 0,
         },
-        headerRight: {
-          flex: 1,
-          flexDirection: 'row',
-          alignItems: 'center',
-          justifyContent: 'flex-end',
-          minWidth: 0,
-        },
-        headerBtn: { padding: 4, minWidth: 40, alignItems: 'flex-start' },
-        headerBtnRight: { alignItems: 'flex-end' },
+        headerRight: { flex: 1, minWidth: 0 },
         dateNav: {
           flexDirection: 'row',
           alignItems: 'center',
@@ -107,12 +113,48 @@ export default function SaleOrderListScreen({ route, navigation }) {
           backgroundColor: colors.surface,
         },
         doneDateText: { fontSize: 16, fontWeight: '600', color: colors.primary },
+        tabsWrap: {
+          backgroundColor: colors.surface,
+          borderBottomWidth: 1,
+          borderBottomColor: colors.border,
+        },
+        tabsScroll: {
+          flexDirection: 'row',
+          paddingHorizontal: spacing.md,
+          paddingVertical: spacing.sm,
+          gap: spacing.sm,
+        },
+        tab: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 6,
+          paddingVertical: 10,
+          paddingHorizontal: spacing.md,
+          borderRadius: borderRadius.lg,
+          backgroundColor: colors.background,
+        },
+        tabActive: { backgroundColor: colors.primary },
+        tabText: { fontSize: 14, fontWeight: '600', color: colors.text },
+        tabTextActive: { color: '#fff' },
+        tabBadge: {
+          minWidth: 22,
+          height: 22,
+          borderRadius: 11,
+          backgroundColor: colors.border,
+          alignItems: 'center',
+          justifyContent: 'center',
+          paddingHorizontal: 6,
+        },
+        tabBadgeActive: { backgroundColor: 'rgba(255,255,255,0.3)' },
+        tabBadgeText: { fontSize: 12, fontWeight: '700', color: colors.textSecondary },
+        tabBadgeTextActive: { color: '#fff' },
         list: { padding: spacing.md, paddingBottom: 140 },
         empty: { alignItems: 'center', justifyContent: 'center', paddingVertical: 48 },
         emptyText: { fontSize: 16, color: colors.textSecondary, marginTop: 12 },
         emptyHint: { fontSize: 13, color: colors.textSecondary, marginTop: 6 },
       }),
-    [colors]
+    [colors, insets.top]
   );
 
   const loadOrders = useCallback(async () => {
@@ -123,10 +165,7 @@ export default function SaleOrderListScreen({ route, navigation }) {
       const data = await getCachedOrders(vehicleId);
       const all = Array.isArray(data) ? data : [];
       const dateStr = formatDate(selectedDate);
-      let list = all.filter((o) => (o.date_order || '').startsWith(dateStr));
-      if (customerId != null) {
-        list = list.filter((o) => o.partner_id?.[0] === customerId);
-      }
+      const list = all.filter((o) => (o.date_order || '').startsWith(dateStr));
       const orderIds = list.map((o) => o.id);
       const [totals, pickings, allLines] = await Promise.all([
         getOrderLineTotalsFromDB(list),
@@ -158,12 +197,12 @@ export default function SaleOrderListScreen({ route, navigation }) {
         }))
       );
     } catch (err) {
-      console.error('Sale Order Error:', err);
+      console.error('Delivered Orders Error:', err);
       setOrders([]);
     } finally {
       setLoading(false);
     }
-  }, [customerId, selectedDate]);
+  }, [selectedDate]);
 
   useEffect(() => {
     loadOrders();
@@ -194,16 +233,11 @@ export default function SaleOrderListScreen({ route, navigation }) {
     if (date) setSelectedDate(date);
   };
 
-  const onBackPress = () => {
-    if (customerId != null) {
-      navigation.navigate('Orders', { customerId: null });
-    } else {
-      navigation.navigate('Dashboard');
-    }
-  };
-
   const onOrderPress = (order) => {
-    navigation.navigate('SaleOrderDetails', { saleOrderId: order.id });
+    navigation.navigate('InvoiceScreen', {
+      saleOrderId: order.id,
+      total: order.amount_total,
+    });
   };
 
   if (loading) {
@@ -216,27 +250,14 @@ export default function SaleOrderListScreen({ route, navigation }) {
 
   return (
     <View style={styles.container}>
-      {/* Header: back (to Dashboard), date navigator (center, tap = calendar), QR (right) */}
       <View style={styles.header}>
-        <View style={styles.headerLeft}>
-          <TouchableOpacity onPress={onBackPress} style={styles.headerBtn}>
-            <Ionicons name="arrow-back" size={24} color={colors.primary} />
-          </TouchableOpacity>
-        </View>
+        <View style={styles.headerLeft} />
         <View style={styles.headerCenter}>
           <View style={styles.dateNav}>
-            <TouchableOpacity
-              onPress={goToPreviousDay}
-              style={styles.dateNavChevron}
-              activeOpacity={0.7}
-            >
+            <TouchableOpacity onPress={goToPreviousDay} style={styles.dateNavChevron} activeOpacity={0.7}>
               <Ionicons name="chevron-back" size={24} color={colors.primary} />
             </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.dateNavDateTouch}
-              onPress={() => setShowPicker(true)}
-              activeOpacity={0.7}
-            >
+            <TouchableOpacity style={styles.dateNavDateTouch} onPress={() => setShowPicker(true)} activeOpacity={0.7}>
               <Text style={styles.dateNavText}>{formatDate(selectedDate)}</Text>
             </TouchableOpacity>
             <TouchableOpacity
@@ -249,14 +270,7 @@ export default function SaleOrderListScreen({ route, navigation }) {
             </TouchableOpacity>
           </View>
         </View>
-        <View style={styles.headerRight}>
-          <TouchableOpacity
-            onPress={() => navigation.navigate('ScanQRCode')}
-            style={[styles.headerBtn, styles.headerBtnRight]}
-          >
-            <Ionicons name="qr-code-outline" size={28} color={colors.primary} />
-          </TouchableOpacity>
-        </View>
+        <View style={styles.headerRight} />
       </View>
 
       {showPicker && (
@@ -276,19 +290,73 @@ export default function SaleOrderListScreen({ route, navigation }) {
         </TouchableOpacity>
       )}
 
+      <View style={styles.tabsWrap}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.tabsScroll}
+        >
+          <TouchableOpacity
+            style={[styles.tab, activeTab === TAB_CASH && styles.tabActive]}
+            onPress={() => setActiveTab(TAB_CASH)}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="cash-outline" size={18} color={activeTab === TAB_CASH ? '#fff' : colors.text} />
+            <Text style={[styles.tabText, activeTab === TAB_CASH && styles.tabTextActive]}>Cash</Text>
+            <View style={[styles.tabBadge, activeTab === TAB_CASH && styles.tabBadgeActive]}>
+              <Text style={[styles.tabBadgeText, activeTab === TAB_CASH && styles.tabBadgeTextActive]}>
+                {tabCounts[TAB_CASH]}
+              </Text>
+            </View>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.tab, activeTab === TAB_CHEQUE && styles.tabActive]}
+            onPress={() => setActiveTab(TAB_CHEQUE)}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="card-outline" size={18} color={activeTab === TAB_CHEQUE ? '#fff' : colors.text} />
+            <Text style={[styles.tabText, activeTab === TAB_CHEQUE && styles.tabTextActive]}>Cheque</Text>
+            <View style={[styles.tabBadge, activeTab === TAB_CHEQUE && styles.tabBadgeActive]}>
+              <Text style={[styles.tabBadgeText, activeTab === TAB_CHEQUE && styles.tabBadgeTextActive]}>
+                {tabCounts[TAB_CHEQUE]}
+              </Text>
+            </View>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.tab, activeTab === TAB_CREDIT && styles.tabActive]}
+            onPress={() => setActiveTab(TAB_CREDIT)}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="wallet-outline" size={18} color={activeTab === TAB_CREDIT ? '#fff' : colors.text} />
+            <Text style={[styles.tabText, activeTab === TAB_CREDIT && styles.tabTextActive]}>Credit</Text>
+            <View style={[styles.tabBadge, activeTab === TAB_CREDIT && styles.tabBadgeActive]}>
+              <Text style={[styles.tabBadgeText, activeTab === TAB_CREDIT && styles.tabBadgeTextActive]}>
+                {tabCounts[TAB_CREDIT]}
+              </Text>
+            </View>
+          </TouchableOpacity>
+        </ScrollView>
+      </View>
+
       <FlatList
         data={filteredOrders}
         keyExtractor={(item) => String(item.id)}
         contentContainerStyle={styles.list}
         ListEmptyComponent={
           <View style={styles.empty}>
-            <Ionicons name="cube-outline" size={48} color={colors.textSecondary} />
-            <Text style={styles.emptyText}>No orders to deliver</Text>
-            <Text style={styles.emptyHint}>Orders for this date will appear here after sync</Text>
+            <Ionicons
+              name={activeTab === TAB_CASH ? 'cash-outline' : activeTab === TAB_CHEQUE ? 'card-outline' : 'wallet-outline'}
+              size={48}
+              color={colors.textSecondary}
+            />
+            <Text style={styles.emptyText}>
+              No delivered orders paid by {activeTab === TAB_CASH ? 'Cash' : activeTab === TAB_CHEQUE ? 'Cheque' : 'Credit'} for this date
+            </Text>
+            <Text style={styles.emptyHint}>Delivered & paid orders appear here after payment</Text>
           </View>
         }
         renderItem={({ item }) => (
-          <OrderCard order={item} onPress={onOrderPress} isDelivered={false} />
+          <OrderCard order={item} onPress={onOrderPress} isDelivered={true} />
         )}
       />
     </View>

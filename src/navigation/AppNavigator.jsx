@@ -11,6 +11,7 @@ import LoginScreen from '../screens/LoginScreen';
 import DashboardScreen from '../screens/DashboardScreen';
 import DailyVisitScreen from '../screens/DailyVisitScreen';
 import SaleOrderListScreen from '../screens/SaleOrderListScreen';
+import DeliveredOrdersScreen from '../screens/DeliveredOrdersScreen';
 import SaleOrderDetailsScreen from '../screens/SaleOrderDetailsScreen';
 import ProceedPaymentScreen from '../screens/ProceedPaymentScreen';
 import InvoiceScreen from '../screens/InvoiceScreen';
@@ -68,6 +69,16 @@ function MainTabs() {
           tabBarLabel: 'Orders',
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="cart-outline" size={size} color={color} />
+          ),
+        }}
+      />
+      <Tab.Screen
+        name="DeliveredOrders"
+        component={DeliveredOrdersScreen}
+        options={{
+          tabBarLabel: 'Delivered',
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="checkmark-done-outline" size={size} color={color} />
           ),
         }}
       />

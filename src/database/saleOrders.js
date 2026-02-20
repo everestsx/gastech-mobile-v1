@@ -19,12 +19,22 @@ export async function upsertSaleOrders(rows) {
       const partner = odooRel(r.partner_id);
       const route = odooRel(r.route_id);
       const vehicle = odooRel(r.vehicle_id);
+      const paymentType = empty(r.payment_type);
       await tx.runAsync(
-        `INSERT OR REPLACE INTO sale_orders (
+        `INSERT INTO sale_orders (
           id, name, partner_id, partner_name, state, date_order,
           amount_total, amount_untaxed, amount_tax, invoice_status, order_line,
-          route_id, route_name, vehicle_id, vehicle_name, updated_at, payload
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          route_id, route_name, vehicle_id, vehicle_name, updated_at, payload, payment_type
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          name=excluded.name, partner_id=excluded.partner_id, partner_name=excluded.partner_name,
+          state=excluded.state, date_order=excluded.date_order,
+          amount_total=excluded.amount_total, amount_untaxed=excluded.amount_untaxed, amount_tax=excluded.amount_tax,
+          invoice_status=excluded.invoice_status, order_line=excluded.order_line,
+          route_id=excluded.route_id, route_name=excluded.route_name,
+          vehicle_id=excluded.vehicle_id, vehicle_name=excluded.vehicle_name,
+          updated_at=excluded.updated_at, payload=excluded.payload,
+          payment_type=CASE WHEN excluded.payment_type IS NOT NULL AND excluded.payment_type != '' THEN excluded.payment_type ELSE sale_orders.payment_type END`,
         [
           num(r.id),
           empty(r.name),
@@ -43,6 +53,7 @@ export async function upsertSaleOrders(rows) {
           empty(vehicle.name),
           now,
           empty(r.payload),
+          paymentType || null,
         ]
       );
     }
@@ -73,6 +84,7 @@ export async function getAllSaleOrders(vehicleId = null) {
     order_line: safeParseJson(row.order_line, []),
     route_id: row.route_id != null ? [row.route_id, row.route_name ?? ''] : null,
     vehicle_id: row.vehicle_id != null ? [row.vehicle_id, row.vehicle_name ?? ''] : null,
+    payment_type: row.payment_type ?? null,
   }));
 }
 
@@ -141,5 +153,17 @@ export async function updateSaleOrderInvoiceStatusLocal(orderId, invoiceStatus) 
   await db.runAsync(
     `UPDATE sale_orders SET invoice_status = ?, updated_at = ? WHERE id = ?`,
     [empty(invoiceStatus) || 'invoiced', iso(), num(orderId)]
+  );
+}
+
+/**
+ * Update sale order payment_type locally when user completes payment. Values: 'cash' | 'cheque' | 'credit'.
+ */
+export async function updateSaleOrderPaymentTypeLocal(orderId, paymentType) {
+  const db = await getDb();
+  const type = paymentType === 'cash' || paymentType === 'cheque' || paymentType === 'credit' ? paymentType : null;
+  await db.runAsync(
+    `UPDATE sale_orders SET payment_type = ?, updated_at = ? WHERE id = ?`,
+    [type, iso(), num(orderId)]
   );
 }

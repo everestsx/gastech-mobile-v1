@@ -234,6 +234,9 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         deliveryPhotoUris: deliveryPhotos,
       });
 
+      const primaryPaymentType = needsCredit ? 'credit' : needsCheck ? 'cheque' : 'cash';
+      await saleOrdersDb.updateSaleOrderPaymentTypeLocal(saleOrderId, primaryPaymentType);
+
       navigation.replace('InvoiceScreen', {
         saleOrderId,
         total,

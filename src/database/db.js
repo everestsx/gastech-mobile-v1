@@ -39,6 +39,7 @@ const SALE_ORDERS_COLUMNS = [
   { name: 'vehicle_name', def: 'TEXT' },
   { name: 'updated_at', def: 'TEXT' },
   { name: 'payload', def: 'TEXT' }, // legacy; we always write '' so NOT NULL if present is satisfied
+  { name: 'payment_type', def: 'TEXT' }, // 'cash' | 'cheque' | 'credit' set when user completes payment
 ];
 
 async function runMigrations(db) {
@@ -207,6 +208,19 @@ async function runMigrations(db) {
       console.warn("[Migration] Error adding city column:", e);
     }
     await db.runAsync('PRAGMA user_version = 4');
+  }
+
+  if (current < 5) {
+    try {
+      const info = await db.getAllAsync('PRAGMA table_info(sale_orders)');
+      const hasPaymentType = (info || []).some((c) => c.name === 'payment_type');
+      if (!hasPaymentType) {
+        await db.runAsync('ALTER TABLE sale_orders ADD COLUMN payment_type TEXT');
+      }
+    } catch (e) {
+      console.warn("[Migration] Error adding payment_type:", e);
+    }
+    await db.runAsync('PRAGMA user_version = 5');
   }
 }
 
