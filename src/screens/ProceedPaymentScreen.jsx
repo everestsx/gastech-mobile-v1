@@ -327,7 +327,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         cashInputWrap: {
           flex: 1,
           maxWidth: '50%',
-          flexDirection: 'row',
+          flexDirection: 'row', 
           alignItems: 'center',
           backgroundColor: colors.surface,
           borderRadius: borderRadius.lg,
