@@ -170,9 +170,7 @@ export default function DashboardScreen({ navigation }) {
 
   const routeFromOrder = todayOrders[0]?.route_id?.[1];
   const routeName = routeFromOrder || (routes[0]?.name) || '—';
-  const vehicleName = user?.isAdmin === false
-    ? (user.licensePlate || user.vehicleName || 'Vehicle')
-    : 'Admin';
+  const vehicleName = user?.licensePlate || user?.vehicleName || 'Vehicle';
   const commissionEarned = Math.round(totalSales * 0.1) || 0;
   const commissionPct = Math.min(100, Math.round((commissionEarned / COMMISSION_TARGET) * 100));
 
