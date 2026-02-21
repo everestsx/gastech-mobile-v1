@@ -180,13 +180,13 @@ export default function DeliveryProgressBarChart({ data = [], title = 'Delivery 
         <View style={styles.legendItem}>
           <View style={[styles.legendBox, { backgroundColor: successColor }]} />
           <Text style={[styles.legendText, { color: successColor }]}>
-            Delivered ({sortedData.filter((d) => (Number(d.pending) || 0) === 0 && ((Number(d.delivered) || 0) + (Number(d.pending) || 0)) > 0).length})
+            Delivered ({sortedData.filter((d) => (Number(d.pending) || 0) > 0).length})
           </Text>
         </View>
         <View style={styles.legendItem}>
           <View style={[styles.legendBox, { backgroundColor: errorColor }]} />
           <Text style={[styles.legendText, { color: errorColor }]}>
-            To deliver ({sortedData.filter((d) => (Number(d.pending) || 0) > 0).length})
+          To deliver ({sortedData.filter((d) => (Number(d.pending) || 0) === 0 && ((Number(d.delivered) || 0) + (Number(d.pending) || 0)) > 0).length})
           </Text>
         </View>
       </View>

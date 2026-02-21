@@ -83,7 +83,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
           paddingVertical: 6,
           paddingHorizontal: 12,
           borderRadius: borderRadius.md,
-          borderWidth: 1.5,
+          borderWidth: 1,
           borderColor: colors.primary,
         },
         modifyUpdateBtnUpdate: { backgroundColor: colors.warning, borderColor: colors.warning },
