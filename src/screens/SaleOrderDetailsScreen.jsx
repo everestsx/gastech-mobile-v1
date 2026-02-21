@@ -613,6 +613,12 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
                               <Text style={styles.addressText}>
                                   {order.city}
                               </Text>
+                              <Text style={styles.addressText}>
+                                  {order.street}
+                              </Text>
+                              <Text style={styles.addressText}>
+                                  {order.zip_code}
+                              </Text>
                           </View>
                       )}
                   </View>
