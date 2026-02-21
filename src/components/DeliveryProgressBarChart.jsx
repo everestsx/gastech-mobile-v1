@@ -1,5 +1,5 @@
-import React, { useMemo } from 'react';
-import { View, Text, StyleSheet, ScrollView } from 'react-native';
+import React, { useMemo, useState } from 'react';
+import { View, Text, StyleSheet, ScrollView, Pressable } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { spacing } from '../constants/theme';
@@ -17,6 +17,7 @@ const LABEL_HEIGHT = 36;
  */
 export default function DeliveryProgressBarChart({ data = [], title = 'Delivery Progress by Shop', rightElement = null }) {
   const { colors } = useTheme();
+  const [selectedIndex, setSelectedIndex] = useState(null);
   const barWidth = FIXED_BAR_WIDTH;
   const sortedData = useMemo(() => {
     return [...(data || [])].sort((a, b) => {
@@ -70,6 +71,33 @@ export default function DeliveryProgressBarChart({ data = [], title = 'Delivery 
         legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
         legendBox: { width: 14, height: 14, borderRadius: 3 },
         legendText: { fontSize: 13, fontWeight: '600' },
+        tooltipWrap: {
+          position: 'absolute',
+          left: spacing.md,
+          right: spacing.md,
+          top: 52,
+          zIndex: 10,
+          alignItems: 'center',
+        },
+        tooltip: {
+          backgroundColor: colors.surface,
+          borderRadius: 10,
+          paddingVertical: 10,
+          paddingHorizontal: 14,
+          minWidth: 160,
+          maxWidth: 220,
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: 2 },
+          shadowOpacity: 0.2,
+          shadowRadius: 6,
+          elevation: 6,
+          borderWidth: 1,
+          borderColor: colors.border || 'rgba(0,0,0,0.08)',
+        },
+        tooltipTitle: { fontSize: 12, fontWeight: '700', color: colors.textSecondary, marginBottom: 6 },
+        tooltipRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 },
+        tooltipLabel: { fontSize: 12, color: colors.textSecondary },
+        tooltipValue: { fontSize: 13, fontWeight: '600', color: colors.text },
       }),
     [colors]
   );
@@ -90,6 +118,8 @@ export default function DeliveryProgressBarChart({ data = [], title = 'Delivery 
   const successColor = colors.success ?? '#059669';
   const errorColor = colors.error ?? '#dc2626';
 
+  const selectedRow = selectedIndex != null ? sortedData[selectedIndex] : null;
+
   return (
     <View style={styles.card}>
       <View style={styles.titleRow}>
@@ -97,6 +127,33 @@ export default function DeliveryProgressBarChart({ data = [], title = 'Delivery 
         <Text style={[styles.title, { flex: 1 }]}>{title}</Text>
         {rightElement}
       </View>
+      {selectedRow != null && (
+        <View style={styles.tooltipWrap} pointerEvents="box-none">
+          <View style={styles.tooltip}>
+            <Text style={styles.tooltipTitle}>Shop details</Text>
+            <View style={styles.tooltipRow}>
+              <Text style={styles.tooltipLabel}>Customer</Text>
+              <Text style={[styles.tooltipValue, { flex: 1, marginLeft: 8, textAlign: 'right' }]} numberOfLines={2}>
+                {selectedRow.shopName || selectedRow.shopId || `Shop ${selectedIndex + 1}`}
+              </Text>
+            </View>
+            <View style={styles.tooltipRow}>
+              <Text style={styles.tooltipLabel}>Delivered (qty)</Text>
+              <Text style={styles.tooltipValue}>{Math.max(0, Number(selectedRow.delivered) || 0)}</Text>
+            </View>
+            <View style={styles.tooltipRow}>
+              <Text style={styles.tooltipLabel}>Pending (qty)</Text>
+              <Text style={styles.tooltipValue}>{Math.max(0, Number(selectedRow.pending) || 0)}</Text>
+            </View>
+            <View style={[styles.tooltipRow, { marginBottom: 0 }]}>
+              <Text style={styles.tooltipLabel}>Total gas</Text>
+              <Text style={styles.tooltipValue}>
+                {Math.max(0, Number(selectedRow.delivered) || 0) + Math.max(0, Number(selectedRow.pending) || 0)}
+              </Text>
+            </View>
+          </View>
+        </View>
+      )}
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
@@ -111,16 +168,21 @@ export default function DeliveryProgressBarChart({ data = [], title = 'Delivery 
               const isFullyDelivered = pending === 0 && total > 0;
               const barColor = isFullyDelivered ? errorColor : successColor;
               const barHeight = total > 0 ? Math.max(8, (total / maxVal) * (CHART_HEIGHT - LABEL_HEIGHT - 12)) : 0;
+              const isSelected = selectedIndex === i;
               return (
-                <View
+                <Pressable
                   key={row.shopId || i}
-                  style={{
+                  onPress={() => setSelectedIndex(isSelected ? null : i)}
+                  style={({ pressed }) => ({
                     width: barWidth + BAR_GAP,
                     height: CHART_HEIGHT - LABEL_HEIGHT,
                     justifyContent: 'flex-end',
                     alignItems: 'center',
                     marginLeft: i === 0 ? BAR_GAP : 0,
-                  }}
+                    opacity: pressed ? 0.85 : 1,
+                    backgroundColor: isSelected ? (colors.primary + '12') : 'transparent',
+                    borderRadius: 6,
+                  })}
                 >
                   <Text
                     style={{
@@ -141,7 +203,7 @@ export default function DeliveryProgressBarChart({ data = [], title = 'Delivery 
                       borderTopRightRadius: 6,
                     }}
                   />
-                </View>
+                </Pressable>
               );
             })}
           </View>
