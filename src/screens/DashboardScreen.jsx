@@ -8,7 +8,9 @@ import {
   RefreshControl,
   ActivityIndicator,
   Image,
+  Platform,
 } from 'react-native';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
@@ -63,6 +65,10 @@ export default function DashboardScreen({ navigation }) {
   const [lastSyncTime, setLastSyncTime] = useState(null);
   const [syncLog, setSyncLog] = useState([]);
   const [lastSyncResult, setLastSyncResult] = useState(null);
+  const [selectedChartDate, setSelectedChartDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [showChartDatePicker, setShowChartDatePicker] = useState(false);
+  const [chartLineTotalsByOrder, setChartLineTotalsByOrder] = useState({});
+  const [chartPickingsBySaleId, setChartPickingsBySaleId] = useState([]);
 
   const loadData = useCallback(async () => {
     try {
@@ -134,6 +140,41 @@ export default function DashboardScreen({ navigation }) {
     return () => clearInterval(tid);
   }, [loadData, loadSyncStatus]);
 
+  useEffect(() => {
+    const today = new Date().toISOString().split('T')[0];
+    if (selectedChartDate === today) {
+      setChartLineTotalsByOrder(lineTotalsByOrder);
+      setChartPickingsBySaleId(pickingsBySaleId);
+      return;
+    }
+    const dateOrders = orders.filter((o) => (o.date_order || '').startsWith(selectedChartDate));
+    const orderIds = dateOrders.map((o) => o.id);
+    if (orderIds.length === 0) {
+      setChartLineTotalsByOrder({});
+      setChartPickingsBySaleId([]);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const [totals, pickings] = await Promise.all([
+          getOrderLineTotalsFromDB(dateOrders),
+          getPickingsBySaleIdsFromDB(orderIds),
+        ]);
+        if (!cancelled) {
+          setChartLineTotalsByOrder(totals || {});
+          setChartPickingsBySaleId(pickings || []);
+        }
+      } catch (_) {
+        if (!cancelled) {
+          setChartLineTotalsByOrder({});
+          setChartPickingsBySaleId([]);
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [selectedChartDate, orders, lineTotalsByOrder, pickingsBySaleId]);
+
   const onRefresh = async () => {
     setRefreshing(true);
     await loadData();
@@ -188,21 +229,33 @@ export default function DashboardScreen({ navigation }) {
     return map;
   }, [pickingsBySaleId]);
 
-  const deliveryByShop = useMemo(() => {
+  const chartDateOrders = useMemo(
+    () => orders.filter((o) => (o.date_order || '').startsWith(selectedChartDate)),
+    [orders, selectedChartDate]
+  );
+  const chartPickingStateBySaleId = useMemo(() => {
+    const map = {};
+    (chartPickingsBySaleId || []).forEach((p) => {
+      const sid = Array.isArray(p.sale_id) ? p.sale_id[0] : p.sale_id;
+      map[sid] = (p.state || '').toLowerCase();
+    });
+    return map;
+  }, [chartPickingsBySaleId]);
+  const chartDeliveryByShop = useMemo(() => {
     const byPartner = {};
-    todayOrders.forEach((o) => {
+    chartDateOrders.forEach((o) => {
       const partnerId = o.partner_id?.[0] ?? o.partner_id;
       const partnerName = o.partner_id?.[1] ?? `Shop ${partnerId}`;
       const key = partnerId ?? 'unknown';
       if (!byPartner[key]) byPartner[key] = { shopId: `S${partnerId}`, shopName: partnerName, delivered: 0, pending: 0 };
-      const qty = Math.round(Number(lineTotalsByOrder[o.id]) || 0);
-      const isDone = (pickingStateBySaleId[o.id] || '') === 'done';
+      const qty = Math.round(Number(chartLineTotalsByOrder[o.id]) || 0);
+      const isDone = (chartPickingStateBySaleId[o.id] || '') === 'done';
       if (isDone) byPartner[key].delivered += qty;
       else byPartner[key].pending += qty;
     });
     const real = Object.values(byPartner).filter((r) => r.delivered > 0 || r.pending > 0);
-    return real.length > 0 ? real : SAMPLE_DELIVERY_BY_SHOP;
-  }, [todayOrders, lineTotalsByOrder, pickingStateBySaleId]);
+    return real;
+  }, [chartDateOrders, chartLineTotalsByOrder, chartPickingStateBySaleId]);
 
   const styles = useMemo(
     () =>
@@ -584,9 +637,47 @@ export default function DashboardScreen({ navigation }) {
         </View>
       </View>
 
-      {/* 5. Delivery Progress by Shop - bar chart */}
+      {/* 5. Delivery Progress by Shop - bar chart with date picker (default today) */}
       <View style={{ paddingHorizontal: spacing.md }}>
-        <DeliveryProgressBarChart data={deliveryByShop} title="Delivery Progress by Shop" />
+        <DeliveryProgressBarChart
+          data={chartDeliveryByShop}
+          title="Delivery Progress by Shop"
+          rightElement={
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <Text style={{ fontSize: 12, color: colors.textSecondary }}>
+                {selectedChartDate === new Date().toISOString().split('T')[0]
+                  ? 'Today'
+                  : new Date(selectedChartDate + 'T12:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+              </Text>
+              <TouchableOpacity
+                onPress={() => setShowChartDatePicker(true)}
+                style={{ padding: 4 }}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="calendar-outline" size={22} color={colors.primary} />
+              </TouchableOpacity>
+              {showChartDatePicker && (
+                <DateTimePicker
+                  value={new Date(selectedChartDate + 'T12:00:00')}
+                  mode="date"
+                  display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                  onChange={(_, date) => {
+                    if (Platform.OS === 'android') setShowChartDatePicker(false);
+                    if (date) setSelectedChartDate(date.toISOString().split('T')[0]);
+                  }}
+                />
+              )}
+              {showChartDatePicker && Platform.OS === 'ios' && (
+                <TouchableOpacity
+                  onPress={() => setShowChartDatePicker(false)}
+                  style={{ paddingVertical: 4, paddingHorizontal: 8 }}
+                >
+                  <Text style={{ fontSize: 15, fontWeight: '600', color: colors.primary }}>Done</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          }
+        />
       </View>
 
       {/* 6. Configurable: Create Sales Order & Return */}
