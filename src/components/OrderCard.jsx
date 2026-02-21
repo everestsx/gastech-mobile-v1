@@ -4,10 +4,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
 import { getProductDisplayName, getGasSizeFromProductName } from '../utils/productDisplay';
-
-function formatCurrency(amount) {
-  return `LKR ${Number(amount).toFixed(2)}`;
-}
+import { formatCurrency } from '../utils/format';
 
 /** Format date_order (ISO or date string) for display. */
 function formatOrderDate(dateOrder) {

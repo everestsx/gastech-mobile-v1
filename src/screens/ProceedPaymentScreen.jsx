@@ -19,6 +19,7 @@ import { getCachedJournals, getSaleOrderDetailsFromDB } from '../services/sync.s
 import * as saleOrdersDb from '../database/saleOrders.js';
 import * as syncQueueDb from '../database/syncQueue.js';
 import { JOURNAL_CODE_CASH, JOURNAL_CODE_CHEQUE } from '../constants/journals';
+import { formatAmount } from '../utils/format';
 
 const PAYMENT_CASH = 'cash';
 const PAYMENT_CHECK = 'check';
@@ -32,7 +33,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   const [loading, setLoading] = useState(false);
   const [journalsLoading, setJournalsLoading] = useState(true);
   const [journals, setJournals] = useState([]);
-  const [selectedPaymentMethods, setSelectedPaymentMethods] = useState([PAYMENT_CASH]);
+  const [selectedPaymentMethods, setSelectedPaymentMethods] = useState([]);
   const [cashAmount, setCashAmount] = useState('');
   const [checkAmount, setCheckAmount] = useState('');
   const [selectedJournalId, setSelectedJournalId] = useState(null);
@@ -41,7 +42,6 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   const [deliveryPhotos, setDeliveryPhotos] = useState([]);
   const cashInputRef = useRef(null);
   const checkInputRef = useRef(null);
-  const hasInitialFilledCash = useRef(false);
 
   const MAX_PHOTOS = 3;
 
@@ -131,17 +131,6 @@ export default function ProceedPaymentScreen({ route, navigation }) {
     loadJournals();
   }, [loadJournals]);
 
-  // Initial auto-fill cash only once on mount when Cash is selected (do not re-fill when user clears)
-  useEffect(() => {
-    if (hasInitialFilledCash.current) return;
-    if (selectedPaymentMethods.includes(PAYMENT_CASH) && orderTotal > 0) {
-      hasInitialFilledCash.current = true;
-      setCashAmount(orderTotal.toFixed(2));
-    }
-  }, [selectedPaymentMethods, orderTotal]);
-
-  // Auto-fill check only when user first selects Check (in togglePaymentMethod), not when they clear
-
   useEffect(() => {
     if (selectedPaymentMethods.includes(PAYMENT_CHECK)) {
       if (!isSelectedJournalValid && selectedJournalId != null) {
@@ -175,18 +164,18 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       if (has) {
         const next = prev.filter((m) => m !== method);
         if (next.length === 0) return prev;
-        if (method === PAYMENT_CASH) setCashAmount('0');
-        if (method === PAYMENT_CHECK) setCheckAmount('0');
+        if (method === PAYMENT_CASH) setCashAmount('');
+        if (method === PAYMENT_CHECK) setCheckAmount('');
         return next;
       }
-      if (method === PAYMENT_CASH) setCashAmount(orderTotal > 0 ? orderTotal.toFixed(2) : '');
-      if (method === PAYMENT_CHECK) {
-        const remaining = Math.max(0, orderTotal - (parseFloat(String(cashAmount).replace(/,/g, '')) || 0));
-        setCheckAmount(remaining > 0 ? remaining.toFixed(2) : '0');
-      }
+      const cashNum = parseFloat(String(cashAmount).replace(/,/g, '')) || 0;
+      const checkNum = parseFloat(String(checkAmount).replace(/,/g, '')) || 0;
+      const remaining = Math.max(0, orderTotal - (method === PAYMENT_CASH ? checkNum : cashNum));
+      if (method === PAYMENT_CASH) setCashAmount(remaining > 0 ? formatAmount(remaining) : '');
+      if (method === PAYMENT_CHECK) setCheckAmount(remaining > 0 ? formatAmount(remaining) : '');
       return [...prev, method];
     });
-  }, [orderTotal, cashAmount]);
+  }, [orderTotal, cashAmount, checkAmount]);
 
   const handleProceed = async () => {
     if (!canProceed) return;
@@ -349,7 +338,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         cashInputIcon: { marginRight: spacing.sm },
         cashInput: { flex: 1, fontSize: 14, color: colors.text, paddingVertical: 12 },
         cashInputSuffix: { fontSize: 12, fontWeight: '600', color: colors.textSecondary, marginLeft: spacing.sm },
-        cashHint: { fontSize: 12, color: colors.textSecondary, marginBottom: spacing.lg },
+        cashHint: { fontSize: 12, color: colors.textSecondary, marginBottom: spacing.md },
         checkAmountRow: {
           flexDirection: 'row',
           gap: spacing.md,
@@ -392,7 +381,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           borderWidth: 2,
           borderColor: colors.border,
           paddingVertical: spacing.md,
-          paddingHorizontal: spacing.lg,
+          paddingHorizontal: spacing.md,
           marginBottom: spacing.lg,
           opacity: 0.9,
         },
@@ -531,7 +520,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
     >
       <View style={styles.totalCard}>
         <Text style={styles.totalLabel}>Total Amount</Text>
-        <Text style={styles.total}>Rs. {Number(total).toFixed(2)}</Text>
+        <Text style={styles.total}>Rs. {formatAmount(total)}</Text>
       </View>
 
       {/* Payment method: checkboxes (multi-select) */}
@@ -660,7 +649,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
                   placeholderTextColor={colors.textSecondary}
                 />
               </View>
-              <Text style={[styles.cashHint, { marginBottom: spacing.sm }]}>Check amount: LKR {checkAmountNum.toFixed(2)}</Text>
+              <Text style={[styles.cashHint, { marginBottom: spacing.sm }]}>Check amount: LKR {formatAmount(checkAmountNum)}</Text>
             </View>
           ) : (
             <>
@@ -703,11 +692,11 @@ export default function ProceedPaymentScreen({ route, navigation }) {
 
       {selectedPaymentMethods.includes(PAYMENT_CREDIT) && (
         <>
-          <Text style={styles.sectionLabel}>Remaining amount (credit)</Text>
+          <Text style={styles.sectionLabel}>Credit</Text>
           <View style={styles.creditAmountWrap}>
             <Ionicons name="wallet-outline" size={24} color={colors.textSecondary} />
-            <Text style={styles.creditAmountText}>LKR {creditAmountNum.toFixed(2)}</Text>
             <Text style={styles.creditAmountHint}>Remaining after Cash & Check</Text>
+            <Text style={styles.creditAmountText}> Rs. {formatAmount(creditAmountNum)}</Text>
           </View>
         </>
       )}
