@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -124,10 +124,10 @@ export default function ProceedPaymentScreen({ route, navigation }) {
     if (!canProceed) return;
     const cashJournalId = cashJournalPreferred?.id ?? null;
     const checkJournalId = selectedJournalId != null && isSelectedJournalValid ? selectedJournalId : null;
-    const needsCash = cashAmountNum > 0 && cashJournalId != null;
-    const needsCheck = checkAmountNum > 0 && checkJournalId != null;
-    const needsCredit = creditAmountNum > 0;
-    if (!needsCash && !needsCheck && !needsCredit) return;
+    const isCash = paymentType === PAYMENT_CASH && cashJournalId != null;
+    const isCheck = paymentType === PAYMENT_CHECK && checkJournalId != null && checkNumberTrimmed !== '';
+    const isCredit = paymentType === PAYMENT_CREDIT;
+    if (!isCash && !isCheck && !isCredit) return;
     try {
       setLoading(true);
 
@@ -143,20 +143,20 @@ export default function ProceedPaymentScreen({ route, navigation }) {
 
       const payments = [];
       let paymentSplit = { cash: 0, check: 0, credit: 0 };
-      if (paymentType === PAYMENT_CASH && needsCash) {
-        payments.push({ type: 'cash', amount: cashAmountNum, journalId: cashJournalId });
-        paymentSplit = { cash: cashAmountNum, check: 0, credit: 0 };
-      } else if (paymentType === PAYMENT_CHECK && needsCheck) {
+      if (isCash) {
+        payments.push({ type: 'cash', amount: orderTotal, journalId: cashJournalId });
+        paymentSplit = { cash: orderTotal, check: 0, credit: 0 };
+      } else if (isCheck) {
         payments.push({
           type: 'check',
-          amount: checkAmountNum,
+          amount: orderTotal,
           journalId: checkJournalId,
           checkNumber: checkNumberTrimmed || undefined,
         });
-        paymentSplit = { cash: 0, check: checkAmountNum, credit: 0 };
-      } else if (paymentType === PAYMENT_CREDIT && needsCredit) {
-        payments.push({ type: 'credit', amount: creditAmountNum });
-        paymentSplit = { cash: 0, check: 0, credit: creditAmountNum };
+        paymentSplit = { cash: 0, check: orderTotal, credit: 0 };
+      } else if (isCredit) {
+        payments.push({ type: 'credit', amount: orderTotal });
+        paymentSplit = { cash: 0, check: 0, credit: orderTotal };
       }
       if (payments.length === 0) return;
 
@@ -169,7 +169,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         deliveryPhotoUris: deliveryPhotos,
       });
 
-      const primaryPaymentType = needsCredit ? 'credit' : needsCheck ? 'cheque' : 'cash';
+      const primaryPaymentType = isCredit ? 'credit' : isCheck ? 'cheque' : 'cash';
       await saleOrdersDb.updateSaleOrderPaymentTypeLocal(saleOrderId, primaryPaymentType);
 
       navigation.replace('InvoiceScreen', {
@@ -177,8 +177,8 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         total,
         paymentType: 'split',
         paymentSplit,
-        selectedBankId: needsCheck ? checkJournalId : null,
-        selectedBankName: selectedJournal?.name ?? (needsCheck ? null : undefined),
+        selectedBankId: isCheck ? checkJournalId : null,
+        selectedBankName: selectedJournal?.name ?? (isCheck ? null : undefined),
         deliveryPhotoUris: deliveryPhotos,
         cashAmount: paymentSplit.cash,
         checkNumber: paymentType === PAYMENT_CHECK ? (checkNumber || undefined) : undefined,
@@ -475,17 +475,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       <View style={styles.radioRow}>
         <TouchableOpacity
           style={[styles.radioOption, paymentType === PAYMENT_CASH && styles.radioOptionSelected]}
-          onPress={() => {
-            if (hasUnconfirmedEdits) {
-              Alert.alert('Confirm edit first', 'Please confirm or cancel your current edit (tap the checkmark or stay on this option) before switching payment method.');
-              return;
-            }
-            setPaymentType(PAYMENT_CASH);
-            const checkConfirmed = checkNumberTrimmed !== '' && checkAmountNum > 0;
-            if (!checkConfirmed) { setSelectedJournalId(null); setJournalSearch(''); }
-            setCashEditMode(false);
-            setCashAmountDraft(cashAmount);
-          }}
+          onPress={() => setPaymentType(PAYMENT_CASH)}
           activeOpacity={0.8}
         >
           <View style={[styles.radioCircle, paymentType === PAYMENT_CASH && styles.radioCircleSelected]}>
@@ -497,13 +487,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
 
         <TouchableOpacity
           style={[styles.radioOption, paymentType === PAYMENT_CHECK && styles.radioOptionSelected]}
-          onPress={() => {
-            if (hasUnconfirmedEdits) {
-              Alert.alert('Confirm edit first', 'Please confirm or cancel your current edit (tap the checkmark or stay on this option) before switching payment method.');
-              return;
-            }
-            setPaymentType(PAYMENT_CHECK);
-          }}
+          onPress={() => setPaymentType(PAYMENT_CHECK)}
           activeOpacity={0.8}
         >
           <View style={[styles.radioCircle, paymentType === PAYMENT_CHECK && styles.radioCircleSelected]}>
@@ -515,15 +499,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
 
         <TouchableOpacity
           style={[styles.radioOption, paymentType === PAYMENT_CREDIT && styles.radioOptionSelected]}
-          onPress={() => {
-            if (hasUnconfirmedEdits) {
-              Alert.alert('Confirm edit first', 'Please confirm or cancel your current edit (tap the checkmark or stay on this option) before switching payment method.');
-              return;
-            }
-            setPaymentType(PAYMENT_CREDIT);
-            const checkConfirmed = checkNumberTrimmed !== '' && checkAmountNum > 0;
-            if (!checkConfirmed) { setSelectedJournalId(null); setJournalSearch(''); }
-          }}
+          onPress={() => setPaymentType(PAYMENT_CREDIT)}
           activeOpacity={0.8}
         >
           <View style={[styles.radioCircle, paymentType === PAYMENT_CREDIT && styles.radioCircleSelected]}>
@@ -534,49 +510,13 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         </TouchableOpacity>
       </View>
 
-      {/* Dynamic content: Cash = amount (half width) + modify icon, Check = bank + amount/check#, Credit = remaining only */}
+      {/* One method = full order total. No partial payment. */}
       {paymentType === PAYMENT_CASH && (
-        <>
-          <Text style={styles.sectionLabel}>Amount Paid <Text style={styles.requiredStar}>*</Text></Text>
-          <View style={styles.cashRow}>
-            <View style={styles.cashInputWrap}>
-              <Ionicons name="cash-outline" size={22} color={colors.primary} style={styles.cashInputIcon} />
-              <TextInput
-                ref={cashInputRef}
-                style={styles.cashInput}
-                value={cashEditMode ? cashAmountDraft : cashAmount}
-                onChangeText={(t) => cashEditMode && setCashAmountDraft(t)}
-                placeholder="Total amount"
-                placeholderTextColor={colors.textSecondary}
-                keyboardType="decimal-pad"
-                editable={cashEditMode}
-              />
-              <Text style={styles.cashInputSuffix}>LKR</Text>
-            </View>
-            <TouchableOpacity
-              style={styles.cashModifyBtn}
-              onPress={() => {
-                if (cashEditMode) {
-                  setCashAmount(cashAmountDraft);
-                  setCashEditMode(false);
-                  cashInputRef.current?.blur();
-                } else {
-                  setCashAmountDraft(cashAmount);
-                  setCashEditMode(true);
-                  cashInputRef.current?.focus();
-                }
-              }}
-              activeOpacity={0.8}
-            >
-              <Ionicons
-                name={cashEditMode ? 'checkmark-circle' : 'pencil'}
-                size={22}
-                color={colors.primary}
-              />
-            </TouchableOpacity>
-          </View>
-          <Text style={styles.cashHint}>Default: full total. You can pay less or more.</Text>
-        </>
+        <View style={styles.creditAmountWrap}>
+          <Ionicons name="cash-outline" size={24} color={colors.primary} />
+          <Text style={styles.creditAmountText}>LKR {orderTotal.toFixed(2)}</Text>
+          <Text style={styles.creditAmountHint}>Full amount (auto-loaded)</Text>
+        </View>
       )}
 
       {paymentType === PAYMENT_CHECK && (
@@ -603,68 +543,26 @@ export default function ProceedPaymentScreen({ route, navigation }) {
                 onPress={() => {
                   setSelectedJournalId(null);
                   setJournalSearch('');
-                  setCheckAmount('0');
                   setCheckNumber('');
-                  setCheckAmountEditMode(true);
-                  setCheckNumberEditMode(true);
                 }}
                 activeOpacity={0.8}
               >
                 <Ionicons name="swap-horizontal-outline" size={18} color={colors.primary} />
                 <Text style={styles.changeBankText}>Change Bank</Text>
               </TouchableOpacity>
-              <Text style={[styles.sectionLabel, { marginTop: spacing.md }]}>Amount & Check number</Text>
-              <View style={styles.checkAmountRow}>
-                <View style={styles.checkAmountCol}>
-                  <Text style={styles.checkAmountLabel}>Amount (LKR)</Text>
-                  <View style={styles.checkInputRow}>
-                    <TextInput
-                      style={styles.checkAmountInput}
-                      value={checkAmount}
-                      onChangeText={setCheckAmount}
-                      placeholder="0"
-                      placeholderTextColor={colors.textSecondary}
-                      keyboardType="decimal-pad"
-                      editable={checkAmountEditMode}
-                    />
-                    <TouchableOpacity
-                      style={styles.checkFieldBtn}
-                      onPress={() => setCheckAmountEditMode((prev) => !prev)}
-                      activeOpacity={0.8}
-                    >
-                      <Ionicons
-                        name={checkAmountEditMode ? 'checkmark-circle' : 'pencil'}
-                        size={22}
-                        color={colors.primary}
-                      />
-                    </TouchableOpacity>
-                  </View>
-                </View>
-                <View style={styles.checkAmountCol}>
-                  <Text style={styles.checkAmountLabel}>Check number <Text style={styles.requiredStar}>*</Text></Text>
-                  <View style={styles.checkInputRow}>
-                    <TextInput
-                      style={styles.checkAmountInput}
-                      value={checkNumber}
-                      onChangeText={setCheckNumber}
-                      placeholder="Check #"
-                      placeholderTextColor={colors.textSecondary}
-                      editable={checkNumberEditMode}
-                    />
-                    <TouchableOpacity
-                      style={styles.checkFieldBtn}
-                      onPress={() => setCheckNumberEditMode((prev) => !prev)}
-                      activeOpacity={0.8}
-                    >
-                      <Ionicons
-                        name={checkNumberEditMode ? 'checkmark-circle' : 'pencil'}
-                        size={22}
-                        color={colors.primary}
-                      />
-                    </TouchableOpacity>
-                  </View>
-                </View>
+              <View style={[styles.creditAmountWrap, { marginTop: spacing.md }]}>
+                <Ionicons name="card-outline" size={24} color={colors.primary} />
+                <Text style={styles.creditAmountText}>LKR {orderTotal.toFixed(2)}</Text>
+                <Text style={styles.creditAmountHint}>Full amount (auto-loaded)</Text>
               </View>
+              <Text style={[styles.sectionLabel, { marginTop: spacing.sm }]}>Check number <Text style={styles.requiredStar}>*</Text></Text>
+              <TextInput
+                style={[styles.checkAmountInput, { marginBottom: spacing.lg }]}
+                value={checkNumber}
+                onChangeText={setCheckNumber}
+                placeholder="Enter check number"
+                placeholderTextColor={colors.textSecondary}
+              />
             </View>
           ) : (
             <>
@@ -706,14 +604,11 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       )}
 
       {paymentType === PAYMENT_CREDIT && (
-        <>
-          <Text style={styles.sectionLabel}>Credit amount (remaining after Cash & Check)</Text>
-          <View style={styles.creditAmountWrap}>
-            <Ionicons name="wallet-outline" size={24} color={colors.textSecondary} />
-            <Text style={styles.creditAmountText}>LKR {creditAmountNum.toFixed(2)}</Text>
-            <Text style={styles.creditAmountHint}>Auto-filled • Not editable</Text>
-          </View>
-        </>
+        <View style={styles.creditAmountWrap}>
+          <Ionicons name="wallet-outline" size={24} color={colors.primary} />
+          <Text style={styles.creditAmountText}>LKR {orderTotal.toFixed(2)}</Text>
+          <Text style={styles.creditAmountHint}>Full amount (auto-loaded)</Text>
+        </View>
       )}
 
       {/* Evidence of delivery: one common section below payment methods; required only if Check or Credit used */}

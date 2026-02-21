@@ -41,9 +41,11 @@ export default function SaleOrderListScreen({ route, navigation }) {
   const [loading, setLoading] = useState(true);
   const [selectedDate, setSelectedDate] = useState(() => new Date());
   const [showPicker, setShowPicker] = useState(false);
-  // Orders tab: only not-delivered orders (to deliver)
+  // Orders tab: not delivered OR delivered but payment not completed (so user can pay)
+  const hasPaymentCompleted = (o) =>
+    ['cash', 'cheque', 'credit'].includes((o.payment_type || '').toLowerCase());
   const filteredOrders = useMemo(
-    () => orders.filter((o) => !o.isDelivered),
+    () => orders.filter((o) => !o.isDelivered || !hasPaymentCompleted(o)),
     [orders]
   );
 
@@ -203,7 +205,15 @@ export default function SaleOrderListScreen({ route, navigation }) {
   };
 
   const onOrderPress = (order) => {
-    navigation.navigate('SaleOrderDetails', { saleOrderId: order.id });
+    if (order.isDelivered) {
+      navigation.navigate('ProceedPayment', {
+        saleOrderId: order.id,
+        total: order.amount_total,
+        deliveryDone: true,
+      });
+    } else {
+      navigation.navigate('SaleOrderDetails', { saleOrderId: order.id });
+    }
   };
 
   if (loading) {
@@ -283,12 +293,12 @@ export default function SaleOrderListScreen({ route, navigation }) {
         ListEmptyComponent={
           <View style={styles.empty}>
             <Ionicons name="cube-outline" size={48} color={colors.textSecondary} />
-            <Text style={styles.emptyText}>No orders to deliver</Text>
-            <Text style={styles.emptyHint}>Orders for this date will appear here after sync</Text>
+            <Text style={styles.emptyText}>No orders</Text>
+            <Text style={styles.emptyHint}>To-deliver and delivered-but-unpaid orders appear here</Text>
           </View>
         }
         renderItem={({ item }) => (
-          <OrderCard order={item} onPress={onOrderPress} isDelivered={false} />
+          <OrderCard order={item} onPress={onOrderPress} isDelivered={item.isDelivered} />
         )}
       />
     </View>

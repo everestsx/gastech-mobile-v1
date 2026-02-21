@@ -46,8 +46,11 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
   const [showPicker, setShowPicker] = useState(false);
   const [activeTab, setActiveTab] = useState(TAB_CASH);
 
+  // Delivered tab: only delivered AND payment completed (cash/cheque/credit)
+  const hasPaymentCompleted = (o) =>
+    ['cash', 'cheque', 'credit'].includes((o.payment_type || '').toLowerCase());
   const deliveredOrders = useMemo(
-    () => orders.filter((o) => o.isDelivered),
+    () => orders.filter((o) => o.isDelivered && hasPaymentCompleted(o)),
     [orders]
   );
 
