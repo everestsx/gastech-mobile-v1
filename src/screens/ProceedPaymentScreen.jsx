@@ -61,7 +61,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
     () => (journals || []).filter((j) => j.type === 'bank'),
     [journals]
   );
-  const journalsForType = selectedPaymentMethods.includes(PAYMENT_CHECK) ? chequeJournals : [];
+  const journalsForType = paymentType === PAYMENT_CHECK ? chequeJournals : [];
   const filteredJournals = useMemo(() => {
     const q = (journalSearch || '').trim().toLowerCase();
     if (!q) return journalsForType;
@@ -107,7 +107,6 @@ export default function ProceedPaymentScreen({ route, navigation }) {
     loadJournals();
   }, [loadJournals]);
 
-  // Initial auto-fill cash only once on mount when Cash is selected (do not re-fill when user clears)
   useEffect(() => {
     if (paymentType === PAYMENT_CHECK) {
       if (!isSelectedJournalValid && selectedJournalId != null) {
@@ -118,41 +117,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         setSelectedJournalId(chequeJournals[0].id);
       }
     }
-  }, [selectedPaymentMethods, isSelectedJournalValid, selectedJournalId, chequeJournals]);
-
-  // Auto-select Credit when cash + check is less than total (remaining goes to credit)
-  useEffect(() => {
-    const cashPlusCheck = cashAmountNum + checkAmountNum;
-    if (cashPlusCheck < orderTotal && creditAmountNum > 0 && !selectedPaymentMethods.includes(PAYMENT_CREDIT)) {
-      setSelectedPaymentMethods((prev) => [...prev, PAYMENT_CREDIT]);
-    }
-  }, [cashAmountNum, checkAmountNum, orderTotal, creditAmountNum, selectedPaymentMethods]);
-
-  // Auto-deselect Credit when cash + check covers full total (credit amount becomes 0)
-  useEffect(() => {
-    if (creditAmountNum === 0 && selectedPaymentMethods.includes(PAYMENT_CREDIT)) {
-      setSelectedPaymentMethods((prev) => prev.filter((m) => m !== PAYMENT_CREDIT));
-    }
-  }, [creditAmountNum, selectedPaymentMethods]);
-
-  const togglePaymentMethod = useCallback((method) => {
-    setSelectedPaymentMethods((prev) => {
-      const has = prev.includes(method);
-      if (has) {
-        const next = prev.filter((m) => m !== method);
-        if (next.length === 0) return prev;
-        if (method === PAYMENT_CASH) setCashAmount('0');
-        if (method === PAYMENT_CHECK) setCheckAmount('0');
-        return next;
-      }
-      if (method === PAYMENT_CASH) setCashAmount(orderTotal > 0 ? orderTotal.toFixed(2) : '');
-      if (method === PAYMENT_CHECK) {
-        const remaining = Math.max(0, orderTotal - (parseFloat(String(cashAmount).replace(/,/g, '')) || 0));
-        setCheckAmount(remaining > 0 ? remaining.toFixed(2) : '0');
-      }
-      return [...prev, method];
-    });
-  }, [orderTotal, cashAmount]);
+  }, [paymentType, isSelectedJournalValid, selectedJournalId, chequeJournals]);
 
   const handleProceed = async () => {
     if (!canProceed) return;
@@ -506,11 +471,11 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           onPress={() => setPaymentType(PAYMENT_CASH)}
           activeOpacity={0.8}
         >
-          <View style={[styles.checkboxBox, selectedPaymentMethods.includes(PAYMENT_CASH) && styles.checkboxBoxSelected]}>
-            {selectedPaymentMethods.includes(PAYMENT_CASH) && <Ionicons name="checkmark" size={14} color="#fff" />}
+          <View style={[styles.checkboxBox, paymentType === PAYMENT_CASH && styles.checkboxBoxSelected]}>
+            {paymentType === PAYMENT_CASH && <Ionicons name="checkmark" size={14} color="#fff" />}
           </View>
-          <Ionicons name="cash-outline" size={22} color={selectedPaymentMethods.includes(PAYMENT_CASH) ? '#fff' : colors.text} />
-          <Text style={[styles.radioLabel, selectedPaymentMethods.includes(PAYMENT_CASH) && styles.radioLabelSelected]}>Cash</Text>
+          <Ionicons name="cash-outline" size={22} color={paymentType === PAYMENT_CASH ? '#fff' : colors.text} />
+          <Text style={[styles.radioLabel, paymentType === PAYMENT_CASH && styles.radioLabelSelected]}>Cash</Text>
         </TouchableOpacity>
 
         <TouchableOpacity
@@ -518,11 +483,11 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           onPress={() => setPaymentType(PAYMENT_CHECK)}
           activeOpacity={0.8}
         >
-          <View style={[styles.checkboxBox, selectedPaymentMethods.includes(PAYMENT_CHECK) && styles.checkboxBoxSelected]}>
-            {selectedPaymentMethods.includes(PAYMENT_CHECK) && <Ionicons name="checkmark" size={14} color="#fff" />}
+          <View style={[styles.checkboxBox, paymentType === PAYMENT_CHECK && styles.checkboxBoxSelected]}>
+            {paymentType === PAYMENT_CHECK && <Ionicons name="checkmark" size={14} color="#fff" />}
           </View>
-          <Ionicons name="card-outline" size={22} color={selectedPaymentMethods.includes(PAYMENT_CHECK) ? '#fff' : colors.text} />
-          <Text style={[styles.radioLabel, selectedPaymentMethods.includes(PAYMENT_CHECK) && styles.radioLabelSelected]}>Check</Text>
+          <Ionicons name="card-outline" size={22} color={paymentType === PAYMENT_CHECK ? '#fff' : colors.text} />
+          <Text style={[styles.radioLabel, paymentType === PAYMENT_CHECK && styles.radioLabelSelected]}>Check</Text>
         </TouchableOpacity>
 
         <TouchableOpacity
@@ -530,11 +495,11 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           onPress={() => setPaymentType(PAYMENT_CREDIT)}
           activeOpacity={0.8}
         >
-          <View style={[styles.checkboxBox, selectedPaymentMethods.includes(PAYMENT_CREDIT) && styles.checkboxBoxSelected]}>
-            {selectedPaymentMethods.includes(PAYMENT_CREDIT) && <Ionicons name="checkmark" size={14} color="#fff" />}
+          <View style={[styles.checkboxBox, paymentType === PAYMENT_CREDIT && styles.checkboxBoxSelected]}>
+            {paymentType === PAYMENT_CREDIT && <Ionicons name="checkmark" size={14} color="#fff" />}
           </View>
-          <Ionicons name="wallet-outline" size={22} color={selectedPaymentMethods.includes(PAYMENT_CREDIT) ? '#fff' : colors.text} />
-          <Text style={[styles.radioLabel, selectedPaymentMethods.includes(PAYMENT_CREDIT) && styles.radioLabelSelected]}>Credit</Text>
+          <Ionicons name="wallet-outline" size={22} color={paymentType === PAYMENT_CREDIT ? '#fff' : colors.text} />
+          <Text style={[styles.radioLabel, paymentType === PAYMENT_CREDIT && styles.radioLabelSelected]}>Credit</Text>
         </TouchableOpacity>
       </View>
 
@@ -547,7 +512,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         </View>
       )}
 
-      {selectedPaymentMethods.includes(PAYMENT_CHECK) && (
+      {paymentType === PAYMENT_CHECK && (
         <>
           <Text style={styles.sectionLabel}>Select Bank <Text style={styles.requiredStar}>*</Text></Text>
           {journalsLoading ? (

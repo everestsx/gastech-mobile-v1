@@ -44,6 +44,9 @@ export default function SaleOrderListScreen({ route, navigation }) {
   const [loading, setLoading] = useState(true);
   const [selectedDate, setSelectedDate] = useState(() => new Date());
   const [showPicker, setShowPicker] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchField, setSearchField] = useState('customer');
+  const [showFieldDropdown, setShowFieldDropdown] = useState(false);
   // Orders tab: not delivered OR delivered but payment not completed (so user can pay)
   const hasPaymentCompleted = (o) =>
     ['cash', 'cheque', 'credit'].includes((o.payment_type || '').toLowerCase());
