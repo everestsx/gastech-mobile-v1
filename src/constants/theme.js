@@ -4,9 +4,9 @@
  */
 
 export const lightColors = {
-  primary: '#ED5D1A',
-  primaryDark: '#4f46e5',
-  primaryLight: '#818cf8',
+  primary: '#6366f1',
+  primaryDark: '#312e81',
+  primaryLight: '#a5b4fc',
   primarySurface: '#e0e7ff',
   secondary: '#4338ca',
   background: '#f4f6f9',
@@ -25,9 +25,9 @@ export const lightColors = {
 };
 
 export const darkColors = {
-  primary: '#818cf8',
+  primary: '#6366f1',
   primaryDark: '#6366f1',
-  primaryLight: '#a5b4fc',
+  primaryLight: '#312e81',
   primarySurface: '#312e81',
   secondary: '#4338ca',
   background: '#111827',
