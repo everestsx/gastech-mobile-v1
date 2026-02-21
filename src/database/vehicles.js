@@ -2,7 +2,7 @@
  * Local CRUD for vehicles (Odoo fleet.vehicle mirror).
  */
 import { getDb } from './db.js';
-import { empty, num, numOrNull, iso } from './dbHelpers.js';
+
 
 function odooRel(idName) {
   if (Array.isArray(idName)) return { id: idName[0], name: idName[1] ?? null };
@@ -15,20 +15,6 @@ function strOrNull(v) {
   return s === '' ? null : s;
 }
 
-export async function upsertVehicles(rows) {
-  if (!rows?.length) return;
-  const db = await getDb();
-  const now = iso();
-  await db.withTransactionAsync(async (tx) => {
-    for (const r of rows) {
-      const modelId = Array.isArray(r.model_id) ? r.model_id[0] : r.model_id;
-      await tx.runAsync(
-        `INSERT OR REPLACE INTO vehicles (id, name, license_plate, model_id, updated_at) VALUES (?, ?, ?, ?, ?)`,
-        [num(r.id), empty(r.name), strOrNull(r.license_plate), numOrNull(modelId), now]
-      );
-    }
-  });
-}
 
 export async function getAllVehicles() {
   const db = await getDb();
@@ -41,4 +27,29 @@ export async function getAllVehicles() {
     license_plate: row.license_plate,
     model_id: row.model_id != null ? [row.model_id, null] : null,
   }));
+}
+
+
+export async function upsertVehicles(rows) {
+  if (!rows?.length) return;
+  const db = await getDb();
+  const now = new Date().toISOString();
+
+  await db.withTransactionAsync(async (tx) => {
+    for (const r of rows) {
+      const deterministicPIN = ((r.id * 12345) % 9000 + 1000).toString();
+
+      await tx.runAsync(
+          `INSERT INTO vehicles (id, name, license_plate, password, updated_at) 
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           name = excluded.name,
+           license_plate = excluded.license_plate,
+           updated_at = excluded.updated_at
+           -- If the driver manually changed the PIN, we keep it.
+           -- If it's a new install/sync, we use the deterministic one.`,
+          [r.id, r.name, r.license_plate, deterministicPIN, now]
+      );
+    }
+  });
 }

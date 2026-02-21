@@ -178,30 +178,9 @@ export default function DashboardScreen({ navigation }) {
   const chequePct = collectionTotal > 0 ? Math.round((chequeTotal / collectionTotal) * 100) : 0;
   const creditPct = collectionTotal > 0 ? Math.round((creditTotal / collectionTotal) * 100) : 0;
 
-  // Show the route that appears most in today's orders (from backend, stored with each sale order on sync)
-  const routeName = useMemo(() => {
-    const today = new Date().toISOString().split('T')[0];
-    const todayOrdersForRoute = (orders || []).filter((o) => (o.date_order || '').startsWith(today));
-    if (!todayOrdersForRoute.length) return (routes || [])[0]?.name || '—';
-    const countByRoute = {};
-    todayOrdersForRoute.forEach((o) => {
-      const routeId = o.route_id?.[0] ?? o.route_id;
-      const name = o.route_id?.[1] ?? (routeId != null ? `Route ${routeId}` : null);
-      if (name != null && name !== '') {
-        const key = String(routeId ?? name);
-        countByRoute[key] = (countByRoute[key] || { name, count: 0 });
-        countByRoute[key].name = name;
-        countByRoute[key].count += 1;
-      }
-    });
-    const entries = Object.values(countByRoute);
-    if (entries.length === 0) return (routes || [])[0]?.name || '—';
-    const most = entries.reduce((a, b) => (a.count >= b.count ? a : b));
-    return most.name || '—';
-  }, [orders, routes]);
-  const vehicleName = user?.isAdmin === false
-    ? (user.licensePlate || user.vehicleName || 'Vehicle')
-    : 'Admin';
+  const routeFromOrder = todayOrders[0]?.route_id?.[1];
+  const routeName = routeFromOrder || (routes[0]?.name) || '—';
+  const vehicleName = user?.licensePlate || user?.vehicleName || 'Vehicle';
   const commissionEarned = Math.round(totalSales * 0.1) || 0;
   const commissionPct = Math.min(100, Math.round((commissionEarned / COMMISSION_TARGET) * 100));
 

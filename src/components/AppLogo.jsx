@@ -7,12 +7,12 @@ import { colors } from '../constants/theme';
  * To use your own logo: add your image to assets/logo.png and uncomment
  * the Image block below (and remove the placeholder View).
  */
-// const LOGO_SOURCE = require('../../assets/logo.png');
+const LOGO_SOURCE = require('../../assets/images/AppLogo.png');
 
-export default function AppLogo({ size = 120, showLabel = true, useImage = false }) {
+export default function AppLogo({ size = 120,useImage = false }) {
   if (useImage) {
     try {
-      const logo = require('../../assets/logo.png');
+      const logo = require('../../assets/images/AppLogo.png');
       return (
         <View style={styles.wrapper}>
           <Image
@@ -20,9 +20,6 @@ export default function AppLogo({ size = 120, showLabel = true, useImage = false
             style={[styles.image, { width: size, height: size * 0.5 }]}
             resizeMode="contain"
           />
-          {showLabel && (
-            <Text style={styles.label}>Gas Cylinder Delivery</Text>
-          )}
         </View>
       );
     } catch (_) {}
@@ -30,9 +27,6 @@ export default function AppLogo({ size = 120, showLabel = true, useImage = false
   return (
     <View style={[styles.placeholder, { width: size, height: size * 0.5 }]}>
       <Text style={styles.placeholderText}>GasTech</Text>
-      {showLabel && (
-        <Text style={styles.label}>Gas Cylinder Delivery</Text>
-      )}
     </View>
   );
 }

@@ -222,6 +222,21 @@ async function runMigrations(db) {
     }
     await db.runAsync('PRAGMA user_version = 5');
   }
+
+
+  if (current < 6) {
+    try {
+      const info = await db.getAllAsync('PRAGMA table_info(vehicles)');
+      const hasPassword = (info || []).some((c) => c.name === 'password');
+      if (!hasPassword) {
+        await db.runAsync('ALTER TABLE vehicles ADD COLUMN password TEXT');
+      }
+    } catch (e) {
+      console.warn('[Migration] Error adding password to vehicles:', e);
+    }
+    await db.runAsync('PRAGMA user_version = 6');
+  }
+
 }
 
 /**

@@ -619,3 +619,19 @@ export async function runSync() {
     return result;
   }
 }
+
+export async function syncVehiclesOnly() {
+  try {
+    const { getVehicles } = await import('./vehicle.service');
+    const vehicles = await getVehicles();
+
+    if (vehicles && vehicles.length > 0) {
+
+      await vehiclesDb.upsertVehicles(vehicles);
+      return true;
+    }
+  } catch (e) {
+    console.error("Vehicle sync failed", e);
+  }
+  return false;
+}

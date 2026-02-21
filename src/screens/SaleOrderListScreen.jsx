@@ -7,6 +7,9 @@ import {
   StyleSheet,
   ActivityIndicator,
   Platform,
+  TextInput,
+  Modal,
+  Pressable,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -48,6 +51,22 @@ export default function SaleOrderListScreen({ route, navigation }) {
     () => orders.filter((o) => !o.isDelivered || !hasPaymentCompleted(o)),
     [orders]
   );
+  const searchFieldLabels = { customer: 'Customer', orderId: 'Order ID' };
+  const ordersFilteredBySearch = useMemo(() => {
+    const q = (searchQuery || '').trim().toLowerCase();
+    if (!q) return filteredOrders;
+    return filteredOrders.filter((o) => {
+      if (searchField === 'customer') {
+        const name = (o.partner_id && o.partner_id[1]) ? String(o.partner_id[1]) : '';
+        return name.toLowerCase().includes(q);
+      }
+      if (searchField === 'orderId') {
+        const name = o.name ? String(o.name) : '';
+        return name.toLowerCase().includes(q);
+      }
+      return true;
+    });
+  }, [filteredOrders, searchQuery, searchField]);
 
   const styles = useMemo(
     () =>
@@ -113,6 +132,67 @@ export default function SaleOrderListScreen({ route, navigation }) {
         empty: { alignItems: 'center', justifyContent: 'center', paddingVertical: 48 },
         emptyText: { fontSize: 16, color: colors.textSecondary, marginTop: 12 },
         emptyHint: { fontSize: 13, color: colors.textSecondary, marginTop: 6 },
+        searchRow: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          paddingHorizontal: spacing.md,
+          paddingVertical: spacing.sm,
+          backgroundColor: colors.surface,
+          borderBottomWidth: 1,
+          borderBottomColor: colors.border,
+          gap: spacing.sm,
+        },
+        searchInput: {
+          flex: 1,
+          height: 40,
+          backgroundColor: colors.background,
+          borderRadius: borderRadius.md,
+          paddingHorizontal: spacing.md,
+          fontSize: 15,
+          color: colors.text,
+          borderWidth: 1,
+          borderColor: colors.border,
+        },
+        searchFieldBtn: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          height: 40,
+          paddingHorizontal: spacing.sm,
+          backgroundColor: colors.background,
+          borderRadius: borderRadius.md,
+          borderWidth: 1,
+          borderColor: colors.border,
+          gap: 4,
+        },
+        searchFieldBtnText: { fontSize: 13, fontWeight: '600', color: colors.text },
+        dropdownModal: {
+          flex: 1,
+          justifyContent: 'flex-start',
+          alignItems: 'flex-end',
+          paddingTop: 100,
+          paddingRight: spacing.md,
+        },
+        dropdownBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'transparent' },
+        dropdownMenu: {
+          backgroundColor: colors.surface,
+          borderRadius: borderRadius.md,
+          borderWidth: 1,
+          borderColor: colors.border,
+          elevation: 4,
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: 2 },
+          shadowOpacity: 0.15,
+          shadowRadius: 4,
+          minWidth: 140,
+        },
+        dropdownItem: {
+          paddingVertical: 12,
+          paddingHorizontal: spacing.md,
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 8,
+        },
+        dropdownItemText: { fontSize: 15, fontWeight: '500', color: colors.text },
       }),
     [colors]
   );
@@ -286,8 +366,60 @@ export default function SaleOrderListScreen({ route, navigation }) {
         </TouchableOpacity>
       )}
 
+      {/* Search: input (left) + field selector dropdown (right) */}
+      <View style={styles.searchRow}>
+        <TextInput
+          style={styles.searchInput}
+          value={searchQuery}
+          onChangeText={setSearchQuery}
+          placeholder={`Search by ${searchFieldLabels[searchField]?.toLowerCase() || 'customer'}…`}
+          placeholderTextColor={colors.textSecondary}
+          returnKeyType="search"
+        />
+        <TouchableOpacity
+          style={styles.searchFieldBtn}
+          onPress={() => setShowFieldDropdown(true)}
+          activeOpacity={0.8}
+        >
+          <Text style={styles.searchFieldBtnText} numberOfLines={1}>
+            {searchFieldLabels[searchField] || 'Field'}
+          </Text>
+          <Ionicons name="chevron-down" size={18} color={colors.textSecondary} />
+        </TouchableOpacity>
+      </View>
+
+      <Modal
+        visible={showFieldDropdown}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowFieldDropdown(false)}
+      >
+        <Pressable style={styles.dropdownBackdrop} onPress={() => setShowFieldDropdown(false)}>
+          <View style={styles.dropdownModal}>
+            <View style={styles.dropdownMenu}>
+              <TouchableOpacity
+                style={styles.dropdownItem}
+                onPress={() => { setSearchField('customer'); setShowFieldDropdown(false); }}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="person-outline" size={20} color={colors.primary} />
+                <Text style={styles.dropdownItemText}>Customer name</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.dropdownItem}
+                onPress={() => { setSearchField('orderId'); setShowFieldDropdown(false); }}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="document-text-outline" size={20} color={colors.primary} />
+                <Text style={styles.dropdownItemText}>Order ID</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Pressable>
+      </Modal>
+
       <FlatList
-        data={filteredOrders}
+        data={ordersFilteredBySearch}
         keyExtractor={(item) => String(item.id)}
         contentContainerStyle={styles.list}
         ListEmptyComponent={
