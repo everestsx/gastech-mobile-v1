@@ -35,15 +35,8 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   const [paymentType, setPaymentType] = useState(PAYMENT_CASH);
   const [selectedJournalId, setSelectedJournalId] = useState(null);
   const [journalSearch, setJournalSearch] = useState('');
-  const [cashAmount, setCashAmount] = useState('');
-  const [checkAmount, setCheckAmount] = useState('');
   const [checkNumber, setCheckNumber] = useState('');
   const [deliveryPhotos, setDeliveryPhotos] = useState([]);
-  const [cashEditMode, setCashEditMode] = useState(false);
-  const [cashAmountDraft, setCashAmountDraft] = useState('');
-  const [checkAmountEditMode, setCheckAmountEditMode] = useState(false);
-  const [checkNumberEditMode, setCheckNumberEditMode] = useState(false);
-  const cashInputRef = useRef(null);
 
   const MAX_PHOTOS = 3;
 
@@ -86,35 +79,18 @@ export default function ProceedPaymentScreen({ route, navigation }) {
     selectedJournal &&
     (paymentType === PAYMENT_CHECK && (selectedJournal.code?.toUpperCase() === JOURNAL_CODE_CHEQUE || (selectedJournal.name || '').toLowerCase().includes('cheque')));
 
-  const cashAmountNum = useMemo(() => {
-    const n = parseFloat(String(cashAmount).replace(/,/g, ''));
-    return Number.isFinite(n) && n >= 0 ? n : 0;
-  }, [cashAmount]);
-
-  const checkAmountNum = useMemo(() => {
-    const n = parseFloat(String(checkAmount).replace(/,/g, ''));
-    return Number.isFinite(n) && n >= 0 ? n : 0;
-  }, [checkAmount]);
-
-  const remainingAfterCash = orderTotal - cashAmountNum;
-  const creditAmountNum = useMemo(() => Math.max(0, orderTotal - cashAmountNum - checkAmountNum), [orderTotal, cashAmountNum, checkAmountNum]);
-  const totalEntered = cashAmountNum + checkAmountNum + creditAmountNum;
-  const hasAnyPayment = cashAmountNum > 0 || checkAmountNum > 0 || creditAmountNum > 0;
-
   const checkNumberTrimmed = useMemo(() => (checkNumber != null ? String(checkNumber).trim() : ''), [checkNumber]);
-  const paymentComplete =
-    hasAnyPayment &&
-    totalEntered >= orderTotal &&
-    (cashAmountNum <= 0 || (cashJournalPreferred != null)) &&
-    (checkAmountNum <= 0 || (!!isSelectedJournalValid && (selectedJournalId != null) && checkNumberTrimmed !== '')) &&
-    (creditAmountNum <= 0 || true);
 
-  const evidenceRequired = checkAmountNum > 0 || creditAmountNum > 0;
-  const hasUnconfirmedEdits = cashEditMode || checkAmountEditMode || checkNumberEditMode;
-  const canProceed =
-    paymentComplete &&
-    (evidenceRequired ? deliveryPhotos.length >= 1 : true) &&
-    !hasUnconfirmedEdits;
+  // One payment method only: full order total. No partial/split.
+  const paymentComplete = useMemo(() => {
+    if (paymentType === PAYMENT_CASH) return cashJournalPreferred != null;
+    if (paymentType === PAYMENT_CHECK) return !!isSelectedJournalValid && selectedJournalId != null && checkNumberTrimmed !== '';
+    if (paymentType === PAYMENT_CREDIT) return true;
+    return false;
+  }, [paymentType, cashJournalPreferred, isSelectedJournalValid, selectedJournalId, checkNumberTrimmed]);
+
+  const evidenceRequired = paymentType === PAYMENT_CHECK || paymentType === PAYMENT_CREDIT;
+  const canProceed = paymentComplete && (evidenceRequired ? deliveryPhotos.length >= 1 : true);
 
   const loadJournals = useCallback(async () => {
     setJournalsLoading(true);
@@ -131,47 +107,6 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   useEffect(() => {
     loadJournals();
   }, [loadJournals]);
-
-  useEffect(() => {
-    if (paymentType === PAYMENT_CASH && cashAmount === '' && orderTotal > 0) {
-      setCashAmount(orderTotal.toFixed(2));
-    }
-  }, [paymentType]);
-
-  // When leaving Cash tab without confirming, discard draft and exit edit mode
-  useEffect(() => {
-    if (paymentType !== PAYMENT_CASH) {
-      setCashEditMode(false);
-      setCashAmountDraft(cashAmount);
-    }
-  }, [paymentType, cashAmount]);
-
-  // Auto-fill Check amount only when user opens Check tab and has not yet entered check number (persist once they have)
-  useEffect(() => {
-    if (paymentType === PAYMENT_CHECK) {
-      if (checkNumberTrimmed === '') {
-        const remaining = Math.max(0, orderTotal - cashAmountNum);
-        setCheckAmount(remaining > 0 ? remaining.toFixed(2) : '0');
-        setCheckAmountEditMode(true);
-        setCheckNumberEditMode(true);
-      }
-    }
-  }, [paymentType, orderTotal, cashAmountNum, checkNumberTrimmed]);
-
-  // When user leaves Check without amount or check number, zero check amount so balance goes to Credit
-  useEffect(() => {
-    if (paymentType !== PAYMENT_CHECK && (checkNumber == null || String(checkNumber).trim() === '')) {
-      setCheckAmount('0');
-    }
-  }, [paymentType, checkNumber]);
-
-  // Reset check edit modes when leaving Check tab
-  useEffect(() => {
-    if (paymentType !== PAYMENT_CHECK) {
-      setCheckAmountEditMode(false);
-      setCheckNumberEditMode(false);
-    }
-  }, [paymentType]);
 
   useEffect(() => {
     if (paymentType === PAYMENT_CHECK) {

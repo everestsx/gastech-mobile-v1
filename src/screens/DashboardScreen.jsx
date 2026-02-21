@@ -7,7 +7,6 @@ import {
   ScrollView,
   RefreshControl,
   ActivityIndicator,
-  Image,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -43,9 +42,13 @@ const SAMPLE_DELIVERY_BY_SHOP = [
 function formatCurrency(amount) {
   return `Rs. ${Number(amount).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
 }
+/** Show actual amount: e.g. 6800 → "Rs. 6.8K", 7000 → "Rs. 7K" */
 function formatShort(amount) {
   const n = Number(amount) || 0;
-  if (n >= 1000) return `Rs. ${(n / 1000).toFixed(0)}K`;
+  if (n >= 1000) {
+    const k = n / 1000;
+    return `Rs. ${k % 1 === 0 ? k.toFixed(0) : k.toFixed(1)}K`;
+  }
   return `Rs. ${n}`;
 }
 
@@ -160,13 +163,20 @@ export default function DashboardScreen({ navigation }) {
   const today = new Date().toISOString().split('T')[0];
   const todayOrders = orders.filter((o) => (o.date_order || '').startsWith(today));
   const totalSales = todayOrders.reduce((s, o) => s + (Number(o.amount_total) || 0), 0);
-  const cashTotal = todayOrders.reduce((s, o) => s + (Number(o.amount_total) || 0) * 0.5, 0);
-  const chequeTotal = todayOrders.reduce((s, o) => s + (Number(o.amount_total) || 0) * 0.25, 0);
-  const creditTotal = todayOrders.reduce((s, o) => s + (Number(o.amount_total) || 0) * 0.25, 0);
+  // Today's collection by actual payment type: sum amount_total only for orders paid with that method
+  const cashTotal = todayOrders
+    .filter((o) => (o.payment_type || '').toLowerCase() === 'cash')
+    .reduce((s, o) => s + (Number(o.amount_total) || 0), 0);
+  const chequeTotal = todayOrders
+    .filter((o) => (o.payment_type || '').toLowerCase() === 'cheque')
+    .reduce((s, o) => s + (Number(o.amount_total) || 0), 0);
+  const creditTotal = todayOrders
+    .filter((o) => (o.payment_type || '').toLowerCase() === 'credit')
+    .reduce((s, o) => s + (Number(o.amount_total) || 0), 0);
   const collectionTotal = cashTotal + chequeTotal + creditTotal || 1;
-  const cashPct = Math.round((cashTotal / collectionTotal) * 100);
-  const chequePct = Math.round((chequeTotal / collectionTotal) * 100);
-  const creditPct = Math.round((creditTotal / collectionTotal) * 100);
+  const cashPct = collectionTotal > 0 ? Math.round((cashTotal / collectionTotal) * 100) : 0;
+  const chequePct = collectionTotal > 0 ? Math.round((chequeTotal / collectionTotal) * 100) : 0;
+  const creditPct = collectionTotal > 0 ? Math.round((creditTotal / collectionTotal) * 100) : 0;
 
   const routeFromOrder = todayOrders[0]?.route_id?.[1];
   const routeName = routeFromOrder || (routes[0]?.name) || '—';
@@ -176,10 +186,24 @@ export default function DashboardScreen({ navigation }) {
   const commissionEarned = Math.round(totalSales * 0.1) || 0;
   const commissionPct = Math.min(100, Math.round((commissionEarned / COMMISSION_TARGET) * 100));
 
-  const shopsCompleted = todayOrders.length;
+  // Shops completed = today's orders that have payment completed (cash/cheque/credit)
+  const todayOrdersPaid = todayOrders.filter(
+    (o) => ['cash', 'cheque', 'credit'].includes((o.payment_type || '').toLowerCase())
+  );
+  const shopsCompleted = todayOrdersPaid.length;
+  const shopsTotalToday = todayOrders.length;
   const shopsPct = Math.min(100, Math.round((shopsCompleted / SHOPS_TARGET) * 100));
-  const totalGasDelivered = Object.values(lineTotalsByOrder).reduce((s, q) => s + (Number(q) || 0), 0);
-  const gasPct = Math.min(100, Math.round((totalGasDelivered / GAS_TARGET) * 100));
+
+  // Gas: delivered = sum of gas from paid orders only; total = sum from all today's orders
+  const gasDeliveredToday = todayOrdersPaid.reduce(
+    (s, o) => s + (Number(lineTotalsByOrder[o.id]) || 0),
+    0
+  );
+  const gasTotalToday = todayOrders.reduce(
+    (s, o) => s + (Number(lineTotalsByOrder[o.id]) || 0),
+    0
+  );
+  const gasPct = Math.min(100, Math.round((gasDeliveredToday / GAS_TARGET) * 100));
 
   const pickingStateBySaleId = useMemo(() => {
     const map = {};
@@ -203,7 +227,15 @@ export default function DashboardScreen({ navigation }) {
       else byPartner[key].pending += qty;
     });
     const real = Object.values(byPartner).filter((r) => r.delivered > 0 || r.pending > 0);
-    return real.length > 0 ? real : SAMPLE_DELIVERY_BY_SHOP;
+    const list = real.length > 0 ? real : SAMPLE_DELIVERY_BY_SHOP;
+    // To-deliver (pending) shops first, delivered shops last
+    return [...list].sort((a, b) => {
+      const aPending = Number(a.pending) || 0;
+      const bPending = Number(b.pending) || 0;
+      if (aPending > 0 && bPending === 0) return -1;
+      if (aPending === 0 && bPending > 0) return 1;
+      return 0;
+    });
   }, [todayOrders, lineTotalsByOrder, pickingStateBySaleId]);
 
   const styles = useMemo(
@@ -318,8 +350,9 @@ export default function DashboardScreen({ navigation }) {
           borderWidth: 2,
           alignItems: 'center',
         },
+        collectionIconWrap: { marginBottom: 4 },
         collectionIcon: { width: 28, height: 28 },
-        collectionAmount: { fontSize: 18, fontWeight: '800', marginTop: 4 },
+        collectionAmount: { fontSize: 10, fontWeight: '800', marginTop: 4 },
         collectionLabel: { fontSize: 12, fontWeight: '700', color: colors.text, marginTop: 4 },
         collectionPct: { fontSize: 12, fontWeight: '600', marginTop: 2 },
         shopsGasRow: {
@@ -542,25 +575,31 @@ export default function DashboardScreen({ navigation }) {
         <Text style={styles.commissionPct}>{commissionPct}% of target achieved</Text>
       </View>
 
-      {/* 3. Collection today - three cards: Cash, Cheque, Credit (real image icons) */}
+      {/* 3. Today's sales by payment type: actual amounts (Cash, Cheque, Credit) with icons */}
       <View style={styles.collectionRow}>
         <View style={[styles.collectionCard, { borderColor: colors.cash ?? '#059669' }]}>
-          <Image source={require('../../assets/images/cash.png')} style={styles.collectionIcon} resizeMode="contain" />
+          <View style={styles.collectionIconWrap}>
+            <Ionicons name="cash-outline" size={28} color={colors.cash ?? '#059669'} />
+          </View>
           <Text style={[styles.collectionAmount, { color: colors.cash ?? '#059669' }]}>{formatShort(cashTotal)}</Text>
           <Text style={styles.collectionLabel}>CASH</Text>
-          <Text style={[styles.collectionPct, { color: colors.cash ?? '#059669' }]}>{cashPct}%</Text>
+          <Text style={[styles.collectionPct, { color: colors.cash ?? '#059669' }]}>{collectionTotal > 0 ? `${cashPct}%` : '—'}</Text>
         </View>
         <View style={[styles.collectionCard, { borderColor: colors.cheque ?? '#d97706' }]}>
-          <Image source={require('../../assets/images/cheque.png')} style={styles.collectionIcon} resizeMode="contain" />
+          <View style={styles.collectionIconWrap}>
+            <Ionicons name="card-outline" size={28} color={colors.cheque ?? '#d97706'} />
+          </View>
           <Text style={[styles.collectionAmount, { color: colors.cheque ?? '#d97706' }]}>{formatShort(chequeTotal)}</Text>
           <Text style={styles.collectionLabel}>CHEQUE</Text>
-          <Text style={[styles.collectionPct, { color: colors.cheque ?? '#d97706' }]}>{chequePct}%</Text>
+          <Text style={[styles.collectionPct, { color: colors.cheque ?? '#d97706' }]}>{collectionTotal > 0 ? `${chequePct}%` : '—'}</Text>
         </View>
         <View style={[styles.collectionCard, { borderColor: colors.credit ?? '#6366f1' }]}>
-          <Image source={require('../../assets/images/credit.png')} style={styles.collectionIcon} resizeMode="contain" />
+          <View style={styles.collectionIconWrap}>
+            <Ionicons name="wallet-outline" size={28} color={colors.credit ?? '#6366f1'} />
+          </View>
           <Text style={[styles.collectionAmount, { color: colors.credit ?? '#6366f1' }]}>{formatShort(creditTotal)}</Text>
           <Text style={styles.collectionLabel}>CREDIT</Text>
-          <Text style={[styles.collectionPct, { color: colors.credit ?? '#6366f1' }]}>{creditPct}%</Text>
+          <Text style={[styles.collectionPct, { color: colors.credit ?? '#6366f1' }]}>{collectionTotal > 0 ? `${creditPct}%` : '—'}</Text>
         </View>
       </View>
 
@@ -569,20 +608,20 @@ export default function DashboardScreen({ navigation }) {
         <View style={styles.shopsGasCard}>
           <View style={{ flexDirection: 'row', alignItems: 'baseline' }}>
             <Text style={[styles.shopsGasValue, { color: colors.primary }]}>{shopsCompleted}</Text>
-            <Text style={[styles.shopsGasTarget, { color: colors.textSecondary }]}>/{SHOPS_TARGET}</Text>
+            <Text style={[styles.shopsGasTarget, { color: colors.textSecondary }]}>/{shopsTotalToday}</Text>
           </View>
-          <Text style={styles.shopsGasLabel}>SHOPS COMPLETED</Text>
-          <Text style={styles.shopsGasPct}>{shopsPct}% Complete</Text>
+          <Text style={styles.shopsGasLabel}>SHOPS COMPLETED (today)</Text>
+          <Text style={styles.shopsGasPct}>{shopsCompleted} paid of {shopsTotalToday} • {shopsPct}% of target</Text>
         </View>
         <View style={styles.shopsGasCard}>
           <View style={{ flexDirection: 'row', alignItems: 'baseline' }}>
             <Text style={[styles.shopsGasValue, { color: colors.warning ?? '#d97706' }]}>
-              {totalGasDelivered.toLocaleString('en-IN')}
+              {Math.round(gasDeliveredToday).toLocaleString('en-IN')}
             </Text>
-            <Text style={[styles.shopsGasTarget, { color: colors.textSecondary }]}>/{GAS_TARGET.toLocaleString('en-IN')}</Text>
+            <Text style={[styles.shopsGasTarget, { color: colors.textSecondary }]}>/{Math.round(gasTotalToday).toLocaleString('en-IN')}</Text>
           </View>
-          <Text style={styles.shopsGasLabel}>TOTAL GAS DELIVERED</Text>
-          <Text style={styles.shopsGasPct}>{gasPct}% Complete</Text>
+          <Text style={styles.shopsGasLabel}>TOTAL GAS DELIVERED (today)</Text>
+          <Text style={styles.shopsGasPct}>{Math.round(gasDeliveredToday)} delivered / {Math.round(gasTotalToday)} total • {gasPct}% of target</Text>
         </View>
       </View>
 
