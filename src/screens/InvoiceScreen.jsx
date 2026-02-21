@@ -9,6 +9,7 @@ import {
   Alert,
   Platform,
   Animated,
+  Image,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Print from 'expo-print';
@@ -20,7 +21,23 @@ function formatCurrency(amount) {
   return `LKR ${Number(amount).toFixed(2)}`;
 }
 
-function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSplit) {
+/** Simple amount in words for LKR (whole part only). */
+function amountInWords(num) {
+  const n = Math.floor(Number(num));
+  if (n === 0) return 'Zero';
+  const ones = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine'];
+  const tens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+  const teens = ['Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
+  if (n < 10) return ones[n];
+  if (n < 20) return teens[n - 10];
+  if (n < 100) return (tens[Math.floor(n / 10)] + ' ' + ones[n % 10]).trim();
+  if (n < 1000) return (ones[Math.floor(n / 100)] + ' Hundred ' + amountInWords(n % 100)).trim();
+  if (n < 100000) return (amountInWords(Math.floor(n / 1000)) + ' Thousand ' + amountInWords(n % 1000)).trim();
+  if (n < 10000000) return (amountInWords(Math.floor(n / 100000)) + ' Lakh ' + amountInWords(n % 100000)).trim();
+  return (amountInWords(Math.floor(n / 10000000)) + ' Crore ' + amountInWords(n % 10000000)).trim();
+}
+
+function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSplit, logoUri) {
   const date = order?.date_order
     ? new Date(order.date_order).toLocaleDateString('en-LK', {
         year: 'numeric',
@@ -28,7 +45,7 @@ function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSp
         day: 'numeric',
       })
     : new Date().toLocaleDateString('en-LK');
-  const customerName = order?.partner_id?.[1] ?? '—';
+  const customerName = (order?.partner_id?.[1] ?? '—').replace(/</g, '&lt;');
   const orderNo = order?.name ?? '—';
   const paymentLabel =
     paymentType === 'split' && paymentSplit
@@ -46,64 +63,105 @@ function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSp
   const rows =
     (lines || [])
       .map(
-        (l) =>
+        (l, i) =>
           `<tr>
-            <td style="padding:6px 8px;border-bottom:1px solid #eee">${(l.product_id?.[1] ?? '—').replace(/</g, '&lt;')}</td>
-            <td style="padding:6px 8px;border-bottom:1px solid #eee;text-align:center">${Number(l.product_uom_qty ?? 0)}</td>
-            <td style="padding:6px 8px;border-bottom:1px solid #eee;text-align:right">${formatCurrency(l.price_unit ?? 0)}</td>
-            <td style="padding:6px 8px;border-bottom:1px solid #eee;text-align:right">${formatCurrency(l.price_total ?? 0)}</td>
+            <td style="padding:2px 4px;border-bottom:1px solid #eee;font-size:9px">${i + 1}</td>
+            <td style="padding:2px 4px;border-bottom:1px solid #eee;font-size:9px">${(l.product_id?.[1] ?? '—').replace(/</g, '&lt;').substring(0, 28)}</td>
+            <td style="padding:2px 4px;border-bottom:1px solid #eee;text-align:center;font-size:9px">${Number(l.product_uom_qty ?? 0)}</td>
+            <td style="padding:2px 4px;border-bottom:1px solid #eee;text-align:right;font-size:9px">${formatCurrency(l.price_unit ?? 0)}</td>
+            <td style="padding:2px 4px;border-bottom:1px solid #eee;text-align:right;font-size:9px">${formatCurrency((l.price_subtotal ?? l.price_total) ?? 0)}</td>
           </tr>`
       )
-      .join('') || '<tr><td colspan="4" style="padding:12px;text-align:center">No line items</td></tr>';
+      .join('') || '<tr><td colspan="5" style="padding:8px;text-align:center;font-size:9px">No line items</td></tr>';
+
+  const amountUntaxed = order?.amount_untaxed ?? 0;
+  const amountTax = order?.amount_tax ?? 0;
+  const amountTotal = order?.amount_total ?? 0;
+  const words = amountInWords(amountTotal) + ' Rupees only';
+
+  const logoImg = logoUri
+    ? `<img src="${logoUri}" alt="GasTech" style="max-width:56mm;height:auto;display:block;margin:0 auto 6px;" />`
+    : '<h1 style="margin:0 0 6px 0;font-size:14px;color:#1e5aa8">GasTech</h1>';
 
   return `
 <!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=80mm">
   <style>
-    body { font-family: system-ui, sans-serif; font-size: 12px; color: #111; padding: 16px; max-width: 320px; margin: 0 auto; }
-    h1 { font-size: 18px; margin: 0 0 8px 0; color: #1e5aa8; }
-    .meta { color: #666; margin-bottom: 12px; font-size: 11px; }
-    table { width: 100%; border-collapse: collapse; margin: 8px 0; }
-    th { text-align: left; padding: 6px 8px; border-bottom: 2px solid #1e5aa8; font-size: 10px; text-transform: uppercase; color: #666; }
-    th:nth-child(2), th:nth-child(3), th:nth-child(4) { text-align: right; }
-    .totals { margin-top: 12px; border-top: 1px solid #ddd; padding-top: 8px; }
-    .row { display: flex; justify-content: space-between; margin: 4px 0; }
-    .total-row { font-weight: bold; font-size: 14px; margin-top: 8px; }
-    .payment { margin-top: 12px; padding: 8px; background: #f4f6f9; border-radius: 8px; font-size: 11px; }
-    .footer { margin-top: 16px; font-size: 10px; color: #999; text-align: center; }
+    body { font-family: system-ui, sans-serif; font-size: 9px; color: #111; padding: 6px 8px; max-width: 80mm; margin: 0 auto; }
+    .title { font-size: 11px; font-weight: bold; text-align: center; margin: 4px 0 8px; border: 1px solid #333; padding: 4px; }
+    .two-col { display: flex; gap: 8px; margin-bottom: 6px; }
+    .col { flex: 1; }
+    .field { margin-bottom: 2px; }
+    .label { font-weight: 600; color: #444; }
+    table { width: 100%; border-collapse: collapse; margin: 6px 0; font-size: 8px; }
+    th { text-align: left; padding: 2px 4px; border-bottom: 1px solid #333; }
+    th:nth-child(3), th:nth-child(4), th:nth-child(5) { text-align: right; }
+    td { padding: 2px 4px; border-bottom: 1px solid #eee; }
+    .totals { margin-top: 6px; border-top: 1px solid #333; padding-top: 4px; }
+    .row { display: flex; justify-content: space-between; margin: 2px 0; }
+    .total-row { font-weight: bold; font-size: 10px; margin-top: 4px; }
+    .payment { margin-top: 6px; padding: 4px; background: #f4f6f9; font-size: 9px; }
+    .footer { margin-top: 8px; font-size: 8px; color: #666; text-align: center; }
   </style>
 </head>
 <body>
-  <h1>GasTech</h1>
-  <div class="meta">INVOICE</div>
-  <div class="meta">Order: ${orderNo} &nbsp;|&nbsp; Date: ${date}</div>
-  <div class="meta">Customer: ${customerName.replace(/</g, '&lt;')}</div>
+  ${logoImg}
+  <div class="title">Tax Invoice</div>
+  <div class="two-col">
+    <div class="col">
+      <div class="field"><span class="label">Date of Invoice:</span> ${date}</div>
+      <div class="field"><span class="label">Supplier's TIN:</span> —</div>
+      <div class="field"><span class="label">Supplier's Name:</span> GasTech</div>
+      <div class="field"><span class="label">Address:</span> —</div>
+      <div class="field"><span class="label">Telephone No:</span> —</div>
+      <div class="field"><span class="label">Date of Delivery:</span> ${date}</div>
+    </div>
+    <div class="col">
+      <div class="field"><span class="label">Tax Invoice No.:</span> ${orderNo}</div>
+      <div class="field"><span class="label">Purchaser's TIN:</span> —</div>
+      <div class="field"><span class="label">Purchaser's Name:</span> ${customerName}</div>
+      <div class="field"><span class="label">Address:</span> —</div>
+      <div class="field"><span class="label">Telephone No:</span> —</div>
+      <div class="field"><span class="label">Place of Supply:</span> —</div>
+    </div>
+  </div>
   <table>
     <thead>
       <tr>
-        <th>Product</th>
+        <th>Ref</th>
+        <th>Description of Goods or Services</th>
         <th>Qty</th>
-        <th>Unit</th>
-        <th>Total</th>
+        <th>Unit Price</th>
+        <th>Amount Excl. VAT (Rs.)</th>
       </tr>
     </thead>
     <tbody>${rows}</tbody>
   </table>
   <div class="totals">
-    <div class="row"><span>Subtotal</span><span>${formatCurrency(order?.amount_untaxed ?? 0)}</span></div>
-    <div class="row"><span>Tax</span><span>${formatCurrency(order?.amount_tax ?? 0)}</span></div>
-    <div class="row total-row"><span>Total</span><span>${formatCurrency(order?.amount_total ?? 0)}</span></div>
+    <div class="row"><span>Total Value of Supply:</span><span>${formatCurrency(amountUntaxed)}</span></div>
+    <div class="row"><span>VAT Amount (18%):</span><span>${formatCurrency(amountTax)}</span></div>
+    <div class="row total-row"><span>Total Amount including VAT:</span><span>${formatCurrency(amountTotal)}</span></div>
+    <div class="row" style="margin-top:4px"><span>Total Amount in words:</span></div>
+    <div class="row" style="font-size:8px;margin-left:0">${words}</div>
+    <div class="row" style="margin-top:4px"><span>Mode of Payment:</span><span>${paymentLabel.replace(/</g, '&lt;')}</span></div>
   </div>
-  <div class="payment">Payment: ${paymentLabel}</div>
-  <div class="footer">Thank you for your business</div>
+  <div class="payment">Thank you for your business</div>
+  <div class="footer">GasTech – Your Trusted Business Partner</div>
 </body>
 </html>`;
 }
 
+const LOGO_SOURCE = require('../../assets/images/AppLogo.png');
+
 export default function InvoiceScreen({ route, navigation }) {
   const { colors } = useTheme();
+  const logoUri = useMemo(
+    () => Image.resolveAssetSource(LOGO_SOURCE)?.uri ?? null,
+    []
+  );
   const {
     saleOrderId,
     total,
@@ -142,7 +200,7 @@ export default function InvoiceScreen({ route, navigation }) {
           shadowOpacity: 0.06,
           shadowRadius: 4,
         },
-        companyName: { fontSize: 20, fontWeight: '800', color: colors.primary, marginBottom: 4 },
+        logo: { width: 180, height: 56, marginBottom: 8, alignSelf: 'center' },
         invoiceTitle: { fontSize: 14, fontWeight: '700', color: colors.textSecondary, marginBottom: spacing.md },
         metaRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 },
         metaLabel: { fontSize: 12, color: colors.textSecondary },
@@ -319,7 +377,7 @@ export default function InvoiceScreen({ route, navigation }) {
     if (!order) return;
     setPrinting(true);
     try {
-      const html = buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSplit);
+      const html = buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSplit, logoUri);
       await Print.printAsync({
         html,
       });
@@ -373,8 +431,8 @@ export default function InvoiceScreen({ route, navigation }) {
     >
       {/* Invoice preview */}
       <View style={styles.previewCard}>
-        <Text style={styles.companyName}>GasTech</Text>
-        <Text style={styles.invoiceTitle}>INVOICE</Text>
+        <Image source={LOGO_SOURCE} style={styles.logo} resizeMode="contain" />
+        <Text style={styles.invoiceTitle}>Tax Invoice</Text>
         <View style={styles.metaRow}>
           <Text style={styles.metaLabel}>Order</Text>
           <Text style={styles.metaValue}>{order?.name ?? '—'}</Text>

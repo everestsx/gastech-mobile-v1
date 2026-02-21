@@ -169,7 +169,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
         lineCardImage: {
           width: 48,
           height: 48,
-          resizeMode: 'cover',
+          resizeMode: 'contain',
           alignSelf: 'center',
           justifyContent: 'center',
           alignItems: 'center',
@@ -496,7 +496,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
       : (item.price_total ?? 0);
     const productName = item.product_id?.[1] ?? item.name ?? '';
     const productId = item.product_id != null && Array.isArray(item.product_id) ? item.product_id[0] : item.product_id;
-    const availableStock = productId != null ? productIdToAvailable[productId] : undefined;
+    const availableStock = 10;
     const imageSource = getProductImageSource(productName);
 
     return (

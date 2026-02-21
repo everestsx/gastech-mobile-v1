@@ -531,7 +531,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
     >
       <View style={styles.totalCard}>
         <Text style={styles.totalLabel}>Total Amount</Text>
-        <Text style={styles.total}>LKR {Number(total).toFixed(2)}</Text>
+        <Text style={styles.total}>Rs. {Number(total).toFixed(2)}</Text>
       </View>
 
       {/* Payment method: checkboxes (multi-select) */}
@@ -582,6 +582,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
             {selectedPaymentMethods.includes(PAYMENT_CASH) ? (
               <View style={styles.cashInputWrap}>
                 <Ionicons name="cash-outline" size={20} color={colors.primary} style={styles.cashInputIcon} />
+                <Text style={styles.cashInputSuffix}>Rs.</Text>
                 <TextInput
                   ref={cashInputRef}
                   style={styles.cashInput}
@@ -592,7 +593,6 @@ export default function ProceedPaymentScreen({ route, navigation }) {
                   placeholderTextColor={colors.textSecondary}
                   keyboardType="decimal-pad"
                 />
-                <Text style={styles.cashInputSuffix}>LKR</Text>
               </View>
             ) : null}
           </View>
@@ -703,7 +703,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
 
       {selectedPaymentMethods.includes(PAYMENT_CREDIT) && (
         <>
-          <Text style={styles.sectionLabel}>Credit amount (remaining)</Text>
+          <Text style={styles.sectionLabel}>Remaining amount (credit)</Text>
           <View style={styles.creditAmountWrap}>
             <Ionicons name="wallet-outline" size={24} color={colors.textSecondary} />
             <Text style={styles.creditAmountText}>LKR {creditAmountNum.toFixed(2)}</Text>
