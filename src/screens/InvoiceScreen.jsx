@@ -37,7 +37,7 @@ function amountInWords(num) {
   return (amountInWords(Math.floor(n / 10000000)) + ' Crore ' + amountInWords(n % 10000000)).trim();
 }
 
-function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSplit, logoUri) {
+function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSplit, logoUri, customerSignatureDataUrl) {
   const date = order?.date_order
     ? new Date(order.date_order).toLocaleDateString('en-LK', {
         year: 'numeric',
@@ -149,6 +149,12 @@ function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSp
     <div class="row" style="margin-top:4px"><span>Mode of Payment:</span><span>${paymentLabel.replace(/</g, '&lt;')}</span></div>
   </div>
   <div class="payment">Thank you for your business</div>
+  ${customerSignatureDataUrl ? `
+  <div class="signature-section" style="margin-top:8px;padding-top:6px;border-top:1px solid #ddd;">
+    <div class="label" style="font-size:9px;font-weight:600;color:#444;margin-bottom:4px;">Customer signature</div>
+    <img src="${customerSignatureDataUrl}" alt="Customer signature" style="max-width:50mm;height:auto;max-height:25mm;display:block;" />
+  </div>
+  ` : ''}
   <div class="footer">GasTech – Your Trusted Business Partner</div>
 </body>
 </html>`;
@@ -168,6 +174,7 @@ export default function InvoiceScreen({ route, navigation }) {
     paymentType,
     selectedBankName,
     paymentSplit,
+    customerSignatureDataUrl,
   } = route.params ?? {};
 
   const [order, setOrder] = useState(null);
@@ -377,7 +384,7 @@ export default function InvoiceScreen({ route, navigation }) {
     if (!order) return;
     setPrinting(true);
     try {
-      const html = buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSplit, logoUri);
+      const html = buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSplit, logoUri, customerSignatureDataUrl);
       await Print.printAsync({
         html,
       });
@@ -488,6 +495,12 @@ export default function InvoiceScreen({ route, navigation }) {
         <View style={styles.paymentBadge}>
           <Text style={styles.paymentText}>Payment: {paymentLabel}</Text>
         </View>
+        {customerSignatureDataUrl ? (
+          <View style={{ marginTop: spacing.sm, paddingTop: spacing.sm, borderTopWidth: 1, borderTopColor: colors.border }}>
+            <Text style={[styles.totalsLabel, { marginBottom: 4 }]}>Customer signature</Text>
+            <Image source={{ uri: customerSignatureDataUrl }} style={{ width: '100%', maxWidth: 180, height: 70, resizeMode: 'contain' }} />
+          </View>
+        ) : null}
       </View>
 
       {/* Credit payment: Create invoice → Post invoice → Customer account */}

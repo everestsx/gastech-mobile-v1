@@ -9,7 +9,9 @@ import {
   ScrollView,
   TextInput,
   Image,
+  Modal,
 } from 'react-native';
+import SignatureCanvas from 'react-native-signature-canvas';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import { Ionicons } from '@expo/vector-icons';
@@ -42,6 +44,8 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   const [deliveryPhotos, setDeliveryPhotos] = useState([]);
   const cashInputRef = useRef(null);
   const checkInputRef = useRef(null);
+  const signatureRef = useRef(null);
+  const [showSignatureModal, setShowSignatureModal] = useState(false);
 
   const MAX_PHOTOS = 3;
 
@@ -177,7 +181,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
     });
   }, [orderTotal, cashAmount, checkAmount]);
 
-  const handleProceed = async () => {
+  const handleProceed = async (customerSignatureDataUrl = null) => {
     if (!canProceed) return;
     const cashJournalId = cashJournalPreferred?.id ?? null;
     const checkJournalId = selectedJournalId != null && isSelectedJournalValid ? selectedJournalId : null;
@@ -241,6 +245,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         deliveryPhotoUris: deliveryPhotos,
         cashAmount: paymentSplit.cash,
         checkNumber: needsCheck ? (checkNumber || undefined) : undefined,
+        customerSignatureDataUrl: customerSignatureDataUrl ?? undefined,
       });
     } catch (err) {
       console.error(err);
@@ -507,6 +512,63 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           textAlign: 'center',
           marginBottom: spacing.sm,
         },
+        signatureModalOverlay: {
+          flex: 1,
+          backgroundColor: 'rgba(0,0,0,0.5)',
+          justifyContent: 'center',
+          padding: spacing.lg,
+        },
+        signatureModalContent: {
+          borderRadius: borderRadius.lg,
+          padding: spacing.lg,
+          maxHeight: '80%',
+        },
+        signatureModalTitle: {
+          fontSize: 18,
+          fontWeight: '700',
+          textAlign: 'center',
+          marginBottom: 4,
+        },
+        signatureModalHint: {
+          fontSize: 13,
+          textAlign: 'center',
+          marginBottom: spacing.md,
+        },
+        signatureCanvasWrap: {
+          height: 220,
+          marginBottom: spacing.md,
+          borderRadius: borderRadius.md,
+          overflow: 'hidden',
+          borderWidth: 1,
+          borderColor: colors.border,
+        },
+        signatureCanvas: {
+          flex: 1,
+          height: 220,
+        },
+        signatureBtnRow: {
+          flexDirection: 'row',
+          gap: spacing.sm,
+          marginBottom: spacing.md,
+        },
+        signatureActionBtn: {
+          flex: 1,
+          paddingVertical: 12,
+          alignItems: 'center',
+          borderRadius: borderRadius.md,
+        },
+        signatureClearBtn: {
+          borderWidth: 1,
+        },
+        signatureConfirmBtn: {},
+        signatureActionBtnText: { fontSize: 15, fontWeight: '600' },
+        signatureCancelBtn: {
+          paddingVertical: 12,
+          alignItems: 'center',
+          borderWidth: 1,
+          borderRadius: borderRadius.md,
+        },
+        signatureCancelBtnText: { fontSize: 15, fontWeight: '600' },
       }),
     [colors, insets.bottom]
   );
@@ -794,7 +856,10 @@ export default function ProceedPaymentScreen({ route, navigation }) {
 
       <TouchableOpacity
         style={[styles.payBtn, !canProceed && styles.payBtnDisabled]}
-        onPress={handleProceed}
+        onPress={() => {
+          if (!canProceed) return;
+          setShowSignatureModal(true);
+        }}
         disabled={loading || !canProceed}
         activeOpacity={0.8}
       >
@@ -807,6 +872,63 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           </>
         )}
       </TouchableOpacity>
+
+      <Modal
+        visible={showSignatureModal}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setShowSignatureModal(false)}
+      >
+        <View style={styles.signatureModalOverlay}>
+          <View style={[styles.signatureModalContent, { backgroundColor: colors.surface }]}>
+            <Text style={[styles.signatureModalTitle, { color: colors.text }]}>Customer signature</Text>
+            <Text style={[styles.signatureModalHint, { color: colors.textSecondary }]}>Sign in the box below, then tap Confirm</Text>
+            <View style={styles.signatureCanvasWrap}>
+              <SignatureCanvas
+                ref={signatureRef}
+                onOK={(dataUrl) => {
+                  setShowSignatureModal(false);
+                  handleProceed(dataUrl);
+                }}
+                onEmpty={() => {
+                  Alert.alert('Signature required', 'Please sign above before confirming.');
+                }}
+                descriptionText=""
+                clearText=""
+                confirmText=""
+                penColor="#000000"
+                backgroundColor="rgba(255,255,255,1)"
+                style={styles.signatureCanvas}
+                autoClear={false}
+                webStyle={`.m-signature-pad--footer { display: none !important; }`}
+              />
+            </View>
+            <View style={styles.signatureBtnRow}>
+              <TouchableOpacity
+                style={[styles.signatureActionBtn, styles.signatureClearBtn, { borderColor: colors.border }]}
+                onPress={() => signatureRef.current?.clearSignature()}
+                activeOpacity={0.8}
+              >
+                <Text style={[styles.signatureActionBtnText, { color: colors.textSecondary }]}>Clear</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.signatureActionBtn, styles.signatureConfirmBtn, { backgroundColor: colors.primary }]}
+                onPress={() => signatureRef.current?.readSignature()}
+                activeOpacity={0.8}
+              >
+                <Text style={[styles.signatureActionBtnText, { color: '#fff' }]}>Confirm</Text>
+              </TouchableOpacity>
+            </View>
+            <TouchableOpacity
+              style={[styles.signatureCancelBtn, { borderColor: colors.border }]}
+              onPress={() => setShowSignatureModal(false)}
+              activeOpacity={0.8}
+            >
+              <Text style={[styles.signatureCancelBtnText, { color: colors.textSecondary }]}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 }
