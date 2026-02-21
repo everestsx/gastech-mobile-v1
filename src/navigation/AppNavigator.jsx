@@ -108,7 +108,7 @@ function MainTabs() {
 
 function MainStackScreen() {
   const { colors } = useTheme();
-  const headerOrange = colors.warningLight ?? colors.warning ?? '#d97706';
+  const headerOrange = colors.primary ?? '#6366f1';
   const headerScreenOptions = {
     headerShown: true,
     headerStyle: {

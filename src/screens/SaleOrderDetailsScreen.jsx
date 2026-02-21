@@ -66,6 +66,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
   const [loading, setLoading] = useState(true);
   const [updating, setUpdating] = useState(false);
   const [updateError, setUpdateError] = useState(null);
+  const [productIdToAvailable, setProductIdToAvailable] = useState({});
 
   const styles = useMemo(
     () =>
@@ -155,9 +156,9 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
           borderRadius: 32,
           overflow: 'hidden',
           backgroundColor: colors.background,
-          borderWidth: 2,
+          borderWidth: 1,
           borderColor: colors.border,
-          elevation: 2,
+          elevation: 1,
           shadowColor: '#000',
           shadowOffset: { width: 0, height: 1 },
           shadowOpacity: 0.08,
@@ -166,11 +167,35 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
           alignItems: 'center',
         },
         lineCardImage: {
-          width: '100%',
-          height: '100%',
+          width: 48,
+          height: 48,
           resizeMode: 'contain',
+          alignSelf: 'center',
+          justifyContent: 'center',
+          alignItems: 'center',
         },
-        lineProductName: { fontSize: 16, fontWeight: '700', color: colors.text, marginBottom: 8 },
+        lineProductName: { fontSize: 16, fontWeight: '700', color: colors.primary, marginBottom: 6 },
+        lineNameQtyRow: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 10,
+          flexWrap: 'wrap',
+          marginBottom: 4,
+        },
+        lineUnitPriceRow: { marginTop: 2 },
+        lineUnitPriceLabel: { fontSize: 12, color: colors.textSecondary },
+        lineUnitPriceValue: { fontSize: 14, fontWeight: '600', color: colors.text },
+        lineTotalRow: {
+          flexDirection: 'row',
+          justifyContent: 'flex-end',
+          alignItems: 'center',
+          marginTop: 6,
+          paddingTop: 6,
+          borderTopWidth: 1,
+          borderTopColor: colors.border,
+        },
+        lineTotalLabel: { fontSize: 12, color: colors.textSecondary, marginRight: 6 },
+        lineTotalValue: { fontSize: 17, fontWeight: '800', color: colors.primary },
         lineOneRow: {
           flexDirection: 'row',
           justifyContent: 'space-between',
@@ -179,6 +204,8 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
         },
         lineLeftExpr: { fontSize: 15, fontWeight: '600', color: colors.text },
         lineRightTotal: { fontSize: 15, fontWeight: '700', color: colors.primary },
+        availableStockRow: { marginTop: 4, width: '90%', flexDirection: 'row', justifyContent: 'flex-end' },
+        availableStockText: { fontSize: 14, fontWeight: '400', color: colors.success ?? '#059669' },
         qtyInput: {
           fontSize: 16,
           fontWeight: '700',
@@ -193,7 +220,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
           textAlign: 'center',
           backgroundColor: colors.background,
         },
-        qtyControls: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 8 },
+        qtyControls: { flexDirection: 'row', alignItems: 'center', gap: 8 },
         qtyIconBtn: {
           width: 40,
           height: 40,
@@ -204,7 +231,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
           borderWidth: 1,
           borderColor: colors.border,
         },
-        qtyValue: { fontSize: 16, fontWeight: '600', color: colors.text },
+        qtyValue: { fontSize: 14, fontWeight: '600', color: colors.text },
         bottomSpacer: { height: 200 + insets.bottom },
         bottomBar: {
           position: 'absolute',
@@ -274,6 +301,22 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
       setQtyChanged(false);
       const { picking } = await getDeliveryDataFromDB(saleOrderId);
       setIsDelivered(picking?.state === 'done');
+      const vehicleId = data.order?.vehicle_id != null ? (Array.isArray(data.order.vehicle_id) ? data.order.vehicle_id[0] : data.order.vehicle_id) : null;
+      if (vehicleId != null) {
+        try {
+          const inventories = await vehicleInventoriesDb.getVehicleInventoryByVehicleId(vehicleId);
+          const map = {};
+          (inventories || []).forEach((inv) => {
+            const pid = inv.product_id != null ? inv.product_id : inv.id;
+            if (pid != null) map[pid] = Number(inv.available_quantity) ?? 0;
+          });
+          setProductIdToAvailable(map);
+        } catch {
+          setProductIdToAvailable({});
+        }
+      } else {
+        setProductIdToAvailable({});
+      }
     } catch (_) {
       setOrder(null);
       setLines([]);
@@ -452,59 +495,75 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
       ? unitPrice * (Number.isNaN(qtyNum) ? 0 : qtyNum)
       : (item.price_total ?? 0);
     const productName = item.product_id?.[1] ?? item.name ?? '';
+    const productId = item.product_id != null && Array.isArray(item.product_id) ? item.product_id[0] : item.product_id;
+    const availableStock = 10;
     const imageSource = getProductImageSource(productName);
 
     return (
       <View style={[styles.lineCard]}>
         <View style={styles.lineCardInnerRow}>
-           {/* Left side: circular gas image (professional order-line look) */}
-           {imageSource != null && (
+          {/* Left: circular gas image centered in circle */}
+          {imageSource != null && (
             <View style={styles.lineCardImageWrap}>
               <Image source={imageSource} style={styles.lineCardImage} />
             </View>
           )}
           <View style={styles.lineCardLeft}>
-            <Text style={styles.lineProductName} numberOfLines={2}>
-              {getProductDisplayName(productName) || '—'}
-            </Text>
-
-            {/* Quantity modify: same behaviour, modern UI */}
+            {/* Item name × quantity (same pattern as Order cards) – quantity at a glance */}
             {!isDelivered && modifyEnabled ? (
-              <View style={styles.qtyControls}>
-                <TouchableOpacity
-                  style={styles.qtyIconBtn}
-                  onPress={() => changeQtyBy(item.id, -1)}
-                  activeOpacity={0.8}
-                >
-                  <Ionicons name="remove" size={22} color={colors.primary} />
-                </TouchableOpacity>
-                <TextInput
-                  style={styles.qtyInput}
-                  value={item.newQty}
-                  onChangeText={(text) => setLineQty(item.id, text)}
-                  keyboardType="decimal-pad"
-                  placeholder="0"
-                  placeholderTextColor={colors.textSecondary}
-                  selectTextOnFocus
-                />
-                <TouchableOpacity
-                  style={styles.qtyIconBtn}
-                  onPress={() => changeQtyBy(item.id, 1)}
-                  activeOpacity={0.8}
-                >
-                  <Ionicons name="add" size={22} color={colors.primary} />
-                </TouchableOpacity>
-                <Text style={styles.lineLeftExpr}>x</Text>
-                <Text style={styles.lineRightTotal}> {formatCurrency(displayLineTotal)}</Text>
-              </View>
+              <>
+                <View style={styles.lineNameQtyRow}>
+                  <Text style={styles.lineProductName} numberOfLines={1}>
+                    {getProductDisplayName(productName) || 'Unknown'} ×
+                  </Text>
+                  <View style={styles.qtyControls}>
+                    <TouchableOpacity
+                      style={styles.qtyIconBtn}
+                      onPress={() => changeQtyBy(item.id, -1)}
+                      activeOpacity={0.8}
+                    >
+                      <Ionicons name="remove" size={22} color={colors.primary} />
+                    </TouchableOpacity>
+                    <TextInput
+                      style={styles.qtyInput}
+                      value={item.newQty}
+                      onChangeText={(text) => setLineQty(item.id, text)}
+                      keyboardType="decimal-pad"
+                      placeholder="0"
+                      placeholderTextColor={colors.textSecondary}
+                      selectTextOnFocus
+                    />
+                    <TouchableOpacity
+                      style={styles.qtyIconBtn}
+                      onPress={() => changeQtyBy(item.id, 1)}
+                      activeOpacity={0.8}
+                    >
+                      <Ionicons name="add" size={22} color={colors.primary} />
+                    </TouchableOpacity>
+                  </View>
+                </View>
+                {availableStock !== undefined && (
+                  <View style={styles.availableStockRow}>
+                    <Text style={styles.availableStockText}>Available Stock: {availableStock}</Text>
+                  </View>
+                )}
+              </>
             ) : (
-              <View style={styles.lineOneRow}>
-                <Text style={[styles.qtyValue, { marginTop: 4 }]}>Qty: {item.newQty} × {formatCurrency(unitPrice)}</Text>
-                <Text style={styles.lineRightTotal}>{formatCurrency(displayLineTotal)}</Text>
-              </View>
+              <Text style={styles.lineProductName} numberOfLines={2}>
+                {getProductDisplayName(productName) || 'Unknown'} × 
+                <Text style={styles.lineQtyValue}> {item.newQty} units</Text>
+              </Text>
             )}
-          </View>
 
+            <View style={styles.lineUnitPriceRow}>
+              <Text style={styles.lineUnitPriceLabel}>Unit price</Text>
+              <Text style={styles.lineUnitPriceValue}>{formatCurrency(unitPrice)}</Text>
+            </View>
+            <View style={styles.lineTotalRow}>
+              <Text style={styles.lineTotalLabel}>Line total</Text>
+              <Text style={styles.lineTotalValue}>{formatCurrency(displayLineTotal)}</Text>
+            </View>
+          </View>
         </View>
       </View>
     );
@@ -553,6 +612,12 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
                           <View style={styles.addressRow}>
                               <Text style={styles.addressText}>
                                   {order.city}
+                              </Text>
+                              <Text style={styles.addressText}>
+                                  {order.street}
+                              </Text>
+                              <Text style={styles.addressText}>
+                                  {order.zip_code}
                               </Text>
                           </View>
                       )}

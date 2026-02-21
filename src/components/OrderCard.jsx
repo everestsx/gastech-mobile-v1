@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
-import { getProductDisplayName } from '../utils/productDisplay';
+import { getProductDisplayName, getGasSizeFromProductName } from '../utils/productDisplay';
 
 function formatCurrency(amount) {
   return `LKR ${Number(amount).toFixed(2)}`;
@@ -45,16 +45,17 @@ export function getOrderTotalQty(order) {
 export default function OrderCard({ order, onPress, isDelivered, orderLines = [] }) {
   const { colors } = useTheme();
 
-  const ITEM_BADGE_COLORS = useMemo(
-    () => [
-      colors.primary,
-      colors.success ?? '#059669',
-      colors.warning ?? '#d97706',
-      colors.primaryLight ?? '#818cf8',
-      colors.secondary ?? '#4338ca',
-    ],
+  // Consistent colors per gas size so users quickly identify Small/Medium/Large/Big across all cards
+  const GAS_SIZE_COLORS = useMemo(
+    () => ({
+      small: colors.success ?? '#059669',
+      medium: colors.primary ?? '#4f46e5',
+      large: colors.warning ?? '#d97706',
+      big: colors.secondary ?? '#4338ca',
+    }),
     [colors]
   );
+  const FALLBACK_ACCENT = colors.primaryLight ?? colors.primary ?? '#818cf8';
 
   const styles = useMemo(
     () =>
@@ -79,7 +80,7 @@ export default function OrderCard({ order, onPress, isDelivered, orderLines = []
         customerName: { fontSize: 16, fontWeight: '700', color: colors.text, flex: 1, marginTop: 2 },
         badgesRight: { flexDirection: 'row', alignItems: 'center', gap: 14 },
         badge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 10 },
-        badgeSale: { backgroundColor: colors.success },
+        badgeSale: { backgroundColor: colors.primary },
         badgeDraft: { backgroundColor: colors.warning },
         badgeCancel: { backgroundColor: colors.error },
         badgeStatusToDeliver: { backgroundColor: '#93c5fd' },
@@ -100,12 +101,24 @@ export default function OrderCard({ order, onPress, isDelivered, orderLines = []
           marginTop: 4,
         },
         qtyBadge: {
-          paddingHorizontal: 10,
-          paddingVertical: 5,
-          borderRadius: 8,
+          flexDirection: 'row',
+          alignItems: 'center',
+          paddingVertical: 4,
+          paddingRight: 8,
+          paddingLeft: 0,
+          borderRadius: 6,
+          borderWidth: 1,
           flexShrink: 0,
         },
-        qtyBadgeText: { fontSize: 11, fontWeight: '700', color: '#fff' },
+        qtyBadgeSquare: {
+          width: 10,
+          height: 10,
+          borderRadius: 2,
+          marginLeft: 6,
+          marginRight: 6,
+        },
+        qtyBadgeText: { fontSize: 11, fontWeight: '600', color: colors.text },
+        qtyBadgeSizeLabel: { fontSize: 12, fontWeight: '800', color: colors.text, marginRight: 2 },
       }),
     [colors]
   );
@@ -186,20 +199,32 @@ export default function OrderCard({ order, onPress, isDelivered, orderLines = []
             const qty = Number(line.product_uom_qty) || 0;
             const rawLabel = line.product_id?.[1] || line.name || 'Item';
             const displayName = getProductDisplayName(rawLabel) || 'Item';
-            const bg = ITEM_BADGE_COLORS[index % ITEM_BADGE_COLORS.length];
+            const gasSize = getGasSizeFromProductName(rawLabel);
+            const accent = gasSize && GAS_SIZE_COLORS[gasSize.size]
+              ? GAS_SIZE_COLORS[gasSize.size]
+              : FALLBACK_ACCENT;
             return (
-              <View key={line.id || index} style={[styles.qtyBadge, { backgroundColor: bg }]}>
-                <Text style={styles.qtyBadgeText}>{qty} * {displayName}</Text>
+              <View key={line.id || index} style={[styles.qtyBadge, { borderColor: accent }]}>
+                <View style={[styles.qtyBadgeSquare, { backgroundColor: accent }]} />
+                <Text style={styles.qtyBadgeText} numberOfLines={1}>
+                  {gasSize ? (
+                    <>
+                      <Text style={styles.qtyBadgeSizeLabel}>{gasSize.kg} kg × </Text>
+                      <Text style={styles.qtyBadgeSizeLabel}>{qty}</Text>
+                    </>
+                  ) : (
+                    `${displayName} × ${qty}`
+                  )}
+                </Text>
               </View>
             );
           })}
         </View>
       ) : (
         <View style={styles.qtyBadgesRow}>
-          <View style={[styles.qtyBadge, { backgroundColor: colors.border }]}>
-            <Text style={[styles.qtyBadgeText, { color: colors.textSecondary }]}>
-              Qty: {getOrderTotalQty(order)}
-            </Text>
+          <View style={[styles.qtyBadge, { borderColor: colors.border }]}>
+            <View style={[styles.qtyBadgeSquare, { backgroundColor: colors.border }]} />
+            <Text style={styles.qtyBadgeText}>Qty: {getOrderTotalQty(order)}</Text>
           </View>
         </View>
       )}

@@ -143,16 +143,6 @@ export default function MenuScreen({ navigation }) {
 
       <TouchableOpacity
         style={[styles.menuItem, { backgroundColor: colors.surface, borderColor: colors.border }]}
-        onPress={() => navigation.navigate('DailyVisit')}
-        activeOpacity={0.8}
-      >
-        <Ionicons name="calendar-outline" size={24} color={colors.primary} />
-        <Text style={[styles.menuItemText, { color: colors.text }]}>Daily Visit</Text>
-        <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
-      </TouchableOpacity>
-
-      <TouchableOpacity
-        style={[styles.menuItem, { backgroundColor: colors.surface, borderColor: colors.border }]}
         onPress={() => navigation.navigate('Customers')}
         activeOpacity={0.8}
       >

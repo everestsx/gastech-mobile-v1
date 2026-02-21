@@ -1,36 +1,41 @@
 import React, { useMemo } from 'react';
-import { View, Text, StyleSheet, ScrollView, useWindowDimensions } from 'react-native';
+import { View, Text, StyleSheet, ScrollView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { spacing } from '../constants/theme';
 
 const CHART_HEIGHT = 200;
 const BAR_GAP = 6;
-const MIN_BAR_WIDTH = 24;
+const FIXED_BAR_WIDTH = 24;
 const LABEL_HEIGHT = 36;
 
 /**
  * Vertical bar chart: Delivery Progress by Shop.
  * data = [{ shopId, shopName?, delivered, pending }]
- * Each shop = one bar: fully green (delivered) or fully red (pending), no mix.
+ * Sorted: Delivered (left), To deliver / Pending (right).
+ * Bar width is fixed and half of previous default size.
  */
-export default function DeliveryProgressBarChart({ data = [], title = 'Delivery Progress by Shop' }) {
+export default function DeliveryProgressBarChart({ data = [], title = 'Delivery Progress by Shop', rightElement = null }) {
   const { colors } = useTheme();
-  const { width: screenWidth } = useWindowDimensions();
-  const chartWidth = Math.max(screenWidth - spacing.md * 2, 240);
-  const barWidth = Math.max(
-    MIN_BAR_WIDTH,
-    (chartWidth - (data.length + 1) * BAR_GAP) / Math.max(data.length, 1)
-  );
-  const totalBarWidth = data.length * (barWidth + BAR_GAP) + BAR_GAP;
+  const barWidth = FIXED_BAR_WIDTH;
+  const sortedData = useMemo(() => {
+    return [...(data || [])].sort((a, b) => {
+      const pendingA = Number(a.pending) || 0;
+      const pendingB = Number(b.pending) || 0;
+      if (pendingA === 0 && pendingB > 0) return 1;
+      if (pendingA > 0 && pendingB === 0) return -1;
+      return 0;
+    });
+  }, [data]);
+  const totalBarWidth = sortedData.length * (barWidth + BAR_GAP) + BAR_GAP;
 
   const maxVal = useMemo(() => {
     const max = Math.max(
-      ...data.map((d) => (Number(d.delivered) || 0) + (Number(d.pending) || 0)),
+      ...sortedData.map((d) => (Number(d.delivered) || 0) + (Number(d.pending) || 0)),
       1
     );
     return max;
-  }, [data]);
+  }, [sortedData]);
 
   const styles = useMemo(
     () =>
@@ -69,14 +74,15 @@ export default function DeliveryProgressBarChart({ data = [], title = 'Delivery 
     [colors]
   );
 
-  if (!data.length) {
+  if (!sortedData.length) {
     return (
       <View style={styles.card}>
         <View style={styles.titleRow}>
           <Ionicons name="bar-chart-outline" size={20} color={colors.primary} />
-          <Text style={styles.title}>{title}</Text>
+          <Text style={[styles.title, { flex: 1 }]}>{title}</Text>
+          {rightElement}
         </View>
-        <Text style={[styles.scrollHint, { marginBottom: spacing.sm }]}>No shop data for today</Text>
+        <Text style={[styles.scrollHint, { marginBottom: spacing.sm }]}>No shop data for this date</Text>
       </View>
     );
   }
@@ -88,21 +94,22 @@ export default function DeliveryProgressBarChart({ data = [], title = 'Delivery 
     <View style={styles.card}>
       <View style={styles.titleRow}>
         <Ionicons name="bar-chart-outline" size={20} color={colors.primary} />
-        <Text style={styles.title}>{title}</Text>
+        <Text style={[styles.title, { flex: 1 }]}>{title}</Text>
+        {rightElement}
       </View>
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
         contentContainerStyle={{ paddingRight: spacing.md }}
       >
-        <View style={{ minWidth: Math.max(chartWidth, totalBarWidth) }}>
+        <View style={{ minWidth: totalBarWidth }}>
           <View style={{ flexDirection: 'row', height: CHART_HEIGHT - LABEL_HEIGHT }}>
-            {data.map((row, i) => {
+            {sortedData.map((row, i) => {
               const delivered = Math.max(0, Number(row.delivered) || 0);
               const pending = Math.max(0, Number(row.pending) || 0);
               const total = delivered + pending || 0;
               const isFullyDelivered = pending === 0 && total > 0;
-              const barColor = isFullyDelivered ? successColor : errorColor;
+              const barColor = isFullyDelivered ? errorColor : successColor;
               const barHeight = total > 0 ? Math.max(8, (total / maxVal) * (CHART_HEIGHT - LABEL_HEIGHT - 12)) : 0;
               return (
                 <View
@@ -139,7 +146,7 @@ export default function DeliveryProgressBarChart({ data = [], title = 'Delivery 
             })}
           </View>
           <View style={{ flexDirection: 'row', height: LABEL_HEIGHT, paddingLeft: BAR_GAP }}>
-            {data.map((row, i) => {
+            {sortedData.map((row, i) => {
               const label = row.shopName || row.shopId || `S${i + 1}`;
               const shortLabel = String(label).length > 10 ? String(label).slice(0, 8) + '…' : String(label);
               return (
@@ -173,13 +180,13 @@ export default function DeliveryProgressBarChart({ data = [], title = 'Delivery 
         <View style={styles.legendItem}>
           <View style={[styles.legendBox, { backgroundColor: successColor }]} />
           <Text style={[styles.legendText, { color: successColor }]}>
-            Delivered ({data.filter((d) => (Number(d.pending) || 0) === 0 && ((Number(d.delivered) || 0) + (Number(d.pending) || 0)) > 0).length})
+            Delivered ({sortedData.filter((d) => (Number(d.pending) || 0) === 0 && ((Number(d.delivered) || 0) + (Number(d.pending) || 0)) > 0).length})
           </Text>
         </View>
         <View style={styles.legendItem}>
           <View style={[styles.legendBox, { backgroundColor: errorColor }]} />
           <Text style={[styles.legendText, { color: errorColor }]}>
-            Pending ({data.filter((d) => (Number(d.pending) || 0) > 0).length})
+            To deliver ({sortedData.filter((d) => (Number(d.pending) || 0) > 0).length})
           </Text>
         </View>
       </View>

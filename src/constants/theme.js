@@ -4,9 +4,9 @@
  */
 
 export const lightColors = {
-  primary: '#ED5D1A',
-  primaryDark: '#4f46e5',
-  primaryLight: '#818cf8',
+  primary: '#6366f1',
+  primaryDark: '#312e81',
+  primaryLight: '#a5b4fc',
   primarySurface: '#e0e7ff',
   secondary: '#4338ca',
   background: '#f4f6f9',
@@ -25,23 +25,21 @@ export const lightColors = {
 };
 
 export const darkColors = {
-  primary: '#818cf8',
+  primary: '#6366f1',
   primaryDark: '#6366f1',
-  primaryLight: '#a5b4fc',
-  primarySurface: '#312e81',
+  primaryLight: '#312e81',
+  primarySurface: '#1f2937',
   secondary: '#4338ca',
   background: '#111827',
-  surface: '#1f2937',
+  surface: '#273549',
   text: '#f9fafb',
   textSecondary: '#9ca3af',
-  border: '#374151',
+  border: '#4b5563',
   success: '#10b981',
   warning: '#f59e0b',
+  warningDark: '#b45309',
   warningLight: '#f59e0b',
   error: '#ef4444',
-  cash: '#10b981',
-  cheque: '#f59e0b',
-  credit: '#818cf8',
 };
 
 export function getThemeColors(theme) {
