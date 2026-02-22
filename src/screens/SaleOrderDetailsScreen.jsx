@@ -83,7 +83,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
           paddingVertical: 6,
           paddingHorizontal: 12,
           borderRadius: borderRadius.md,
-          borderWidth: 1.5,
+          borderWidth: 1,
           borderColor: colors.primary,
         },
         modifyUpdateBtnUpdate: { backgroundColor: colors.warning, borderColor: colors.warning },
@@ -466,13 +466,19 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
         : lines.map((l) => l.newQty);
       await applyQtyDoneAndValidate(effectiveQtys, true);
 
-      const total =
+      const subtotal =
         !noChanges && lines.length
-          ? lines.reduce(
-              (sum, l) => sum + (Number(l.newQty) || 0) * (Number(l.price_unit) || 0),
-              0
-            )
-          : order.amount_total;
+          ? lines.reduce((sum, l) => sum + (Number(l.price_subtotal) || 0), 0)
+          : lines.reduce((sum, l) => sum + (Number(l.newQty) || 0) * (Number(l.price_unit) || 0), 0);
+      const tax =
+        !noChanges && lines.length
+          ? lines.reduce((sum, l) => sum + ((Number(l.price_total) || 0) - (Number(l.price_subtotal) || 0)), 0)
+          : lines.reduce((sum, l) => {
+              const lineTax = (Number(l.price_total) || 0) - (Number(l.price_subtotal) || 0);
+              const origQty = Number(l.product_uom_qty) || 1;
+              return sum + (origQty ? (lineTax / origQty) * (Number(l.newQty) || 0) : 0);
+            }, 0);
+      const total = subtotal + tax;
 
       navigation.navigate('ProceedPayment', {
         saleOrderId: order.id,
@@ -486,6 +492,32 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
     }
   }, [order, lines, validateQuantities, hasQtyChanges, applyQtyDoneAndValidate, navigation]);
 
+  /** Subtotal from lines: sum of price_subtotal, or when qty changed sum of price_unit * newQty */
+  const computedSubtotal = useMemo(() => {
+    if (!lines.length) return 0;
+    return lines.reduce((sum, l) => {
+      const qtyChanged = Number(l.newQty) !== Number(l.product_uom_qty);
+      if (qtyChanged) return sum + (Number(l.price_unit) || 0) * (Number(l.newQty) || 0);
+      return sum + (Number(l.price_subtotal) || 0);
+    }, 0);
+  }, [lines]);
+
+  /** Tax from lines: sum of (price_total - price_subtotal) per line; when qty changed, proportional by newQty */
+  const computedTax = useMemo(() => {
+    if (!lines.length) return 0;
+    return lines.reduce((sum, l) => {
+      const lineTax = (Number(l.price_total) || 0) - (Number(l.price_subtotal) || 0);
+      const qtyChanged = Number(l.newQty) !== Number(l.product_uom_qty);
+      if (qtyChanged) {
+        const origQty = Number(l.product_uom_qty) || 1;
+        return sum + (origQty ? (lineTax / origQty) * (Number(l.newQty) || 0) : 0);
+      }
+      return sum + lineTax;
+    }, 0);
+  }, [lines]);
+
+  const computedTotal = computedSubtotal + computedTax;
+
   const renderItem = ({ item }) => {
     const qtyNum = Number(item.newQty);
     const qtyChangedForLine =
@@ -493,10 +525,10 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
     const unitPrice = Number(item.price_unit) || 0;
     const displayLineTotal = qtyChangedForLine
       ? unitPrice * (Number.isNaN(qtyNum) ? 0 : qtyNum)
-      : (item.price_total ?? 0);
+      : (item.price_subtotal ?? 0);
     const productName = item.product_id?.[1] ?? item.name ?? '';
     const productId = item.product_id != null && Array.isArray(item.product_id) ? item.product_id[0] : item.product_id;
-    const availableStock = 10;
+    const availableStock = productId != null ? productIdToAvailable[productId] : undefined;
     const imageSource = getProductImageSource(productName);
 
     return (
@@ -683,35 +715,26 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
           ))
         )}
 
-          {/* Gross Total bottom: Subtotal, Tax, Total (same as before) */}
+          {/* Gross Total: Subtotal (sum price_subtotal), Tax (sum of line tax), Total */}
           <View style={styles.grossTotalCard}>
           <View style={styles.grossRow}>
-            <Text style={styles.grossLabel}>Subtotal</Text>
+            <Text style={styles.grossLabel}>Sub Total</Text>
             <Text style={styles.grossValue}>
-              {formatCurrency(order.amount_total)}
+              {formatCurrency(computedSubtotal)}
             </Text>
           </View>
           <View style={styles.grossRow}>
-            <Text style={styles.grossLabel}>Tax</Text>
+            <Text style={styles.grossLabel}>VAT (18%)</Text>
             <Text style={styles.grossValue}>
-              {formatCurrency(order.amount_tax)}
+              {formatCurrency(computedTax)}
             </Text>
           </View>
           <View style={[styles.grossRow, styles.grossTotalRow]}>
             <Text style={styles.grossTotalLabel}>
-              Total{qtyChanged ? ' (unsaved)' : ''}
+              Total (including VAT) {qtyChanged ? ' (unsaved)' : ''}
             </Text>
             <Text style={styles.grossTotalValue}>
-              {formatCurrency(
-                qtyChanged && lines.length
-                  ? lines.reduce(
-                      (sum, l) =>
-                        sum +
-                        (Number(l.newQty) || 0) * (Number(l.price_unit) || 0),
-                      0
-                    ) + order.amount_tax
-                  : order.amount_total + order.amount_tax
-              )}
+              {formatCurrency(computedTotal)}
             </Text>
           </View>
         </View>
@@ -728,7 +751,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
             if (isDelivered) {
               navigation.navigate('ProceedPayment', {
                 saleOrderId: order.id,
-                total: order.amount_total,
+                total: computedTotal,
                 deliveryDone: true,
               });
             } else {

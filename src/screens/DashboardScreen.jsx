@@ -598,20 +598,20 @@ export default function DashboardScreen({ navigation }) {
         <View style={[styles.collectionCard, { borderColor: colors.cash ?? '#059669' }]}>
           <Image source={require('../../assets/images/cash.png')} style={styles.collectionIcon} resizeMode="contain" />
           <Text style={[styles.collectionAmount, { color: colors.cash ?? '#059669' }]}>{formatShort(cashTotal)}</Text>
-          <Text style={styles.collectionLabel}>CASH</Text>
-          <Text style={[styles.collectionPct, { color: colors.cash ?? '#059669' }]}>{cashPct}%</Text>
+          <Text style={styles.sameRowText}><Text style={styles.collectionLabel}>CASH</Text>
+          <Text style={[styles.collectionPct, { color: colors.cash ?? '#059669' }]}> ( {cashPct}%)</Text></Text>
         </View>
         <View style={[styles.collectionCard, { borderColor: colors.cheque ?? '#d97706' }]}>
           <Image source={require('../../assets/images/cheque.png')} style={styles.collectionIcon} resizeMode="contain" />
           <Text style={[styles.collectionAmount, { color: colors.cheque ?? '#d97706' }]}>{formatShort(chequeTotal)}</Text>
-          <Text style={styles.collectionLabel}>CHEQUE</Text>
-          <Text style={[styles.collectionPct, { color: colors.cheque ?? '#d97706' }]}>{chequePct}%</Text>
+          <Text style={styles.sameRowText}><Text style={styles.collectionLabel}>CHEQUE</Text>
+          <Text style={[styles.collectionPct, { color: colors.cheque ?? '#d97706' }]}> ( {chequePct}%)</Text></Text>
         </View>
         <View style={[styles.collectionCard, { borderColor: colors.credit ?? '#6366f1' }]}>
           <Image source={require('../../assets/images/credit.png')} style={styles.collectionIcon} resizeMode="contain" />
           <Text style={[styles.collectionAmount, { color: colors.credit ?? '#6366f1' }]}>{formatShort(creditTotal)}</Text>
-          <Text style={styles.collectionLabel}>CREDIT</Text>
-          <Text style={[styles.collectionPct, { color: colors.credit ?? '#6366f1' }]}>{creditPct}%</Text>
+          <Text style={styles.sameRowText}><Text style={styles.collectionLabel}>CREDIT</Text>
+          <Text style={styles.sameRowText}><Text style={[styles.collectionPct, { color: colors.credit ?? '#6366f1' }]}>( {creditPct}%)</Text></Text></Text>
         </View>
       </View>
 
