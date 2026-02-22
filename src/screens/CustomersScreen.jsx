@@ -11,7 +11,8 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
-import { getCachedCustomers } from '../services/sync.service';
+import {getCachedCustomers, getFilteredCustomers, getUserSession} from '../services/sync.service';
+import {getCustomersByVehicleRoute} from "@/src/database/partners";
 
 export default function CustomersScreen({ navigation }) {
   const { colors } = useTheme();
@@ -64,9 +65,14 @@ export default function CustomersScreen({ navigation }) {
   );
 
   const loadCustomers = useCallback(async () => {
+      setLoading(true);
     try {
-      const data = await getCachedCustomers();
-      setCustomers(Array.isArray(data) ? data : []);
+        const session = await getUserSession();
+        const vehicleId = session?.vehicleId;
+        const data = await getCustomersByVehicleRoute(vehicleId);
+
+        // const data = await getFilteredCustomers(vehicleId);
+        setCustomers(Array.isArray(data) ? data : []);
     } catch (_) {
       setCustomers([]);
     } finally {
@@ -87,31 +93,54 @@ export default function CustomersScreen({ navigation }) {
   };
 
   const onCustomerPress = (customer) => {
-    navigation.navigate('Orders', { customerId: customer.id });
+    // navigation.navigate('Orders', { customerId: customer.id });
   };
 
-  const renderItem = ({ item }) => (
-    <TouchableOpacity
-      style={styles.item}
-      onPress={() => onCustomerPress(item)}
-      activeOpacity={0.7}
-    >
-      <View style={styles.itemIcon}>
-        <Ionicons name="person-outline" size={22} color={colors.primary} />
-      </View>
-      <View style={styles.itemContent}>
-        <Text style={styles.itemName} numberOfLines={1}>
-          {item.name || '—'}
-        </Text>
-        {item.phone ? (
-          <Text style={styles.itemPhone} numberOfLines={1}>
-            {item.phone}
-          </Text>
-        ) : null}
-      </View>
-      <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
-    </TouchableOpacity>
-  );
+    const renderItem = ({ item }) => (
+        <TouchableOpacity
+            style={styles.item}
+            onPress={() => onCustomerPress(item)}
+            activeOpacity={0.7}
+        >
+            <View style={styles.itemIcon}>
+                <Ionicons name="person-outline" size={22} color={colors.primary} />
+            </View>
+
+            <View style={styles.itemContent}>
+                <Text style={styles.itemName} numberOfLines={1}>
+                    {item.name || '—'}
+                </Text>
+                {item.city ? (
+                    <Text style={{ color: colors.textSecondary, fontSize: 13 }} numberOfLines={1}>
+                            {item.city}
+                        </Text>
+                ) : null}
+                {item.phone ? (
+                    <Text style={styles.itemPhone} numberOfLines={1}>
+                        {item.phone}
+                    </Text>
+                ) : null}
+            </View>
+
+            <View style={{
+                backgroundColor: colors.primary + '15',
+                paddingHorizontal: 8,
+                paddingVertical: 4,
+                borderRadius: 12,
+                marginRight: 8
+            }}>
+                <Text style={{
+                    color: colors.primary,
+                    fontSize: 12,
+                    fontWeight: '700'
+                }}>
+                    {item.total_orders} {item.total_orders === 1 ? 'Order' : 'Orders'}
+                </Text>
+            </View>
+
+            <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
+        </TouchableOpacity>
+    );
 
   if (loading) {
     return (

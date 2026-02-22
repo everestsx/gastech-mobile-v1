@@ -80,7 +80,14 @@ export async function getCachedCustomers() {
     return [];
   }
 }
-
+export async function getFilteredCustomers(vehicleId) {
+  try {
+    return await partnersDb.getCustomersByVehicle(vehicleId);
+  } catch (e) {
+    console.warn('getFilteredCustomers error:', e);
+    return [];
+  }
+}
 /**
  * @param {number | null} [vehicleId] - When set (vehicle login), return only orders for this vehicle.
  */

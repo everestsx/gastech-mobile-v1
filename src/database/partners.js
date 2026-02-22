@@ -36,3 +36,53 @@ export async function getAllPartners() {
     city: row.city,
   }));
 }
+/**
+ * Fetches unique customers (partners) assigned to a specific vehicle
+ * based on the sale orders existing in the local database.
+ */
+export async function getCustomersByVehicle(vehicleId) {
+  const db = await getDb();
+
+  // Using a JOIN to get full partner details for any partner
+  // that has at least one order assigned to this vehicle.
+  const query = `
+    SELECT DISTINCT p.* FROM partners p
+    INNER JOIN sale_orders s ON p.id = s.partner_id
+    WHERE s.vehicle_id = ?
+    ORDER BY p.name ASC
+  `;
+
+  try {
+    const results = await db.getAllAsync(query, [vehicleId]);
+    return results || [];
+  } catch (error) {
+    console.error("Error fetching customers by vehicle:", error);
+    return [];
+  }
+}
+
+export async function getCustomersByVehicleRoute(vehicleId) {
+  const db = await getDb();
+
+  const query = `
+    SELECT 
+      p.id, 
+      p.name, 
+      p.phone, 
+      p.city, 
+      COUNT(s.id) as total_orders
+    FROM partners p
+    INNER JOIN sale_orders s ON p.id = s.partner_id
+    WHERE s.vehicle_id = ?
+    GROUP BY p.id
+    ORDER BY p.name ASC
+  `;
+
+  try {
+    const results = await db.getAllAsync(query, [vehicleId]);
+    return results || [];
+  } catch (error) {
+    console.error("Error fetching customers with order count:", error);
+    return [];
+  }
+}
