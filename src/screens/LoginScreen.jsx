@@ -11,7 +11,7 @@ import {
   TextInput,
   KeyboardAvoidingView,
   Platform,
-
+  Modal, Keyboard,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import AppLogo from '../components/AppLogo';
@@ -78,17 +78,6 @@ export default function LoginScreen({ navigation }) {
   }, [loadVehicles]);
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const onSync = useCallback(async () => {
-    setSyncing(true);
-    try {
-      await runSync();
-      await loadVehicles();
-    } catch (e) {
-      showAlert('Sync failed', e?.message || 'Could not sync.');
-    } finally {
-      setSyncing(false);
-    }
-  }, [loadVehicles]);
 
   useEffect(() => {
     initData();
@@ -125,7 +114,68 @@ export default function LoginScreen({ navigation }) {
   };
 
 
+  const [dropdownPos, setDropdownPos] = useState({ top: 0, left: 0, width: 0 });
+  const dropdownRef = React.useRef(null);
+
+
+  const toggleDropdown = () => {
+    Keyboard.dismiss();
+    if (dropdownRef.current) {
+      // measureInWindow is more accurate for absolute Modal positioning
+      dropdownRef.current.measureInWindow((x, y, width, height) => {
+        setDropdownPos({
+          top: y + height - 2,
+          left: x,
+          width: width,
+        });
+        setDropdownVisible(true);
+      });
+    }
+  };
   const styles = useMemo(() => StyleSheet.create({
+
+
+    dropdownWrapper: {
+      zIndex: 1000,
+    },
+    fullScreenOverlay: {
+      flex: 1,
+      backgroundColor: 'transparent',
+    },
+    bottomFade: {
+      position: 'absolute',
+      bottom: 0,
+      left: 0,
+      right: 0,
+      height: 20,
+      opacity: 0.4,
+    },
+    floatingMenu: {
+      borderTopWidth: 0,
+      position: 'absolute',
+      maxHeight: 200,
+      borderRadius: borderRadius.lg,
+      borderWidth: 0,
+      borderColor: colors.primary,
+      backgroundColor: colors.surface,
+      shadowColor: colors.primary,
+      shadowOffset: { width: 0, height: 12 },
+      shadowOpacity: 0.25,
+      shadowRadius: 16,
+      elevation: 10,
+      zIndex: 9999,
+      marginTop: 0,
+      paddingTop: 0,
+      overflow: 'hidden'
+    },
+    optionRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingVertical: 16,
+      paddingHorizontal: 16,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.border,
+    },
     container: {
       flex: 1,
       backgroundColor: colors.surface
@@ -193,30 +243,7 @@ export default function LoginScreen({ navigation }) {
       fontWeight: '700',
       color: '#fff'
     },
-    dropdownListContainer: {
-      position: 'absolute',
-      top: 56,
-      left: 0,
-      right: 0,
-      backgroundColor: colors.surface,
-      borderRadius: borderRadius.md,
-      borderWidth: 1.5,
-      borderColor: colors.border,
-      maxHeight: 200,
-      zIndex: 3000,
-      elevation: 5,
-      shadowColor: '#000',
-      shadowOffset: { width: 0, height: 4 },
-      shadowOpacity: 0.15,
-      shadowRadius: 10,
-    },
-    optionRow: {
-      padding: 15,
-      borderBottomWidth: 1,
-      borderBottomColor: colors.border,
-      flexDirection: 'row',
-      alignItems: 'center',
-    },
+
   }), [colors]);
 
   const options = useMemo(() => vehicles, [vehicles]);
@@ -236,52 +263,86 @@ export default function LoginScreen({ navigation }) {
             </View>
 
             <View style={styles.formSection}>
-              <Text style={styles.inputLabel}>Vehicle ID</Text>
 
+              <View
+                  style={styles.dropdownWrapper}
+              >
+                <Text style={styles.inputLabel}>Vehicle ID</Text>
 
-              <View style={{ zIndex: 2000 }}>
                 <TouchableOpacity
-                    style={styles.inputGroup}
-                    onPress={() => setDropdownVisible(!dropdownVisible)}
+                    ref={dropdownRef}
+                    style={[styles.inputGroup, dropdownVisible && { borderColor: colors.primary }]}
+                    onPress={toggleDropdown}
                     activeOpacity={0.8}
                 >
                   <Ionicons name="bus-outline" size={20} color={colors.primary} style={{ marginRight: 12 }} />
                   <Text style={{ flex: 1, fontSize: 16, color: colors.text }}>{displayLabel}</Text>
-                  <Ionicons
-                      name={dropdownVisible ? "chevron-up" : "chevron-down"}
-                      size={20}
-                      color={colors.textSecondary}
-                  />
+                  <Ionicons name={dropdownVisible ? "chevron-up" : "chevron-down"} size={20} color={colors.textSecondary} />
                 </TouchableOpacity>
 
-
-                {dropdownVisible && (
-                    <View style={styles.dropdownListContainer}>
+                <Modal visible={dropdownVisible} transparent animationType="fade">
+                  <TouchableOpacity
+                      style={[styles.fullScreenOverlay, { backgroundColor: 'transparent' }]}
+                      activeOpacity={1}
+                      onPress={() => setDropdownVisible(false)}
+                  >
+                    <View
+                        style={[
+                          styles.floatingMenu,
+                          {
+                            backgroundColor: colors.surface,
+                            top: dropdownPos.top,
+                            left: dropdownPos.left,
+                            width: dropdownPos.width,
+                          },
+                        ]}
+                    >
                       <FlatList
                           data={options}
                           keyExtractor={(item) => String(item.id)}
-                          renderItem={({ item }) => (
-                              <TouchableOpacity
-                                  style={styles.optionRow}
-                                  onPress={() => {
-                                    setSelected(item);
-                                    setDropdownVisible(false);
-                                  }}
-                              >
-                                <Text style={{ flex: 1, fontSize: 15, color: colors.text }}>
-                                  {(item.license_plate || item.name)}
-                                </Text>
-                                {selected?.id === item.id && (
-                                    <Ionicons name="checkmark-circle" size={20} color={colors.primary} />
-                                )}
-                              </TouchableOpacity>
-                          )}
-                          nestedScrollEnabled={true}
+                          showsVerticalScrollIndicator={false}
+                          ListEmptyComponent={
+                            <View style={{ padding: 20, alignItems: 'center' }}>
+                              <Text style={{ color: colors.textSecondary }}>No vehicles found.</Text>
+                            </View>
+                          }
+                          renderItem={({ item }) => {
+                            const isSelected = selected?.id === item.id;
+                            return (
+                                <TouchableOpacity
+                                    style={[
+                                      styles.optionRow,
+                                      { borderBottomColor: colors.border },
+                                      isSelected && { backgroundColor: colors.primary + '10' },
+                                    ]}
+                                    onPress={() => {
+                                      setSelected(item);
+                                      setDropdownVisible(false);
+                                    }}
+                                >
+                                  <Text style={[
+                                    { flex: 1, fontSize: 15, color: colors.text },
+                                    isSelected && { fontWeight: '700', color: colors.primary }
+                                  ]}>
+                                    {item.license_plate || item.name}
+                                  </Text>
+
+                                  {isSelected && (
+                                      <Ionicons name="checkmark-circle" size={20} color={colors.primary} />
+                                  )}
+                                </TouchableOpacity>
+                            );
+                          }}
+                      />
+
+                      <View
+                          pointerEvents="none"
+                          style={[styles.bottomFade, { backgroundColor: colors.surface }]}
                       />
                     </View>
-                )}
+                  </TouchableOpacity>
+                </Modal>
               </View>
-
               <Text style={styles.inputLabel}>Password</Text>
               <View style={styles.inputGroup}>
                 <Ionicons name="lock-closed-outline" size={20} color={colors.primary} style={{ marginRight: 12 }} />
