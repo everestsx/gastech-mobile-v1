@@ -19,13 +19,25 @@ import {
   getSyncIntervalMinutes,
   deleteLocalData,
 } from '../services/sync.service';
-
+import CustomAlert from '../components/CustomAlert';
 export default function MenuScreen({ navigation }) {
   const { colors } = useTheme();
   const [syncing, setSyncing] = useState(false);
   const [lastSync, setLastSync] = useState(null);
   const [user, setUser] = useState(null);
+  const [alertConfig, setAlertConfig] = useState({
+    visible: false,
+    title: '',
+    message: '',
+    buttons: []
+  });
+  const showAlert = (title, message, buttons = []) => {
+    setAlertConfig({ visible: true, title, message, buttons });
+  };
 
+  const hideAlert = () => {
+    setAlertConfig(prev => ({ ...prev, visible: false }));
+  };
   const refreshLastSync = async () => {
     const t = await getLastSyncTime();
     setLastSync(t ? new Date(t) : null);
@@ -44,9 +56,9 @@ export default function MenuScreen({ navigation }) {
       const result = await runSync();
       await refreshLastSync();
       if (result.error) {
-        Alert.alert('Sync failed', result.error);
+        showAlert('Sync failed', result.error);
       } else {
-        Alert.alert(
+        showAlert(
           'Sync complete',
           `Customers: ${result.customers}, Orders: ${result.orders}`
         );
@@ -57,21 +69,22 @@ export default function MenuScreen({ navigation }) {
   };
 
   const handleDeleteLocalData = () => {
-    Alert.alert(
+    showAlert(
       'Delete local data',
       'This will remove all synced customers, orders, and other data from this device. Your login is not affected. Sync again to reload data from Odoo. Continue?',
       [
-        { text: 'Cancel', style: 'cancel' },
+        { text: 'Cancel', style: 'cancel', onPress : hideAlert },
         {
           text: 'Delete',
           style: 'destructive',
           onPress: async () => {
+          hideAlert()
             try {
               await deleteLocalData();
               await refreshLastSync();
-              Alert.alert('Done', 'Local data deleted. Use Sync to load data from Odoo again.');
+              showAlert('Done', 'Local data deleted. Use Sync to load data from Odoo again.');
             } catch (e) {
-              Alert.alert('Error', e?.message || 'Failed to delete local data.');
+              showAlert('Error', e?.message || 'Failed to delete local data.');
             }
           },
         },
@@ -80,8 +93,8 @@ export default function MenuScreen({ navigation }) {
   };
 
   const handleLogout = () => {
-    Alert.alert('Log out', 'Are you sure?', [
-      { text: 'Cancel', style: 'cancel' },
+    showAlert('Log out', 'Are you sure?', [
+      { text: 'Cancel', style: 'cancel', onPress:hideAlert },
       {
         text: 'Log out',
         style: 'destructive',
@@ -228,7 +241,15 @@ export default function MenuScreen({ navigation }) {
         <Ionicons name="log-out-outline" size={22} color={colors.error} />
         <Text style={[styles.logoutText, { color: colors.error }]}>Log out</Text>
       </TouchableOpacity>
+      <CustomAlert
+          visible={alertConfig.visible}
+          title={alertConfig.title}
+          message={alertConfig.message}
+          buttons={alertConfig.buttons}
+          onClose={hideAlert}
+      />
     </ScrollView>
+
   );
 }
 
