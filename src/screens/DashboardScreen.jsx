@@ -7,7 +7,6 @@ import {
   ScrollView,
   RefreshControl,
   ActivityIndicator,
-  Image,
   Platform,
 } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -200,10 +199,32 @@ export default function DashboardScreen({ navigation }) {
 
   const today = new Date().toISOString().split('T')[0];
   const todayOrders = orders.filter((o) => (o.date_order || '').startsWith(today));
+
+  const pickingStateBySaleId = useMemo(() => {
+    const map = {};
+    (pickingsBySaleId || []).forEach((p) => {
+      const sid = Array.isArray(p.sale_id) ? p.sale_id[0] : p.sale_id;
+      map[sid] = (p.state || '').toLowerCase();
+    });
+    return map;
+  }, [pickingsBySaleId]);
+
+  /** Today's orders that are actually delivered (picking state 'done') for this vehicle */
+  const deliveredTodayOrders = useMemo(
+    () => todayOrders.filter((o) => (pickingStateBySaleId[o.id] || '') === 'done'),
+    [todayOrders, pickingStateBySaleId]
+  );
+
   const totalSales = todayOrders.reduce((s, o) => s + (Number(o.amount_total) || 0), 0);
-  const cashTotal = todayOrders.reduce((s, o) => s + (Number(o.amount_total) || 0) * 0.5, 0);
-  const chequeTotal = todayOrders.reduce((s, o) => s + (Number(o.amount_total) || 0) * 0.25, 0);
-  const creditTotal = todayOrders.reduce((s, o) => s + (Number(o.amount_total) || 0) * 0.25, 0);
+  const cashTotal = deliveredTodayOrders
+    .filter((o) => (o.payment_type || '').toLowerCase() === 'cash')
+    .reduce((s, o) => s + (Number(o.amount_total) || 0), 0);
+  const chequeTotal = deliveredTodayOrders
+    .filter((o) => (o.payment_type || '').toLowerCase() === 'cheque')
+    .reduce((s, o) => s + (Number(o.amount_total) || 0), 0);
+  const creditTotal = deliveredTodayOrders
+    .filter((o) => (o.payment_type || '').toLowerCase() === 'credit')
+    .reduce((s, o) => s + (Number(o.amount_total) || 0), 0);
   const collectionTotal = cashTotal + chequeTotal + creditTotal || 1;
   const cashPct = Math.round((cashTotal / collectionTotal) * 100);
   const chequePct = Math.round((chequeTotal / collectionTotal) * 100);
@@ -215,19 +236,18 @@ export default function DashboardScreen({ navigation }) {
   const commissionEarned = Math.round(totalSales * 0.1) || 0;
   const commissionPct = Math.min(100, Math.round((commissionEarned / COMMISSION_TARGET) * 100));
 
-  const shopsCompleted = todayOrders.length;
-  const shopsPct = Math.min(100, Math.round((shopsCompleted / SHOPS_TARGET) * 100));
-  const totalGasDelivered = Object.values(lineTotalsByOrder).reduce((s, q) => s + (Number(q) || 0), 0);
-  const gasPct = Math.min(100, Math.round((totalGasDelivered / GAS_TARGET) * 100));
-
-  const pickingStateBySaleId = useMemo(() => {
-    const map = {};
-    (pickingsBySaleId || []).forEach((p) => {
-      const sid = Array.isArray(p.sale_id) ? p.sale_id[0] : p.sale_id;
-      map[sid] = (p.state || '').toLowerCase();
-    });
-    return map;
-  }, [pickingsBySaleId]);
+  const shopsCompleted = deliveredTodayOrders.length;
+  const totalShopsToday = todayOrders.length;
+  const shopsPct = totalShopsToday > 0 ? Math.min(100, Math.round((shopsCompleted / totalShopsToday) * 100)) : 0;
+  const totalGasDelivered = deliveredTodayOrders.reduce(
+    (s, o) => s + (Number(lineTotalsByOrder[o.id]) || 0),
+    0
+  );
+  const totalGasInOrders = todayOrders.reduce(
+    (s, o) => s + (Number(lineTotalsByOrder[o.id]) || 0),
+    0
+  );
+  const gasPct = totalGasInOrders > 0 ? Math.min(100, Math.round((totalGasDelivered / totalGasInOrders) * 100)) : 0;
 
   const chartDateOrders = useMemo(
     () => orders.filter((o) => (o.date_order || '').startsWith(selectedChartDate)),
@@ -593,34 +613,40 @@ export default function DashboardScreen({ navigation }) {
         <Text style={styles.commissionPct}>{commissionPct}% of target achieved</Text>
       </View>
 
-      {/* 3. Collection today - three cards: Cash, Cheque, Credit (real image icons) */}
+      {/* 3. Collection today - Cash, Cheque, Credit (actual full amounts from delivered orders) */}
       <View style={styles.collectionRow}>
         <View style={[styles.collectionCard, { borderColor: colors.cash ?? '#059669' }]}>
-          <Image source={require('../../assets/images/cash.png')} style={styles.collectionIcon} resizeMode="contain" />
-          <Text style={[styles.collectionAmount, { color: colors.cash ?? '#059669' }]}>{formatShort(cashTotal)}</Text>
-          <Text style={styles.sameRowText}><Text style={styles.collectionLabel}>CASH</Text>
-          <Text style={[styles.collectionPct, { color: colors.cash ?? '#059669' }]}> ( {cashPct}%)</Text></Text>
+          <Ionicons name="cash-outline" size={28} color={colors.cash ?? '#059669'} />
+          <Text style={[styles.collectionAmount, { color: colors.cash ?? '#059669' }]} numberOfLines={1}>
+            {formatCurrency(cashTotal)}
+          </Text>
+          <Text style={styles.collectionLabel}>CASH</Text>
+          <Text style={[styles.collectionPct, { color: colors.cash ?? '#059669' }]}> ( {cashPct}%)</Text>
         </View>
         <View style={[styles.collectionCard, { borderColor: colors.cheque ?? '#d97706' }]}>
-          <Image source={require('../../assets/images/cheque.png')} style={styles.collectionIcon} resizeMode="contain" />
-          <Text style={[styles.collectionAmount, { color: colors.cheque ?? '#d97706' }]}>{formatShort(chequeTotal)}</Text>
-          <Text style={styles.sameRowText}><Text style={styles.collectionLabel}>CHEQUE</Text>
-          <Text style={[styles.collectionPct, { color: colors.cheque ?? '#d97706' }]}> ( {chequePct}%)</Text></Text>
+          <Ionicons name="card-outline" size={28} color={colors.cheque ?? '#d97706'} />
+          <Text style={[styles.collectionAmount, { color: colors.cheque ?? '#d97706' }]} numberOfLines={1}>
+            {formatCurrency(chequeTotal)}
+          </Text>
+          <Text style={styles.collectionLabel}>CHEQUE</Text>
+          <Text style={[styles.collectionPct, { color: colors.cheque ?? '#d97706' }]}> ( {chequePct}%)</Text>
         </View>
         <View style={[styles.collectionCard, { borderColor: colors.credit ?? '#6366f1' }]}>
-          <Image source={require('../../assets/images/credit.png')} style={styles.collectionIcon} resizeMode="contain" />
-          <Text style={[styles.collectionAmount, { color: colors.credit ?? '#6366f1' }]}>{formatShort(creditTotal)}</Text>
-          <Text style={styles.sameRowText}><Text style={styles.collectionLabel}>CREDIT</Text>
-          <Text style={styles.sameRowText}><Text style={[styles.collectionPct, { color: colors.credit ?? '#6366f1' }]}>( {creditPct}%)</Text></Text></Text>
+          <Ionicons name="wallet-outline" size={28} color={colors.credit ?? '#6366f1'} />
+          <Text style={[styles.collectionAmount, { color: colors.credit ?? '#6366f1' }]} numberOfLines={1}>
+            {formatCurrency(creditTotal)}
+          </Text>
+          <Text style={styles.collectionLabel}>CREDIT</Text>
+          <Text style={[styles.collectionPct, { color: colors.credit ?? '#6366f1' }]}> ( {creditPct}%)</Text>
         </View>
       </View>
 
-      {/* 4. Shops Completed & Total Gas Delivered */}
+      {/* 4. Shops Completed (delivered/total) & Gas Delivered (delivered/total) */}
       <View style={styles.shopsGasRow}>
         <View style={styles.shopsGasCard}>
           <View style={{ flexDirection: 'row', alignItems: 'baseline' }}>
             <Text style={[styles.shopsGasValue, { color: colors.primary }]}>{shopsCompleted}</Text>
-            <Text style={[styles.shopsGasTarget, { color: colors.textSecondary }]}>/{SHOPS_TARGET}</Text>
+            <Text style={[styles.shopsGasTarget, { color: colors.textSecondary }]}>/{totalShopsToday}</Text>
           </View>
           <Text style={styles.shopsGasLabel}>SHOPS COMPLETED</Text>
           <Text style={styles.shopsGasPct}>{shopsPct}% Complete</Text>
@@ -630,9 +656,9 @@ export default function DashboardScreen({ navigation }) {
             <Text style={[styles.shopsGasValue, { color: colors.warning ?? '#d97706' }]}>
               {totalGasDelivered.toLocaleString('en-IN')}
             </Text>
-            <Text style={[styles.shopsGasTarget, { color: colors.textSecondary }]}>/{GAS_TARGET.toLocaleString('en-IN')}</Text>
+            <Text style={[styles.shopsGasTarget, { color: colors.textSecondary }]}>/{totalGasInOrders.toLocaleString('en-IN')}</Text>
           </View>
-          <Text style={styles.shopsGasLabel}>TOTAL GAS DELIVERED</Text>
+          <Text style={styles.shopsGasLabel}>GAS DELIVERED</Text>
           <Text style={styles.shopsGasPct}>{gasPct}% Complete</Text>
         </View>
       </View>

@@ -26,6 +26,7 @@ import OrderCard from '../components/OrderCard';
 const TAB_CASH = 'cash';
 const TAB_CHEQUE = 'cheque';
 const TAB_CREDIT = 'credit';
+const TAB_ALL = 'all';
 
 function formatDate(d) {
   return d.toISOString().split('T')[0];
@@ -54,6 +55,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
     if (activeTab === TAB_CASH) return deliveredOrders.filter((o) => (o.payment_type || '').toLowerCase() === 'cash');
     if (activeTab === TAB_CHEQUE) return deliveredOrders.filter((o) => (o.payment_type || '').toLowerCase() === 'cheque');
     if (activeTab === TAB_CREDIT) return deliveredOrders.filter((o) => (o.payment_type || '').toLowerCase() === 'credit');
+    if (activeTab === TAB_ALL) return deliveredOrders;
     return deliveredOrders;
   }, [deliveredOrders, activeTab]);
 
@@ -62,6 +64,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
       [TAB_CASH]: deliveredOrders.filter((o) => (o.payment_type || '').toLowerCase() === 'cash').length,
       [TAB_CHEQUE]: deliveredOrders.filter((o) => (o.payment_type || '').toLowerCase() === 'cheque').length,
       [TAB_CREDIT]: deliveredOrders.filter((o) => (o.payment_type || '').toLowerCase() === 'credit').length,
+      [TAB_ALL]: deliveredOrders.length,
     }),
     [deliveredOrders]
   );
@@ -335,6 +338,19 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
               </Text>
             </View>
           </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.tab, activeTab === TAB_ALL && styles.tabActive]}
+            onPress={() => setActiveTab(TAB_ALL)}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="list-outline" size={18} color={activeTab === TAB_ALL ? '#fff' : colors.text} />
+            <Text style={[styles.tabText, activeTab === TAB_ALL && styles.tabTextActive]}>All</Text>
+            <View style={[styles.tabBadge, activeTab === TAB_ALL && styles.tabBadgeActive]}>
+              <Text style={[styles.tabBadgeText, activeTab === TAB_ALL && styles.tabBadgeTextActive]}>
+                {tabCounts[TAB_ALL]}
+              </Text>
+            </View>
+          </TouchableOpacity>
         </ScrollView>
       </View>
 
@@ -345,12 +361,14 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
         ListEmptyComponent={
           <View style={styles.empty}>
             <Ionicons
-              name={activeTab === TAB_CASH ? 'cash-outline' : activeTab === TAB_CHEQUE ? 'card-outline' : 'wallet-outline'}
+              name={activeTab === TAB_ALL ? 'checkmark-done-outline' : activeTab === TAB_CASH ? 'cash-outline' : activeTab === TAB_CHEQUE ? 'card-outline' : 'wallet-outline'}
               size={48}
               color={colors.textSecondary}
             />
             <Text style={styles.emptyText}>
-              No delivered orders paid by {activeTab === TAB_CASH ? 'Cash' : activeTab === TAB_CHEQUE ? 'Cheque' : 'Credit'} for this date
+              {activeTab === TAB_ALL
+                ? 'No delivered orders for this date'
+                : `No delivered orders paid by ${activeTab === TAB_CASH ? 'Cash' : activeTab === TAB_CHEQUE ? 'Cheque' : 'Credit'} for this date`}
             </Text>
             <Text style={styles.emptyHint}>Delivered & paid orders appear here after payment</Text>
           </View>
