@@ -13,13 +13,14 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { getSaleOrderDetailsFromDB, getDeliveryDataFromDB } from '../services/sync.service';
+import { getSaleOrderDetailsFromDB,getCachedVehicleInventory, getDeliveryDataFromDB } from '../services/sync.service';
 import * as saleOrderLinesDb from '../database/saleOrderLines.js';
 import * as saleOrdersDb from '../database/saleOrders.js';
 import * as stockMoveLinesDb from '../database/stockMoveLines.js';
 import * as stockMovesDb from '../database/stockMoves.js';
 import * as stockPickingsDb from '../database/stockPickings.js';
 import * as syncQueueDb from '../database/syncQueue.js';
+import * as vehicleInventoriesDb from '../database/vehicleInventories.js';
 import {
   buildProductIdToMoveLineIdMap,
   buildProductIdToMoveIdMap,
@@ -71,6 +72,12 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
   const styles = useMemo(
     () =>
       StyleSheet.create({
+          stockWarningText: {
+            fontSize: 12,
+            color: colors.error || '#c00',
+            marginTop: 4,
+            fontWeight: '600'
+          },
         container: { flex: 1, backgroundColor: colors.background },
         center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.background },
         scroll: { flex: 1 },
@@ -281,6 +288,63 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
     [colors, insets.bottom]
   );
 
+  const updateVehicleInventory = useCallback(async (effectiveQtys) => {
+    const vehicleId = order?.vehicle_id != null
+      ? (Array.isArray(order.vehicle_id) ? order.vehicle_id[0] : order.vehicle_id)
+      : null;
+
+    if (vehicleId == null) {
+      console.warn('No vehicle ID found for inventory update');
+      return;
+    }
+
+    console.log('[Inventory Update] Starting update for vehicle:', vehicleId);
+
+    try {
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const qtyUsed = effectiveQtys[i] != null ? Number(effectiveQtys[i]) : Number(line.newQty);
+        const productId = Array.isArray(line.product_id) ? line.product_id[0] : line.product_id;
+
+        if (productId == null || qtyUsed <= 0) continue;
+
+        const currentStock = productIdToAvailable[productId] ?? 0;
+        const newStock = Math.max(0, currentStock - qtyUsed);
+
+        console.log(`[Inventory Update] Product ${productId}: ${currentStock} - ${qtyUsed} = ${newStock}`);
+
+        await vehicleInventoriesDb.updateVehicleInventoryQuantity(
+          vehicleId,
+          productId,
+          newStock
+        );
+
+        const updated = await vehicleInventoriesDb.getVehicleInventoryByVehicleId(vehicleId);
+        const verifyItem = updated.find(inv =>
+          (inv.product_id === productId || inv.id === productId)
+        );
+        console.log(`[Inventory Update] Verified new stock:`, verifyItem?.available_quantity);
+      }
+
+      await syncQueueDb.enqueue(syncQueueDb.ACTION_INVENTORY_UPDATE, {
+        vehicleId,
+        updates: lines.map((line, i) => {
+          const productId = Array.isArray(line.product_id) ? line.product_id[0] : line.product_id;
+          const qtyUsed = effectiveQtys[i] != null ? Number(effectiveQtys[i]) : Number(line.newQty);
+          return {
+            productId,
+            quantityUsed: qtyUsed,
+            newQuantity: Math.max(0, (productIdToAvailable[productId] ?? 0) - qtyUsed)
+          };
+        }).filter(u => u.productId != null)
+      });
+
+      console.log('[Inventory Update] Complete - enqueued for sync');
+    } catch (error) {
+      console.error('[Inventory Update] Failed:', error);
+      throw new Error('Failed to update vehicle inventory');
+    }
+  }, [order, lines, productIdToAvailable]);
   const loadDetails = useCallback(async () => {
     setLoading(true);
     try {
@@ -301,22 +365,30 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
       setQtyChanged(false);
       const { picking } = await getDeliveryDataFromDB(saleOrderId);
       setIsDelivered(picking?.state === 'done');
-      const vehicleId = data.order?.vehicle_id != null ? (Array.isArray(data.order.vehicle_id) ? data.order.vehicle_id[0] : data.order.vehicle_id) : null;
-      if (vehicleId != null) {
-        try {
-          const inventories = await vehicleInventoriesDb.getVehicleInventoryByVehicleId(vehicleId);
-          const map = {};
-          (inventories || []).forEach((inv) => {
-            const pid = inv.product_id != null ? inv.product_id : inv.id;
-            if (pid != null) map[pid] = Number(inv.available_quantity) ?? 0;
-          });
-          setProductIdToAvailable(map);
-        } catch {
+
+
+        const vehicleId = data.order?.vehicle_id != null
+          ? (Array.isArray(data.order.vehicle_id) ? data.order.vehicle_id[0] : data.order.vehicle_id)
+          : null;
+
+        if (vehicleId != null) {
+          try {
+            const inventories = await getCachedVehicleInventory(vehicleId);
+            const map = {};
+            (inventories || []).forEach((inv) => {
+              const pid = inv.product_id != null ? inv.product_id : inv.id;
+              if (pid != null) {
+                map[pid] = Number(inv.available_quantity) ?? 0;
+              }
+            });
+            setProductIdToAvailable(map);
+          } catch (error) {
+            console.error('Failed to load vehicle inventory:', error);
+            setProductIdToAvailable({});
+          }
+        } else {
           setProductIdToAvailable({});
         }
-      } else {
-        setProductIdToAvailable({});
-      }
     } catch (_) {
       setOrder(null);
       setLines([]);
@@ -330,50 +402,86 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
     loadDetails();
   }, [loadDetails]);
 
-  const setLineQty = useCallback((lineId, value) => {
-    setUpdateError(null);
-    const trimmed = value.replace(/[^0-9.]/g, '');
-    const num = trimmed === '' ? 0 : parseFloat(trimmed);
-    const safeQty = isNaN(num) || num < 0 ? 0 : num;
-    setLines((prev) =>
-      prev.map((l) =>
-        l.id === lineId ? { ...l, newQty: trimmed === '' ? '' : String(safeQty) } : l
-      )
-    );
-    setQtyChanged(true);
-  }, []);
+    const setLineQty = useCallback((lineId, value) => {
+      setUpdateError(null);
+      const trimmed = value.replace(/[^0-9.]/g, '');
+      const num = trimmed === '' ? 0 : parseFloat(trimmed);
+      let safeQty = isNaN(num) || num < 0 ? 0 : num;
 
-  const changeQtyBy = useCallback((lineId, delta) => {
-    setUpdateError(null);
-    const MAX_QTY = 9999;
-    setLines((prev) =>
-      prev.map((l) => {
-        if (l.id !== lineId) return l;
-        const current = parseFloat(l.newQty) || 0;
-        const next = Math.max(1, Math.min(MAX_QTY, current + delta));
-        return { ...l, newQty: String(next) };
-      })
-    );
-    setQtyChanged(true);
-  }, []);
+      setLines((prev) => {
+        // Find the line from the previous state
+        const line = prev.find(l => l.id === lineId);
 
+        if (line) {
+          const productId = Array.isArray(line.product_id) ? line.product_id[0] : line.product_id;
+
+          // Check against available stock
+          if (productId != null && productIdToAvailable[productId] !== undefined) {
+            const maxAllowed = productIdToAvailable[productId];
+            safeQty = Math.min(safeQty, maxAllowed);
+          }
+        }
+
+        return prev.map((l) =>
+          l.id === lineId
+            ? { ...l, newQty: trimmed === '' ? '' : String(safeQty) }
+            : l
+        );
+      });
+
+      setQtyChanged(true);
+    }, [productIdToAvailable]);
+const changeQtyBy = useCallback((lineId, delta) => {
+  setUpdateError(null);
+  const MAX_QTY = 9999;
+  setLines((prev) =>
+    prev.map((l) => {
+      if (l.id !== lineId) return l;
+
+      const current = parseFloat(l.newQty) || 0;
+      let next = current + delta;
+
+
+      const productId = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
+      if (productId != null && productIdToAvailable[productId] !== undefined) {
+        const maxAllowed = Math.min(MAX_QTY, productIdToAvailable[productId]);
+        next = Math.max(1, Math.min(maxAllowed, next));
+      } else {
+        next = Math.max(1, Math.min(MAX_QTY, next));
+      }
+
+      return { ...l, newQty: String(next) };
+    })
+  );
+  setQtyChanged(true);
+}, [productIdToAvailable]);
   const hasQtyChanges = useCallback(() => {
     return lines.some(
       (l) => Number(l.newQty) !== Number(l.product_uom_qty)
     );
   }, [lines]);
 
-  /** Validate: each line qty >= 1 (upselling/downselling allowed; backorder only when partial). */
-  const validateQuantities = useCallback(() => {
-    for (const l of lines) {
-      const qty = Number(l.newQty);
-      if (Number.isNaN(qty) || qty < 1) {
-        return `Quantity for "${getProductDisplayName(l.product_id?.[1] ?? l.name ?? '')}" must be at least 1 (cannot be 0)`;
+const validateQuantities = useCallback(() => {
+  for (const l of lines) {
+    const qty = Number(l.newQty);
+    const productName = getProductDisplayName(l.product_id?.[1] ?? l.name ?? '');
+
+
+    if (Number.isNaN(qty) || qty < 1) {
+      return `Quantity for "${productName}" must be at least 1 (cannot be 0)`;
+    }
+
+
+    const productId = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
+    if (productId != null && productIdToAvailable[productId] !== undefined) {
+      const availableStock = productIdToAvailable[productId];
+      if (qty > availableStock) {
+        return `Insufficient stock for "${productName}". Available: ${availableStock}, Requested: ${qty}`;
       }
     }
-    return null;
-  }, [lines]);
-
+  }
+  return null;
+}, [lines, productIdToAvailable]);
   /** Apply qty updates locally (offline DB) and enqueue for sync. No Odoo calls. */
   const applyQtyDoneAndValidate = useCallback(
     async (effectiveQtys, markDeliveryDone = false) => {
@@ -426,7 +534,21 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
     },
     [order?.id, lines]
   );
+const getStockWarning = useCallback((lineId) => {
+  const line = lines.find(l => l.id === lineId);
+  if (!line) return null;
 
+  const qty = Number(line.newQty);
+  const productId = Array.isArray(line.product_id) ? line.product_id[0] : line.product_id;
+
+  if (productId != null && productIdToAvailable[productId] !== undefined) {
+    const availableStock = productIdToAvailable[productId];
+    if (qty > availableStock) {
+      return `Exceeds available stock (${availableStock})`;
+    }
+  }
+  return null;
+}, [lines, productIdToAvailable]);
   const updateQty = async () => {
     const validationError = validateQuantities();
     if (validationError) {
@@ -448,50 +570,53 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
     }
   };
 
-  /** Proceed to payment: save qtys locally, mark delivery done, enqueue, then navigate. */
-  const handleProceedToPayment = useCallback(async () => {
-    const noChanges = !hasQtyChanges();
-    if (!noChanges) {
-      const validationError = validateQuantities();
-      if (validationError) {
-        setUpdateError(validationError);
-        return;
-      }
+const handleProceedToPayment = useCallback(async () => {
+  const noChanges = !hasQtyChanges();
+  if (!noChanges) {
+    const validationError = validateQuantities();
+    if (validationError) {
+      setUpdateError(validationError);
+      return;
     }
-    setUpdateError(null);
-    setUpdating(true);
-    try {
-      const effectiveQtys = noChanges
-        ? lines.map((l) => Number(l.product_uom_qty) ?? 0)
-        : lines.map((l) => l.newQty);
-      await applyQtyDoneAndValidate(effectiveQtys, true);
+  }
+  setUpdateError(null);
+  setUpdating(true);
+  try {
+    const effectiveQtys = noChanges
+      ? lines.map((l) => Number(l.product_uom_qty) ?? 0)
+      : lines.map((l) => l.newQty);
 
-      const subtotal =
-        !noChanges && lines.length
-          ? lines.reduce((sum, l) => sum + (Number(l.price_subtotal) || 0), 0)
-          : lines.reduce((sum, l) => sum + (Number(l.newQty) || 0) * (Number(l.price_unit) || 0), 0);
-      const tax =
-        !noChanges && lines.length
-          ? lines.reduce((sum, l) => sum + ((Number(l.price_total) || 0) - (Number(l.price_subtotal) || 0)), 0)
-          : lines.reduce((sum, l) => {
-              const lineTax = (Number(l.price_total) || 0) - (Number(l.price_subtotal) || 0);
-              const origQty = Number(l.product_uom_qty) || 1;
-              return sum + (origQty ? (lineTax / origQty) * (Number(l.newQty) || 0) : 0);
-            }, 0);
-      const total = subtotal + tax;
 
-      navigation.navigate('ProceedPayment', {
-        saleOrderId: order.id,
-        total: total ?? order.amount_total,
-        deliveryDone: true,
-      });
-    } catch (err) {
-      setUpdateError(err?.message ?? 'Delivery update failed. Please try again.');
-    } finally {
-      setUpdating(false);
-    }
-  }, [order, lines, validateQuantities, hasQtyChanges, applyQtyDoneAndValidate, navigation]);
+    await applyQtyDoneAndValidate(effectiveQtys, true);
 
+    // Update vehicle inventory - deduct stock
+    await updateVehicleInventory(effectiveQtys);
+
+    const subtotal =
+      !noChanges && lines.length
+        ? lines.reduce((sum, l) => sum + (Number(l.price_subtotal) || 0), 0)
+        : lines.reduce((sum, l) => sum + (Number(l.newQty) || 0) * (Number(l.price_unit) || 0), 0);
+    const tax =
+      !noChanges && lines.length
+        ? lines.reduce((sum, l) => sum + ((Number(l.price_total) || 0) - (Number(l.price_subtotal) || 0)), 0)
+        : lines.reduce((sum, l) => {
+            const lineTax = (Number(l.price_total) || 0) - (Number(l.price_subtotal) || 0);
+            const origQty = Number(l.product_uom_qty) || 1;
+            return sum + (origQty ? (lineTax / origQty) * (Number(l.newQty) || 0) : 0);
+          }, 0);
+    const total = subtotal + tax;
+
+    navigation.navigate('ProceedPayment', {
+      saleOrderId: order.id,
+      total: total ?? order.amount_total,
+      deliveryDone: true,
+    });
+  } catch (err) {
+    setUpdateError(err?.message ?? 'Delivery update failed. Please try again.');
+  } finally {
+    setUpdating(false);
+  }
+}, [order, lines, validateQuantities, hasQtyChanges, applyQtyDoneAndValidate, updateVehicleInventory, navigation]);
   /** Subtotal from lines: sum of price_subtotal, or when qty changed sum of price_unit * newQty */
   const computedSubtotal = useMemo(() => {
     if (!lines.length) return 0;
@@ -576,8 +701,15 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
                 </View>
                 {availableStock !== undefined && (
                   <View style={styles.availableStockRow}>
-                    <Text style={styles.availableStockText}>Available Stock: {availableStock}</Text>
+                    <Text style={styles.availableStockText}>
+                      Available Stock: {availableStock}
+                    </Text>
                   </View>
+                )}
+                {getStockWarning(item.id) && (
+                  <Text style={styles.stockWarningText}>
+                    {getStockWarning(item.id)}
+                  </Text>
                 )}
               </>
             ) : (

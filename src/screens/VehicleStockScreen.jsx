@@ -128,9 +128,14 @@ export default function VehicleStockScreen({ navigation }) {
   const load = useCallback(async () => {
     const session = await getUserSession();
     setUser(session || null);
-    if (session?.isAdmin === false && session.vehicleId != null) {
-      const list = await getCachedVehicleInventory(session.vehicleId);
-      setInventory(Array.isArray(list) ? list : []);
+
+    // Convert to Number to ensure SQLite match
+    const vId = session?.vehicleId ? Number(session.vehicleId) : null;
+
+    if (vId) {
+      const data = await getCachedVehicleInventory(vId);
+      console.log(`[UI Debug] Found ${data.length} items for vehicle ${vId}`);
+      setInventory(Array.isArray(data) ? data : []);
     } else {
       setInventory([]);
     }
@@ -199,15 +204,6 @@ export default function VehicleStockScreen({ navigation }) {
     );
   }
 
-  if (user?.isAdmin !== false) {
-    return (
-      <View style={[screenStyles.container, screenStyles.empty]}>
-        <Ionicons name="cube-outline" size={56} color={colors.textSecondary} style={{ marginBottom: spacing.md }} />
-        <Text style={screenStyles.emptyText}>My Stocks</Text>
-        <Text style={screenStyles.hint}>Log in as a vehicle to see that vehicle's product stock.</Text>
-      </View>
-    );
-  }
 
   if (inventory.length === 0) {
     return (

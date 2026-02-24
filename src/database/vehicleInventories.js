@@ -36,6 +36,8 @@ export async function upsertVehicleInventories(rows) {
 export async function getVehicleInventoryByVehicleId(vehicleId) {
   if (vehicleId == null) return [];
   const db = await getDb();
+  const total = await db.getFirstAsync('SELECT COUNT(*) as count FROM vehicle_inventories');
+  console.log(`[DB Debug] Total rows in inventory table: ${total.count}`);
   const rows = await db.getAllAsync(
     'SELECT id, location_id, vehicle_id, product_id, product_name, quantity, available_quantity FROM vehicle_inventories WHERE vehicle_id = ? ORDER BY product_name',
     [vehicleId]
@@ -65,4 +67,15 @@ export async function getAllVehicleInventories() {
     quantity: row.quantity,
     available_quantity: row.available_quantity,
   }));
+}
+
+export async function updateVehicleInventoryQuantity(vehicleId, productId, newQuantity) {
+  const db = await getDb();
+  await db.executeSqlAsync(
+    `UPDATE vehicle_inventories 
+     SET available_quantity = ?, 
+         updated_at = datetime('now')
+     WHERE vehicle_id = ? AND product_id = ?`,
+    [newQuantity, vehicleId, productId]
+  );
 }
