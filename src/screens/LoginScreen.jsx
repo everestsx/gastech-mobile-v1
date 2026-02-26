@@ -96,6 +96,7 @@ export default function LoginScreen({ navigation }) {
       }
 
       await saveUserSession({
+        isAdmin: false,
         vehicleId: selected.id,
         vehicleName: selected.name,
         licensePlate: selected.license_plate || '',

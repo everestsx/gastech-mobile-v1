@@ -1,0 +1,128 @@
+/**
+ * Offline payment proof images: store local file path only (no base64).
+ * Sync reads file → base64 at sync time; single message_post with attachments array.
+ * Duplicate protection: if sync_status === 'synced' never resend.
+ */
+import { getDb } from './db.js';
+import { empty, num, iso } from './dbHelpers.js';
+
+export const SYNC_STATUS_PENDING = 'pending';
+export const SYNC_STATUS_SYNCED = 'synced';
+export const SYNC_STATUS_FAILED = 'failed';
+
+export const MAX_RETRIES = 5;
+
+/**
+ * Insert a pending attachment (photo saved to device; will be uploaded on sync).
+ * @param {object} row - { sale_order_id, local_file_path, file_name, mime_type }
+ * @returns {Promise<number>} Insert id
+ */
+export async function insert(row) {
+  const db = await getDb();
+  const result = await db.runAsync(
+    `INSERT INTO offline_attachments (sale_order_id, local_file_path, file_name, mime_type, sync_status, retry_count, created_at)
+     VALUES (?, ?, ?, ?, ?, 0, ?)`,
+    [
+      num(row.sale_order_id),
+      empty(row.local_file_path),
+      empty(row.file_name),
+      empty(row.mime_type) || 'image/jpeg',
+      SYNC_STATUS_PENDING,
+      iso(),
+    ]
+  );
+  return result.lastInsertRowId;
+}
+
+/**
+ * Get all pending attachments for a sale order (sync_status = pending, retry_count < MAX_RETRIES).
+ * Do NOT return if sync_status === 'synced' (duplicate protection).
+ */
+export async function getPendingBySaleOrderId(saleOrderId) {
+  const db = await getDb();
+  const rows = await db.getAllAsync(
+    `SELECT id, sale_order_id, local_file_path, file_name, mime_type, sync_status, retry_count
+     FROM offline_attachments
+     WHERE sale_order_id = ? AND sync_status = ? AND retry_count < ?
+     ORDER BY id ASC`,
+    [num(saleOrderId), SYNC_STATUS_PENDING, MAX_RETRIES]
+  );
+  return (rows || []).map((r) => ({
+    id: r.id,
+    sale_order_id: r.sale_order_id,
+    local_file_path: r.local_file_path,
+    file_name: r.file_name,
+    mime_type: r.mime_type,
+    sync_status: r.sync_status,
+    retry_count: r.retry_count,
+  }));
+}
+
+/**
+ * Get all pending attachments across all sale orders (for sync engine).
+ * Process in batches; max 3 uploads at a time per doc.
+ */
+export async function getAllPending(limit = 50) {
+  const db = await getDb();
+  const rows = await db.getAllAsync(
+    `SELECT id, sale_order_id, local_file_path, file_name, mime_type, sync_status, retry_count
+     FROM offline_attachments
+     WHERE sync_status = ? AND retry_count < ?
+     ORDER BY created_at ASC
+     LIMIT ?`,
+    [SYNC_STATUS_PENDING, MAX_RETRIES, limit]
+  );
+  return (rows || []).map((r) => ({
+    id: r.id,
+    sale_order_id: r.sale_order_id,
+    local_file_path: r.local_file_path,
+    file_name: r.file_name,
+    mime_type: r.mime_type,
+    sync_status: r.sync_status,
+    retry_count: r.retry_count,
+  }));
+}
+
+/**
+ * Mark attachment as synced (upload succeeded). Set synced_at = now.
+ */
+export async function markSynced(id) {
+  const db = await getDb();
+  const now = iso();
+  await db.runAsync(
+    `UPDATE offline_attachments SET sync_status = ?, synced_at = ?, last_error = NULL WHERE id = ?`,
+    [SYNC_STATUS_SYNCED, now, num(id)]
+  );
+}
+
+/**
+ * Mark a single attachment as failed (file missing / invalid base64). Do not retry.
+ */
+export async function markFailed(id, lastError) {
+  const db = await getDb();
+  await db.runAsync(
+    `UPDATE offline_attachments SET sync_status = ?, last_error = ? WHERE id = ?`,
+    [SYNC_STATUS_FAILED, empty(lastError), num(id)]
+  );
+}
+
+/**
+ * Increment retry_count and set last_error; if >= MAX_RETRIES, set sync_status = 'failed'.
+ */
+export async function incrementRetry(id, lastError = '') {
+  const db = await getDb();
+  await db.runAsync(
+    `UPDATE offline_attachments SET retry_count = retry_count + 1, last_error = ? WHERE id = ?`,
+    [empty(lastError), num(id)]
+  );
+  const row = await db.getFirstAsync(
+    'SELECT retry_count FROM offline_attachments WHERE id = ?',
+    [num(id)]
+  );
+  if (row && row.retry_count >= MAX_RETRIES) {
+    await db.runAsync(
+      `UPDATE offline_attachments SET sync_status = ? WHERE id = ?`,
+      [SYNC_STATUS_FAILED, num(id)]
+    );
+  }
+}

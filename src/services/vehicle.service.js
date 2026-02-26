@@ -15,6 +15,20 @@ export const getVehicles = () =>
   );
 
 /**
+ * Get a single vehicle by id (for vehicle-scoped sync; avoids fetching all vehicles).
+ */
+export const getVehicleById = (vehicleId) =>
+  callOdoo(
+    "fleet.vehicle",
+    "search_read",
+    [[["id", "=", vehicleId]]],
+    {
+      fields: ["id", "name", "license_plate", "model_id"],
+      limit: 1,
+    }
+  ).then((rows) => (Array.isArray(rows) && rows.length > 0 ? rows[0] : null));
+
+/**
  * Validates credentials directly against the Odoo fleet.vehicle model.
  */
 export const authenticateVehicleOnline = async (vehicleId, enteredPassword) => {

@@ -20,7 +20,10 @@ import { spacing, borderRadius } from '../constants/theme';
 import { getCachedJournals, getSaleOrderDetailsFromDB } from '../services/sync.service';
 import * as saleOrdersDb from '../database/saleOrders.js';
 import * as syncQueueDb from '../database/syncQueue.js';
+import * as offlineAttachmentsDb from '../database/offlineAttachments.js';
+import * as FileSystem from 'expo-file-system';
 import { JOURNAL_CODE_CASH, JOURNAL_CODE_CHEQUE } from '../constants/journals';
+import { SRI_LANKA_BANKS } from '../constants/sriLankaBanks';
 import { formatAmount } from '../utils/format';
 
 const PAYMENT_CASH = 'cash';
@@ -39,8 +42,8 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   const [cashAmount, setCashAmount] = useState('');
   const [checkAmount, setCheckAmount] = useState('');
   const [selectedJournalId, setSelectedJournalId] = useState(null);
-  const [journalSearch, setJournalSearch] = useState('');
   const [checkNumber, setCheckNumber] = useState('');
+  const [selectedLocalBankId, setSelectedLocalBankId] = useState(null);
   const [deliveryPhotos, setDeliveryPhotos] = useState([]);
   const cashInputRef = useRef(null);
   const checkInputRef = useRef(null);
@@ -71,22 +74,6 @@ export default function ProceedPaymentScreen({ route, navigation }) {
     [journals]
   );
   const journalsForType = selectedPaymentMethods.includes(PAYMENT_CHECK) ? chequeJournals : [];
-  const filteredJournals = useMemo(() => {
-    const q = (journalSearch || '').trim().toLowerCase();
-    if (!q) return journalsForType;
-    return journalsForType.filter(
-      (j) =>
-        (j.name || '').toLowerCase().includes(q) ||
-        (j.code || '').toLowerCase().includes(q)
-    );
-  }, [journalSearch, journalsForType]);
-
-  const selectedJournal =
-    selectedJournalId != null ? journals.find((j) => j.id === selectedJournalId) : null;
-  const isSelectedJournalValid =
-    selectedJournal &&
-    (selectedJournal.code?.toUpperCase() === JOURNAL_CODE_CHEQUE || (selectedJournal.name || '').toLowerCase().includes('cheque'));
-
   const cashAmountNum = useMemo(() => {
     if (!selectedPaymentMethods.includes(PAYMENT_CASH)) return 0;
     const n = parseFloat(String(cashAmount).replace(/,/g, ''));
@@ -107,11 +94,16 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   const hasAnyPayment = totalEntered > 0;
 
   const checkNumberTrimmed = useMemo(() => (checkNumber != null ? String(checkNumber).trim() : ''), [checkNumber]);
+  const selectedLocalBank = useMemo(
+    () => (selectedLocalBankId ? SRI_LANKA_BANKS.find((b) => b.id === selectedLocalBankId) : null),
+    [selectedLocalBankId]
+  );
+  const chequeJournalInternal = chequeJournals[0];
   const paymentComplete =
     hasAnyPayment &&
     totalEntered >= orderTotal &&
     (cashAmountNum <= 0 || (cashJournalPreferred != null)) &&
-    (checkAmountNum <= 0 || (!!isSelectedJournalValid && (selectedJournalId != null) && checkNumberTrimmed !== '')) &&
+    (checkAmountNum <= 0 || (chequeJournalInternal != null && checkNumberTrimmed !== '' && selectedLocalBankId != null)) &&
     (creditAmountNum <= 0 || true);
 
   const evidenceRequired = checkAmountNum > 0 || creditAmountNum > 0;
@@ -136,16 +128,10 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   }, [loadJournals]);
 
   useEffect(() => {
-    if (selectedPaymentMethods.includes(PAYMENT_CHECK)) {
-      if (!isSelectedJournalValid && selectedJournalId != null) {
-        setSelectedJournalId(null);
-        setJournalSearch('');
-      }
-      if (chequeJournals.length === 1 && selectedJournalId !== chequeJournals[0]?.id) {
-        setSelectedJournalId(chequeJournals[0].id);
-      }
+    if (selectedPaymentMethods.includes(PAYMENT_CHECK) && chequeJournals.length > 0) {
+      setSelectedJournalId(chequeJournals[0].id);
     }
-  }, [selectedPaymentMethods, isSelectedJournalValid, selectedJournalId, chequeJournals]);
+  }, [selectedPaymentMethods, chequeJournals]);
 
   // Auto-select Credit when cash + check is less than total (remaining goes to credit)
   useEffect(() => {
@@ -169,7 +155,11 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         const next = prev.filter((m) => m !== method);
         if (next.length === 0) return prev;
         if (method === PAYMENT_CASH) setCashAmount('');
-        if (method === PAYMENT_CHECK) setCheckAmount('');
+        if (method === PAYMENT_CHECK) {
+          setCheckAmount('');
+          setSelectedLocalBankId(null);
+          setCheckNumber('');
+        }
         return next;
       }
       const cashNum = parseFloat(String(cashAmount).replace(/,/g, '')) || 0;
@@ -184,7 +174,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   const handleProceed = async (customerSignatureDataUrl = null) => {
     if (!canProceed) return;
     const cashJournalId = cashJournalPreferred?.id ?? null;
-    const checkJournalId = selectedJournalId != null && isSelectedJournalValid ? selectedJournalId : null;
+    const checkJournalId = (chequeJournalInternal?.id ?? selectedJournalId) ?? null;
     const needsCash = cashAmountNum > 0 && cashJournalId != null;
     const needsCheck = checkAmountNum > 0 && checkJournalId != null;
     const needsCredit = creditAmountNum > 0 && selectedPaymentMethods.includes(PAYMENT_CREDIT);
@@ -223,6 +213,31 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       }
       if (payments.length === 0) return;
 
+      // Save proof photos to persistent storage and register in offline_attachments (no base64 in DB)
+      const soId = Number(saleOrderId);
+      const timestamp = Date.now();
+      for (let i = 0; i < deliveryPhotos.length; i++) {
+        const uri = deliveryPhotos[i];
+        if (!uri || typeof uri !== 'string') continue;
+        try {
+          const ext = (uri.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg';
+          const fileName = `payment_${soId}_${timestamp}_${i}.${ext}`;
+          const destPath = `${FileSystem.documentDirectory}proof_${fileName}`;
+          const base64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
+          if (base64 && base64.length >= 100) {
+            await FileSystem.writeAsStringAsync(destPath, base64, { encoding: FileSystem.EncodingType.Base64 });
+            await offlineAttachmentsDb.insert({
+              sale_order_id: soId,
+              local_file_path: destPath,
+              file_name: fileName,
+              mime_type: ext === 'png' ? 'image/png' : 'image/jpeg',
+            });
+          }
+        } catch (e) {
+          console.warn('ProceedPayment: save proof photo', i, e?.message ?? e);
+        }
+      }
+
       await syncQueueDb.enqueue(syncQueueDb.ACTION_PAYMENT, {
         saleOrderId,
         partnerId,
@@ -230,6 +245,8 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         total: orderTotal,
         payments,
         deliveryPhotoUris: deliveryPhotos,
+        chequeBankName: needsCheck ? selectedLocalBank?.name : undefined,
+        checkNumber: needsCheck ? (checkNumberTrimmed || undefined) : undefined,
       });
 
       const primaryPaymentType = needsCredit ? 'credit' : needsCheck ? 'cheque' : 'cash';
@@ -241,7 +258,8 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         paymentType: 'split',
         paymentSplit,
         selectedBankId: needsCheck ? checkJournalId : null,
-        selectedBankName: selectedJournal?.name ?? (needsCheck ? null : undefined),
+        selectedBankName: needsCheck ? selectedLocalBank?.name : undefined,
+        chequeBankName: needsCheck ? (selectedLocalBank?.name ?? undefined) : undefined,
         deliveryPhotoUris: deliveryPhotos,
         cashAmount: paymentSplit.cash,
         checkNumber: needsCheck ? (checkNumber || undefined) : undefined,
@@ -673,35 +691,34 @@ export default function ProceedPaymentScreen({ route, navigation }) {
 
       {selectedPaymentMethods.includes(PAYMENT_CHECK) && (
         <>
-          <Text style={styles.sectionLabel}>Select Bank <Text style={styles.requiredStar}>*</Text></Text>
+          <Text style={styles.sectionLabel}>Cheque drawn on (Bank) <Text style={styles.requiredStar}>*</Text></Text>
           {journalsLoading ? (
             <View style={styles.bankList}>
               <ActivityIndicator size="small" color={colors.primary} />
-              <Text style={styles.noBanksText}>Loading journals…</Text>
+              <Text style={styles.noBanksText}>Loading…</Text>
             </View>
-          ) : selectedJournal && isSelectedJournalValid ? (
-            <View style={styles.selectedBankWrap}>
-              <TouchableOpacity style={styles.bankCardSelectedOnly} onPress={() => {}} activeOpacity={1}>
-                <View style={styles.bankIconWrapSmall}>
-                  <Ionicons name="card-outline" size={22} color="#fff" />
-                </View>
-                <Text style={styles.bankNameSelectedOnly} numberOfLines={1}>
-                  {selectedJournal.name} {selectedJournal.code ? `(${selectedJournal.code})` : ''}
-                </Text>
-                <Ionicons name="checkmark-circle" size={20} color="#fff" />
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.changeBankBtn}
-                onPress={() => {
-                  setSelectedJournalId(null);
-                  setJournalSearch('');
-                }}
-                activeOpacity={0.8}
-              >
-                <Ionicons name="swap-horizontal-outline" size={18} color={colors.primary} />
-                <Text style={styles.changeBankText}>Change Bank</Text>
-              </TouchableOpacity>
-              <Text style={[styles.sectionLabel, { marginTop: spacing.md }]}>Check number <Text style={styles.requiredStar}>*</Text></Text>
+          ) : (
+            <>
+              <View style={[styles.bankList, { marginBottom: spacing.sm }]}>
+                {SRI_LANKA_BANKS.map((bank) => (
+                  <TouchableOpacity
+                    key={bank.id}
+                    style={[
+                      styles.bankCard,
+                      selectedLocalBankId === bank.id && { borderColor: colors.primary, backgroundColor: colors.primary + '15' },
+                    ]}
+                    onPress={() => setSelectedLocalBankId(selectedLocalBankId === bank.id ? null : bank.id)}
+                    activeOpacity={0.8}
+                  >
+                    <View style={styles.bankIconWrap}>
+                      <Ionicons name={bank.icon || 'business-outline'} size={24} color={colors.primary} />
+                    </View>
+                    <Text style={styles.bankName} numberOfLines={1}>{bank.name}</Text>
+                    {selectedLocalBankId === bank.id && <Ionicons name="checkmark-circle" size={20} color={colors.primary} />}
+                  </TouchableOpacity>
+                ))}
+              </View>
+              <Text style={[styles.sectionLabel, { marginTop: spacing.sm }]}>Check number <Text style={styles.requiredStar}>*</Text></Text>
               <View style={styles.checkInputRow}>
                 <TextInput
                   style={[styles.checkAmountInput, { flex: 1 }]}
@@ -712,41 +729,6 @@ export default function ProceedPaymentScreen({ route, navigation }) {
                 />
               </View>
               <Text style={[styles.cashHint, { marginBottom: spacing.sm }]}>Check amount: LKR {formatAmount(checkAmountNum)}</Text>
-            </View>
-          ) : (
-            <>
-              <View style={styles.searchWrap}>
-                <Ionicons name="search-outline" size={20} color={colors.textSecondary} />
-                <TextInput
-                  style={styles.searchInput}
-                  value={journalSearch}
-                  onChangeText={setJournalSearch}
-                  placeholder="Search check journals…"
-                  placeholderTextColor={colors.textSecondary}
-                  returnKeyType="search"
-                />
-                {journalSearch.length > 0 && (
-                  <TouchableOpacity onPress={() => setJournalSearch('')} style={styles.searchClear} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                    <Ionicons name="close-circle" size={20} color={colors.textSecondary} />
-                  </TouchableOpacity>
-                )}
-              </View>
-              <View style={styles.bankList}>
-                {filteredJournals.map((journal) => (
-                  <TouchableOpacity key={journal.id} style={styles.bankCard} onPress={() => setSelectedJournalId(journal.id)} activeOpacity={0.8}>
-                    <View style={styles.bankIconWrap}>
-                      <Ionicons name="card-outline" size={24} color={colors.primary} />
-                    </View>
-                    <Text style={styles.bankName} numberOfLines={1}>{journal.name} {journal.code ? `(${journal.code})` : ''}</Text>
-                    <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
-                  </TouchableOpacity>
-                ))}
-                {filteredJournals.length === 0 && (
-                  <Text style={styles.noBanksText}>
-                    {journalsForType.length === 0 ? 'No Cheque journal (CSH5) in Odoo' : 'No journals match your search'}
-                  </Text>
-                )}
-              </View>
             </>
           )}
         </>

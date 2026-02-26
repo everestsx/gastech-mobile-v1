@@ -47,9 +47,9 @@ export default function SaleOrderListScreen({ route, navigation }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchField, setSearchField] = useState('customer');
   const [showFieldDropdown, setShowFieldDropdown] = useState(false);
-  // Orders tab: only not-delivered orders (to deliver)
+  // Orders tab: not delivered, or delivered but not yet invoiced (so we can collect payment)
   const filteredOrders = useMemo(
-    () => orders.filter((o) => !o.isDelivered),
+    () => orders.filter((o) => !o.isDelivered || String(o.invoice_status) !== 'invoiced'),
     [orders]
   );
   const searchFieldLabels = { customer: 'Customer', orderId: 'Order ID' };
@@ -286,7 +286,16 @@ export default function SaleOrderListScreen({ route, navigation }) {
   };
 
   const onOrderPress = (order) => {
-    navigation.navigate('SaleOrderDetails', { saleOrderId: order.id });
+    const deliveredNotInvoiced = order.isDelivered && String(order.invoice_status) !== 'invoiced';
+    if (deliveredNotInvoiced) {
+      navigation.navigate('ProceedPayment', {
+        saleOrderId: order.id,
+        total: order.amount_total,
+        deliveryDone: true,
+      });
+    } else {
+      navigation.navigate('SaleOrderDetails', { saleOrderId: order.id });
+    }
   };
 
   if (loading) {

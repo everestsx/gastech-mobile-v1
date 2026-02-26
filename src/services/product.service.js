@@ -16,3 +16,16 @@ export const getAllProducts = () =>
     fields: PRODUCT_FIELDS,
     limit: PRODUCT_LIMIT,
   });
+
+/**
+ * Get products by ids (for vehicle-scoped sync; avoids fetching all products).
+ * @param {number[]} ids
+ * @returns {Promise<Array<{ id: number, name: string, list_price?: number, qty_available?: number }>>}
+ */
+export const getProductsByIds = (ids) => {
+  if (!ids?.length) return Promise.resolve([]);
+  return callOdoo('product.product', 'search_read', [[['id', 'in', ids]]], {
+    fields: PRODUCT_FIELDS,
+    limit: ids.length,
+  });
+};

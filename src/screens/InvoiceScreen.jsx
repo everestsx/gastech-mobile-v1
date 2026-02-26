@@ -37,7 +37,7 @@ function amountInWords(num) {
   return (amountInWords(Math.floor(n / 10000000)) + ' Crore ' + amountInWords(n % 10000000)).trim();
 }
 
-function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSplit, logoUri, customerSignatureDataUrl) {
+function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSplit, logoUri, customerSignatureDataUrl, chequeBankName, checkNumber) {
   const date = order?.date_order
     ? new Date(order.date_order).toLocaleDateString('en-LK', {
         year: 'numeric',
@@ -46,6 +46,8 @@ function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSp
       })
     : new Date().toLocaleDateString('en-LK');
   const customerName = (order?.partner_id?.[1] ?? '—').replace(/</g, '&lt;');
+  const customerAddress = [order?.city, order?.partner_phone].filter(Boolean).join(', ').replace(/</g, '&lt;') || '—';
+  const customerPhone = (order?.partner_phone ?? '—').replace(/</g, '&lt;');
   const orderNo = order?.name ?? '—';
   const paymentLabel =
     paymentType === 'split' && paymentSplit
@@ -80,8 +82,8 @@ function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSp
   const words = amountInWords(amountTotal) + ' Rupees only';
 
   const logoImg = logoUri
-    ? `<img src="${logoUri}" alt="GasTech" style="max-width:56mm;height:auto;display:block;margin:0 auto 6px;" />`
-    : '<h1 style="margin:0 0 6px 0;font-size:14px;color:#1e5aa8">GasTech</h1>';
+    ? `<img src="${logoUri}" alt="GasTech" style="max-width:56mm;height:auto;display:block;margin:0 0 6px auto;margin-left:auto;" />`
+    : '<h1 style="margin:0 0 6px 0;font-size:14px;color:#1e5aa8;text-align:right">GasTech</h1>';
 
   return `
 <!DOCTYPE html>
@@ -123,8 +125,8 @@ function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSp
       <div class="field"><span class="label">Tax Invoice No.:</span> ${orderNo}</div>
       <div class="field"><span class="label">Purchaser's TIN:</span> —</div>
       <div class="field"><span class="label">Purchaser's Name:</span> ${customerName}</div>
-      <div class="field"><span class="label">Address:</span> —</div>
-      <div class="field"><span class="label">Telephone No:</span> —</div>
+      <div class="field"><span class="label">Address:</span> ${customerAddress}</div>
+      <div class="field"><span class="label">Telephone No:</span> ${customerPhone}</div>
       <div class="field"><span class="label">Place of Supply:</span> —</div>
     </div>
   </div>
@@ -147,6 +149,10 @@ function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSp
     <div class="row" style="margin-top:4px"><span>Total Amount in words:</span></div>
     <div class="row" style="font-size:8px;margin-left:0">${words}</div>
     <div class="row" style="margin-top:4px"><span>Mode of Payment:</span><span>${paymentLabel.replace(/</g, '&lt;')}</span></div>
+    ${(chequeBankName || checkNumber) ? `
+    <div class="row" style="margin-top:2px"><span>Bank (Cheque):</span><span>${(chequeBankName || '—').replace(/</g, '&lt;')}</span></div>
+    <div class="row" style="margin-top:2px"><span>Cheque No.:</span><span>${(checkNumber || '—').replace(/</g, '&lt;')}</span></div>
+    ` : ''}
   </div>
   <div class="payment">Thank you for your business</div>
   ${customerSignatureDataUrl ? `
@@ -173,6 +179,8 @@ export default function InvoiceScreen({ route, navigation }) {
     total,
     paymentType,
     selectedBankName,
+    chequeBankName,
+    checkNumber,
     paymentSplit,
     customerSignatureDataUrl,
   } = route.params ?? {};
@@ -207,7 +215,7 @@ export default function InvoiceScreen({ route, navigation }) {
           shadowOpacity: 0.06,
           shadowRadius: 4,
         },
-        logo: { width: 180, height: 56, marginBottom: 8, alignSelf: 'center' },
+        logo: { width: 180, height: 56, marginBottom: 8, alignSelf: 'flex-end' },
         invoiceTitle: { fontSize: 14, fontWeight: '700', color: colors.textSecondary, marginBottom: spacing.md },
         metaRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 },
         metaLabel: { fontSize: 12, color: colors.textSecondary },
@@ -276,8 +284,6 @@ export default function InvoiceScreen({ route, navigation }) {
         printerNoteTextWrap: { flex: 1 },
         printerNoteTitle: { fontSize: 14, fontWeight: '700', color: colors.text, marginBottom: 4 },
         printerNoteText: { fontSize: 12, color: colors.textSecondary, lineHeight: 18 },
-        doneBtn: { paddingVertical: 14, alignItems: 'center' },
-        doneBtnText: { fontSize: 16, fontWeight: '700', color: colors.primary },
         syncOverlay: {
           ...StyleSheet.absoluteFillObject,
           backgroundColor: 'rgba(0,0,0,0.5)',
@@ -353,7 +359,9 @@ export default function InvoiceScreen({ route, navigation }) {
     runSync().catch((err) => console.warn('InvoiceScreen background sync', err?.message ?? err));
   }, [saleOrderId]);
 
-  const handleDone = useCallback(async () => {
+  const handlePrint = useCallback(async () => {
+    if (!order) return;
+    setPrinting(true);
     setDoneState('syncing');
     Animated.parallel([
       Animated.timing(fadeAnim, { toValue: 1, duration: 200, useNativeDriver: true }),
@@ -363,28 +371,11 @@ export default function InvoiceScreen({ route, navigation }) {
       await runSync();
       setDoneState('success');
       Animated.timing(fadeAnim, { toValue: 1, duration: 150, useNativeDriver: true }).start();
-      setTimeout(() => {
-        navigation.reset({
-          index: 0,
-          routes: [{ name: 'Main', params: { screen: 'Dashboard' } }],
-        });
-      }, 1200);
     } catch (err) {
       setDoneState('offline');
-      setTimeout(() => {
-        navigation.reset({
-          index: 0,
-          routes: [{ name: 'Main', params: { screen: 'Dashboard' } }],
-        });
-      }, 1800);
     }
-  }, [fadeAnim, scaleAnim, navigation]);
-
-  const handlePrint = async () => {
-    if (!order) return;
-    setPrinting(true);
     try {
-      const html = buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSplit, logoUri, customerSignatureDataUrl);
+      const html = buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSplit, logoUri, customerSignatureDataUrl, chequeBankName, checkNumber);
       await Print.printAsync({
         html,
       });
@@ -396,8 +387,9 @@ export default function InvoiceScreen({ route, navigation }) {
       );
     } finally {
       setPrinting(false);
+      setTimeout(() => setDoneState(null), 2000);
     }
-  };
+  }, [order, lines, paymentType, selectedBankName, paymentSplit, logoUri, customerSignatureDataUrl, chequeBankName, checkNumber, fadeAnim, scaleAnim]);
 
   const paymentLabel =
     paymentType === 'split' && paymentSplit
@@ -454,6 +446,14 @@ export default function InvoiceScreen({ route, navigation }) {
             {order?.partner_id?.[1] ?? '—'}
           </Text>
         </View>
+        {(order?.city || order?.partner_phone) ? (
+          <View style={styles.metaRow}>
+            <Text style={styles.metaLabel}>Address</Text>
+            <Text style={styles.metaValue} numberOfLines={2}>
+              {[order?.city, order?.partner_phone].filter(Boolean).join(', ')}
+            </Text>
+          </View>
+        ) : null}
 
         <View style={styles.tableHeader}>
           <Text style={[styles.th, styles.thProduct]}>Product</Text>
@@ -552,15 +552,6 @@ export default function InvoiceScreen({ route, navigation }) {
           </Text>
         </View>
       </View>
-
-      <TouchableOpacity
-        style={styles.doneBtn}
-        onPress={handleDone}
-        disabled={!!doneState}
-        activeOpacity={0.8}
-      >
-        <Text style={styles.doneBtnText}>Done</Text>
-      </TouchableOpacity>
 
       {doneState && (
         <Animated.View
