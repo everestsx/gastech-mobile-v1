@@ -318,7 +318,8 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
           productId,
           newStock
         );
-
+          const allInventory = await vehicleInventoriesDb.getVehicleInventoryByVehicleId(vehicleId);
+          console.log('[Inventory Update] Full inventory after update:', JSON.stringify(allInventory));
         const updated = await vehicleInventoriesDb.getVehicleInventoryByVehicleId(vehicleId);
         const verifyItem = updated.find(inv =>
           (inv.product_id === productId || inv.id === productId)
@@ -368,8 +369,10 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
 
 
         const vehicleId = data.order?.vehicle_id != null
-          ? (Array.isArray(data.order.vehicle_id) ? data.order.vehicle_id[0] : data.order.vehicle_id)
-          : null;
+            ? (Array.isArray(data.order.vehicle_id) ? data.order.vehicle_id[0] : data.order.vehicle_id)
+            : null;
+
+        console.log(`[UI Debug] This order is assigned to Vehicle ID: ${vehicleId}`);
 
         if (vehicleId != null) {
           try {

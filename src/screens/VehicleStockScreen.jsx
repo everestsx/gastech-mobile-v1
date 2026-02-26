@@ -17,10 +17,21 @@ import { getUserSession, getCachedVehicleInventory } from '../services/sync.serv
 const CARD_MIN_WIDTH = 160;
 const CARD_GAP = spacing.md;
 
+/**
+ * Strips the product code prefix (e.g., "[GAS5] ") from product names.
+ * "[GAS5] Gas 5 kg" -> "Gas 5 kg"
+ */
+function formatProductName(name) {
+  if (!name) return '—';
+  // Remove prefix like "[GAS5] " or "[GAS12.5] "
+  return name.replace(/^\[[^\]]+\]\s*/, '').trim() || name;
+}
+
 function StockCard({ item, colors, cardWidth, isLeft }) {
   const qty = Number(item.quantity) || 0;
   const available = Number(item.available_quantity) ?? qty;
-  const name = item.product_name || `Product ${item.product_id || ''}`.trim() || '—';
+  const rawName = item.product_name || `Product ${item.product_id || ''}`.trim() || '—';
+  const name = formatProductName(rawName);
   const lowStock = available <= 0;
 
   return (
@@ -125,22 +136,43 @@ export default function VehicleStockScreen({ navigation }) {
   const paddingH = spacing.lg;
   const cardWidth = (width - paddingH * 2 - horizontalGap * (numColumns - 1)) / numColumns;
 
-  const load = useCallback(async () => {
-    const session = await getUserSession();
-    setUser(session || null);
+  // const load = useCallback(async () => {
+  //   const session = await getUserSession();
+  //   setUser(session || null);
+  //
+  //   // Convert to Number to ensure SQLite match
+  //   const vId = session?.vehicleId ? Number(session.vehicleId) : null;
+  //
+  //   if (vId) {
+  //     const data = await getCachedVehicleInventory(vId);
+  //     console.log(`[UI Debug] Found ${data.length} items for vehicle ${vId}`);
+  //     setInventory(Array.isArray(data) ? data : []);
+  //   } else {
+  //     setInventory([]);
+  //   }
+  // }, []);
+// In VehicleStockScreen.jsx - update the load function to force fresh data
+const load = useCallback(async (forceRefresh = false) => {
+  const session = await getUserSession();
+  setUser(session || null);
 
-    // Convert to Number to ensure SQLite match
-    const vId = session?.vehicleId ? Number(session.vehicleId) : null;
+  const vId = session?.vehicleId ? Number(session.vehicleId) : null;
 
-    if (vId) {
-      const data = await getCachedVehicleInventory(vId);
-      console.log(`[UI Debug] Found ${data.length} items for vehicle ${vId}`);
-      setInventory(Array.isArray(data) ? data : []);
-    } else {
-      setInventory([]);
-    }
-  }, []);
+  if (vId) {
+    // Pass forceRefresh to bypass any caching
+    const data = await getCachedVehicleInventory(vId, forceRefresh);
+    console.log(`[UI Debug] Found ${data.length} items for vehicle ${vId}`, data);
+    setInventory(Array.isArray(data) ? data : []);
+  } else {
+    setInventory([]);
+  }
+}, []);
 
+// Update the focus listener to force refresh
+useEffect(() => {
+  const unsub = navigation.addListener?.('focus', () => load(true));
+  return () => unsub?.();
+}, [load, navigation]);
   useEffect(() => {
     let mounted = true;
     (async () => {

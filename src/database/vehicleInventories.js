@@ -71,7 +71,7 @@ export async function getAllVehicleInventories() {
 
 export async function updateVehicleInventoryQuantity(vehicleId, productId, newQuantity) {
   const db = await getDb();
-  await db.executeSqlAsync(
+  await db.runAsync(
     `UPDATE vehicle_inventories 
      SET available_quantity = ?, 
          updated_at = datetime('now')
@@ -79,3 +79,4 @@ export async function updateVehicleInventoryQuantity(vehicleId, productId, newQu
     [newQuantity, vehicleId, productId]
   );
 }
+
