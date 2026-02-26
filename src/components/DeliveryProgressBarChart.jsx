@@ -12,8 +12,7 @@ const LABEL_HEIGHT = 36;
 /**
  * Vertical bar chart: Delivery Progress by Shop.
  * data = [{ shopId, shopName?, delivered, pending }]
- * Sorted: Delivered (left), To deliver / Pending (right).
- * Bar width is fixed and half of previous default size.
+ * Sorted: To deliver (pending) first, then Delivered. Colors: To deliver = red, Delivered = green.
  */
 export default function DeliveryProgressBarChart({ data = [], title = 'Delivery Progress by Shop', rightElement = null }) {
   const { colors } = useTheme();
@@ -115,10 +114,12 @@ export default function DeliveryProgressBarChart({ data = [], title = 'Delivery 
     );
   }
 
-  const successColor = colors.success ?? '#059669';
-  const errorColor = colors.error ?? '#dc2626';
+  const deliveredColor = colors.success ?? '#059669';
+  const toDeliverColor = colors.error ?? '#dc2626';
 
   const selectedRow = selectedIndex != null ? sortedData[selectedIndex] : null;
+  const toDeliverCount = sortedData.filter((d) => (Number(d.pending) || 0) > 0).length;
+  const deliveredCount = sortedData.filter((d) => (Number(d.pending) || 0) === 0 && ((Number(d.delivered) || 0) + (Number(d.pending) || 0)) > 0).length;
 
   return (
     <View style={styles.card}>
@@ -166,7 +167,7 @@ export default function DeliveryProgressBarChart({ data = [], title = 'Delivery 
               const pending = Math.max(0, Number(row.pending) || 0);
               const total = delivered + pending || 0;
               const isFullyDelivered = pending === 0 && total > 0;
-              const barColor = isFullyDelivered ? errorColor : successColor;
+              const barColor = isFullyDelivered ? deliveredColor : toDeliverColor;
               const barHeight = total > 0 ? Math.max(8, (total / maxVal) * (CHART_HEIGHT - LABEL_HEIGHT - 12)) : 0;
               const isSelected = selectedIndex === i;
               return (
@@ -240,15 +241,15 @@ export default function DeliveryProgressBarChart({ data = [], title = 'Delivery 
       <Text style={styles.scrollHint}>← Swipe to see all shops →</Text>
       <View style={styles.legendRow}>
         <View style={styles.legendItem}>
-          <View style={[styles.legendBox, { backgroundColor: successColor }]} />
-          <Text style={[styles.legendText, { color: successColor }]}>
-            Delivered ({sortedData.filter((d) => (Number(d.pending) || 0) > 0).length})
+          <View style={[styles.legendBox, { backgroundColor: toDeliverColor }]} />
+          <Text style={[styles.legendText, { color: toDeliverColor }]}>
+            To deliver ({toDeliverCount})
           </Text>
         </View>
         <View style={styles.legendItem}>
-          <View style={[styles.legendBox, { backgroundColor: errorColor }]} />
-          <Text style={[styles.legendText, { color: errorColor }]}>
-          To deliver ({sortedData.filter((d) => (Number(d.pending) || 0) === 0 && ((Number(d.delivered) || 0) + (Number(d.pending) || 0)) > 0).length})
+          <View style={[styles.legendBox, { backgroundColor: deliveredColor }]} />
+          <Text style={[styles.legendText, { color: deliveredColor }]}>
+            Delivered ({deliveredCount})
           </Text>
         </View>
       </View>

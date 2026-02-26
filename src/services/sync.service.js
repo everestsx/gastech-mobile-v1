@@ -2,8 +2,8 @@
  * Offline-first sync: pull from Odoo into SQLite, serve all data from local DB.
  * Sync = fetch from backend and store; app reads only from DB.
  */
-import { getCustomers } from './customer.service';
-import { getAllSaleOrders } from './saleOrder.service';
+import { getCustomers, getPartnersByIds } from './customer.service';
+import { getAllSaleOrders, getSaleOrdersByVehicle } from './saleOrder.service';
 import { getAllProducts } from './product.service';
 import { getStockMovesByPickingId, getStockMoveLinesByMoveIds } from './delivery.service';
 import { getJournals } from './journal.service';
@@ -441,17 +441,38 @@ export async function runSync() {
       return { error: 'No active session' };
     }
     await processSyncQueue();
-    log('fetch', 'customers + orders');
-    const [customers, orders] = await Promise.all([
-      getCustomers().catch((e) => {
-        logWarn('fetch customers', e);
+
+    const user = await getUserSession();
+    const vehicleId = user?.isAdmin === false ? user.vehicleId : null;
+
+    let orders = [];
+    let customers = [];
+
+    if (vehicleId != null) {
+      log('fetch', `orders for vehicle ${vehicleId} only`);
+      orders = await getSaleOrdersByVehicle(vehicleId).catch((e) => {
+        logWarn('fetch orders by vehicle', e);
         return [];
-      }),
-      getAllSaleOrders().catch((e) => {
-        logWarn('fetch orders', e);
+      });
+      const partnerIds = [...new Set((orders || []).map((o) => (Array.isArray(o.partner_id) ? o.partner_id[0] : o.partner_id)).filter(Boolean))];
+      log('fetch', `partners for vehicle (${partnerIds.length} ids)`);
+      customers = await getPartnersByIds(partnerIds).catch((e) => {
+        logWarn('fetch partners by ids', e);
         return [];
-      }),
-    ]);
+      });
+    } else {
+      log('fetch', 'customers + orders (full sync)');
+      [customers, orders] = await Promise.all([
+        getCustomers().catch((e) => {
+          logWarn('fetch customers', e);
+          return [];
+        }),
+        getAllSaleOrders().catch((e) => {
+          logWarn('fetch orders', e);
+          return [];
+        }),
+      ]);
+    }
 
     result.customers = (customers || []).length;
     result.orders = (orders || []).length;
@@ -575,8 +596,11 @@ export async function runSync() {
     const allVehicleWarehouses = [];
     const allVehicleInventories = [];
     const vehiclesList = vehicles || [];
-    for (const v of vehiclesList) {
-      const vehicleId = v.id;
+    const vehiclesToFetchInventory = vehicleId != null
+      ? vehiclesList.filter((v) => v.id === vehicleId)
+      : vehiclesList;
+    for (const v of vehiclesToFetchInventory) {
+      const vId = v.id;
       const licensePlate = v.license_plate || (v.name || '').split('/').pop() || '';
       if (!licensePlate) continue;
       try {
@@ -586,7 +610,7 @@ export async function runSync() {
         if (loc) {
           allVehicleWarehouses.push({
             id: loc.id,
-            vehicle_id: vehicleId,
+            vehicle_id: vId,
             name: loc.name,
             complete_name: loc.complete_name,
           });
@@ -596,12 +620,12 @@ export async function runSync() {
             allVehicleInventories.push({
               ...q,
               location_id: loc.id,
-              vehicle_id: vehicleId,
+              vehicle_id: vId,
             });
           });
         }
       } catch (e) {
-        logWarn(`vehicle ${vehicleId} warehouse/inventory`, e);
+        logWarn(`vehicle ${vId} warehouse/inventory`, e);
       }
     }
     result.vehicleWarehouses = allVehicleWarehouses.length;

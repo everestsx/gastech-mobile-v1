@@ -1,5 +1,18 @@
 import { callOdoo } from "./index.service";
 
+const SALE_ORDER_FIELDS = [
+  "id",
+  "name",
+  "partner_id",
+  "state",
+  "date_order",
+  "amount_total",
+  "invoice_status",
+  "order_line",
+  "route_id",
+  "vehicle_id",
+];
+
 /**
  * Get ALL sale orders (with invoice_status for list display)
  */
@@ -9,20 +22,24 @@ export const getAllSaleOrders = () =>
     "search_read",
     [[]],
     {
-      fields: [
-        "id",
-        "name",
-        "partner_id",
-        "state",
-        "date_order",
-        "amount_total",
-        "invoice_status",
-        "order_line",
-        "route_id",
-        "vehicle_id",
-      ],
+      fields: SALE_ORDER_FIELDS,
       order: "date_order desc",
-      limit: 50,
+      limit: 500,
+    }
+  );
+
+/**
+ * Get sale orders for a specific vehicle only (for vehicle-scoped sync).
+ */
+export const getSaleOrdersByVehicle = (vehicleId) =>
+  callOdoo(
+    "sale.order",
+    "search_read",
+    [[["vehicle_id", "=", vehicleId]]],
+    {
+      fields: SALE_ORDER_FIELDS,
+      order: "date_order desc",
+      limit: 500,
     }
   );
 
