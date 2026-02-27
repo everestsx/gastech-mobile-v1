@@ -14,6 +14,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
+import { dashboardConfig } from '../constants/dashboardConfig';
 import {
   getCachedOrders,
   getCachedRoutes,
@@ -52,7 +53,10 @@ function formatShort(amount) {
 
 export default function DashboardScreen({ navigation }) {
   const insets = useSafeAreaInsets();
-  const { colors, showCreateSalesOrder, showReturnOrder } = useTheme();
+  const { colors, showCreateSalesOrder: userShowCreate, showReturnOrder: userShowReturn } = useTheme();
+  // Visibility from config file; user preference (theme/settings) can further hide when config allows
+  const showCreateSalesOrder = dashboardConfig.showCreateSalesOrder && userShowCreate;
+  const showReturnOrder = dashboardConfig.showReturnOrder && userShowReturn;
   const [orders, setOrders] = useState([]);
   const [user, setUser] = useState(null);
   const [routes, setRoutes] = useState([]);
@@ -667,17 +671,39 @@ export default function DashboardScreen({ navigation }) {
       <View style={{ paddingHorizontal: spacing.md }}>
         <DeliveryProgressBarChart
           data={chartDeliveryByShop}
-          title="Delivery Progress by Shop"
+          title="Delivery Progress"
           rightElement={
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              <Text style={{ fontSize: 12, color: colors.textSecondary }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 2 }}>
+              <TouchableOpacity
+                onPress={() => {
+                  const d = new Date(selectedChartDate + 'T12:00:00');
+                  d.setDate(d.getDate() - 1);
+                  setSelectedChartDate(d.toISOString().split('T')[0]);
+                }}
+                style={{ padding: 6 }}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="chevron-back" size={22} color={colors.primary} />
+              </TouchableOpacity>
+              <Text style={{ fontSize: 12, color: colors.textSecondary, minWidth: 72, textAlign: 'center' }}>
                 {selectedChartDate === new Date().toISOString().split('T')[0]
                   ? 'Today'
                   : new Date(selectedChartDate + 'T12:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
               </Text>
               <TouchableOpacity
+                onPress={() => {
+                  const d = new Date(selectedChartDate + 'T12:00:00');
+                  d.setDate(d.getDate() + 1);
+                  setSelectedChartDate(d.toISOString().split('T')[0]);
+                }}
+                style={{ padding: 6 }}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="chevron-forward" size={22} color={colors.primary} />
+              </TouchableOpacity>
+              <TouchableOpacity
                 onPress={() => setShowChartDatePicker(true)}
-                style={{ padding: 4 }}
+                style={{ padding: 6, marginLeft: 2 }}
                 activeOpacity={0.8}
               >
                 <Ionicons name="calendar-outline" size={22} color={colors.primary} />
