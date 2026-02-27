@@ -19,7 +19,6 @@ export async function upsertSaleOrders(rows) {
       const partner = odooRel(r.partner_id);
       const route = odooRel(r.route_id);
       const vehicle = odooRel(r.vehicle_id);
-      const paymentType = empty(r.payment_type);
       await tx.runAsync(
         `INSERT INTO sale_orders (
           id, name, partner_id, partner_name, state, date_order,
@@ -53,7 +52,7 @@ export async function upsertSaleOrders(rows) {
           empty(vehicle.name),
           now,
           empty(r.payload),
-          paymentType || null,
+          empty(r.payment_type ?? '')
         ]
       );
     }

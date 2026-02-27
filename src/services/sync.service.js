@@ -751,13 +751,12 @@ export async function runSync() {
       log('db', 'vehicle_inventories');
       await vehicleInventoriesDb.upsertVehicleInventories(allVehicleInventories);
     }
-
-    await syncLogDb.appendLog({
-      sync_at: syncAt,
-      status: 'success',
-      message: null,
-      counts: result,
-    });
+    // await syncLogDb.appendLog({
+    //   sync_at: syncAt,
+    //   status: 'success',
+    //   message: null,
+    //   counts: result,
+    // });
     const storage = await getAsyncStorage();
     await storage.setItem(KEYS.LAST_SYNC, syncAt);
     log('done', JSON.stringify(result));
