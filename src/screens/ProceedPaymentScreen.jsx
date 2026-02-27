@@ -29,7 +29,7 @@ import { getOrAssignInvoiceNumber } from '../utils/invoiceNumber';
 import { normalizeBase64ForUpload } from '../services/proofAttachment.service';
 
 const PAYMENT_CASH = 'cash';
-const PAYMENT_CHECK = 'check';
+const PAYMENT_CHECK = 'cheque';
 const PAYMENT_CREDIT = 'credit';
 
 export default function ProceedPaymentScreen({ route, navigation }) {
@@ -46,6 +46,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   const [selectedJournalId, setSelectedJournalId] = useState(null);
   const [checkNumber, setCheckNumber] = useState('');
   const [selectedLocalBankId, setSelectedLocalBankId] = useState(null);
+  const [bankSearchQuery, setBankSearchQuery] = useState('');
   const [deliveryPhotos, setDeliveryPhotos] = useState([]);
   const cashInputRef = useRef(null);
   const checkInputRef = useRef(null);
@@ -100,6 +101,12 @@ export default function ProceedPaymentScreen({ route, navigation }) {
     () => (selectedLocalBankId ? SRI_LANKA_BANKS.find((b) => b.id === selectedLocalBankId) : null),
     [selectedLocalBankId]
   );
+  const filteredBanks = useMemo(() => {
+    if (selectedLocalBankId && selectedLocalBank) return [selectedLocalBank];
+    const q = (bankSearchQuery || '').trim().toLowerCase();
+    if (!q) return SRI_LANKA_BANKS;
+    return SRI_LANKA_BANKS.filter((b) => (b.name || '').toLowerCase().includes(q));
+  }, [selectedLocalBankId, selectedLocalBank, bankSearchQuery]);
   const chequeJournalInternal = chequeJournals[0];
   const paymentComplete =
     hasAnyPayment &&
@@ -295,7 +302,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           backgroundColor: colors.surface,
           padding: spacing.lg,
           borderRadius: borderRadius.lg,
-          marginBottom: spacing.lg,
+          marginBottom: spacing.md,
           elevation: 2,
           shadowColor: '#000',
           shadowOffset: { width: 0, height: 2 },
@@ -315,7 +322,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           alignItems: 'center',
           justifyContent: 'center',
           gap: 8,
-          paddingVertical: spacing.lg,
+          paddingVertical: spacing.md,
           backgroundColor: colors.surface,
           borderRadius: borderRadius.lg,
           borderWidth: 2,
@@ -324,8 +331,8 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         },
         photoBtnText: { fontSize: 14, fontWeight: '600', color: colors.primary },
         photoPreviewWrap: {
-          width: 100,
-          height: 100,
+          width: '75',
+          height: '75',
           borderRadius: borderRadius.md,
           overflow: 'hidden',
           backgroundColor: colors.surface,
@@ -356,9 +363,8 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           gap: spacing.sm,
           marginBottom: spacing.sm,
         },
-        amountHalfCol: { flex: 1 },
         cashInputWrap: {
-          flex: 1,
+          minWidth: '50%',
           flexDirection: 'row',
           alignItems: 'center',
           backgroundColor: colors.surface,
@@ -395,7 +401,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         },
         checkAmountLabel: { fontSize: 12, fontWeight: '600', color: colors.textSecondary },
         checkAmountInput: {
-          flex: 1,
+          width: '100%',
           backgroundColor: colors.background,
           borderRadius: borderRadius.md,
           borderWidth: 1,
@@ -406,6 +412,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           color: colors.text,
         },
         creditAmountWrap: {
+          width: '100%',
           flexDirection: 'row',
           alignItems: 'center',
           backgroundColor: colors.surface,
@@ -463,15 +470,26 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           borderColor: colors.border,
           gap: 8,
         },
-        searchInput: { flex: 1, fontSize: 15, color: colors.text, paddingVertical: 0 },
+        searchInput: { flex: 1, fontSize: 15, color: colors.text, paddingVertical: 6 },
         searchClear: { padding: 2 },
+        bankSearchWrap: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          backgroundColor: colors.surface,
+          borderWidth: 1,
+          borderColor: colors.border,
+          borderRadius: borderRadius.md,
+          paddingHorizontal: spacing.sm,
+          marginBottom: spacing.sm,
+          gap: 8,
+        },
         selectedBankWrap: { marginBottom: spacing.sm },
         bankCardSelectedOnly: {
           flexDirection: 'row',
           alignItems: 'center',
           backgroundColor: colors.primary,
-          paddingVertical: 10,
-          paddingHorizontal: spacing.sm,
+          paddingVertical: 0,
+          paddingHorizontal: 0,
           borderRadius: borderRadius.md,
           borderWidth: 2,
           borderColor: colors.primary,
@@ -486,14 +504,14 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           marginRight: spacing.sm,
         },
         bankNameSelectedOnly: { flex: 1, fontSize: 15, fontWeight: '600', color: '#fff' },
-        changeBankBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, marginTop: spacing.sm, paddingVertical: 8 },
+        changeBankBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 8 },
         changeBankText: { fontSize: 14, fontWeight: '600', color: colors.primary },
-        bankList: { marginBottom: spacing.lg },
+        bankList: { marginBottom: spacing.sm },
         bankCard: {
           flexDirection: 'row',
           alignItems: 'center',
           backgroundColor: colors.surface,
-          paddingVertical: 10,
+          paddingVertical: 4,
           paddingHorizontal: spacing.sm,
           borderRadius: borderRadius.md,
           marginBottom: 6,
@@ -513,7 +531,9 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           alignItems: 'center',
           justifyContent: 'center',
           marginRight: spacing.sm,
+          overflow: 'hidden',
         },
+        bankLogo: { width: 36, height: 36 },
         bankName: { flex: 1, fontSize: 14, fontWeight: '600', color: colors.text },
         noBanksText: { fontSize: 14, color: colors.textSecondary, textAlign: 'center', paddingVertical: spacing.lg },
         bottomSpacer: { height: spacing.md },
@@ -530,6 +550,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           shadowOffset: { width: 0, height: 2 },
           shadowOpacity: 0.08,
           shadowRadius: 4,
+          marginTop: spacing.sm,
         },
         payBtnDisabled: { backgroundColor: colors.textSecondary, opacity: 0.7 },
         btnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
@@ -656,7 +677,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       <Text style={styles.sectionLabel}>Amount Paid <Text style={styles.requiredStar}>*</Text></Text>
       {(selectedPaymentMethods.includes(PAYMENT_CASH) || selectedPaymentMethods.includes(PAYMENT_CHECK)) && (
         <View style={styles.amountRowHalf}>
-          <View style={styles.amountHalfCol}>
+          <View >
             {selectedPaymentMethods.includes(PAYMENT_CASH) ? (
               <View style={styles.cashInputWrap}>
                 <Ionicons name="cash-outline" size={20} color={colors.primary} style={styles.cashInputIcon} />
@@ -678,29 +699,26 @@ export default function ProceedPaymentScreen({ route, navigation }) {
             {selectedPaymentMethods.includes(PAYMENT_CHECK) ? (
               <View style={styles.cashInputWrap}>
                 <Ionicons name="card-outline" size={20} color={colors.primary} style={styles.cashInputIcon} />
+                <Text style={styles.cashInputSuffix}>Rs.</Text>
                 <TextInput
                   ref={checkInputRef}
                   style={styles.cashInput}
                   value={checkAmount}
                   onChangeText={setCheckAmount}
                   onFocus={() => setCheckAmount('')}
-                  placeholder="Check"
+                  placeholder="Cheque"
                   placeholderTextColor={colors.textSecondary}
                   keyboardType="decimal-pad"
                 />
-                <Text style={styles.cashInputSuffix}>LKR</Text>
               </View>
             ) : null}
           </View>
         </View>
       )}
-      {(selectedPaymentMethods.includes(PAYMENT_CASH) || selectedPaymentMethods.includes(PAYMENT_CHECK)) && (
-        <Text style={styles.cashHint}>Remaining goes to Credit. Tap amount field to clear and retype.</Text>
-      )}
 
       {selectedPaymentMethods.includes(PAYMENT_CHECK) && (
         <>
-          <Text style={styles.sectionLabel}>Cheque drawn on (Bank) <Text style={styles.requiredStar}>*</Text></Text>
+          <Text style={styles.sectionLabel}>Choose Bank <Text style={styles.requiredStar}>*</Text></Text>
           {journalsLoading ? (
             <View style={styles.bankList}>
               <ActivityIndicator size="small" color={colors.primary} />
@@ -708,27 +726,80 @@ export default function ProceedPaymentScreen({ route, navigation }) {
             </View>
           ) : (
             <>
+              {selectedLocalBankId == null ? (
+                <View style={styles.bankSearchWrap}>
+                  <Ionicons name="search-outline" size={20} color={colors.textSecondary} />
+                  <TextInput
+                    style={styles.searchInput}
+                    value={bankSearchQuery}
+                    onChangeText={setBankSearchQuery}
+                    placeholder="Search bank..."
+                    placeholderTextColor={colors.textSecondary}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+                  {bankSearchQuery.length > 0 ? (
+                    <TouchableOpacity onPress={() => setBankSearchQuery('')} style={styles.searchClear} hitSlop={8}>
+                      <Ionicons name="close-circle" size={20} color={colors.textSecondary} />
+                    </TouchableOpacity>
+                  ) : null}
+                </View>
+              ) : null}
               <View style={[styles.bankList, { marginBottom: spacing.sm }]}>
-                {SRI_LANKA_BANKS.map((bank) => (
-                  <TouchableOpacity
-                    key={bank.id}
-                    style={[
-                      styles.bankCard,
-                      selectedLocalBankId === bank.id && { borderColor: colors.primary, backgroundColor: colors.primary + '15' },
-                    ]}
-                    onPress={() => setSelectedLocalBankId(selectedLocalBankId === bank.id ? null : bank.id)}
-                    activeOpacity={0.8}
-                  >
-                    <View style={styles.bankIconWrap}>
-                      <Ionicons name={bank.icon || 'business-outline'} size={24} color={colors.primary} />
-                    </View>
-                    <Text style={styles.bankName} numberOfLines={1}>{bank.name}</Text>
-                    {selectedLocalBankId === bank.id && <Ionicons name="checkmark-circle" size={20} color={colors.primary} />}
-                  </TouchableOpacity>
-                ))}
+                {selectedLocalBankId != null ? (
+                  <>
+                    <TouchableOpacity
+                      style={[styles.bankCard, { borderColor: colors.primary}]}
+                      onPress={() => {}}
+                      activeOpacity={1}
+                    >
+                      <View style={styles.bankIconWrap}>
+                        {selectedLocalBank?.logo != null ? (
+                          <Image source={selectedLocalBank.logo} style={styles.bankLogo} resizeMode="contain" />
+                        ) : (
+                          <Ionicons name={selectedLocalBank?.icon || 'business-outline'} size={24} color={colors.primary} />
+                        )}
+                      </View>
+                      <Text style={styles.bankName} numberOfLines={1}>{selectedLocalBank?.name}</Text>
+                      <Ionicons name="checkmark-circle" size={20} color={colors.primary} />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.changeBankBtn}
+                      onPress={() => { setSelectedLocalBankId(null); setBankSearchQuery(''); }}
+                      activeOpacity={0.8}
+                    >
+                      <Ionicons name="swap-horizontal-outline" size={18} color={colors.primary} />
+                      <Text style={styles.changeBankText}>Switch bank</Text>
+                    </TouchableOpacity>
+                  </>
+                ) : filteredBanks.length === 0 ? (
+                  <Text style={styles.noBanksText}>No banks match "{bankSearchQuery}"</Text>
+                ) : (
+                  filteredBanks.map((bank) => (
+                    <TouchableOpacity
+                      key={bank.id}
+                      style={[
+                        styles.bankCard,
+                        selectedLocalBankId === bank.id && { borderColor: colors.primary, backgroundColor: colors.primary + '15' },
+                      ]}
+                      onPress={() => setSelectedLocalBankId(bank.id)}
+                      activeOpacity={0.8}
+                    >
+                      <View style={styles.bankIconWrap}>
+                        {bank.logo != null ? (
+                          <Image source={bank.logo} style={styles.bankLogo} resizeMode="contain" />
+                        ) : (
+                          <Ionicons name={bank.icon || 'business-outline'} size={24} color={colors.primary} />
+                        )}
+                      </View>
+                      <Text style={styles.bankName} numberOfLines={1}>{bank.name}</Text>
+                      {selectedLocalBankId === bank.id && <Ionicons name="checkmark-circle" size={20} color={colors.primary} />}
+                    </TouchableOpacity>
+                  ))
+                )}
               </View>
-              <Text style={[styles.sectionLabel, { marginTop: spacing.sm }]}>Check number <Text style={styles.requiredStar}>*</Text></Text>
-              <View style={styles.checkInputRow}>
+              <Text style={[styles.sectionLabel]}>Cheque number <Text style={styles.requiredStar}>*</Text></Text>
+              <View style={[styles.checkInputRow , { marginBottom: spacing.sm }]}>
                 <TextInput
                   style={[styles.checkAmountInput, { flex: 1 }]}
                   value={checkNumber}
@@ -737,7 +808,6 @@ export default function ProceedPaymentScreen({ route, navigation }) {
                   placeholderTextColor={colors.textSecondary}
                 />
               </View>
-              <Text style={[styles.cashHint, { marginBottom: spacing.sm }]}>Check amount: LKR {formatAmount(checkAmountNum)}</Text>
             </>
           )}
         </>
@@ -762,22 +832,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           <Text style={styles.photoCount}> ({deliveryPhotos.length}/{MAX_PHOTOS})</Text>
         )}
       </Text>
-      {deliveryPhotos.length > 0 && (
-        <View style={styles.photoList}>
-          {deliveryPhotos.map((uri, index) => (
-            <View key={`${uri}-${index}`} style={styles.photoPreviewWrap}>
-              <Image source={{ uri }} style={styles.photoPreview} resizeMode="cover" />
-              <TouchableOpacity
-                style={styles.photoRemoveBtn}
-                onPress={() => setDeliveryPhotos((prev) => prev.filter((_, i) => i !== index))}
-                activeOpacity={0.8}
-              >
-                <Ionicons name="close-circle" size={28} color={colors.error} />
-              </TouchableOpacity>
-            </View>
-          ))}
-        </View>
-      )}
+      
       {deliveryPhotos.length < MAX_PHOTOS && (
         <View style={styles.photoButtonsRow}>
           <TouchableOpacity
@@ -830,6 +885,22 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           </TouchableOpacity>
         </View>
       )}
+      {deliveryPhotos.length > 0 && (
+        <View style={styles.photoList}>
+          {deliveryPhotos.map((uri, index) => (
+            <View key={`${uri}-${index}`} style={styles.photoPreviewWrap}>
+              <Image source={{ uri }} style={styles.photoPreview} resizeMode="cover" />
+              <TouchableOpacity
+                style={styles.photoRemoveBtn}
+                onPress={() => setDeliveryPhotos((prev) => prev.filter((_, i) => i !== index))}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="close-circle" size={28} color={colors.error} />
+              </TouchableOpacity>
+            </View>
+          ))}
+        </View>
+      )}
       {deliveryPhotos.length === 0 && (
         <Text style={styles.photoHint}>
           {evidenceRequired ? `Attach at least 1 photo (max ${MAX_PHOTOS}) as evidence of delivery` : `Optional: attach up to ${MAX_PHOTOS} photos as evidence`}
@@ -838,8 +909,6 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       {deliveryPhotos.length >= 1 && deliveryPhotos.length < MAX_PHOTOS && (
         <Text style={styles.photoHint}>You can add up to {MAX_PHOTOS - deliveryPhotos.length} more</Text>
       )}
-
-      <View style={styles.bottomSpacer} />
 
       {evidenceRequired && deliveryPhotos.length === 0 && (
         <Text style={styles.evidenceAssistText}>Please update evidence of delivery to proceed</Text>
