@@ -1,16 +1,39 @@
 import React, { useState, useCallback, useMemo } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Alert } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
+import { getCustomerByRef, getPartnersByIds } from '../services/customer.service';
+import { getCachedOrders, getUserSession } from '../services/sync.service';
 
 const CUSTOMER_PREFIX = 'CUSTOMER:';
+
+function formatDate(d) {
+  return d.toISOString().split('T')[0];
+}
+
+/** Get today's first (non-cancelled) order for this customer from cache. */
+async function getTodayOrderForCustomer(customerId) {
+  const user = await getUserSession();
+  const vehicleId = user?.isAdmin === false ? user.vehicleId : null;
+  const data = await getCachedOrders(vehicleId);
+  const all = Array.isArray(data) ? data : [];
+  const todayStr = formatDate(new Date());
+  const list = all.filter(
+    (o) =>
+      (o.date_order || '').startsWith(todayStr) &&
+      o.partner_id?.[0] === customerId &&
+      String(o.state || '') !== 'cancel'
+  );
+  return list.length ? list[0] : null;
+}
 
 export default function ScanQRCodeScreen({ navigation, route }) {
   const { colors } = useTheme();
   const returnTo = route?.params?.returnTo ?? null;
   const [permission, requestPermission] = useCameraPermissions();
   const [scanned, setScanned] = useState(false);
+  const [resolving, setResolving] = useState(false);
 
   const styles = useMemo(
     () =>
@@ -61,6 +84,7 @@ export default function ScanQRCodeScreen({ navigation, route }) {
           borderRadius: 12,
         },
         rescanText: { color: '#fff', fontSize: 16, fontWeight: '600' },
+        resolvingWrap: { marginTop: 24, alignItems: 'center' },
         closeBtn: {
           position: 'absolute',
           top: 48,
@@ -73,40 +97,116 @@ export default function ScanQRCodeScreen({ navigation, route }) {
     [colors]
   );
 
+  const navigateToOrderDetails = useCallback(
+    (saleOrderId) => {
+      navigation.reset({
+        index: 1,
+        routes: [
+          { name: 'MainTabs' },
+          { name: 'SaleOrderDetails', params: { saleOrderId } },
+        ],
+      });
+    },
+    [navigation]
+  );
+
+  const navigateToScanResult = useCallback(
+    (params) => {
+      navigation.reset({
+        index: 1,
+        routes: [
+          { name: 'MainTabs' },
+          { name: 'ScanResult', params },
+        ],
+      });
+    },
+    [navigation]
+  );
+
+  const resolveAndNavigate = useCallback(
+    async (customerId, customerName = null) => {
+      if (returnTo === 'DailyVisit') {
+        navigation.reset({
+          index: 0,
+          routes: [
+            { name: 'MainTabs', params: { screen: 'DailyVisit', params: { customerId } } },
+          ],
+        });
+        return;
+      }
+      try {
+        const order = await getTodayOrderForCustomer(customerId);
+        if (order?.id) {
+          navigateToOrderDetails(order.id);
+        } else {
+          navigateToScanResult({
+            type: 'no_order',
+            customerName: customerName || '',
+          });
+        }
+      } catch (err) {
+        console.warn('ScanQR: getTodayOrderForCustomer failed', err);
+        navigateToScanResult({
+          type: 'error',
+          message: 'Could not load orders. Please try again.',
+        });
+      }
+    },
+    [navigation, returnTo, navigateToOrderDetails, navigateToScanResult]
+  );
+
   const handleBarCodeScanned = useCallback(
-    ({ data }) => {
-      if (scanned) return;
+    async ({ data }) => {
+      if (scanned || resolving) return;
       setScanned(true);
       const trimmed = (data || '').trim();
+      // Format 1: CUSTOMER:<partner_id>
       if (trimmed.startsWith(CUSTOMER_PREFIX)) {
         const idStr = trimmed.slice(CUSTOMER_PREFIX.length).trim();
         const customerId = parseInt(idStr, 10);
         if (!Number.isNaN(customerId)) {
-          if (returnTo === 'DailyVisit') {
-            navigation.reset({
-              index: 0,
-              routes: [
-                {
-                  name: 'MainTabs',
-                  params: { screen: 'DailyVisit', params: { customerId } },
-                },
-              ],
+          setResolving(true);
+          try {
+            const partners = await getPartnersByIds([customerId]);
+            const partner = partners?.find((p) => p.id === customerId);
+            const customerName = partner?.name ?? null;
+            await resolveAndNavigate(customerId, customerName);
+          } catch (err) {
+            console.warn('ScanQR: getPartnersByIds failed', err);
+            navigateToScanResult({
+              type: 'error',
+              message: 'Could not look up customer. Please check your connection and try again.',
             });
-          } else {
-            navigation.reset({
-              index: 0,
-              routes: [
-                { name: 'MainTabs', params: { screen: 'Orders', params: { customerId } } },
-              ],
-            });
+          } finally {
+            setResolving(false);
           }
           return;
         }
       }
-      Alert.alert('Invalid QR', 'This is not a customer QR code. Expected format: CUSTOMER:id');
-      setScanned(false);
+      // Format 2: plain customer ref code (e.g. 2019080029)
+      setResolving(true);
+      try {
+        const customer = await getCustomerByRef(trimmed);
+        if (customer?.id) {
+          await resolveAndNavigate(customer.id, customer.name ?? null);
+          return;
+        }
+        navigateToScanResult({
+          type: 'customer_not_found',
+          ref: trimmed,
+        });
+      } catch (err) {
+        console.warn('ScanQR: getCustomerByRef failed', err);
+        navigateToScanResult({
+          type: 'error',
+          message: 'Could not look up customer. Please check your connection and try again.',
+        });
+      } finally {
+        setResolving(false);
+        setScanned(false);
+      }
     },
-    [navigation, scanned, returnTo]
+    [scanned, resolving, resolveAndNavigate, navigateToScanResult]
   );
 
   if (!permission) {
@@ -139,7 +239,13 @@ export default function ScanQRCodeScreen({ navigation, route }) {
       <View style={styles.overlay}>
         <View style={styles.frame} />
         <Text style={styles.hint}>Align customer QR code within the frame</Text>
-        {scanned && (
+        {resolving && (
+          <View style={styles.resolvingWrap}>
+            <ActivityIndicator size="large" color="#fff" />
+            <Text style={styles.hint}>Looking up customer…</Text>
+          </View>
+        )}
+        {scanned && !resolving && (
           <TouchableOpacity
             style={styles.rescanBtn}
             onPress={() => setScanned(false)}
