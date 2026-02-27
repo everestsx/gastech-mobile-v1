@@ -345,7 +345,9 @@ async function processSyncQueue() {
             if (invoiceId != null) await postInvoice(invoiceId);
           }
           const dateStr = new Date().toISOString().slice(0, 10);
-          const baseMemo = `Payment for Invoice / Order ${orderName}`;
+          const baseMemo = p.invoiceNumber
+            ? `Payment for Invoice ${p.invoiceNumber} / Order ${orderName}`
+            : `Payment for Invoice / Order ${orderName}`;
           for (const pm of payments) {
             if (pm.type === 'credit') continue;
             const amount = Number(pm.amount);
@@ -367,7 +369,7 @@ async function processSyncQueue() {
         buildPaymentProofMessageBody,
         createProofAttachment,
         postPaymentProofToChatterWithAttachmentIds,
-        normalizeBase64ForUpload,
+        imageFileToBase64String,
       } = await import('./proofAttachment.service.js');
       const hasCheck = payments.some((pm) => pm.type === 'check');
       const hasCash = payments.some((pm) => pm.type === 'cash');
@@ -395,30 +397,52 @@ async function processSyncQueue() {
       const attachmentIds = [];
       const syncedAttachmentIds = [];
 
-      for (const att of pendingAttachments) {
-        if (!att.local_file_path || !att.file_name) continue;
-        try {
-          const info = await FileSystem.getInfoAsync(att.local_file_path, { size: false });
-          if (!info?.exists) {
-            await offlineAttachmentsDb.markFailed(att.id, `File missing: ${att.local_file_path}`);
-            logWarn('queue payment proof', new Error('File missing'));
-            continue;
+      // 1) Prefer proofPhotoBase64 from payload (captured at save time): create attachment → get id → then re-call message_post with ids
+      const proofPhotoBase64 = p.proofPhotoBase64 || [];
+      if (proofPhotoBase64.length > 0) {
+        for (let i = 0; i < proofPhotoBase64.length; i++) {
+          const item = proofPhotoBase64[i];
+          const filename = item?.filename || `payment_proof_${i + 1}.jpg`;
+          const base64 = item?.base64;
+          if (!base64 || typeof base64 !== 'string') continue;
+          try {
+            const aid = await createProofAttachment(soId, base64, filename);
+            if (aid != null) attachmentIds.push(aid);
+          } catch (createErr) {
+            logWarn('queue payment proof create attachment', createErr);
           }
-          const base64 = await FileSystem.readAsStringAsync(att.local_file_path, { encoding: FileSystem.EncodingType.Base64 });
-          const normalized = normalizeBase64ForUpload(base64);
-          if (!normalized) {
-            await offlineAttachmentsDb.markFailed(att.id, 'Invalid or too short base64');
-            logWarn('queue payment proof', new Error('Invalid base64'));
-            continue;
+        }
+        if (attachmentIds.length > 0) {
+          for (const att of pendingAttachments) syncedAttachmentIds.push(att.id);
+        }
+      }
+
+      // 2) Fallback: read from saved files (offline_attachments) when no payload base64
+      if (attachmentIds.length === 0) {
+        for (const att of pendingAttachments) {
+          if (!att.local_file_path || !att.file_name) continue;
+          try {
+            const info = await FileSystem.getInfoAsync(att.local_file_path, { size: false });
+            if (!info?.exists) {
+              await offlineAttachmentsDb.markFailed(att.id, `File missing: ${att.local_file_path}`);
+              logWarn('queue payment proof', new Error('File missing'));
+              continue;
+            }
+            const normalized = await imageFileToBase64String(FileSystem, att.local_file_path);
+            if (!normalized) {
+              await offlineAttachmentsDb.markFailed(att.id, 'Invalid or too short base64');
+              logWarn('queue payment proof', new Error('Invalid base64'));
+              continue;
+            }
+            const aid = await createProofAttachment(soId, normalized, att.file_name);
+            if (aid != null) {
+              attachmentIds.push(aid);
+              syncedAttachmentIds.push(att.id);
+            }
+          } catch (attErr) {
+            await offlineAttachmentsDb.incrementRetry(att.id, attErr?.message || 'Read error');
+            logWarn('queue payment proof attachment', attErr);
           }
-          const aid = await createProofAttachment(soId, normalized, att.file_name);
-          if (aid != null) {
-            attachmentIds.push(aid);
-            syncedAttachmentIds.push(att.id);
-          }
-        } catch (attErr) {
-          await offlineAttachmentsDb.incrementRetry(att.id, attErr?.message || 'Read error');
-          logWarn('queue payment proof attachment', attErr);
         }
       }
 
@@ -428,8 +452,7 @@ async function processSyncQueue() {
           const uri = deliveryPhotoUris[i];
           if (!uri || typeof uri !== 'string') continue;
           try {
-            const base64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
-            const normalized = normalizeBase64ForUpload(base64);
+            const normalized = await imageFileToBase64String(FileSystem, uri);
             if (normalized) {
               const ext = (uri.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg';
               const filename = `payment_proof_${i + 1}.${ext}`;
@@ -442,6 +465,7 @@ async function processSyncQueue() {
         }
       }
 
+      // 3) Re-call API: message_post with attachment_ids so images appear in sale order chatter
       try {
         await postPaymentProofToChatterWithAttachmentIds(soId, { body: chatterBody, attachmentIds });
         const pendingById = new Map(pendingAttachments.map((a) => [a.id, a]));

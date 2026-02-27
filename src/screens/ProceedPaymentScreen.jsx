@@ -25,6 +25,8 @@ import * as FileSystem from 'expo-file-system';
 import { JOURNAL_CODE_CASH, JOURNAL_CODE_CHEQUE } from '../constants/journals';
 import { SRI_LANKA_BANKS } from '../constants/sriLankaBanks';
 import { formatAmount } from '../utils/format';
+import { getOrAssignInvoiceNumber } from '../utils/invoiceNumber';
+import { normalizeBase64ForUpload } from '../services/proofAttachment.service';
 
 const PAYMENT_CASH = 'cash';
 const PAYMENT_CHECK = 'check';
@@ -189,6 +191,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         ? orderInfo.partner_id[0]
         : orderInfo.partner_id;
       const orderName = orderInfo.name ?? `Order ${saleOrderId}`;
+      const invoiceNumber = await getOrAssignInvoiceNumber(saleOrderId);
 
       await saleOrdersDb.updateSaleOrderInvoiceStatusLocal(saleOrderId, 'invoiced');
 
@@ -213,25 +216,28 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       }
       if (payments.length === 0) return;
 
-      // Save proof photos to persistent storage and register in offline_attachments (no base64 in DB)
+      // 1) Capture: convert each proof image to base64 (single code path) and save file for fallback
       const soId = Number(saleOrderId);
       const timestamp = Date.now();
+      const proofPhotoBase64 = [];
       for (let i = 0; i < deliveryPhotos.length; i++) {
         const uri = deliveryPhotos[i];
         if (!uri || typeof uri !== 'string') continue;
         try {
-          const ext = (uri.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg';
-          const fileName = `payment_${soId}_${timestamp}_${i}.${ext}`;
-          const destPath = `${FileSystem.documentDirectory}proof_${fileName}`;
-          const base64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
-          if (base64 && base64.length >= 100) {
-            await FileSystem.writeAsStringAsync(destPath, base64, { encoding: FileSystem.EncodingType.Base64 });
+          const rawBase64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
+          const normalized = normalizeBase64ForUpload(rawBase64);
+          if (normalized) {
+            const ext = (uri.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg';
+            const fileName = `payment_${soId}_${timestamp}_${i}.${ext}`;
+            const destPath = `${FileSystem.documentDirectory}proof_${fileName}`;
+            await FileSystem.writeAsStringAsync(destPath, rawBase64, { encoding: FileSystem.EncodingType.Base64 });
             await offlineAttachmentsDb.insert({
               sale_order_id: soId,
               local_file_path: destPath,
               file_name: fileName,
               mime_type: ext === 'png' ? 'image/png' : 'image/jpeg',
             });
+            proofPhotoBase64.push({ filename: fileName, base64: normalized });
           }
         } catch (e) {
           console.warn('ProceedPayment: save proof photo', i, e?.message ?? e);
@@ -242,8 +248,10 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         saleOrderId,
         partnerId,
         orderName,
+        invoiceNumber,
         total: orderTotal,
         payments,
+        proofPhotoBase64: proofPhotoBase64.length > 0 ? proofPhotoBase64 : undefined,
         deliveryPhotoUris: deliveryPhotos,
         chequeBankName: needsCheck ? selectedLocalBank?.name : undefined,
         checkNumber: needsCheck ? (checkNumberTrimmed || undefined) : undefined,
@@ -255,6 +263,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       navigation.replace('InvoiceScreen', {
         saleOrderId,
         total,
+        invoiceNumber,
         paymentType: 'split',
         paymentSplit,
         selectedBankId: needsCheck ? checkJournalId : null,
