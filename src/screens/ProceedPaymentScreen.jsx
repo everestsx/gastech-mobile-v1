@@ -461,7 +461,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           borderColor: colors.border,
           gap: 8,
         },
-        searchInput: { flex: 1, fontSize: 15, color: colors.text, paddingVertical: 0 },
+        searchInput: { flex: 1, fontSize: 15, color: colors.text, paddingVertical: 6 },
         searchClear: { padding: 2 },
         bankSearchWrap: {
           flexDirection: 'row',
@@ -522,7 +522,9 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           alignItems: 'center',
           justifyContent: 'center',
           marginRight: spacing.sm,
+          overflow: 'hidden',
         },
+        bankLogo: { width: 36, height: 36 },
         bankName: { flex: 1, fontSize: 14, fontWeight: '600', color: colors.text },
         noBanksText: { fontSize: 14, color: colors.textSecondary, textAlign: 'center', paddingVertical: spacing.lg },
         bottomSpacer: { height: spacing.md },
@@ -743,7 +745,11 @@ export default function ProceedPaymentScreen({ route, navigation }) {
                       activeOpacity={1}
                     >
                       <View style={styles.bankIconWrap}>
-                        <Ionicons name={selectedLocalBank?.icon || 'business-outline'} size={24} color={colors.primary} />
+                        {selectedLocalBank?.logo != null ? (
+                          <Image source={selectedLocalBank.logo} style={styles.bankLogo} resizeMode="contain" />
+                        ) : (
+                          <Ionicons name={selectedLocalBank?.icon || 'business-outline'} size={24} color={colors.primary} />
+                        )}
                       </View>
                       <Text style={styles.bankName} numberOfLines={1}>{selectedLocalBank?.name}</Text>
                       <Ionicons name="checkmark-circle" size={20} color={colors.primary} />
@@ -771,7 +777,11 @@ export default function ProceedPaymentScreen({ route, navigation }) {
                       activeOpacity={0.8}
                     >
                       <View style={styles.bankIconWrap}>
-                        <Ionicons name={bank.icon || 'business-outline'} size={24} color={colors.primary} />
+                        {bank.logo != null ? (
+                          <Image source={bank.logo} style={styles.bankLogo} resizeMode="contain" />
+                        ) : (
+                          <Ionicons name={bank.icon || 'business-outline'} size={24} color={colors.primary} />
+                        )}
                       </View>
                       <Text style={styles.bankName} numberOfLines={1}>{bank.name}</Text>
                       {selectedLocalBankId === bank.id && <Ionicons name="checkmark-circle" size={20} color={colors.primary} />}
