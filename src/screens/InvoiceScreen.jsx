@@ -66,26 +66,38 @@ function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSp
           ? `Credit: ${selectedBankName}`
           : (!paymentType && !selectedBankName && !paymentSplit) ? 'Invoiced' : 'Cash';
 
+  const lineAmounts = (lines || []).map((l) => {
+    const sub = Number(l.price_subtotal) || 0;
+    const total = Number(l.price_total) || 0;
+    return { sub, total, tax: total - sub };
+  });
+  const computedUntaxed = lineAmounts.reduce((s, a) => s + a.sub, 0);
+  const computedTax = lineAmounts.reduce((s, a) => s + a.tax, 0);
+
   const rows =
     (lines || [])
       .map(
         (l, i) => {
-          const productName = getProductDisplayName(l.product_id?.[1] ?? '—').replace(/</g, '&lt;').substring(0, 28);
-          const lineTotal = formatAmount((l.price_subtotal ?? l.price_total) ?? 0);
+          const productName = getProductDisplayName(l.product_id?.[1] ?? '—').replace(/</g, '&lt;').substring(0, 42);
+          const lineSub = Number(l.price_subtotal) || 0;
+          const lineTotal = Number(l.price_total) || 0;
+          const lineTax = lineTotal - lineSub;
           return `<tr>
             <td style="padding:2px 4px;border-bottom:1px solid #eee;font-size:9px">${i + 1}</td>
             <td style="padding:2px 4px;border-bottom:1px solid #eee;font-size:9px">${productName}</td>
             <td style="padding:2px 4px;border-bottom:1px solid #eee;text-align:center;font-size:9px">${Number(l.product_uom_qty ?? 0)}</td>
             <td style="padding:2px 4px;border-bottom:1px solid #eee;text-align:right;font-size:9px">${formatAmount(l.price_unit ?? 0)}</td>
-            <td style="padding:2px 4px;border-bottom:1px solid #eee;text-align:right;font-size:9px">${lineTotal}</td>
+            <td style="padding:2px 4px;border-bottom:1px solid #eee;text-align:right;font-size:9px">${formatAmount(lineSub)}</td>
+            <td style="padding:2px 4px;border-bottom:1px solid #eee;text-align:right;font-size:9px">${formatAmount(lineTax)}</td>
+            <td style="padding:2px 4px;border-bottom:1px solid #eee;text-align:right;font-size:9px">${formatAmount(lineTotal)}</td>
           </tr>`;
         }
       )
-      .join('') || '<tr><td colspan="5" style="padding:8px;text-align:center;font-size:9px">No line items</td></tr>';
+      .join('') || '<tr><td colspan="7" style="padding:8px;text-align:center;font-size:9px">No line items</td></tr>';
 
-  const amountUntaxed = order?.amount_untaxed ?? 0;
-  const amountTax = order?.amount_tax ?? 0;
-  const amountTotal = order?.amount_total ?? 0;
+  const amountUntaxed = (order?.amount_untaxed != null && order.amount_untaxed !== 0) ? order.amount_untaxed : computedUntaxed;
+  const amountTax = (order?.amount_tax != null && order.amount_tax !== 0) ? order.amount_tax : computedTax;
+  const amountTotal = order?.amount_total ?? (amountUntaxed + amountTax);
   const words = amountInWords(amountTotal) + ' Rupees only';
 
   const logoImg = logoUri
@@ -108,12 +120,12 @@ function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSp
     table { width: 100%; border-collapse: collapse; margin: 6px 0; font-size: 8px; border: 1px solid #ddd; border-radius: 6px; overflow: hidden; table-layout: auto; }
     th { text-align: left; padding: 8px 6px; border-bottom: 1px solid #ddd; background: #eef2ff; font-weight: 700; color: #374151; }
     th:nth-child(1) { width: 22px; text-align: center; padding-right: 8px; }
-    th:nth-child(2) { padding-right: 8px; }
-    th:nth-child(3), th:nth-child(4), th:nth-child(5) { text-align: right; min-width: 36px; padding-left: 10px; }
+    th:nth-child(2) { min-width: 45%; padding-right: 10px; }
+    th:nth-child(3), th:nth-child(4), th:nth-child(5), th:nth-child(6), th:nth-child(7) { text-align: right; min-width: 36px; padding-left: 10px; }
     td { padding: 8px 6px; border-bottom: 1px solid #eee; }
     td:nth-child(1) { padding-right: 8px; }
-    td:nth-child(2) { padding-right: 8px; }
-    td:nth-child(3), td:nth-child(4), td:nth-child(5) { padding-left: 10px; }
+    td:nth-child(2) { min-width: 45%; padding-right: 10px; }
+    td:nth-child(3), td:nth-child(4), td:nth-child(5), td:nth-child(6), td:nth-child(7) { text-align: right; padding-left: 10px; }
     tr:last-child td { border-bottom: none; }
     .totals { margin-top: 6px; border-top: 1px solid #333; padding-top: 4px; }
     .row { display: flex; justify-content: space-between; margin: 2px 0; }
@@ -151,6 +163,8 @@ function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSp
         <th>Qty</th>
         <th>Unit Price</th>
         <th>Amount Excl. VAT (Rs.)</th>
+        <th>VAT (Rs.)</th>
+        <th>Total (Rs.)</th>
       </tr>
     </thead>
     <tbody>${rows}</tbody>
@@ -231,7 +245,7 @@ export default function InvoiceScreen({ route, navigation }) {
           shadowRadius: 4,
           alignSelf: 'stretch',
         },
-        logo: { width: 180, height: 56, marginBottom: 6, alignSelf: 'flex-start' },
+        logo: { width: 80, height: 56, marginBottom: 6, alignSelf: 'flex-start' },
         invoiceTitle: { fontSize: 14, fontWeight: '700', color: colors.textSecondary, marginBottom: spacing.sm },
         metaRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 3, alignItems: 'flex-start' },
         metaLabel: { fontSize: 12, color: colors.textSecondary, minWidth: 72 },
@@ -253,9 +267,10 @@ export default function InvoiceScreen({ route, navigation }) {
         },
         th: { fontSize: 11, fontWeight: '700', color: colors.textSecondary },
         thNo: { width: 26, textAlign: 'center', marginRight: 8 },
-        thProduct: { flex: 1, paddingRight: 8 },
-        thQty: { flex: 1, minWidth: 44, textAlign: 'right', marginLeft: 8 },
-        thTotal: { flex: 1, minWidth: 56, textAlign: 'right', marginLeft: 8 },
+        thProduct: { flex: 2.5, paddingRight: 12, minWidth: 100 },
+        thQty: { flex: 0.7, minWidth: 36, textAlign: 'right', marginLeft: 4 },
+        thTax: { flex: 0.9, minWidth: 44, textAlign: 'right', marginLeft: 4 },
+        thTotal: { flex: 1, minWidth: 52, textAlign: 'right', marginLeft: 8 },
         tableRow: {
           flexDirection: 'row',
           borderBottomWidth: 1,
@@ -267,9 +282,10 @@ export default function InvoiceScreen({ route, navigation }) {
         tableRowLast: { borderBottomWidth: 0 },
         td: { fontSize: 13, color: colors.text },
         tdNo: { width: 26, textAlign: 'center', fontSize: 13, color: colors.text, marginRight: 8 },
-        tdProduct: { flex: 1, paddingRight: 8 },
-        tdQty: { flex: 1, minWidth: 44, textAlign: 'right', marginLeft: 8 },
-        tdTotal: { flex: 1, minWidth: 56, textAlign: 'right', marginLeft: 8 },
+        tdProduct: { flex: 2.5, paddingRight: 12, minWidth: 100 },
+        tdQty: { flex: 0.7, minWidth: 36, textAlign: 'right', marginLeft: 4 },
+        tdTax: { flex: 0.9, minWidth: 44, textAlign: 'right', marginLeft: 4 },
+        tdTotal: { flex: 1, minWidth: 52, textAlign: 'right', marginLeft: 8 },
         totalsSection: { marginTop: spacing.sm, paddingTop: spacing.sm, borderTopWidth: 1, borderTopColor: colors.border },
         totalsRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 },
         totalsRowMain: { marginTop: 4 },
@@ -424,6 +440,29 @@ export default function InvoiceScreen({ route, navigation }) {
     }
   }, [order, lines, invoiceNumber, paymentType, selectedBankName, paymentSplit, logoUri, customerSignatureDataUrl, chequeBankName, checkNumber, fadeAnim, scaleAnim]);
 
+  /** Subtotal from lines: sum of price_subtotal */
+  const computedSubtotal = useMemo(() => {
+    if (!lines?.length) return 0;
+    return lines.reduce((sum, l) => sum + (Number(l.price_subtotal) || 0), 0);
+  }, [lines]);
+
+  /** Tax from lines: sum of (price_total - price_subtotal) per line */
+  const computedTax = useMemo(() => {
+    if (!lines?.length) return 0;
+    return lines.reduce(
+      (sum, l) => sum + ((Number(l.price_total) || 0) - (Number(l.price_subtotal) || 0)),
+      0
+    );
+  }, [lines]);
+
+  const displaySubtotal = (order?.amount_untaxed != null && order.amount_untaxed !== 0)
+    ? order.amount_untaxed
+    : computedSubtotal;
+  const displayTax = (order?.amount_tax != null && order.amount_tax !== 0)
+    ? order.amount_tax
+    : computedTax;
+  const displayTotal = order?.amount_total ?? total ?? (displaySubtotal + displayTax);
+
   const paymentLabel =
     paymentType === 'split' && paymentSplit
       ? [
@@ -493,42 +532,49 @@ export default function InvoiceScreen({ route, navigation }) {
             <Text style={[styles.th, styles.thNo]}>No</Text>
             <Text style={[styles.th, styles.thProduct]}>Product</Text>
             <Text style={[styles.th, styles.thQty]}>Qty</Text>
+            <Text style={[styles.th, styles.thTax]}>Tax</Text>
             <Text style={[styles.th, styles.thTotal]}>Total</Text>
           </View>
-          {(lines || []).map((line, index) => (
-            <View
-              key={line.id}
-              style={[styles.tableRow, index === (lines?.length ?? 0) - 1 && styles.tableRowLast]}
-            >
-              <Text style={[styles.td, styles.tdNo]}>{index + 1}</Text>
-              <Text style={[styles.td, styles.tdProduct]} numberOfLines={1}>
-                {getProductDisplayName(line.product_id?.[1] ?? '—')}
-              </Text>
-              <Text style={[styles.td, styles.tdQty]}>{line.product_uom_qty}</Text>
-              <Text style={[styles.td, styles.tdTotal]}>
-                {formatAmount(line.price_total ?? 0)}
-              </Text>
-            </View>
-          ))}
+          {(lines || []).map((line, index) => {
+            const lineSubtotal = Number(line.price_subtotal) || 0;
+            const lineTotal = Number(line.price_total) || 0;
+            const lineTax = lineTotal - lineSubtotal;
+            return (
+              <View
+                key={line.id}
+                style={[styles.tableRow, index === (lines?.length ?? 0) - 1 && styles.tableRowLast]}
+              >
+                <Text style={[styles.td, styles.tdNo]}>{index + 1}</Text>
+                <Text style={[styles.td, styles.tdProduct]} numberOfLines={2}>
+                  {getProductDisplayName(line.product_id?.[1] ?? '—')}
+                </Text>
+                <Text style={[styles.td, styles.tdQty]}>{line.product_uom_qty}</Text>
+                <Text style={[styles.td, styles.tdTax]}>{formatAmount(lineTax)}</Text>
+                <Text style={[styles.td, styles.tdTotal]}>
+                  {formatAmount(lineTotal)}
+                </Text>
+              </View>
+            );
+          })}
         </View>
 
         <View style={styles.totalsSection}>
           <View style={styles.totalsRow}>
             <Text style={styles.totalsLabel}>Subtotal</Text>
             <Text style={styles.totalsValue}>
-              {formatInvoiceCurrency(order?.amount_untaxed ?? 0)}
+              {formatInvoiceCurrency(displaySubtotal)}
             </Text>
           </View>
           <View style={styles.totalsRow}>
             <Text style={styles.totalsLabel}>Tax</Text>
             <Text style={styles.totalsValue}>
-              {formatInvoiceCurrency(order?.amount_tax ?? 0)}
+              {formatInvoiceCurrency(displayTax)}
             </Text>
           </View>
           <View style={[styles.totalsRow, styles.totalsRowMain]}>
             <Text style={styles.totalsLabelMain}>Total</Text>
             <Text style={styles.totalsValueMain}>
-              {formatInvoiceCurrency(order?.amount_total ?? total ?? 0)}
+              {formatInvoiceCurrency(displayTotal)}
             </Text>
           </View>
         </View>

@@ -312,56 +312,62 @@ async function processSyncQueue() {
       const skipPaymentCreation = alreadySyncedSaleOrderIds.has(soId);
 
       if (!skipPaymentCreation) {
-        const orderInfo = await getSaleOrderForPayment(saleOrderId);
-        if (!orderInfo) {
-          logWarn('queue payment', new Error('Sale order not found'));
-          continue;
-        }
-        const partnerId = Array.isArray(orderInfo.partner_id) ? orderInfo.partner_id[0] : orderInfo.partner_id;
-        if (partnerId == null) continue;
-
-        const existingInvoiceIds = orderInfo.invoice_ids ?? [];
-        let invoiceAlreadyPosted = false;
-        if (existingInvoiceIds.length > 0) {
-          const invoiceId = Array.isArray(existingInvoiceIds) ? existingInvoiceIds[0] : existingInvoiceIds;
-          const invState = await getInvoiceState(invoiceId).catch(() => ({}));
-          if (invState?.state === 'posted') {
-            invoiceAlreadyPosted = true;
-          } else if (invState?.state === 'draft') {
-            await postInvoice(invoiceId);
-          }
-        }
-
-        if (!invoiceAlreadyPosted) {
-          let invoiceId = null;
-          if (existingInvoiceIds.length > 0) {
-            invoiceId = Array.isArray(existingInvoiceIds) ? existingInvoiceIds[0] : existingInvoiceIds;
+        try {
+          const orderInfo = await getSaleOrderForPayment(saleOrderId);
+          if (!orderInfo) {
+            logWarn('queue payment', new Error('Sale order not found'));
           } else {
-            const wizardId = await createAdvancePaymentWizard(saleOrderId);
-            if (wizardId == null) continue;
-            await createInvoicesFromWizard(wizardId, saleOrderId);
-            const invoiceIds = await getSaleOrderInvoiceIds(saleOrderId);
-            invoiceId = Array.isArray(invoiceIds) ? invoiceIds[0] : invoiceIds;
-            if (invoiceId != null) await postInvoice(invoiceId);
+            const partnerId = Array.isArray(orderInfo.partner_id) ? orderInfo.partner_id[0] : orderInfo.partner_id;
+            if (partnerId != null) {
+              const existingInvoiceIds = orderInfo.invoice_ids ?? [];
+              let invoiceAlreadyPosted = false;
+              if (existingInvoiceIds.length > 0) {
+                const invoiceId = Array.isArray(existingInvoiceIds) ? existingInvoiceIds[0] : existingInvoiceIds;
+                const invState = await getInvoiceState(invoiceId).catch(() => ({}));
+                if (invState?.state === 'posted') {
+                  invoiceAlreadyPosted = true;
+                } else if (invState?.state === 'draft') {
+                  await postInvoice(invoiceId);
+                }
+              }
+
+              if (!invoiceAlreadyPosted) {
+                let invoiceId = null;
+                if (existingInvoiceIds.length > 0) {
+                  invoiceId = Array.isArray(existingInvoiceIds) ? existingInvoiceIds[0] : existingInvoiceIds;
+                } else {
+                  const wizardId = await createAdvancePaymentWizard(saleOrderId);
+                  if (wizardId != null) {
+                    await createInvoicesFromWizard(wizardId, saleOrderId);
+                    const invoiceIds = await getSaleOrderInvoiceIds(saleOrderId);
+                    invoiceId = Array.isArray(invoiceIds) ? invoiceIds[0] : invoiceIds;
+                    if (invoiceId != null) await postInvoice(invoiceId);
+                  }
+                }
+                const dateStr = new Date().toISOString().slice(0, 10);
+                const baseMemo = p.invoiceNumber
+                  ? `Payment for Invoice ${p.invoiceNumber} / Order ${orderName}`
+                  : `Payment for Invoice / Order ${orderName}`;
+                for (const pm of payments) {
+                  if (pm.type === 'credit') continue;
+                  const amount = Number(pm.amount);
+                  if (!amount || !pm.journalId) continue;
+                  await createPayment({
+                    partnerId,
+                    amount,
+                    currencyId: 1,
+                    journalId: pm.journalId,
+                    date: dateStr,
+                    memo: `${baseMemo} (${pm.type || 'payment'})${pm.checkNumber ? ` #${pm.checkNumber}` : ''}`,
+                    invoiceId,
+                  });
+                }
+              }
+            }
           }
-          const dateStr = new Date().toISOString().slice(0, 10);
-          const baseMemo = p.invoiceNumber
-            ? `Payment for Invoice ${p.invoiceNumber} / Order ${orderName}`
-            : `Payment for Invoice / Order ${orderName}`;
-          for (const pm of payments) {
-            if (pm.type === 'credit') continue;
-            const amount = Number(pm.amount);
-            if (!amount || !pm.journalId) continue;
-            await createPayment({
-              partnerId,
-              amount,
-              currencyId: 1,
-              journalId: pm.journalId,
-              date: dateStr,
-              memo: `${baseMemo} (${pm.type || 'payment'})${pm.checkNumber ? ` #${pm.checkNumber}` : ''}`,
-              invoiceId,
-            });
-          }
+        } catch (invoiceErr) {
+          logWarn('queue payment (invoice/payments)', invoiceErr);
+          // Continue to post chatter + proof images so sale order chat still gets message and photo
         }
       }
 
@@ -396,56 +402,67 @@ async function processSyncQueue() {
 
       const attachmentIds = [];
       const syncedAttachmentIds = [];
+      const pendingCount = (pendingAttachments || []).length;
+      const payloadBase64Count = (p.proofPhotoBase64 || []).length;
+      log('queue', `payment proof (SO ${soId}): ${pendingCount} pending files in local DB, ${payloadBase64Count} base64 in payload — will create attachment then message_post`);
+      if (pendingCount === 0 && payloadBase64Count === 0) {
+        log('queue', `payment proof: no images to attach (add photos on Proceed Payment screen and confirm to see [Payment] base64 conversion logs)`);
+      }
 
-      // 1) Prefer proofPhotoBase64 from payload (captured at save time): create attachment → get id → then re-call message_post with ids
-      const proofPhotoBase64 = p.proofPhotoBase64 || [];
-      if (proofPhotoBase64.length > 0) {
+      // 1) Prefer saved files (offline_attachments): read file → base64 → API 1 create ir.attachment
+      for (const att of pendingAttachments || []) {
+        if (!att.local_file_path || !att.file_name) continue;
+        try {
+          const info = await FileSystem.getInfoAsync(att.local_file_path, { size: false });
+          if (!info?.exists) {
+            await offlineAttachmentsDb.markFailed(att.id, `File missing: ${att.local_file_path}`);
+            logWarn('queue payment proof', new Error('File missing'));
+            continue;
+          }
+          const normalized = await imageFileToBase64String(FileSystem, att.local_file_path);
+          if (!normalized) {
+            await offlineAttachmentsDb.markFailed(att.id, 'Invalid or too short base64');
+            logWarn('queue payment proof', new Error('Invalid base64'));
+            continue;
+          }
+          log('queue', `create attachment API (ir.attachment create) SO ${soId} file ${att.file_name} datas length ${normalized.length}`);
+          const aid = await createProofAttachment(soId, normalized, att.file_name);
+          if (aid != null) {
+            attachmentIds.push(aid);
+            syncedAttachmentIds.push(att.id);
+            log('queue', `create attachment API result: attachment_id=${aid}`);
+          }
+        } catch (attErr) {
+          await offlineAttachmentsDb.incrementRetry(att.id, attErr?.message || 'Read error');
+          logWarn('queue payment proof attachment', attErr);
+        }
+      }
+
+      // 2) Fallback: proofPhotoBase64 from payload (if no attachments from files)
+      if (attachmentIds.length === 0) {
+        const proofPhotoBase64 = p.proofPhotoBase64 || [];
         for (let i = 0; i < proofPhotoBase64.length; i++) {
           const item = proofPhotoBase64[i];
           const filename = item?.filename || `payment_proof_${i + 1}.jpg`;
           const base64 = item?.base64;
           if (!base64 || typeof base64 !== 'string') continue;
           try {
+            log('queue', `create attachment API (ir.attachment create) SO ${soId} from payload ${filename} datas length ${base64.length}`);
             const aid = await createProofAttachment(soId, base64, filename);
-            if (aid != null) attachmentIds.push(aid);
+            if (aid != null) {
+              attachmentIds.push(aid);
+              log('queue', `create attachment API result: attachment_id=${aid}`);
+            }
           } catch (createErr) {
             logWarn('queue payment proof create attachment', createErr);
           }
         }
         if (attachmentIds.length > 0) {
-          for (const att of pendingAttachments) syncedAttachmentIds.push(att.id);
+          for (const att of pendingAttachments || []) syncedAttachmentIds.push(att.id);
         }
       }
 
-      // 2) Fallback: read from saved files (offline_attachments) when no payload base64
-      if (attachmentIds.length === 0) {
-        for (const att of pendingAttachments) {
-          if (!att.local_file_path || !att.file_name) continue;
-          try {
-            const info = await FileSystem.getInfoAsync(att.local_file_path, { size: false });
-            if (!info?.exists) {
-              await offlineAttachmentsDb.markFailed(att.id, `File missing: ${att.local_file_path}`);
-              logWarn('queue payment proof', new Error('File missing'));
-              continue;
-            }
-            const normalized = await imageFileToBase64String(FileSystem, att.local_file_path);
-            if (!normalized) {
-              await offlineAttachmentsDb.markFailed(att.id, 'Invalid or too short base64');
-              logWarn('queue payment proof', new Error('Invalid base64'));
-              continue;
-            }
-            const aid = await createProofAttachment(soId, normalized, att.file_name);
-            if (aid != null) {
-              attachmentIds.push(aid);
-              syncedAttachmentIds.push(att.id);
-            }
-          } catch (attErr) {
-            await offlineAttachmentsDb.incrementRetry(att.id, attErr?.message || 'Read error');
-            logWarn('queue payment proof attachment', attErr);
-          }
-        }
-      }
-
+      // 3) Last fallback: read from deliveryPhotoUris (URIs may be stale after app restart)
       const deliveryPhotoUris = p.deliveryPhotoUris || [];
       if (attachmentIds.length === 0 && deliveryPhotoUris.length > 0) {
         for (let i = 0; i < deliveryPhotoUris.length; i++) {
@@ -456,6 +473,7 @@ async function processSyncQueue() {
             if (normalized) {
               const ext = (uri.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg';
               const filename = `payment_proof_${i + 1}.${ext}`;
+              log('queue', `create attachment API (ir.attachment create) SO ${soId} from URI datas length ${normalized.length}`);
               const aid = await createProofAttachment(soId, normalized, filename);
               if (aid != null) attachmentIds.push(aid);
             }
@@ -465,10 +483,11 @@ async function processSyncQueue() {
         }
       }
 
-      // 3) Re-call API: message_post with attachment_ids so images appear in sale order chatter
+      // API 2: Post message to sale order chat (body + attachment_ids so captured photo shows)
       try {
+        log('queue', `message_post API (sale.order) SO ${soId} attachment_ids=[${attachmentIds.join(', ')}]`);
         await postPaymentProofToChatterWithAttachmentIds(soId, { body: chatterBody, attachmentIds });
-        const pendingById = new Map(pendingAttachments.map((a) => [a.id, a]));
+        const pendingById = new Map((pendingAttachments || []).map((a) => [a.id, a]));
         for (const id of syncedAttachmentIds) {
           await offlineAttachmentsDb.markSynced(id);
           const att = pendingById.get(id);

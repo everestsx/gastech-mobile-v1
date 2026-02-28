@@ -223,10 +223,14 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       }
       if (payments.length === 0) return;
 
-      // 1) Capture: convert each proof image to base64 (single code path) and save file for fallback
       const soId = Number(saleOrderId);
       const timestamp = Date.now();
       const proofPhotoBase64 = [];
+      const photoCount = deliveryPhotos.length;
+      console.log(`[Payment] Captured proof photos count: ${photoCount}. Converting to base64 and storing in local DB...`);
+      if (photoCount === 0) {
+        console.log('[Payment] No proof photos attached — add at least 1 photo (Evidence of delivery) so it appears in sale order chat.');
+      }
       for (let i = 0; i < deliveryPhotos.length; i++) {
         const uri = deliveryPhotos[i];
         if (!uri || typeof uri !== 'string') continue;
@@ -234,6 +238,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           const rawBase64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
           const normalized = normalizeBase64ForUpload(rawBase64);
           if (normalized) {
+            console.log(`[Payment] Proof photo ${i + 1}/${photoCount}: converted to base64 string (length=${normalized.length}), prefix data:image/...;base64, removed for datas`);
             const ext = (uri.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg';
             const fileName = `payment_${soId}_${timestamp}_${i}.${ext}`;
             const destPath = `${FileSystem.documentDirectory}proof_${fileName}`;
@@ -244,14 +249,18 @@ export default function ProceedPaymentScreen({ route, navigation }) {
               file_name: fileName,
               mime_type: ext === 'png' ? 'image/png' : 'image/jpeg',
             });
+            console.log(`[Payment] Proof photo ${i + 1}: stored in local DB (offline_attachments) file=${fileName}`);
             proofPhotoBase64.push({ filename: fileName, base64: normalized });
+          } else {
+            console.warn(`[Payment] Proof photo ${i + 1}: base64 conversion returned empty (uri length=${(rawBase64 && rawBase64.length) || 0})`);
           }
         } catch (e) {
-          console.warn('ProceedPayment: save proof photo', i, e?.message ?? e);
+          console.warn('[Payment] save proof photo', i, e?.message ?? e);
         }
       }
+      console.log(`[Payment] Total proof photos stored for sync: ${proofPhotoBase64.length}. On sync: ir.attachment create → message_post with attachment_ids.`);
 
-      await syncQueueDb.enqueue(syncQueueDb.ACTION_PAYMENT, {
+      const queuePayload = {
         saleOrderId,
         partnerId,
         orderName,
@@ -262,7 +271,9 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         deliveryPhotoUris: deliveryPhotos,
         chequeBankName: needsCheck ? selectedLocalBank?.name : undefined,
         checkNumber: needsCheck ? (checkNumberTrimmed || undefined) : undefined,
-      });
+      };
+      await syncQueueDb.enqueue(syncQueueDb.ACTION_PAYMENT, queuePayload);
+      console.log(`[Payment] Stored in local DB (sync_queue): payment for SO ${saleOrderId}, proof photos=${proofPhotoBase64.length}. On sync: create attachment API → message_post API.`);
 
       const primaryPaymentType = needsCredit ? 'credit' : needsCheck ? 'cheque' : 'cash';
       await saleOrdersDb.updateSaleOrderPaymentTypeLocal(saleOrderId, primaryPaymentType);
