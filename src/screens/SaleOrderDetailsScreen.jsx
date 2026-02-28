@@ -13,7 +13,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { getSaleOrderDetailsFromDB,getCachedVehicleInventory, getDeliveryDataFromDB } from '../services/sync.service';
+import { getSaleOrderDetailsFromDB, getCachedVehicleInventoryByLocation, getVehicleLocationId, getDeliveryDataFromDB } from '../services/sync.service';
 import * as saleOrderLinesDb from '../database/saleOrderLines.js';
 import * as saleOrdersDb from '../database/saleOrders.js';
 import * as stockMoveLinesDb from '../database/stockMoveLines.js';
@@ -298,7 +298,14 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
       return;
     }
 
-    console.log('[Inventory Update] Starting update for vehicle:', vehicleId);
+    // Get location_id for this vehicle
+    const locationId = await getVehicleLocationId(vehicleId);
+    if (locationId == null) {
+      console.warn(`No location_id found for vehicle ${vehicleId}`);
+      return;
+    }
+
+    console.log('[Inventory Update] Starting update for vehicle:', vehicleId, 'location:', locationId);
 
     try {
       for (let i = 0; i < lines.length; i++) {
@@ -313,15 +320,17 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
 
         console.log(`[Inventory Update] Product ${productId}: ${currentStock} - ${qtyUsed} = ${newStock}`);
 
-        await vehicleInventoriesDb.updateVehicleInventoryQuantity(
-          vehicleId,
+
+        await vehicleInventoriesDb.updateVehicleInventoryQuantityByLocation(
+          locationId,
           productId,
           newStock
         );
-          const allInventory = await vehicleInventoriesDb.getVehicleInventoryByVehicleId(vehicleId);
-          console.log('[Inventory Update] Full inventory after update:', JSON.stringify(allInventory));
-        const updated = await vehicleInventoriesDb.getVehicleInventoryByVehicleId(vehicleId);
-        const verifyItem = updated.find(inv =>
+
+        const allInventory = await vehicleInventoriesDb.getVehicleInventoryByLocationId(locationId);
+        console.log('[Inventory Update] Full inventory after update:', JSON.stringify(allInventory));
+
+        const verifyItem = allInventory.find(inv =>
           (inv.product_id === productId || inv.id === productId)
         );
         console.log(`[Inventory Update] Verified new stock:`, verifyItem?.available_quantity);
@@ -329,6 +338,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
 
       await syncQueueDb.enqueue(syncQueueDb.ACTION_INVENTORY_UPDATE, {
         vehicleId,
+        locationId,
         updates: lines.map((line, i) => {
           const productId = Array.isArray(line.product_id) ? line.product_id[0] : line.product_id;
           const qtyUsed = effectiveQtys[i] != null ? Number(effectiveQtys[i]) : Number(line.newQty);
@@ -376,15 +386,24 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
 
         if (vehicleId != null) {
           try {
-            const inventories = await getCachedVehicleInventory(vehicleId);
-            const map = {};
-            (inventories || []).forEach((inv) => {
-              const pid = inv.product_id != null ? inv.product_id : inv.id;
-              if (pid != null) {
-                map[pid] = Number(inv.available_quantity) ?? 0;
-              }
-            });
-            setProductIdToAvailable(map);
+            // Get location_id for this vehicle and fetch inventory by location
+            const locationId = await getVehicleLocationId(vehicleId);
+            console.log(`[UI Debug] Vehicle ${vehicleId} has location_id: ${locationId}`);
+
+            if (locationId) {
+              const inventories = await getCachedVehicleInventoryByLocation(locationId);
+              const map = {};
+              (inventories || []).forEach((inv) => {
+                const pid = inv.product_id != null ? inv.product_id : inv.id;
+                if (pid != null) {
+                  map[pid] = Number(inv.available_quantity) ?? 0;
+                }
+              });
+              setProductIdToAvailable(map);
+            } else {
+              console.warn(`[UI Debug] No location_id found for vehicle ${vehicleId}`);
+              setProductIdToAvailable({});
+            }
           } catch (error) {
             console.error('Failed to load vehicle inventory:', error);
             setProductIdToAvailable({});

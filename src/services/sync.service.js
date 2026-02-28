@@ -122,6 +122,35 @@ export async function getCachedVehicleInventory(vehicleId) {
   }
 }
 
+/**
+ * Get the location_id (stock.location id) for a given vehicle from local DB.
+ * @param {number} vehicleId
+ * @returns {Promise<number|null>}
+ */
+export async function getVehicleLocationId(vehicleId) {
+  try {
+    const warehouse = await vehicleWarehousesDb.getVehicleWarehouseByVehicleId(vehicleId);
+    return warehouse?.id ?? null;
+  } catch (e) {
+    console.warn('getVehicleLocationId', e);
+    return null;
+  }
+}
+
+/**
+ * Get cached vehicle inventory by location_id from local DB.
+ * @param {number} locationId
+ * @returns {Promise<Array>}
+ */
+export async function getCachedVehicleInventoryByLocation(locationId) {
+  try {
+    return await vehicleInventoriesDb.getVehicleInventoryByLocationId(locationId);
+  } catch (e) {
+    console.warn('getCachedVehicleInventoryByLocation', e);
+    return [];
+  }
+}
+
 export async function getCachedRoutes() {
   try {
     return await routesDb.getAllRoutes();
@@ -623,6 +652,7 @@ export async function runSync() {
               vehicle_id: vId,
             });
           });
+          await vehicleInventoriesDb.upsertVehicleInventories(allVehicleInventories);
         }
       } catch (e) {
         logWarn(`vehicle ${vId} warehouse/inventory`, e);

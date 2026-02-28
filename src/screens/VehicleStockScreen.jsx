@@ -12,7 +12,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
-import { getUserSession, getCachedVehicleInventory } from '../services/sync.service';
+import { getUserSession, getCachedVehicleInventoryByLocation, getVehicleLocationId } from '../services/sync.service';
 
 const CARD_MIN_WIDTH = 160;
 const CARD_GAP = spacing.md;
@@ -151,7 +151,7 @@ export default function VehicleStockScreen({ navigation }) {
   //     setInventory([]);
   //   }
   // }, []);
-// In VehicleStockScreen.jsx - update the load function to force fresh data
+
 const load = useCallback(async (forceRefresh = false) => {
   const session = await getUserSession();
   setUser(session || null);
@@ -159,10 +159,19 @@ const load = useCallback(async (forceRefresh = false) => {
   const vId = session?.vehicleId ? Number(session.vehicleId) : null;
 
   if (vId) {
-    // Pass forceRefresh to bypass any caching
-    const data = await getCachedVehicleInventory(vId, forceRefresh);
-    console.log(`[UI Debug] Found ${data.length} items for vehicle ${vId}`, data);
-    setInventory(Array.isArray(data) ? data : []);
+    // Get the location_id for this vehicle
+    const locationId = await getVehicleLocationId(vId);
+    console.log(`[UI Debug] Vehicle ${vId} has location_id: ${locationId}`);
+
+    if (locationId) {
+      // Fetch inventory by location_id instead of vehicle_id
+      const data = await getCachedVehicleInventoryByLocation(locationId);
+      console.log(`[UI Debug] Found ${data.length} items for location ${locationId}`, data);
+      setInventory(Array.isArray(data) ? data : []);
+    } else {
+      console.warn(`[UI Debug] No location_id found for vehicle ${vId}`);
+      setInventory([]);
+    }
   } else {
     setInventory([]);
   }

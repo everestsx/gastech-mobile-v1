@@ -59,7 +59,7 @@ export const callOdoo = async (model, method, domain = [], options = {}) => {
   });
 
   const json = await response.json();
-  console.log(`[Odoo Response] ${model}.${method}:`, JSON.stringify(json, null, 2));
+  // console.log(`[Odoo Response] ${model}.${method}:`, JSON.stringify(json, null, 2));
   if (json.error) {
     const msg = json.error.data?.message || json.error.message || 'Odoo error';
     const debug = json.error.data?.debug;
@@ -98,7 +98,7 @@ export const callOdooArgs = async (model, method, positionalArgs) => {
   });
 
   const json = await response.json();
-  console.log(`[Odoo Response] ${model}.${method}:`, JSON.stringify(json, null, 2));
+  // console.log(`[Odoo Response] ${model}.${method}:`, JSON.stringify(json, null, 2));
   if (json.error) {
     const msg = json.error.data?.message || json.error.message || 'Odoo error';
     const debug = json.error.data?.debug;
@@ -133,7 +133,7 @@ export const callOdooArgsKwargs = async (model, method, positionalArgs, kwargs =
   });
 
   const json = await response.json();
-  console.log(`[Odoo Response] ${model}.${method}:`, JSON.stringify(json, null, 2));
+  // console.log(`[Odoo Response] ${model}.${method}:`, JSON.stringify(json, null, 2));
   if (json.error) {
     const msg = json.error.data?.message || json.error.message || 'Odoo error';
     const debug = json.error.data?.debug;

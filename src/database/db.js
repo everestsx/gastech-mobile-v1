@@ -237,6 +237,21 @@ async function runMigrations(db) {
     await db.runAsync('PRAGMA user_version = 6');
   }
 
+  // Migration 7: Add is_locally_modified column to vehicle_inventories
+  if (current < 7) {
+    try {
+      const info = await db.getAllAsync('PRAGMA table_info(vehicle_inventories)');
+      const hasLocallyModified = (info || []).some((c) => c.name === 'is_locally_modified');
+      if (!hasLocallyModified) {
+        await db.runAsync('ALTER TABLE vehicle_inventories ADD COLUMN is_locally_modified INTEGER DEFAULT 0');
+        console.log('[Migration] Added is_locally_modified column to vehicle_inventories');
+      }
+    } catch (e) {
+      console.warn('[Migration] Error adding is_locally_modified:', e);
+    }
+    await db.runAsync('PRAGMA user_version = 7');
+  }
+
 }
 
 /**
