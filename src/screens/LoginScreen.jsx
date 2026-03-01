@@ -84,6 +84,7 @@ export default function LoginScreen({ navigation }) {
   }, [initData]);
 
   const handleLogin = async () => {
+    Keyboard.dismiss();
     if (!selected) return showAlert('Required', 'Please select a vehicle.');
     if (!password) return showAlert('Required', 'Please enter your password');
 
@@ -354,7 +355,9 @@ export default function LoginScreen({ navigation }) {
                     value={password}
                     autoCapitalize="none"
                     autoCorrect={false}
+                    returnKeyType="done"
                     onChangeText={setPassword}
+                    onSubmitEditing={handleLogin}
                 />
                 <TouchableOpacity onPress={() => setShowPassword(!showPassword)}>
                   <Ionicons name={showPassword ? "eye-off-outline" : "eye-outline"} size={22} color={colors.textSecondary} />
