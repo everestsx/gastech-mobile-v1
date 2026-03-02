@@ -14,13 +14,12 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
+import { dashboardConfig } from '../constants/dashboardConfig';
 import {
   getCachedOrders,
   getCachedRoutes,
-  runSync,
   getLastSyncTime,
   getSyncLogRecent,
-  getSyncIntervalMinutes,
   getUserSession,
   getOrderLineTotalsFromDB,
   getPickingsBySaleIdsFromDB,
@@ -30,6 +29,8 @@ import {
   calculateCommissionProgress,
 } from '../services/commission.service';
 import DeliveryProgressBarChart from '../components/DeliveryProgressBarChart';
+import SyncIndicator from '../components/SyncIndicator';
+import { useSync } from '../context/SyncContext';
 
 // const SHOPS_TARGET = 60;
 // const GAS_TARGET = 6000;
@@ -53,9 +54,15 @@ function formatShort(amount) {
   return `Rs. ${n}`;
 }
 
+const SYNC_INDICATOR_GAP = 12;
+
 export default function DashboardScreen({ navigation }) {
   const insets = useSafeAreaInsets();
-  const { colors, showCreateSalesOrder, showReturnOrder } = useTheme();
+  const { isSyncing } = useSync();
+  const { colors, showCreateSalesOrder: userShowCreate, showReturnOrder: userShowReturn } = useTheme();
+  // Visibility from config file; user preference (theme/settings) can further hide when config allows
+  const showCreateSalesOrder = dashboardConfig.showCreateSalesOrder && userShowCreate;
+  const showReturnOrder = dashboardConfig.showReturnOrder && userShowReturn;
   const [orders, setOrders] = useState([]);
   const [user, setUser] = useState(null);
   const [routes, setRoutes] = useState([]);
@@ -63,10 +70,8 @@ export default function DashboardScreen({ navigation }) {
   const [pickingsBySaleId, setPickingsBySaleId] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [syncing, setSyncing] = useState(false);
   const [lastSyncTime, setLastSyncTime] = useState(null);
   const [syncLog, setSyncLog] = useState([]);
-  const [lastSyncResult, setLastSyncResult] = useState(null);
   const [selectedChartDate, setSelectedChartDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [showChartDatePicker, setShowChartDatePicker] = useState(false);
   const [chartLineTotalsByOrder, setChartLineTotalsByOrder] = useState({});
@@ -322,253 +327,255 @@ export default function DashboardScreen({ navigation }) {
   }, [chartDateOrders, chartLineTotalsByOrder, chartPickingStateBySaleId]);
 
   const styles = useMemo(
-      () =>
-          StyleSheet.create({
-            container: { flex: 1, backgroundColor: colors.background },
-            content: { paddingBottom: 100 },
-            center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-            topBar: {
-              backgroundColor: colors.primary ?? '#6366f1',
-              paddingTop: spacing.lg,
-              paddingHorizontal: spacing.md,
-              paddingBottom: 28,
-            },
-            topBarRow: {
-              flexDirection: 'row',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-            },
-            topBarLeft: {
-              flexDirection: 'column',
-              alignItems: 'flex-start',
-              gap: 6,
-              flex: 1,
-            },
-            vehicleName: { fontSize: 16, fontWeight: '700', color: '#fff' },
-            dateRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-            dateText: { fontSize: 14, color: 'rgba(255,255,255,0.95)' },
-            routePill: {
-              flexDirection: 'row',
-              alignItems: 'center',
-              paddingVertical: 6,
-              paddingHorizontal: 12,
-              borderRadius: 20,
-              backgroundColor: 'rgba(255,255,255,0.08)',
-              borderWidth: 1,
-              borderColor: 'rgba(255,255,255,0.4)',
-              gap: 6,
-            },
-            routePillText: { fontSize: 13, fontWeight: '600', color: 'rgba(255,255,255,0.95)' },
-            headerButtons: {
-              flexDirection: 'row',
-              alignItems: 'flex-end',
-              gap: 8,
-            },
-            header: {
-              flexDirection: 'row',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              marginBottom: spacing.md,
-            },
-            greeting: { fontSize: 22, fontWeight: '800', color: colors.text },
-            hint: { fontSize: 14, color: colors.textSecondary, marginTop: 2 },
-            syncBtnTop: {
-              backgroundColor: 'transparent',
-              borderRadius: borderRadius.md,
-              paddingVertical: 8,
-              paddingHorizontal: 12,
-              flexDirection: 'row',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: 6,
-              borderWidth: 1.5,
-              borderColor: 'rgba(255,255,255,0.9)',
-            },
-            syncBtnTopText: { fontSize: 14, fontWeight: '700', color: '#fff' },
-            lastSyncTimeText: {
-              fontSize: 11,
-              color: 'rgba(255,255,255,0.9)',
-              marginTop: 4,
-            },
-            dailyVisitBtnTop: {
-              backgroundColor: 'transparent',
-              borderRadius: borderRadius.md,
-              paddingVertical: 8,
-              paddingHorizontal: 12,
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: 6,
-              borderWidth: 1.5,
-              borderColor: 'rgba(255,255,255,0.9)',
-            },
-            dailyVisitBtnTopText: { fontSize: 14, fontWeight: '700', color: '#fff' },
-            sectionTitle: {
-              fontSize: 17,
-              fontWeight: '700',
-              color: colors.text,
-              marginBottom: spacing.sm,
-            },
-            commissionCard: {
-              backgroundColor: colors.primaryLight ?? '#312e81',
-              borderRadius: borderRadius.lg,
-              padding: spacing.lg,
-              marginHorizontal: spacing.md,
-              marginTop: -20,
-              marginBottom: spacing.md,
-            },
-            commissionTitle: { fontSize: 12, fontWeight: '700', color: colors.text, letterSpacing: 0.5 },
-            commissionAmount: { fontSize: 28, fontWeight: '800', color: colors.text, marginTop: 4 },
-            commissionPct: { fontSize: 14, color: colors.text, marginTop: 4 },
-            collectionRow: {
-              flexDirection: 'row',
-              gap: spacing.sm,
-              paddingHorizontal: spacing.md,
-              marginBottom: spacing.md,
-            },
-            collectionCard: {
-              flex: 1,
-              backgroundColor: colors.surface,
-              borderRadius: borderRadius.lg,
-              padding: spacing.md,
-              borderWidth: 2,
-              alignItems: 'center',
-            },
-            collectionIcon: { width: 28, height: 28 },
-            collectionAmount: { fontSize: 18, fontWeight: '800', marginTop: 4 },
-            collectionLabel: { fontSize: 12, fontWeight: '700', color: colors.text, marginTop: 4 },
-            collectionPct: { fontSize: 12, fontWeight: '600', marginTop: 2 },
-            shopsGasRow: {
-              flexDirection: 'row',
-              gap: spacing.md,
-              paddingHorizontal: spacing.md,
-              marginBottom: spacing.md,
-            },
-            shopsGasCard: {
-              flex: 1,
-              backgroundColor: colors.surface,
-              borderRadius: borderRadius.lg,
-              padding: spacing.md,
-              alignItems: 'center',
-              justifyContent: 'center',
-            },
-            shopsGasValue: { fontSize: 28, fontWeight: '800', color: colors.text },
-            shopsGasTarget: { fontSize: 18, fontWeight: '700', color: colors.textSecondary },
-            shopsGasLabel: { fontSize: 11, fontWeight: '700', color: colors.textSecondary, marginTop: 4, letterSpacing: 0.3 },
-            shopsGasPct: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
-            metricsRow: {
-              flexDirection: 'row',
-              gap: spacing.sm,
-              marginBottom: spacing.md,
-            },
-            metricCard: {
-              flex: 1,
-              backgroundColor: colors.surface,
-              borderRadius: borderRadius.lg,
-              padding: spacing.md,
-              alignItems: 'center',
-              elevation: 2,
-              shadowColor: '#000',
-              shadowOffset: { width: 0, height: 2 },
-              shadowOpacity: 0.06,
-              shadowRadius: 4,
-            },
-            metricValue: { fontSize: 15, fontWeight: '800', color: colors.text, marginTop: 4 },
-            metricLabel: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
-            totalsCard: {
-              backgroundColor: colors.surface,
-              borderRadius: borderRadius.lg,
-              padding: spacing.md,
-              marginBottom: spacing.md,
-              elevation: 2,
-              shadowColor: '#000',
-              shadowOffset: { width: 0, height: 2 },
-              shadowOpacity: 0.06,
-              shadowRadius: 4,
-            },
-            totalSalesRow: {
-              flexDirection: 'row',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              paddingVertical: 10,
-              borderBottomWidth: 1,
-              borderBottomColor: colors.border,
-            },
-            cashCreditRow: {
-              flexDirection: 'row',
-              gap: spacing.sm,
-              paddingTop: 10,
-              alignItems: 'center',
-            },
-            halfBox: {
-              flex: 1,
-              flexDirection: 'row',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              minHeight: 32,
-            },
-            totalsLabel: { fontSize: 13, color: colors.textSecondary },
-            totalsValue: { fontSize: 16, fontWeight: '800', color: colors.text },
-            chartCard: {
-              backgroundColor: colors.surface,
-              borderRadius: borderRadius.lg,
-              padding: spacing.md,
-              marginBottom: spacing.md,
-              elevation: 2,
-              shadowColor: '#000',
-              shadowOffset: { width: 0, height: 2 },
-              shadowOpacity: 0.06,
-              shadowRadius: 4,
-              overflow: 'hidden',
-            },
-            chartTitle: { fontSize: 16, fontWeight: '600', color: colors.text, marginBottom: 4 },
-            actionsRow: { flexDirection: 'row', gap: spacing.md },
-            actionCard: {
-              flex: 1,
-              backgroundColor: colors.surface,
-              borderRadius: borderRadius.lg,
-              padding: spacing.lg,
-              alignItems: 'center',
-              elevation: 2,
-              shadowColor: '#000',
-              shadowOffset: { width: 0, height: 2 },
-              shadowOpacity: 0.06,
-              shadowRadius: 4,
-            },
-            actionIconWrap: {
-              width: 56,
-              height: 56,
-              borderRadius: 28,
-              backgroundColor: colors.background,
-              justifyContent: 'center',
-              alignItems: 'center',
-              marginBottom: 8,
-            },
-            actionLabel: { fontSize: 13, fontWeight: '600', color: colors.text },
-            syncStatusCard: {
-              backgroundColor: colors.surface,
-              borderRadius: borderRadius.md,
-              padding: spacing.sm,
-              marginBottom: spacing.md,
-              borderLeftWidth: 4,
-              borderLeftColor: colors.primary,
-            },
-            syncStatusText: { fontSize: 12, color: colors.textSecondary },
-            syncStatusTime: { fontSize: 13, fontWeight: '600', color: colors.text, marginTop: 2 },
-            syncError: { fontSize: 12, color: colors.error || '#c00', marginTop: 4 },
-            syncCounts: { fontSize: 11, color: colors.textSecondary, marginTop: 2 },
-            syncLogTitle: { fontSize: 14, fontWeight: '700', color: colors.text, marginBottom: 6 },
-            syncLogItem: {
-              flexDirection: 'row',
-              alignItems: 'center',
-              paddingVertical: 6,
-              borderBottomWidth: 1,
-              borderBottomColor: colors.border,
-              gap: 8,
-            },
-            syncLogStatus: { width: 8, height: 8, borderRadius: 4 },
-            syncLogText: { fontSize: 12, color: colors.textSecondary, flex: 1 },
-          }),
-      [colors]
+    () =>
+      StyleSheet.create({
+        container: { flex: 1, backgroundColor: colors.background },
+        content: { paddingBottom: 100 },
+        center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+        topBar: {
+          backgroundColor: colors.primary ?? '#6366f1',
+          paddingTop: spacing.lg,
+          paddingHorizontal: spacing.md,
+          paddingBottom: 28,
+        },
+        topBarRow: {
+          flexDirection: 'row',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+        },
+        topBarRowWithMargin: { marginBottom: 10 },
+        topBarLeft: {
+          flexDirection: 'column',
+          alignItems: 'flex-start',
+          gap: 6,
+          flex: 1,
+        },
+        vehicleName: { fontSize: 16, fontWeight: '700', color: '#fff' },
+        dateRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+        dateText: { fontSize: 14, color: 'rgba(255,255,255,0.95)' },
+        routePill: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          paddingVertical: 6,
+          paddingHorizontal: 12,
+          borderRadius: 20,
+          backgroundColor: 'rgba(255,255,255,0.08)',
+          borderWidth: 1,
+          borderColor: 'rgba(255,255,255,0.4)',
+          gap: 6,
+        },
+        routePillText: { fontSize: 13, fontWeight: '600', color: 'rgba(255,255,255,0.95)' },
+        headerButtons: {
+          flexDirection: 'row',
+          alignItems: 'flex-end',
+          gap: 8,
+        },
+        header: {
+          flexDirection: 'row',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          marginBottom: spacing.md,
+        },
+        greeting: { fontSize: 22, fontWeight: '800', color: colors.text },
+        hint: { fontSize: 14, color: colors.textSecondary, marginTop: 2 },
+        lastSyncedRow: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 8,
+        },
+        lastSyncedBlock: { alignItems: 'flex-end' },
+        lastSyncedLabel: {
+          fontSize: 10,
+          fontWeight: '600',
+          color: 'rgba(255,255,255,0.75)',
+          textTransform: 'uppercase',
+          letterSpacing: 0.5,
+        },
+        lastSyncTimeText: {
+          fontSize: 12,
+          fontWeight: '600',
+          color: 'rgba(255,255,255,0.95)',
+          marginTop: 2,
+        },
+        dailyVisitBtnTop: {
+          backgroundColor: 'transparent',
+          borderRadius: borderRadius.md,
+          paddingVertical: 8,
+          paddingHorizontal: 12,
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 6,
+          borderWidth: 1.5,
+          borderColor: 'rgba(255,255,255,0.9)',
+        },
+        dailyVisitBtnTopText: { fontSize: 14, fontWeight: '700', color: '#fff' },
+        sectionTitle: {
+          fontSize: 17,
+          fontWeight: '700',
+          color: colors.text,
+          marginBottom: spacing.sm,
+        },
+        commissionCard: {
+          backgroundColor: colors.primaryLight ?? '#312e81',
+          borderRadius: borderRadius.lg,
+          padding: spacing.lg,
+          marginHorizontal: spacing.md,
+          marginTop: -20,
+          marginBottom: spacing.md,
+        },
+        commissionTitle: { fontSize: 12, fontWeight: '700', color: colors.text, letterSpacing: 0.5 },
+        commissionAmount: { fontSize: 28, fontWeight: '800', color: colors.text, marginTop: 4 },
+        commissionPct: { fontSize: 14, color: colors.text, marginTop: 4 },
+        collectionRow: {
+          flexDirection: 'row',
+          gap: spacing.sm,
+          paddingHorizontal: spacing.md,
+          marginBottom: spacing.md,
+        },
+        collectionCard: {
+          flex: 1,
+          backgroundColor: colors.surface,
+          borderRadius: borderRadius.lg,
+          padding: spacing.md,
+          borderWidth: 2,
+          alignItems: 'center',
+        },
+        collectionIcon: { width: 28, height: 28 },
+        collectionAmount: { fontSize: 18, fontWeight: '800', marginTop: 4 },
+        collectionLabel: { fontSize: 12, fontWeight: '700', color: colors.text, marginTop: 4 },
+        collectionPct: { fontSize: 12, fontWeight: '600', marginTop: 2 },
+        shopsGasRow: {
+          flexDirection: 'row',
+          gap: spacing.md,
+          paddingHorizontal: spacing.md,
+          marginBottom: spacing.md,
+        },
+        shopsGasCard: {
+          flex: 1,
+          backgroundColor: colors.surface,
+          borderRadius: borderRadius.lg,
+          padding: spacing.md,
+          alignItems: 'center',
+          justifyContent: 'center',
+        },
+        shopsGasValue: { fontSize: 28, fontWeight: '800', color: colors.text },
+        shopsGasTarget: { fontSize: 18, fontWeight: '700', color: colors.textSecondary },
+        shopsGasLabel: { fontSize: 11, fontWeight: '700', color: colors.textSecondary, marginTop: 4, letterSpacing: 0.3 },
+        shopsGasPct: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
+        metricsRow: {
+          flexDirection: 'row',
+          gap: spacing.sm,
+          marginBottom: spacing.md,
+        },
+        metricCard: {
+          flex: 1,
+          backgroundColor: colors.surface,
+          borderRadius: borderRadius.lg,
+          padding: spacing.md,
+          alignItems: 'center',
+          elevation: 2,
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: 2 },
+          shadowOpacity: 0.06,
+          shadowRadius: 4,
+        },
+        metricValue: { fontSize: 15, fontWeight: '800', color: colors.text, marginTop: 4 },
+        metricLabel: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
+        totalsCard: {
+          backgroundColor: colors.surface,
+          borderRadius: borderRadius.lg,
+          padding: spacing.md,
+          marginBottom: spacing.md,
+          elevation: 2,
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: 2 },
+          shadowOpacity: 0.06,
+          shadowRadius: 4,
+        },
+        totalSalesRow: {
+          flexDirection: 'row',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          paddingVertical: 10,
+          borderBottomWidth: 1,
+          borderBottomColor: colors.border,
+        },
+        cashCreditRow: {
+          flexDirection: 'row',
+          gap: spacing.sm,
+          paddingTop: 10,
+          alignItems: 'center',
+        },
+        halfBox: {
+          flex: 1,
+          flexDirection: 'row',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          minHeight: 32,
+        },
+        totalsLabel: { fontSize: 13, color: colors.textSecondary },
+        totalsValue: { fontSize: 16, fontWeight: '800', color: colors.text },
+        chartCard: {
+          backgroundColor: colors.surface,
+          borderRadius: borderRadius.lg,
+          padding: spacing.md,
+          marginBottom: spacing.md,
+          elevation: 2,
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: 2 },
+          shadowOpacity: 0.06,
+          shadowRadius: 4,
+          overflow: 'hidden',
+        },
+        chartTitle: { fontSize: 16, fontWeight: '600', color: colors.text, marginBottom: 4 },
+        actionsRow: { flexDirection: 'row', gap: spacing.md },
+        actionCard: {
+          flex: 1,
+          backgroundColor: colors.surface,
+          borderRadius: borderRadius.lg,
+          padding: spacing.lg,
+          alignItems: 'center',
+          elevation: 2,
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: 2 },
+          shadowOpacity: 0.06,
+          shadowRadius: 4,
+        },
+        actionIconWrap: {
+          width: 56,
+          height: 56,
+          borderRadius: 28,
+          backgroundColor: colors.background,
+          justifyContent: 'center',
+          alignItems: 'center',
+          marginBottom: 8,
+        },
+        actionLabel: { fontSize: 13, fontWeight: '600', color: colors.text },
+        syncStatusCard: {
+          backgroundColor: colors.surface,
+          borderRadius: borderRadius.md,
+          padding: spacing.sm,
+          marginBottom: spacing.md,
+          borderLeftWidth: 4,
+          borderLeftColor: colors.primary,
+        },
+        syncStatusText: { fontSize: 12, color: colors.textSecondary },
+        syncStatusTime: { fontSize: 13, fontWeight: '600', color: colors.text, marginTop: 2 },
+        syncError: { fontSize: 12, color: colors.error || '#c00', marginTop: 4 },
+        syncCounts: { fontSize: 11, color: colors.textSecondary, marginTop: 2 },
+        syncLogTitle: { fontSize: 14, fontWeight: '700', color: colors.text, marginBottom: 6 },
+        syncLogItem: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          paddingVertical: 6,
+          borderBottomWidth: 1,
+          borderBottomColor: colors.border,
+          gap: 8,
+        },
+        syncLogStatus: { width: 8, height: 8, borderRadius: 4 },
+        syncLogText: { fontSize: 12, color: colors.textSecondary, flex: 1 },
+      }),
+    [colors]
   );
 
   if (loading) {
@@ -587,56 +594,49 @@ export default function DashboardScreen({ navigation }) {
   });
 
   return (
-      <ScrollView
-          style={styles.container}
-          contentContainerStyle={styles.content}
-          refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.primary]} />
-          }
-      >
-        {/* 1. Top bar: date + route left, Sync then Daily Visit right (no profile) */}
-        <View style={[styles.topBar, { paddingTop: spacing.lg + insets.top }]}>
-          <View style={styles.topBarRow}>
-            <View style={styles.topBarLeft}>
-              <Text style={styles.vehicleName} numberOfLines={1}>
-                {vehicleName}
-              </Text>
-              <View style={styles.dateRow}>
-                <Ionicons name="calendar-outline" size={18} color="rgba(255,255,255,0.95)" />
-                <Text style={styles.dateText}>{todayDateStr}</Text>
-              </View>
-              <View style={styles.routePill}>
-                <Ionicons name="location-outline" size={16} color="rgba(255,255,255,0.95)" />
-                <Text style={styles.routePillText}>Route: {routeName}</Text>
-              </View>
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={styles.content}
+      refreshControl={
+        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.primary]} />
+      }
+    >
+      {/* 1. Top bar: date + route left; sync indicator (when syncing) + Last Synced right */}
+      <View style={[styles.topBar, { paddingTop: spacing.lg + insets.top }]}>
+        <View style={[styles.topBarRow, styles.topBarRowWithMargin]}>
+          <View style={styles.topBarLeft}>
+            <Text style={styles.vehicleName} numberOfLines={1}>
+              {vehicleName}
+            </Text>
+            <View style={styles.dateRow}>
+              <Ionicons name="calendar-outline" size={18} color="rgba(255,255,255,0.95)" />
+              <Text style={styles.dateText}>{todayDateStr}</Text>
             </View>
-            <View style={styles.headerButtons}>
-              <View style={{ alignItems: 'flex-end' }}>
-                <TouchableOpacity
-                    style={styles.syncBtnTop}
-                    onPress={onSync}
-                    disabled={syncing}
-                    activeOpacity={0.8}
-                >
-                  {syncing ? (
-                      <ActivityIndicator size="small" color="#fff" />
-                  ) : (
-                      <Ionicons name="sync-outline" size={20} color="#fff" />
-                  )}
-                  <Text style={styles.syncBtnTopText}>Sync</Text>
-                </TouchableOpacity>
+            <View style={styles.routePill}>
+              <Ionicons name="location-outline" size={16} color="rgba(255,255,255,0.95)" />
+              <Text style={styles.routePillText}>Route: {routeName}</Text>
+            </View>
+          </View>
+          <View style={styles.headerButtons}>
+            <View style={styles.lastSyncedRow}>
+              {/* {isSyncing && <SyncIndicator style={{ marginRight: SYNC_INDICATOR_GAP }} />} */}
+              <View style={styles.lastSyncedBlock}>
+                <Text style={styles.lastSyncedLabel}>Last Synced</Text>
                 <Text style={styles.lastSyncTimeText} numberOfLines={1}>
                   {lastSyncTime
-                      ? new Date(lastSyncTime).toLocaleTimeString('en-IN', {
+                    ? new Date(lastSyncTime).toLocaleString('en-IN', {
+                        day: '2-digit',
+                        month: 'short',
                         hour: '2-digit',
                         minute: '2-digit',
                         hour12: true,
                       })
-                      : '—'}
+                    : '—'}
                 </Text>
               </View>
-              {/* //Daily Visit Keep Commented for now */}
-              {/* <TouchableOpacity
+            </View>
+            {/* //Daily Visit Keep Commented for now */}
+            {/* <TouchableOpacity
               style={styles.dailyVisitBtnTop}
               onPress={() => navigation.navigate('Orders', { customerId: null })}
               activeOpacity={0.8}
@@ -715,48 +715,70 @@ export default function DashboardScreen({ navigation }) {
           </View>
         </View>
 
-        {/* 5. Delivery Progress by Shop - bar chart with date picker (default today) */}
-        <View style={{ paddingHorizontal: spacing.md }}>
-          <DeliveryProgressBarChart
-              data={chartDeliveryByShop}
-              title="Delivery Progress by Shop"
-              rightElement={
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  <Text style={{ fontSize: 12, color: colors.textSecondary }}>
-                    {selectedChartDate === new Date().toISOString().split('T')[0]
-                        ? 'Today'
-                        : new Date(selectedChartDate + 'T12:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
-                  </Text>
-                  <TouchableOpacity
-                      onPress={() => setShowChartDatePicker(true)}
-                      style={{ padding: 4 }}
-                      activeOpacity={0.8}
-                  >
-                    <Ionicons name="calendar-outline" size={22} color={colors.primary} />
-                  </TouchableOpacity>
-                  {showChartDatePicker && (
-                      <DateTimePicker
-                          value={new Date(selectedChartDate + 'T12:00:00')}
-                          mode="date"
-                          display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                          onChange={(_, date) => {
-                            if (Platform.OS === 'android') setShowChartDatePicker(false);
-                            if (date) setSelectedChartDate(date.toISOString().split('T')[0]);
-                          }}
-                      />
-                  )}
-                  {showChartDatePicker && Platform.OS === 'ios' && (
-                      <TouchableOpacity
-                          onPress={() => setShowChartDatePicker(false)}
-                          style={{ paddingVertical: 4, paddingHorizontal: 8 }}
-                      >
-                        <Text style={{ fontSize: 15, fontWeight: '600', color: colors.primary }}>Done</Text>
-                      </TouchableOpacity>
-                  )}
-                </View>
-              }
-          />
-        </View>
+      {/* 5. Delivery Progress by Shop - bar chart with date picker (default today) */}
+      <View style={{ paddingHorizontal: spacing.md }}>
+        <DeliveryProgressBarChart
+          data={chartDeliveryByShop}
+          title="Delivery Progress"
+          rightElement={
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 2 }}>
+              <TouchableOpacity
+                onPress={() => {
+                  const d = new Date(selectedChartDate + 'T12:00:00');
+                  d.setDate(d.getDate() - 1);
+                  setSelectedChartDate(d.toISOString().split('T')[0]);
+                }}
+                style={{ padding: 6 }}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="chevron-back" size={22} color={colors.primary} />
+              </TouchableOpacity>
+              <Text style={{ fontSize: 12, color: colors.textSecondary, minWidth: 72, textAlign: 'center' }}>
+                {selectedChartDate === new Date().toISOString().split('T')[0]
+                  ? 'Today'
+                  : new Date(selectedChartDate + 'T12:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+              </Text>
+              <TouchableOpacity
+                onPress={() => {
+                  const d = new Date(selectedChartDate + 'T12:00:00');
+                  d.setDate(d.getDate() + 1);
+                  setSelectedChartDate(d.toISOString().split('T')[0]);
+                }}
+                style={{ padding: 6 }}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="chevron-forward" size={22} color={colors.primary} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => setShowChartDatePicker(true)}
+                style={{ padding: 6, marginLeft: 2 }}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="calendar-outline" size={22} color={colors.primary} />
+              </TouchableOpacity>
+              {showChartDatePicker && (
+                <DateTimePicker
+                  value={new Date(selectedChartDate + 'T12:00:00')}
+                  mode="date"
+                  display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                  onChange={(_, date) => {
+                    if (Platform.OS === 'android') setShowChartDatePicker(false);
+                    if (date) setSelectedChartDate(date.toISOString().split('T')[0]);
+                  }}
+                />
+              )}
+              {showChartDatePicker && Platform.OS === 'ios' && (
+                <TouchableOpacity
+                  onPress={() => setShowChartDatePicker(false)}
+                  style={{ paddingVertical: 4, paddingHorizontal: 8 }}
+                >
+                  <Text style={{ fontSize: 15, fontWeight: '600', color: colors.primary }}>Done</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          }
+        />
+      </View>
 
         {/* 6. Configurable: Create Sales Order & Return */}
         {(showCreateSalesOrder || showReturnOrder) && (

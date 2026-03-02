@@ -19,7 +19,6 @@ export async function upsertSaleOrders(rows) {
       const partner = odooRel(r.partner_id);
       const route = odooRel(r.route_id);
       const vehicle = odooRel(r.vehicle_id);
-      const paymentType = empty(r.payment_type);
       await tx.runAsync(
         `INSERT INTO sale_orders (
           id, name, partner_id, partner_name, state, date_order,
@@ -53,7 +52,7 @@ export async function upsertSaleOrders(rows) {
           empty(vehicle.name),
           now,
           empty(r.payload),
-          paymentType || null,
+          empty(r.payment_type ?? '')
         ]
       );
     }
@@ -92,7 +91,7 @@ export async function getSaleOrderById(id) {
   const db = await getDb();
   try {
     const row = await db.getFirstAsync(`
-      SELECT so.*, p.city as partner_city 
+      SELECT so.*, p.city as partner_city, p.phone as partner_phone
       FROM sale_orders so
       LEFT JOIN partners p ON so.partner_id = p.id
       WHERE so.id = ?
@@ -103,6 +102,7 @@ export async function getSaleOrderById(id) {
     return {
       ...row,
       city: row.partner_city || '',
+      partner_phone: row.partner_phone ?? '',
       partner_id: row.partner_id != null ? [row.partner_id, row.partner_name ?? ''] : null,
       order_line: safeParseJson(row.order_line, []),
     };

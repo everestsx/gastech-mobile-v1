@@ -16,9 +16,13 @@ import * as Print from 'expo-print';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
 import { getSaleOrderDetailsFromDB, runSync } from '../services/sync.service';
+import { getOrAssignInvoiceNumber } from '../utils/invoiceNumber';
+import { getProductDisplayName } from '../utils/productDisplay';
+import { formatAmount } from '../utils/format';
 
-function formatCurrency(amount) {
-  return `LKR ${Number(amount).toFixed(2)}`;
+/** Currency in invoice section: "Rs" (e.g. "Rs 944.00"). */
+function formatInvoiceCurrency(amount) {
+  return `Rs ${formatAmount(amount)}`;
 }
 
 /** Simple amount in words for LKR (whole part only). */
@@ -37,7 +41,7 @@ function amountInWords(num) {
   return (amountInWords(Math.floor(n / 10000000)) + ' Crore ' + amountInWords(n % 10000000)).trim();
 }
 
-function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSplit, logoUri, customerSignatureDataUrl) {
+function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSplit, logoUri, customerSignatureDataUrl, chequeBankName, checkNumber, invoiceNumber) {
   const date = order?.date_order
     ? new Date(order.date_order).toLocaleDateString('en-LK', {
         year: 'numeric',
@@ -46,13 +50,15 @@ function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSp
       })
     : new Date().toLocaleDateString('en-LK');
   const customerName = (order?.partner_id?.[1] ?? '—').replace(/</g, '&lt;');
-  const orderNo = order?.name ?? '—';
+  const customerAddress = [order?.city, order?.partner_phone].filter(Boolean).join(', ').replace(/</g, '&lt;') || '—';
+  const customerPhone = (order?.partner_phone ?? '—').replace(/</g, '&lt;');
+  const invNo = invoiceNumber ?? order?.name ?? '—';
   const paymentLabel =
     paymentType === 'split' && paymentSplit
       ? [
-          paymentSplit.cash > 0 && `Cash ${formatCurrency(paymentSplit.cash)}`,
-          paymentSplit.check > 0 && `Check ${formatCurrency(paymentSplit.check)}`,
-          paymentSplit.credit > 0 && `Credit ${formatCurrency(paymentSplit.credit)}`,
+          paymentSplit.cash > 0 && `Cash ${formatInvoiceCurrency(paymentSplit.cash)}`,
+          paymentSplit.check > 0 && `Check ${formatInvoiceCurrency(paymentSplit.check)}`,
+          paymentSplit.credit > 0 && `Credit ${formatInvoiceCurrency(paymentSplit.credit)}`,
         ].filter(Boolean).join(' • ') || 'Payment'
       : (paymentType === 'bank' || paymentType === 'check') && selectedBankName
         ? `Check: ${selectedBankName}`
@@ -60,28 +66,43 @@ function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSp
           ? `Credit: ${selectedBankName}`
           : (!paymentType && !selectedBankName && !paymentSplit) ? 'Invoiced' : 'Cash';
 
+  const lineAmounts = (lines || []).map((l) => {
+    const sub = Number(l.price_subtotal) || 0;
+    const total = Number(l.price_total) || 0;
+    return { sub, total, tax: total - sub };
+  });
+  const computedUntaxed = lineAmounts.reduce((s, a) => s + a.sub, 0);
+  const computedTax = lineAmounts.reduce((s, a) => s + a.tax, 0);
+
   const rows =
     (lines || [])
       .map(
-        (l, i) =>
-          `<tr>
+        (l, i) => {
+          const productName = getProductDisplayName(l.product_id?.[1] ?? '—').replace(/</g, '&lt;').substring(0, 42);
+          const lineSub = Number(l.price_subtotal) || 0;
+          const lineTotal = Number(l.price_total) || 0;
+          const lineTax = lineTotal - lineSub;
+          return `<tr>
             <td style="padding:2px 4px;border-bottom:1px solid #eee;font-size:9px">${i + 1}</td>
-            <td style="padding:2px 4px;border-bottom:1px solid #eee;font-size:9px">${(l.product_id?.[1] ?? '—').replace(/</g, '&lt;').substring(0, 28)}</td>
+            <td style="padding:2px 4px;border-bottom:1px solid #eee;font-size:9px">${productName}</td>
             <td style="padding:2px 4px;border-bottom:1px solid #eee;text-align:center;font-size:9px">${Number(l.product_uom_qty ?? 0)}</td>
-            <td style="padding:2px 4px;border-bottom:1px solid #eee;text-align:right;font-size:9px">${formatCurrency(l.price_unit ?? 0)}</td>
-            <td style="padding:2px 4px;border-bottom:1px solid #eee;text-align:right;font-size:9px">${formatCurrency((l.price_subtotal ?? l.price_total) ?? 0)}</td>
-          </tr>`
+            <td style="padding:2px 4px;border-bottom:1px solid #eee;text-align:right;font-size:9px">${formatAmount(l.price_unit ?? 0)}</td>
+            <td style="padding:2px 4px;border-bottom:1px solid #eee;text-align:right;font-size:9px">${formatAmount(lineSub)}</td>
+            <td style="padding:2px 4px;border-bottom:1px solid #eee;text-align:right;font-size:9px">${formatAmount(lineTax)}</td>
+            <td style="padding:2px 4px;border-bottom:1px solid #eee;text-align:right;font-size:9px">${formatAmount(lineTotal)}</td>
+          </tr>`;
+        }
       )
-      .join('') || '<tr><td colspan="5" style="padding:8px;text-align:center;font-size:9px">No line items</td></tr>';
+      .join('') || '<tr><td colspan="7" style="padding:8px;text-align:center;font-size:9px">No line items</td></tr>';
 
-  const amountUntaxed = order?.amount_untaxed ?? 0;
-  const amountTax = order?.amount_tax ?? 0;
-  const amountTotal = order?.amount_total ?? 0;
+  const amountUntaxed = (order?.amount_untaxed != null && order.amount_untaxed !== 0) ? order.amount_untaxed : computedUntaxed;
+  const amountTax = (order?.amount_tax != null && order.amount_tax !== 0) ? order.amount_tax : computedTax;
+  const amountTotal = order?.amount_total ?? (amountUntaxed + amountTax);
   const words = amountInWords(amountTotal) + ' Rupees only';
 
   const logoImg = logoUri
-    ? `<img src="${logoUri}" alt="GasTech" style="max-width:56mm;height:auto;display:block;margin:0 auto 6px;" />`
-    : '<h1 style="margin:0 0 6px 0;font-size:14px;color:#1e5aa8">GasTech</h1>';
+    ? `<img src="${logoUri}" alt="GasTech" style="max-width:56mm;height:auto;display:block;margin:0 0 6px 0;" />`
+    : '<h1 style="margin:0 0 6px 0;font-size:14px;color:#1e5aa8;text-align:left">GasTech</h1>';
 
   return `
 <!DOCTYPE html>
@@ -90,16 +111,22 @@ function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSp
   <meta charset="utf-8">
   <meta name="viewport" content="width=80mm">
   <style>
-    body { font-family: system-ui, sans-serif; font-size: 9px; color: #111; padding: 6px 8px; max-width: 80mm; margin: 0 auto; }
+    body { font-family: system-ui, sans-serif; font-size: 9px; color: #111; padding: 6px 6px; max-width: 80mm; margin: 0; }
     .title { font-size: 11px; font-weight: bold; text-align: center; margin: 4px 0 8px; border: 1px solid #333; padding: 4px; }
-    .two-col { display: flex; gap: 8px; margin-bottom: 6px; }
+    .two-col { display: flex; gap: 6px; margin-bottom: 6px; }
     .col { flex: 1; }
     .field { margin-bottom: 2px; }
     .label { font-weight: 600; color: #444; }
-    table { width: 100%; border-collapse: collapse; margin: 6px 0; font-size: 8px; }
-    th { text-align: left; padding: 2px 4px; border-bottom: 1px solid #333; }
-    th:nth-child(3), th:nth-child(4), th:nth-child(5) { text-align: right; }
-    td { padding: 2px 4px; border-bottom: 1px solid #eee; }
+    table { width: 100%; border-collapse: collapse; margin: 6px 0; font-size: 8px; border: 1px solid #ddd; border-radius: 6px; overflow: hidden; table-layout: auto; }
+    th { text-align: left; padding: 8px 6px; border-bottom: 1px solid #ddd; background: #eef2ff; font-weight: 700; color: #374151; }
+    th:nth-child(1) { width: 22px; text-align: center; padding-right: 8px; }
+    th:nth-child(2) { min-width: 45%; padding-right: 10px; }
+    th:nth-child(3), th:nth-child(4), th:nth-child(5), th:nth-child(6), th:nth-child(7) { text-align: right; min-width: 36px; padding-left: 10px; }
+    td { padding: 8px 6px; border-bottom: 1px solid #eee; }
+    td:nth-child(1) { padding-right: 8px; }
+    td:nth-child(2) { min-width: 45%; padding-right: 10px; }
+    td:nth-child(3), td:nth-child(4), td:nth-child(5), td:nth-child(6), td:nth-child(7) { text-align: right; padding-left: 10px; }
+    tr:last-child td { border-bottom: none; }
     .totals { margin-top: 6px; border-top: 1px solid #333; padding-top: 4px; }
     .row { display: flex; justify-content: space-between; margin: 2px 0; }
     .total-row { font-weight: bold; font-size: 10px; margin-top: 4px; }
@@ -120,33 +147,39 @@ function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSp
       <div class="field"><span class="label">Date of Delivery:</span> ${date}</div>
     </div>
     <div class="col">
-      <div class="field"><span class="label">Tax Invoice No.:</span> ${orderNo}</div>
+      <div class="field"><span class="label">Tax Invoice No.:</span> ${invNo}</div>
       <div class="field"><span class="label">Purchaser's TIN:</span> —</div>
       <div class="field"><span class="label">Purchaser's Name:</span> ${customerName}</div>
-      <div class="field"><span class="label">Address:</span> —</div>
-      <div class="field"><span class="label">Telephone No:</span> —</div>
+      <div class="field"><span class="label">Address:</span> ${customerAddress}</div>
+      <div class="field"><span class="label">Telephone No:</span> ${customerPhone}</div>
       <div class="field"><span class="label">Place of Supply:</span> —</div>
     </div>
   </div>
   <table>
     <thead>
       <tr>
-        <th>Ref</th>
+        <th>No</th>
         <th>Description of Goods or Services</th>
         <th>Qty</th>
         <th>Unit Price</th>
         <th>Amount Excl. VAT (Rs.)</th>
+        <th>VAT (Rs.)</th>
+        <th>Total (Rs.)</th>
       </tr>
     </thead>
     <tbody>${rows}</tbody>
   </table>
   <div class="totals">
-    <div class="row"><span>Total Value of Supply:</span><span>${formatCurrency(amountUntaxed)}</span></div>
-    <div class="row"><span>VAT Amount (18%):</span><span>${formatCurrency(amountTax)}</span></div>
-    <div class="row total-row"><span>Total Amount including VAT:</span><span>${formatCurrency(amountTotal)}</span></div>
+    <div class="row"><span>Total Value of Supply:</span><span>${formatInvoiceCurrency(amountUntaxed)}</span></div>
+    <div class="row"><span>VAT Amount (18%):</span><span>${formatInvoiceCurrency(amountTax)}</span></div>
+    <div class="row total-row"><span>Total Amount including VAT:</span><span>${formatInvoiceCurrency(amountTotal)}</span></div>
     <div class="row" style="margin-top:4px"><span>Total Amount in words:</span></div>
     <div class="row" style="font-size:8px;margin-left:0">${words}</div>
     <div class="row" style="margin-top:4px"><span>Mode of Payment:</span><span>${paymentLabel.replace(/</g, '&lt;')}</span></div>
+    ${(chequeBankName || checkNumber) ? `
+    <div class="row" style="margin-top:2px"><span>Bank (Cheque):</span><span>${(chequeBankName || '—').replace(/</g, '&lt;')}</span></div>
+    <div class="row" style="margin-top:2px"><span>Cheque No.:</span><span>${(checkNumber || '—').replace(/</g, '&lt;')}</span></div>
+    ` : ''}
   </div>
   <div class="payment">Thank you for your business</div>
   ${customerSignatureDataUrl ? `
@@ -173,12 +206,15 @@ export default function InvoiceScreen({ route, navigation }) {
     total,
     paymentType,
     selectedBankName,
+    chequeBankName,
+    checkNumber,
     paymentSplit,
     customerSignatureDataUrl,
   } = route.params ?? {};
 
   const [order, setOrder] = useState(null);
   const [lines, setLines] = useState([]);
+  const [invoiceNumber, setInvoiceNumber] = useState(null);
   const [loading, setLoading] = useState(true);
   const [printing, setPrinting] = useState(false);
   const [doneState, setDoneState] = useState(null);
@@ -189,7 +225,7 @@ export default function InvoiceScreen({ route, navigation }) {
     () =>
       StyleSheet.create({
         container: { flex: 1, backgroundColor: colors.background },
-        content: { padding: spacing.md, paddingBottom: spacing.xl + 60 },
+        content: { paddingHorizontal: spacing.sm, paddingVertical: spacing.md, paddingBottom: spacing.xl + 60 },
         center: {
           flex: 1,
           justifyContent: 'center',
@@ -199,39 +235,57 @@ export default function InvoiceScreen({ route, navigation }) {
         previewCard: {
           backgroundColor: colors.surface,
           borderRadius: borderRadius.lg,
-          padding: spacing.lg,
+          paddingVertical: spacing.md,
+          paddingHorizontal: spacing.sm,
           marginBottom: spacing.lg,
           elevation: 2,
           shadowColor: '#000',
           shadowOffset: { width: 0, height: 2 },
           shadowOpacity: 0.06,
           shadowRadius: 4,
+          alignSelf: 'stretch',
         },
-        logo: { width: 180, height: 56, marginBottom: 8, alignSelf: 'center' },
-        invoiceTitle: { fontSize: 14, fontWeight: '700', color: colors.textSecondary, marginBottom: spacing.md },
-        metaRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 },
-        metaLabel: { fontSize: 12, color: colors.textSecondary },
-        metaValue: { fontSize: 13, fontWeight: '600', color: colors.text, flex: 1, marginLeft: 8 },
+        logo: { width: 80, height: 56, marginBottom: 6, alignSelf: 'flex-start' },
+        invoiceTitle: { fontSize: 14, fontWeight: '700', color: colors.textSecondary, marginBottom: spacing.sm },
+        metaRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 3, alignItems: 'flex-start' },
+        metaLabel: { fontSize: 12, color: colors.textSecondary, minWidth: 72 },
+        metaValue: { fontSize: 13, fontWeight: '600', color: colors.text, flex: 1, marginLeft: 4 },
+        tableWrapper: {
+          borderWidth: 1,
+          borderColor: colors.border,
+          borderRadius: 8,
+          marginTop: spacing.sm,
+          overflow: 'hidden',
+        },
         tableHeader: {
           flexDirection: 'row',
-          borderBottomWidth: 2,
-          borderBottomColor: colors.primary,
-          paddingVertical: 6,
-          marginTop: spacing.sm,
-          marginBottom: 4,
+          backgroundColor: colors.primarySurface || '#eef2ff',
+          paddingVertical: 10,
+          paddingHorizontal: 8,
+          borderBottomWidth: 1,
+          borderBottomColor: colors.border,
         },
         th: { fontSize: 11, fontWeight: '700', color: colors.textSecondary },
-        thProduct: { flex: 1 },
-        thNum: { width: 56, textAlign: 'right' },
+        thNo: { width: 26, textAlign: 'center', marginRight: 8 },
+        thProduct: { flex: 2.5, paddingRight: 12, minWidth: 100 },
+        thQty: { flex: 0.7, minWidth: 36, textAlign: 'right', marginLeft: 4 },
+        thTax: { flex: 0.9, minWidth: 44, textAlign: 'right', marginLeft: 4 },
+        thTotal: { flex: 1, minWidth: 52, textAlign: 'right', marginLeft: 8 },
         tableRow: {
           flexDirection: 'row',
           borderBottomWidth: 1,
           borderBottomColor: colors.border,
-          paddingVertical: 6,
+          paddingVertical: 10,
+          paddingHorizontal: 8,
+          alignItems: 'center',
         },
+        tableRowLast: { borderBottomWidth: 0 },
         td: { fontSize: 13, color: colors.text },
-        tdProduct: { flex: 1 },
-        tdNum: { width: 56, textAlign: 'right' },
+        tdNo: { width: 26, textAlign: 'center', fontSize: 13, color: colors.text, marginRight: 8 },
+        tdProduct: { flex: 2.5, paddingRight: 12, minWidth: 100 },
+        tdQty: { flex: 0.7, minWidth: 36, textAlign: 'right', marginLeft: 4 },
+        tdTax: { flex: 0.9, minWidth: 44, textAlign: 'right', marginLeft: 4 },
+        tdTotal: { flex: 1, minWidth: 52, textAlign: 'right', marginLeft: 8 },
         totalsSection: { marginTop: spacing.sm, paddingTop: spacing.sm, borderTopWidth: 1, borderTopColor: colors.border },
         totalsRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 },
         totalsRowMain: { marginTop: 4 },
@@ -276,8 +330,6 @@ export default function InvoiceScreen({ route, navigation }) {
         printerNoteTextWrap: { flex: 1 },
         printerNoteTitle: { fontSize: 14, fontWeight: '700', color: colors.text, marginBottom: 4 },
         printerNoteText: { fontSize: 12, color: colors.textSecondary, lineHeight: 18 },
-        doneBtn: { paddingVertical: 14, alignItems: 'center' },
-        doneBtnText: { fontSize: 16, fontWeight: '700', color: colors.primary },
         syncOverlay: {
           ...StyleSheet.absoluteFillObject,
           backgroundColor: 'rgba(0,0,0,0.5)',
@@ -333,16 +385,19 @@ export default function InvoiceScreen({ route, navigation }) {
     }
     setLoading(true);
     try {
+      const invNo = route.params?.invoiceNumber ?? await getOrAssignInvoiceNumber(saleOrderId);
+      setInvoiceNumber(invNo);
       const data = await getSaleOrderDetailsFromDB(saleOrderId);
       setOrder(data.order);
       setLines(data.lines ?? []);
     } catch (_) {
       setOrder(null);
       setLines([]);
+      setInvoiceNumber(null);
     } finally {
       setLoading(false);
     }
-  }, [saleOrderId]);
+  }, [saleOrderId, route.params?.invoiceNumber]);
 
   useEffect(() => {
     loadInvoice();
@@ -353,7 +408,9 @@ export default function InvoiceScreen({ route, navigation }) {
     runSync().catch((err) => console.warn('InvoiceScreen background sync', err?.message ?? err));
   }, [saleOrderId]);
 
-  const handleDone = useCallback(async () => {
+  const handlePrint = useCallback(async () => {
+    if (!order) return;
+    setPrinting(true);
     setDoneState('syncing');
     Animated.parallel([
       Animated.timing(fadeAnim, { toValue: 1, duration: 200, useNativeDriver: true }),
@@ -363,28 +420,11 @@ export default function InvoiceScreen({ route, navigation }) {
       await runSync();
       setDoneState('success');
       Animated.timing(fadeAnim, { toValue: 1, duration: 150, useNativeDriver: true }).start();
-      setTimeout(() => {
-        navigation.reset({
-          index: 0,
-          routes: [{ name: 'Main', params: { screen: 'Dashboard' } }],
-        });
-      }, 1200);
     } catch (err) {
       setDoneState('offline');
-      setTimeout(() => {
-        navigation.reset({
-          index: 0,
-          routes: [{ name: 'Main', params: { screen: 'Dashboard' } }],
-        });
-      }, 1800);
     }
-  }, [fadeAnim, scaleAnim, navigation]);
-
-  const handlePrint = async () => {
-    if (!order) return;
-    setPrinting(true);
     try {
-      const html = buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSplit, logoUri, customerSignatureDataUrl);
+      const html = buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSplit, logoUri, customerSignatureDataUrl, chequeBankName, checkNumber, invoiceNumber);
       await Print.printAsync({
         html,
       });
@@ -396,15 +436,39 @@ export default function InvoiceScreen({ route, navigation }) {
       );
     } finally {
       setPrinting(false);
+      setTimeout(() => setDoneState(null), 2000);
     }
-  };
+  }, [order, lines, invoiceNumber, paymentType, selectedBankName, paymentSplit, logoUri, customerSignatureDataUrl, chequeBankName, checkNumber, fadeAnim, scaleAnim]);
+
+  /** Subtotal from lines: sum of price_subtotal */
+  const computedSubtotal = useMemo(() => {
+    if (!lines?.length) return 0;
+    return lines.reduce((sum, l) => sum + (Number(l.price_subtotal) || 0), 0);
+  }, [lines]);
+
+  /** Tax from lines: sum of (price_total - price_subtotal) per line */
+  const computedTax = useMemo(() => {
+    if (!lines?.length) return 0;
+    return lines.reduce(
+      (sum, l) => sum + ((Number(l.price_total) || 0) - (Number(l.price_subtotal) || 0)),
+      0
+    );
+  }, [lines]);
+
+  const displaySubtotal = (order?.amount_untaxed != null && order.amount_untaxed !== 0)
+    ? order.amount_untaxed
+    : computedSubtotal;
+  const displayTax = (order?.amount_tax != null && order.amount_tax !== 0)
+    ? order.amount_tax
+    : computedTax;
+  const displayTotal = order?.amount_total ?? total ?? (displaySubtotal + displayTax);
 
   const paymentLabel =
     paymentType === 'split' && paymentSplit
       ? [
-          paymentSplit.cash > 0 && `Cash ${formatCurrency(paymentSplit.cash)}`,
-          paymentSplit.check > 0 && `Check ${formatCurrency(paymentSplit.check)}`,
-          paymentSplit.credit > 0 && `Credit ${formatCurrency(paymentSplit.credit)}`,
+          paymentSplit.cash > 0 && `Cash ${formatInvoiceCurrency(paymentSplit.cash)}`,
+          paymentSplit.check > 0 && `Check ${formatInvoiceCurrency(paymentSplit.check)}`,
+          paymentSplit.credit > 0 && `Credit ${formatInvoiceCurrency(paymentSplit.credit)}`,
         ].filter(Boolean).join(' • ') || 'Payment'
       : (paymentType === 'bank' || paymentType === 'check') && selectedBankName
         ? `Check: ${selectedBankName}`
@@ -441,8 +505,8 @@ export default function InvoiceScreen({ route, navigation }) {
         <Image source={LOGO_SOURCE} style={styles.logo} resizeMode="contain" />
         <Text style={styles.invoiceTitle}>Tax Invoice</Text>
         <View style={styles.metaRow}>
-          <Text style={styles.metaLabel}>Order</Text>
-          <Text style={styles.metaValue}>{order?.name ?? '—'}</Text>
+          <Text style={styles.metaLabel}>Invoice No.</Text>
+          <Text style={styles.metaValue}>{invoiceNumber ?? '—'}</Text>
         </View>
         <View style={styles.metaRow}>
           <Text style={styles.metaLabel}>Date</Text>
@@ -454,41 +518,63 @@ export default function InvoiceScreen({ route, navigation }) {
             {order?.partner_id?.[1] ?? '—'}
           </Text>
         </View>
-
-        <View style={styles.tableHeader}>
-          <Text style={[styles.th, styles.thProduct]}>Product</Text>
-          <Text style={[styles.th, styles.thNum]}>Qty</Text>
-          <Text style={[styles.th, styles.thNum]}>Total</Text>
-        </View>
-        {(lines || []).map((line) => (
-          <View key={line.id} style={styles.tableRow}>
-            <Text style={[styles.td, styles.tdProduct]} numberOfLines={1}>
-              {line.product_id?.[1] ?? '—'}
-            </Text>
-            <Text style={[styles.td, styles.tdNum]}>{line.product_uom_qty}</Text>
-            <Text style={[styles.td, styles.tdNum]}>
-              {formatCurrency(line.price_total)}
+        {(order?.city || order?.partner_phone) ? (
+          <View style={styles.metaRow}>
+            <Text style={styles.metaLabel}>Address</Text>
+            <Text style={styles.metaValue} numberOfLines={2}>
+              {[order?.city, order?.partner_phone].filter(Boolean).join(', ')}
             </Text>
           </View>
-        ))}
+        ) : null}
+
+        <View style={styles.tableWrapper}>
+          <View style={styles.tableHeader}>
+            <Text style={[styles.th, styles.thNo]}>No</Text>
+            <Text style={[styles.th, styles.thProduct]}>Product</Text>
+            <Text style={[styles.th, styles.thQty]}>Qty</Text>
+            <Text style={[styles.th, styles.thTax]}>Tax</Text>
+            <Text style={[styles.th, styles.thTotal]}>Total</Text>
+          </View>
+          {(lines || []).map((line, index) => {
+            const lineSubtotal = Number(line.price_subtotal) || 0;
+            const lineTotal = Number(line.price_total) || 0;
+            const lineTax = lineTotal - lineSubtotal;
+            return (
+              <View
+                key={line.id}
+                style={[styles.tableRow, index === (lines?.length ?? 0) - 1 && styles.tableRowLast]}
+              >
+                <Text style={[styles.td, styles.tdNo]}>{index + 1}</Text>
+                <Text style={[styles.td, styles.tdProduct]} numberOfLines={2}>
+                  {getProductDisplayName(line.product_id?.[1] ?? '—')}
+                </Text>
+                <Text style={[styles.td, styles.tdQty]}>{line.product_uom_qty}</Text>
+                <Text style={[styles.td, styles.tdTax]}>{formatAmount(lineTax)}</Text>
+                <Text style={[styles.td, styles.tdTotal]}>
+                  {formatAmount(lineTotal)}
+                </Text>
+              </View>
+            );
+          })}
+        </View>
 
         <View style={styles.totalsSection}>
           <View style={styles.totalsRow}>
             <Text style={styles.totalsLabel}>Subtotal</Text>
             <Text style={styles.totalsValue}>
-              {formatCurrency(order?.amount_untaxed)}
+              {formatInvoiceCurrency(displaySubtotal)}
             </Text>
           </View>
           <View style={styles.totalsRow}>
             <Text style={styles.totalsLabel}>Tax</Text>
             <Text style={styles.totalsValue}>
-              {formatCurrency(order?.amount_tax)}
+              {formatInvoiceCurrency(displayTax)}
             </Text>
           </View>
           <View style={[styles.totalsRow, styles.totalsRowMain]}>
             <Text style={styles.totalsLabelMain}>Total</Text>
             <Text style={styles.totalsValueMain}>
-              {formatCurrency(order?.amount_total ?? total)}
+              {formatInvoiceCurrency(displayTotal)}
             </Text>
           </View>
         </View>
@@ -552,15 +638,6 @@ export default function InvoiceScreen({ route, navigation }) {
           </Text>
         </View>
       </View>
-
-      <TouchableOpacity
-        style={styles.doneBtn}
-        onPress={handleDone}
-        disabled={!!doneState}
-        activeOpacity={0.8}
-      >
-        <Text style={styles.doneBtnText}>Done</Text>
-      </TouchableOpacity>
 
       {doneState && (
         <Animated.View

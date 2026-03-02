@@ -14,7 +14,7 @@ const LABEL_HEIGHT = 36;
  * data = [{ shopId, shopName?, delivered, pending }]
  * Sorted: To deliver (pending) first, then Delivered. Colors: To deliver = red, Delivered = green.
  */
-export default function DeliveryProgressBarChart({ data = [], title = 'Delivery Progress by Shop', rightElement = null }) {
+export default function DeliveryProgressBarChart({ data = [], title = 'Delivery Progress', rightElement = null }) {
   const { colors } = useTheme();
   const [selectedIndex, setSelectedIndex] = useState(null);
   const barWidth = FIXED_BAR_WIDTH;

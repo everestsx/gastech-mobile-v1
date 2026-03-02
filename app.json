@@ -1,4 +1,5 @@
 {
+  "newArchEnabled": true,
   "expo": {
     "name": "GasTechMobile",
     "slug": "GasTechMobile",
@@ -13,7 +14,8 @@
       "backgroundColor": "#ED5D1A"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.gastech.mobile"
     },
     "android": {
       "package": "com.gastech.mobile",
@@ -24,7 +26,8 @@
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
       "permissions": [
-        "android.permission.CAMERA"
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
       ]
     },
     "web": {
