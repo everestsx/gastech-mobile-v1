@@ -18,15 +18,15 @@ import { dashboardConfig } from '../constants/dashboardConfig';
 import {
   getCachedOrders,
   getCachedRoutes,
-  runSync,
   getLastSyncTime,
   getSyncLogRecent,
-  getSyncIntervalMinutes,
   getUserSession,
   getOrderLineTotalsFromDB,
   getPickingsBySaleIdsFromDB,
 } from '../services/sync.service';
 import DeliveryProgressBarChart from '../components/DeliveryProgressBarChart';
+import SyncIndicator from '../components/SyncIndicator';
+import { useSync } from '../context/SyncContext';
 
 const COMMISSION_TARGET = 6000;
 const SHOPS_TARGET = 60;
@@ -51,8 +51,11 @@ function formatShort(amount) {
   return `Rs. ${n}`;
 }
 
+const SYNC_INDICATOR_GAP = 12;
+
 export default function DashboardScreen({ navigation }) {
   const insets = useSafeAreaInsets();
+  const { isSyncing } = useSync();
   const { colors, showCreateSalesOrder: userShowCreate, showReturnOrder: userShowReturn } = useTheme();
   // Visibility from config file; user preference (theme/settings) can further hide when config allows
   const showCreateSalesOrder = dashboardConfig.showCreateSalesOrder && userShowCreate;
@@ -64,10 +67,8 @@ export default function DashboardScreen({ navigation }) {
   const [pickingsBySaleId, setPickingsBySaleId] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [syncing, setSyncing] = useState(false);
   const [lastSyncTime, setLastSyncTime] = useState(null);
   const [syncLog, setSyncLog] = useState([]);
-  const [lastSyncResult, setLastSyncResult] = useState(null);
   const [selectedChartDate, setSelectedChartDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [showChartDatePicker, setShowChartDatePicker] = useState(false);
   const [chartLineTotalsByOrder, setChartLineTotalsByOrder] = useState({});
@@ -298,6 +299,7 @@ export default function DashboardScreen({ navigation }) {
           justifyContent: 'space-between',
           alignItems: 'center',
         },
+        topBarRowWithMargin: { marginBottom: 10 },
         topBarLeft: {
           flexDirection: 'column',
           alignItems: 'flex-start',
@@ -332,23 +334,24 @@ export default function DashboardScreen({ navigation }) {
         },
         greeting: { fontSize: 22, fontWeight: '800', color: colors.text },
         hint: { fontSize: 14, color: colors.textSecondary, marginTop: 2 },
-        syncBtnTop: {
-          backgroundColor: 'transparent',
-          borderRadius: borderRadius.md,
-          paddingVertical: 8,
-          paddingHorizontal: 12,
+        lastSyncedRow: {
           flexDirection: 'row',
           alignItems: 'center',
-          justifyContent: 'center',
-          gap: 6,
-          borderWidth: 1.5,
-          borderColor: 'rgba(255,255,255,0.9)',
+          gap: 8,
         },
-        syncBtnTopText: { fontSize: 14, fontWeight: '700', color: '#fff' },
+        lastSyncedBlock: { alignItems: 'flex-end' },
+        lastSyncedLabel: {
+          fontSize: 10,
+          fontWeight: '600',
+          color: 'rgba(255,255,255,0.75)',
+          textTransform: 'uppercase',
+          letterSpacing: 0.5,
+        },
         lastSyncTimeText: {
-          fontSize: 11,
-          color: 'rgba(255,255,255,0.9)',
-          marginTop: 4,
+          fontSize: 12,
+          fontWeight: '600',
+          color: 'rgba(255,255,255,0.95)',
+          marginTop: 2,
         },
         dailyVisitBtnTop: {
           backgroundColor: 'transparent',
@@ -554,9 +557,9 @@ export default function DashboardScreen({ navigation }) {
         <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.primary]} />
       }
     >
-      {/* 1. Top bar: date + route left, Sync then Daily Visit right (no profile) */}
+      {/* 1. Top bar: date + route left; sync indicator (when syncing) + Last Synced right */}
       <View style={[styles.topBar, { paddingTop: spacing.lg + insets.top }]}>
-        <View style={styles.topBarRow}>
+        <View style={[styles.topBarRow, styles.topBarRowWithMargin]}>
           <View style={styles.topBarLeft}>
             <Text style={styles.vehicleName} numberOfLines={1}>
               {vehicleName}
@@ -571,29 +574,22 @@ export default function DashboardScreen({ navigation }) {
             </View>
           </View>
           <View style={styles.headerButtons}>
-            <View style={{ alignItems: 'flex-end' }}>
-              <TouchableOpacity
-                style={styles.syncBtnTop}
-                onPress={onSync}
-                disabled={syncing}
-                activeOpacity={0.8}
-              >
-                {syncing ? (
-                  <ActivityIndicator size="small" color="#fff" />
-                ) : (
-                  <Ionicons name="sync-outline" size={20} color="#fff" />
-                )}
-                <Text style={styles.syncBtnTopText}>Sync</Text>
-              </TouchableOpacity>
-              <Text style={styles.lastSyncTimeText} numberOfLines={1}>
-                {lastSyncTime
-                  ? new Date(lastSyncTime).toLocaleTimeString('en-IN', {
-                      hour: '2-digit',
-                      minute: '2-digit',
-                      hour12: true,
-                    })
-                  : '—'}
-              </Text>
+            <View style={styles.lastSyncedRow}>
+              {/* {isSyncing && <SyncIndicator style={{ marginRight: SYNC_INDICATOR_GAP }} />} */}
+              <View style={styles.lastSyncedBlock}>
+                <Text style={styles.lastSyncedLabel}>Last Synced</Text>
+                <Text style={styles.lastSyncTimeText} numberOfLines={1}>
+                  {lastSyncTime
+                    ? new Date(lastSyncTime).toLocaleString('en-IN', {
+                        day: '2-digit',
+                        month: 'short',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        hour12: true,
+                      })
+                    : '—'}
+                </Text>
+              </View>
             </View>
             {/* //Daily Visit Keep Commented for now */}
             {/* <TouchableOpacity

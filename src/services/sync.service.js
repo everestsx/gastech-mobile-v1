@@ -30,6 +30,12 @@ export let isLoggingOut = false;
 export const setIsLoggingOut = (value) => {
   isLoggingOut = value;
 };
+
+/** Optional listener for sync state (true = syncing, false = idle). Used by SyncContext for global indicator. */
+let _syncStateListener = null;
+export function setSyncStateListener(fn) {
+  _syncStateListener = fn;
+}
 const KEYS = {
   USER: '@gastech_user',
   LAST_SYNC: '@gastech_last_sync',
@@ -595,6 +601,7 @@ export function getSyncIntervalMinutes() {
 // ---------- Sync: pull from Odoo and store in SQLite ----------
 
 export async function runSync() {
+  if (_syncStateListener) _syncStateListener(true);
   log('start', new Date().toISOString());
   const result = { customers: 0, orders: 0, orderLines: 0, pickings: 0, moves: 0, moveLines: 0, journals: 0, routes: 0, vehicles: 0, vehicleWarehouses: 0, vehicleInventories: 0, error: null };
   const syncAt = new Date().toISOString();
@@ -836,12 +843,12 @@ export async function runSync() {
       log('db', 'vehicle_inventories');
       await vehicleInventoriesDb.upsertVehicleInventories(allVehicleInventories);
     }
-    // await syncLogDb.appendLog({
-    //   sync_at: syncAt,
-    //   status: 'success',
-    //   message: null,
-    //   counts: result,
-    // });
+    await syncLogDb.appendLog({
+      sync_at: syncAt,
+      status: 'success',
+      message: null,
+      counts: result,
+    });
     const storage = await getAsyncStorage();
     await storage.setItem(KEYS.LAST_SYNC, syncAt);
     log('done', JSON.stringify(result));
@@ -850,13 +857,20 @@ export async function runSync() {
     result.error = err?.message || 'Sync failed';
     logWarn('error', err);
     console.warn(`${LOG_TAG} error detail`, err);
-    await syncLogDb.appendLog({
-      sync_at: syncAt,
-      status: 'error',
-      message: result.error,
-      counts: result,
-    });
+    //TODO: there is a bug here
+    try {
+      await syncLogDb.appendLog({
+        sync_at: syncAt,
+        status: 'error',
+        message: typeof result.error === 'string' ? result.error : String(result.error ?? 'Sync failed'),
+        counts: JSON.stringify(result),
+      });
+    } catch (logErr) {
+      console.warn(`${LOG_TAG} could not append error to sync_log`, logErr?.message ?? logErr);
+    }
     return result;
+  } finally {
+    if (_syncStateListener) _syncStateListener(false);
   }
 }
 
