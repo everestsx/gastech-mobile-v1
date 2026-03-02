@@ -18,6 +18,7 @@ import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
 import {
   getCachedOrders,
+  getCachedCustomers,
   getOrderLineTotalsFromDB,
   getOrderLinesByOrderIdsFromDB,
   getPickingsBySaleIdsFromDB,
@@ -40,16 +41,25 @@ export default function SaleOrderListScreen({ route, navigation }) {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const customerId = route?.params?.customerId ?? null;
+  const customerNameFromParams = route?.params?.customerName ?? null;
+  const scannedDateParam = route?.params?.scannedDate ?? null;
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [selectedDate, setSelectedDate] = useState(() => new Date());
+  const [selectedDate, setSelectedDate] = useState(() => {
+    if (scannedDateParam) {
+      const d = new Date(scannedDateParam + 'T12:00:00');
+      return isNaN(d.getTime()) ? new Date() : d;
+    }
+    return new Date();
+  });
+  const [customerNameForEmpty, setCustomerNameForEmpty] = useState(customerNameFromParams ?? '');
   const [showPicker, setShowPicker] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchField, setSearchField] = useState('customer');
   const [showFieldDropdown, setShowFieldDropdown] = useState(false);
-  // Orders tab: only not-delivered orders (to deliver)
+  // Orders tab: not delivered, or delivered but not yet invoiced (so we can collect payment)
   const filteredOrders = useMemo(
-    () => orders.filter((o) => !o.isDelivered),
+    () => orders.filter((o) => !o.isDelivered || String(o.invoice_status) !== 'invoiced'),
     [orders]
   );
   const searchFieldLabels = { customer: 'Customer', orderId: 'Order ID' };
@@ -203,12 +213,19 @@ export default function SaleOrderListScreen({ route, navigation }) {
     try {
       const user = await getUserSession();
       const vehicleId = user?.isAdmin === false ? user.vehicleId : null;
-      const data = await getCachedOrders(vehicleId);
+      const [data, cachedCustomers] = await Promise.all([
+        getCachedOrders(vehicleId),
+        customerId != null ? getCachedCustomers() : Promise.resolve([]),
+      ]);
       const all = Array.isArray(data) ? data : [];
       const dateStr = formatDate(selectedDate);
       let list = all.filter((o) => (o.date_order || '').startsWith(dateStr));
       if (customerId != null) {
         list = list.filter((o) => o.partner_id?.[0] === customerId);
+        const partner = Array.isArray(cachedCustomers)
+          ? cachedCustomers.find((c) => c.id === customerId)
+          : null;
+        if (partner?.name) setCustomerNameForEmpty((prev) => prev || partner.name);
       }
       const orderIds = list.map((o) => o.id);
       const [totals, pickings, allLines] = await Promise.all([
@@ -253,6 +270,10 @@ export default function SaleOrderListScreen({ route, navigation }) {
   }, [loadOrders]);
 
   useEffect(() => {
+    if (customerNameFromParams) setCustomerNameForEmpty((prev) => prev || customerNameFromParams);
+  }, [customerNameFromParams]);
+
+  useEffect(() => {
     const unsub = navigation.addListener?.('focus', loadOrders);
     return () => unsub?.();
   }, [loadOrders, navigation]);
@@ -286,7 +307,16 @@ export default function SaleOrderListScreen({ route, navigation }) {
   };
 
   const onOrderPress = (order) => {
-    navigation.navigate('SaleOrderDetails', { saleOrderId: order.id });
+    const deliveredNotInvoiced = order.isDelivered && String(order.invoice_status) !== 'invoiced';
+    if (deliveredNotInvoiced) {
+      navigation.navigate('ProceedPayment', {
+        saleOrderId: order.id,
+        total: order.amount_total,
+        deliveryDone: true,
+      });
+    } else {
+      navigation.navigate('SaleOrderDetails', { saleOrderId: order.id });
+    }
   };
 
   if (loading) {
@@ -419,10 +449,18 @@ export default function SaleOrderListScreen({ route, navigation }) {
           <View style={styles.empty}>
             <Ionicons name="cube-outline" size={48} color={colors.textSecondary} />
             <Text style={styles.emptyText}>
-              {searchQuery.trim() ? 'No orders match your search' : 'No orders to deliver'}
+              {searchQuery.trim()
+                ? 'No orders match your search'
+                : customerId != null
+                  ? `There are no order details for ${customerNameForEmpty || 'this customer'}.`
+                  : 'No orders to deliver'}
             </Text>
             <Text style={styles.emptyHint}>
-              {searchQuery.trim() ? 'Try a different search or clear the search box' : 'Orders for this date will appear here after sync'}
+              {searchQuery.trim()
+                ? 'Try a different search or clear the search box'
+                : customerId != null
+                  ? 'Orders for this date will appear here after sync, or try another date.'
+                  : 'Orders for this date will appear here after sync'}
             </Text>
           </View>
         }

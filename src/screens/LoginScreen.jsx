@@ -96,13 +96,14 @@ export default function LoginScreen({ navigation }) {
       }
 
       await saveUserSession({
+        isAdmin: false,
         vehicleId: selected.id,
         vehicleName: selected.name,
         licensePlate: selected.license_plate || '',
         loggedInAt: new Date().toISOString(),
       });
 
-      // await runSync(); ///todo : discuss if force sync is necessary otherwise remove this line
+      await runSync(); //this is needed inital sync
       navigation.replace('Main');
     } catch (err) {
       showAlert('Login Failed', err.message, [

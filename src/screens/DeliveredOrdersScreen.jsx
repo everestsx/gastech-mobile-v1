@@ -47,7 +47,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
   const [activeTab, setActiveTab] = useState(TAB_CASH);
 
   const deliveredOrders = useMemo(
-    () => orders.filter((o) => o.isDelivered),
+    () => orders.filter((o) => o.isDelivered && String(o.invoice_status) === 'invoiced'),
     [orders]
   );
 

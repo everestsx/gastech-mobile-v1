@@ -252,6 +252,41 @@ async function runMigrations(db) {
     await db.runAsync('PRAGMA user_version = 7');
   }
 
+  // Migration 8: Add offline_attachments table
+  if (current < 8) {
+    await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS offline_attachments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sale_order_id INTEGER NOT NULL,
+      local_file_path TEXT NOT NULL,
+      file_name TEXT NOT NULL,
+      mime_type TEXT,
+      sync_status TEXT NOT NULL DEFAULT 'pending',
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_offline_attachments_sale_order ON offline_attachments(sale_order_id);
+    CREATE INDEX IF NOT EXISTS idx_offline_attachments_sync_status ON offline_attachments(sync_status);
+    `);
+    await db.runAsync('PRAGMA user_version = 7');
+  }
+
+  if (current < 9) {
+    try {
+      const info = await db.getAllAsync('PRAGMA table_info(offline_attachments)');
+      const names = new Set((info || []).map((c) => c.name));
+      if (!names.has('last_error')) {
+        await db.runAsync('ALTER TABLE offline_attachments ADD COLUMN last_error TEXT');
+      }
+      if (!names.has('synced_at')) {
+        await db.runAsync('ALTER TABLE offline_attachments ADD COLUMN synced_at TEXT');
+      }
+    } catch (e) {
+      console.warn('[Migration] offline_attachments last_error/synced_at:', e);
+    }
+    await db.runAsync('PRAGMA user_version = 8');
+  }
+
 }
 
 /**

@@ -4,11 +4,11 @@
  */
 import { getCustomers, getPartnersByIds } from './customer.service';
 import { getAllSaleOrders, getSaleOrdersByVehicle } from './saleOrder.service';
-import { getAllProducts } from './product.service';
+import { getAllProducts, getProductsByIds } from './product.service';
 import { getStockMovesByPickingId, getStockMoveLinesByMoveIds } from './delivery.service';
 import { getJournals } from './journal.service';
 import { getRoutes } from './route.service';
-import { getVehicles } from './vehicle.service';
+import { getVehicles, getVehicleById } from './vehicle.service';
 import { getStockLocationByVehicle } from './vehicleWarehouse.service';
 import { getVehicleInventoryByLocation } from './vehicleInventory.service';
 import * as partnersDb from '../database/partners.js';
@@ -35,7 +35,7 @@ const KEYS = {
   LAST_SYNC: '@gastech_last_sync',
 };
 
-const SYNC_INTERVAL_MS = 3600 * 1000; // 1 minute auto-sync when online
+const SYNC_INTERVAL_MS = 600 * 1000; // 1 minute auto-sync when online
 
 const LOG_TAG = '[Sync]';
 
@@ -327,83 +327,221 @@ async function processSyncQueue() {
     }
   }
 
+  const alreadySyncedSaleOrderIds = await syncQueueDb.getSyncedPaymentSaleOrderIds();
+  const chatterPostedInThisRun = new Set();
+
   for (const item of payment) {
     try {
       const p = item.payload || {};
       const saleOrderId = p.saleOrderId ?? p.sale_id;
-      const payments = p.payments || [];
-      const orderName = p.orderName ?? `Order ${saleOrderId}`;
-
-      const orderInfo = await getSaleOrderForPayment(saleOrderId);
-      if (!orderInfo) {
-        logWarn('queue payment', new Error('Sale order not found'));
+      const soId = typeof saleOrderId === 'number' ? saleOrderId : parseInt(saleOrderId, 10);
+      if (saleOrderId == null || Number.isNaN(soId)) {
+        logWarn('queue payment', new Error('Invalid sale_order_id'));
         continue;
       }
-      const partnerId = Array.isArray(orderInfo.partner_id) ? orderInfo.partner_id[0] : orderInfo.partner_id;
-      if (partnerId == null) continue;
 
-      // Create invoice (if needed) and post it. For credit payments this is enough: the posted invoice
-      // updates the customer account (receivable); no separate account.payment is created.
-      let invoiceId = null;
-      const existingInvoiceIds = orderInfo.invoice_ids ?? [];
-      if (existingInvoiceIds.length > 0) {
-        invoiceId = Array.isArray(existingInvoiceIds) ? existingInvoiceIds[0] : existingInvoiceIds;
-        const invState = await getInvoiceState(invoiceId).catch(() => ({}));
-        if (invState?.state === 'draft') await postInvoice(invoiceId);
-      } else {
-        const wizardId = await createAdvancePaymentWizard(saleOrderId);
-        if (wizardId == null) continue;
-        await createInvoicesFromWizard(wizardId, saleOrderId);
-        const invoiceIds = await getSaleOrderInvoiceIds(saleOrderId);
-        invoiceId = Array.isArray(invoiceIds) ? invoiceIds[0] : invoiceIds;
-        if (invoiceId != null) await postInvoice(invoiceId);
-      }
-      const dateStr = new Date().toISOString().slice(0, 10);
-      const baseMemo = `Payment for Invoice / Order ${orderName}`;
-      for (const pm of payments) {
-        // Credit: no account.payment is created. The posted invoice above already created the receivable
-        // on the customer account; the amount appears there until the customer pays (record payment in Odoo).
-        if (pm.type === 'credit') continue;
-        const amount = Number(pm.amount);
-        if (!amount || !pm.journalId) continue;
-        await createPayment({
-          partnerId,
-          amount,
-          currencyId: 1,
-          journalId: pm.journalId,
-          date: dateStr,
-          memo: `${baseMemo} (${pm.type || 'payment'})${pm.checkNumber ? ` #${pm.checkNumber}` : ''}`,
-          invoiceId,
-        });
-      }
-      const deliveryPhotoUris = p.deliveryPhotoUris || [];
-      if (deliveryPhotoUris.length > 0) {
+      const payments = p.payments || [];
+      const orderName = p.orderName ?? `Order ${saleOrderId}`;
+      const skipPaymentCreation = alreadySyncedSaleOrderIds.has(soId);
+
+      if (!skipPaymentCreation) {
         try {
-          const FileSystem = (await import('expo-file-system')).default;
-          const { uploadProofAndPostToChatter } = await import('./proofAttachment.service.js');
-          for (let i = 0; i < deliveryPhotoUris.length; i++) {
-            const uri = deliveryPhotoUris[i];
-            if (!uri || typeof uri !== 'string') continue;
-            try {
-              const base64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
-              if (base64) {
-                const ext = (uri.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg';
-                const filename = `payment_proof_${i + 1}.${ext}`;
-                const soId = typeof saleOrderId === 'number' ? saleOrderId : parseInt(saleOrderId, 10);
-                if (!Number.isNaN(soId)) {
-                  await uploadProofAndPostToChatter(soId, base64, filename);
-                  log('queue', `proof photo ${i + 1} posted to SO ${soId}`);
+          const orderInfo = await getSaleOrderForPayment(saleOrderId);
+          if (!orderInfo) {
+            logWarn('queue payment', new Error('Sale order not found'));
+          } else {
+            const partnerId = Array.isArray(orderInfo.partner_id) ? orderInfo.partner_id[0] : orderInfo.partner_id;
+            if (partnerId != null) {
+              const existingInvoiceIds = orderInfo.invoice_ids ?? [];
+              let invoiceAlreadyPosted = false;
+              if (existingInvoiceIds.length > 0) {
+                const invoiceId = Array.isArray(existingInvoiceIds) ? existingInvoiceIds[0] : existingInvoiceIds;
+                const invState = await getInvoiceState(invoiceId).catch(() => ({}));
+                if (invState?.state === 'posted') {
+                  invoiceAlreadyPosted = true;
+                } else if (invState?.state === 'draft') {
+                  await postInvoice(invoiceId);
                 }
               }
-            } catch (photoErr) {
-              logWarn('queue payment proof photo', photoErr);
+
+              if (!invoiceAlreadyPosted) {
+                let invoiceId = null;
+                if (existingInvoiceIds.length > 0) {
+                  invoiceId = Array.isArray(existingInvoiceIds) ? existingInvoiceIds[0] : existingInvoiceIds;
+                } else {
+                  const wizardId = await createAdvancePaymentWizard(saleOrderId);
+                  if (wizardId != null) {
+                    await createInvoicesFromWizard(wizardId, saleOrderId);
+                    const invoiceIds = await getSaleOrderInvoiceIds(saleOrderId);
+                    invoiceId = Array.isArray(invoiceIds) ? invoiceIds[0] : invoiceIds;
+                    if (invoiceId != null) await postInvoice(invoiceId);
+                  }
+                }
+                const dateStr = new Date().toISOString().slice(0, 10);
+                const baseMemo = p.invoiceNumber
+                  ? `Payment for Invoice ${p.invoiceNumber} / Order ${orderName}`
+                  : `Payment for Invoice / Order ${orderName}`;
+                for (const pm of payments) {
+                  if (pm.type === 'credit') continue;
+                  const amount = Number(pm.amount);
+                  if (!amount || !pm.journalId) continue;
+                  await createPayment({
+                    partnerId,
+                    amount,
+                    currencyId: 1,
+                    journalId: pm.journalId,
+                    date: dateStr,
+                    memo: `${baseMemo} (${pm.type || 'payment'})${pm.checkNumber ? ` #${pm.checkNumber}` : ''}`,
+                    invoiceId,
+                  });
+                }
+              }
             }
           }
-        } catch (proofErr) {
-          logWarn('queue payment proof upload', proofErr);
+        } catch (invoiceErr) {
+          logWarn('queue payment (invoice/payments)', invoiceErr);
+          // Continue to post chatter + proof images so sale order chat still gets message and photo
         }
       }
+
+      const {
+        buildPaymentProofMessageBody,
+        createProofAttachment,
+        postPaymentProofToChatterWithAttachmentIds,
+        imageFileToBase64String,
+      } = await import('./proofAttachment.service.js');
+      const hasCheck = payments.some((pm) => pm.type === 'check');
+      const hasCash = payments.some((pm) => pm.type === 'cash');
+      const hasCredit = payments.some((pm) => pm.type === 'credit');
+      const paymentMethod = hasCheck ? 'cheque' : hasCash ? 'cash' : hasCredit ? 'credit' : undefined;
+      const chequeBankName = p.chequeBankName || (hasCheck && (p.selectedBankName || '—'));
+      const chequeNumber = p.checkNumber || (payments.find((pm) => pm.type === 'check')?.checkNumber);
+      const chatterBody = buildPaymentProofMessageBody({
+        paymentMethod,
+        chequeBankName: paymentMethod === 'cheque' ? chequeBankName : undefined,
+        checkNumber: paymentMethod === 'cheque' ? (chequeNumber || undefined) : undefined,
+      });
+
+      if (chatterPostedInThisRun.has(soId)) {
+        await syncQueueDb.markSynced(item.id);
+        alreadySyncedSaleOrderIds.add(soId);
+        log('queue', `payment synced id=${item.id} (chatter already posted for SO ${soId})`);
+        continue;
+      }
+
+      const offlineAttachmentsDb = await import('../database/offlineAttachments.js');
+      const pendingAttachments = await offlineAttachmentsDb.getPendingBySaleOrderId(soId);
+      const FileSystem = (await import('expo-file-system')).default;
+
+      const attachmentIds = [];
+      const syncedAttachmentIds = [];
+      const pendingCount = (pendingAttachments || []).length;
+      const payloadBase64Count = (p.proofPhotoBase64 || []).length;
+      log('queue', `payment proof (SO ${soId}): ${pendingCount} pending files in local DB, ${payloadBase64Count} base64 in payload — will create attachment then message_post`);
+      if (pendingCount === 0 && payloadBase64Count === 0) {
+        log('queue', `payment proof: no images to attach (add photos on Proceed Payment screen and confirm to see [Payment] base64 conversion logs)`);
+      }
+
+      // 1) Prefer saved files (offline_attachments): read file → base64 → API 1 create ir.attachment
+      for (const att of pendingAttachments || []) {
+        if (!att.local_file_path || !att.file_name) continue;
+        try {
+          const info = await FileSystem.getInfoAsync(att.local_file_path, { size: false });
+          if (!info?.exists) {
+            await offlineAttachmentsDb.markFailed(att.id, `File missing: ${att.local_file_path}`);
+            logWarn('queue payment proof', new Error('File missing'));
+            continue;
+          }
+          const normalized = await imageFileToBase64String(FileSystem, att.local_file_path);
+          if (!normalized) {
+            await offlineAttachmentsDb.markFailed(att.id, 'Invalid or too short base64');
+            logWarn('queue payment proof', new Error('Invalid base64'));
+            continue;
+          }
+          log('queue', `create attachment API (ir.attachment create) SO ${soId} file ${att.file_name} datas length ${normalized.length}`);
+          const aid = await createProofAttachment(soId, normalized, att.file_name);
+          if (aid != null) {
+            attachmentIds.push(aid);
+            syncedAttachmentIds.push(att.id);
+            log('queue', `create attachment API result: attachment_id=${aid}`);
+          }
+        } catch (attErr) {
+          await offlineAttachmentsDb.incrementRetry(att.id, attErr?.message || 'Read error');
+          logWarn('queue payment proof attachment', attErr);
+        }
+      }
+
+      // 2) Fallback: proofPhotoBase64 from payload (if no attachments from files)
+      if (attachmentIds.length === 0) {
+        const proofPhotoBase64 = p.proofPhotoBase64 || [];
+        for (let i = 0; i < proofPhotoBase64.length; i++) {
+          const item = proofPhotoBase64[i];
+          const filename = item?.filename || `payment_proof_${i + 1}.jpg`;
+          const base64 = item?.base64;
+          if (!base64 || typeof base64 !== 'string') continue;
+          try {
+            log('queue', `create attachment API (ir.attachment create) SO ${soId} from payload ${filename} datas length ${base64.length}`);
+            const aid = await createProofAttachment(soId, base64, filename);
+            if (aid != null) {
+              attachmentIds.push(aid);
+              log('queue', `create attachment API result: attachment_id=${aid}`);
+            }
+          } catch (createErr) {
+            logWarn('queue payment proof create attachment', createErr);
+          }
+        }
+        if (attachmentIds.length > 0) {
+          for (const att of pendingAttachments || []) syncedAttachmentIds.push(att.id);
+        }
+      }
+
+      // 3) Last fallback: read from deliveryPhotoUris (URIs may be stale after app restart)
+      const deliveryPhotoUris = p.deliveryPhotoUris || [];
+      if (attachmentIds.length === 0 && deliveryPhotoUris.length > 0) {
+        for (let i = 0; i < deliveryPhotoUris.length; i++) {
+          const uri = deliveryPhotoUris[i];
+          if (!uri || typeof uri !== 'string') continue;
+          try {
+            const normalized = await imageFileToBase64String(FileSystem, uri);
+            if (normalized) {
+              const ext = (uri.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg';
+              const filename = `payment_proof_${i + 1}.${ext}`;
+              log('queue', `create attachment API (ir.attachment create) SO ${soId} from URI datas length ${normalized.length}`);
+              const aid = await createProofAttachment(soId, normalized, filename);
+              if (aid != null) attachmentIds.push(aid);
+            }
+          } catch (photoErr) {
+            logWarn('queue payment proof photo', photoErr);
+          }
+        }
+      }
+
+      // API 2: Post message to sale order chat (body + attachment_ids so captured photo shows)
+      try {
+        log('queue', `message_post API (sale.order) SO ${soId} attachment_ids=[${attachmentIds.join(', ')}]`);
+        await postPaymentProofToChatterWithAttachmentIds(soId, { body: chatterBody, attachmentIds });
+        const pendingById = new Map((pendingAttachments || []).map((a) => [a.id, a]));
+        for (const id of syncedAttachmentIds) {
+          await offlineAttachmentsDb.markSynced(id);
+          const att = pendingById.get(id);
+          if (att?.local_file_path) {
+            try {
+              await FileSystem.deleteAsync(att.local_file_path, { idempotent: true });
+            } catch (_) {}
+          }
+        }
+        chatterPostedInThisRun.add(soId);
+        log('queue', `chatter posted to SO ${soId} (${attachmentIds.length} images)`);
+      } catch (chatterErr) {
+        for (const id of syncedAttachmentIds) {
+          await offlineAttachmentsDb.incrementRetry(id, chatterErr?.message || 'API error');
+        }
+        logWarn('queue payment chatter', chatterErr);
+        continue;
+      }
+
       await syncQueueDb.markSynced(item.id);
+      alreadySyncedSaleOrderIds.add(soId);
       log('queue', `payment synced id=${item.id}`);
     } catch (e) {
       logWarn('queue payment', e);
@@ -432,6 +570,7 @@ export async function deleteLocalData() {
     'vehicles',
     'vehicle_warehouses',
     'vehicle_inventories',
+    'offline_attachments',
     'sync_log',
     'sync_queue',
   ];
@@ -472,7 +611,8 @@ export async function runSync() {
     await processSyncQueue();
 
     const user = await getUserSession();
-    const vehicleId = user?.isAdmin === false ? user.vehicleId : null;
+    // Vehicle-scoped sync: when user has vehicleId and is not admin, sync only that vehicle's data.
+    const vehicleId = (user?.vehicleId != null && user?.isAdmin !== true) ? user.vehicleId : null;
 
     let orders = [];
     let customers = [];
@@ -584,50 +724,78 @@ export async function runSync() {
     log('db', 'stock_move_lines');
     await stockMoveLinesDb.upsertStockMoveLines(allMoveLines);
     if (productIds.size > 0) {
+      const ids = Array.from(productIds);
       try {
-        log('fetch', 'product.product');
-        const products = await getAllProducts();
+        log('fetch', vehicleId != null ? `product.product (${ids.length} ids)` : 'product.product');
+        const products = vehicleId != null
+          ? await getProductsByIds(ids)
+          : await getAllProducts();
         if (products?.length) {
           log('db', `products (${products.length})`);
           await productsDb.upsertProducts(products);
         } else {
-          await productsDb.upsertProducts(Array.from(productIds).map((id) => ({ id, name: null })));
+          await productsDb.upsertProducts(ids.map((id) => ({ id, name: null })));
         }
       } catch (e) {
         logWarn('fetch products', e);
-        await productsDb.upsertProducts(Array.from(productIds).map((id) => ({ id, name: null })));
+        await productsDb.upsertProducts(ids.map((id) => ({ id, name: null })));
       }
     }
 
-    log('fetch', 'journals + routes + vehicles');
-    const [journals, routes, vehicles] = await Promise.all([
-      getJournals().catch((e) => {
-        logWarn('fetch journals', e);
-        return [];
-      }),
-      getRoutes().catch((e) => {
-        logWarn('fetch routes', e);
-        return [];
-      }),
-      getVehicles().catch((e) => {
-        logWarn('fetch vehicles', e);
-        return [];
-      }),
-    ]);
-    result.journals = (journals || []).length;
-    result.routes = (routes || []).length;
-    result.vehicles = (vehicles || []).length;
-    log('db', 'journals + routes + vehicles');
-    await journalsDb.upsertJournals(journals || []);
-    await routesDb.upsertRoutes(routes || []);
-    await vehiclesDb.upsertVehicles(vehicles || []);
+    // When vehicle-scoped: fetch only journals + routes + single vehicle. Otherwise full list.
+    log('fetch', vehicleId != null ? 'journals + routes + current vehicle' : 'journals + routes + vehicles');
+    let vehiclesList;
+    if (vehicleId != null) {
+      const [journals, routes, singleVehicle] = await Promise.all([
+        getJournals().catch((e) => {
+          logWarn('fetch journals', e);
+          return [];
+        }),
+        getRoutes().catch((e) => {
+          logWarn('fetch routes', e);
+          return [];
+        }),
+        getVehicleById(vehicleId).catch((e) => {
+          logWarn('fetch vehicle by id', e);
+          return null;
+        }),
+      ]);
+      result.journals = (journals || []).length;
+      result.routes = (routes || []).length;
+      vehiclesList = singleVehicle ? [singleVehicle] : [];
+      result.vehicles = vehiclesList.length;
+      log('db', 'journals + routes + vehicles');
+      await journalsDb.upsertJournals(journals || []);
+      await routesDb.upsertRoutes(routes || []);
+      await vehiclesDb.upsertVehicles(vehiclesList);
+    } else {
+      const [journals, routes, vehicles] = await Promise.all([
+        getJournals().catch((e) => {
+          logWarn('fetch journals', e);
+          return [];
+        }),
+        getRoutes().catch((e) => {
+          logWarn('fetch routes', e);
+          return [];
+        }),
+        getVehicles().catch((e) => {
+          logWarn('fetch vehicles', e);
+          return [];
+        }),
+      ]);
+      result.journals = (journals || []).length;
+      result.routes = (routes || []).length;
+      result.vehicles = (vehicles || []).length;
+      vehiclesList = vehicles || [];
+      log('db', 'journals + routes + vehicles');
+      await journalsDb.upsertJournals(journals || []);
+      await routesDb.upsertRoutes(routes || []);
+      await vehiclesDb.upsertVehicles(vehiclesList);
+    }
 
     const allVehicleWarehouses = [];
     const allVehicleInventories = [];
-    const vehiclesList = vehicles || [];
-    const vehiclesToFetchInventory = vehicleId != null
-      ? vehiclesList.filter((v) => v.id === vehicleId)
-      : vehiclesList;
+    const vehiclesToFetchInventory = vehiclesList;
     for (const v of vehiclesToFetchInventory) {
       const vId = v.id;
       const licensePlate = v.license_plate || (v.name || '').split('/').pop() || '';
@@ -668,13 +836,12 @@ export async function runSync() {
       log('db', 'vehicle_inventories');
       await vehicleInventoriesDb.upsertVehicleInventories(allVehicleInventories);
     }
-
-    await syncLogDb.appendLog({
-      sync_at: syncAt,
-      status: 'success',
-      message: null,
-      counts: result,
-    });
+    // await syncLogDb.appendLog({
+    //   sync_at: syncAt,
+    //   status: 'success',
+    //   message: null,
+    //   counts: result,
+    // });
     const storage = await getAsyncStorage();
     await storage.setItem(KEYS.LAST_SYNC, syncAt);
     log('done', JSON.stringify(result));

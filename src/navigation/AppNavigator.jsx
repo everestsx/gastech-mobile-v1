@@ -17,6 +17,7 @@ import ProceedPaymentScreen from '../screens/ProceedPaymentScreen';
 import InvoiceScreen from '../screens/InvoiceScreen';
 import QrGenerateScreen from '../screens/QrGenerateScreen';
 import ScanQRCodeScreen from '../screens/ScanQRCodeScreen';
+import ScanResultScreen from '../screens/ScanResultScreen';
 import MenuScreen from '../screens/MenuScreen';
 import CustomersScreen from '../screens/CustomersScreen';
 import SettingsScreen from '../screens/SettingsScreen';
@@ -186,6 +187,11 @@ function MainStackScreen() {
         name="ScanQRCode"
         component={ScanQRCodeScreen}
         options={{ headerShown: false }}
+      />
+      <MainStack.Screen
+        name="ScanResult"
+        component={ScanResultScreen}
+        options={{ ...headerScreenOptions, title: 'Scan result' }}
       />
       <MainStack.Screen
         name="QRGenerator"
