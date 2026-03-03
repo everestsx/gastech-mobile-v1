@@ -23,10 +23,12 @@ import {
   getUserSession,
   getOrderLineTotalsFromDB,
   getPickingsBySaleIdsFromDB,
+  getOrderLinesByOrderIdsFromDB,
 } from '../services/sync.service';
 import {
   getActiveCommissionPlan,
   calculateCommissionProgress,
+  calculateCommissionProgressByProducts,
 } from '../services/commission.service';
 import DeliveryProgressBarChart from '../components/DeliveryProgressBarChart';
 import SyncIndicator from '../components/SyncIndicator';
@@ -80,6 +82,7 @@ export default function DashboardScreen({ navigation }) {
   // Commission state
   const [commissionPlan, setCommissionPlan] = useState(null);
   const [commissionLoading, setCommissionLoading] = useState(false);
+  const [todayOrderLines, setTodayOrderLines] = useState([]);
 
   const loadData = useCallback(async () => {
     try {
@@ -96,16 +99,19 @@ export default function DashboardScreen({ navigation }) {
       const today = new Date().toISOString().split('T')[0];
       const todayOrders = (Array.isArray(data) ? data : []).filter((o) => (o.date_order || '').startsWith(today));
       const orderIds = todayOrders.map((o) => o.id);
-      const [totals, pickings] = await Promise.all([
+      const [totals, pickings, orderLines] = await Promise.all([
         getOrderLineTotalsFromDB(todayOrders),
         orderIds.length ? getPickingsBySaleIdsFromDB(orderIds) : Promise.resolve([]),
+        orderIds.length ? getOrderLinesByOrderIdsFromDB(orderIds) : Promise.resolve([]),
       ]);
       setLineTotalsByOrder(totals || {});
       setPickingsBySaleId(pickings || []);
+      setTodayOrderLines(orderLines || []);
     } catch (_) {
       setOrders([]);
       setLineTotalsByOrder({});
       setPickingsBySaleId([]);
+      setTodayOrderLines([]);
     } finally {
       setLoading(false);
     }
@@ -273,14 +279,23 @@ export default function DashboardScreen({ navigation }) {
 
   // Use commission_percentage from API, default to 1% if not available
   const commissionPercentage = commissionPlan?.commission_percentage || 1;
+  const productRateMap = commissionPlan?.productRateMap || {};
 
-  // Calculate totals for commission
+  // Calculate totals for fallback commission calculation
   const allOrdersTotal = todayOrders.reduce((s, o) => s + (Number(o.amount_total) || 0), 0);
-  // Delivered orders total (for achieved)
   const deliveredOrdersTotal = deliveredTodayOrders.reduce((s, o) => s + (Number(o.amount_total) || 0), 0);
 
+  // Get order lines for delivered orders (for achieved commission)
+  const deliveredOrderIds = new Set(deliveredTodayOrders.map(o => o.id));
+  const deliveredOrderLines = todayOrderLines.filter(line => {
+    const orderId = Array.isArray(line.order_id) ? line.order_id[0] : line.order_id;
+    return deliveredOrderIds.has(orderId);
+  });
 
-  const commissionProgress = calculateCommissionProgress(allOrdersTotal, deliveredOrdersTotal, commissionPercentage);
+  // Calculate commission using per-product rates if available, else use simple percentage
+  const commissionProgress = commissionPlan?.hasData
+    ? calculateCommissionProgressByProducts(todayOrderLines, deliveredOrderLines, productRateMap, 1)
+    : calculateCommissionProgress(allOrdersTotal, deliveredOrdersTotal, commissionPercentage);
   const commissionTarget = commissionProgress.target;
   const commissionEarned = commissionProgress.achieved;
   const commissionPct = commissionProgress.percentage;
@@ -652,9 +667,9 @@ export default function DashboardScreen({ navigation }) {
         <View style={styles.commissionCard}>
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
             <Text style={styles.commissionTitle}>YOUR COMMISSION TODAY</Text>
-            <Text style={[styles.commissionTitle, { opacity: 0.8 }]}>
-              {commissionPercentage}% Rate
-            </Text>
+            {/*<Text style={[styles.commissionTitle, { opacity: 0.8 }]}>*/}
+            {/*  {commissionPercentage}% Rate*/}
+            {/*</Text>*/}
           </View>
           <Text style={styles.commissionAmount}>
             {formatCurrency(commissionEarned)} / {formatCurrency(commissionTarget)}

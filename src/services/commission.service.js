@@ -1,89 +1,184 @@
-import { callOdoo } from "./index.service";
+import { ODOO_URL, ODOO_API_KEY } from '@env';
+
+const callOdooJson2 = async (model, method, params = {}) => {
+  const baseUrl = ODOO_URL?.replace('/jsonrpc', '').replace(/\/$/, '');
+  const url = `${baseUrl}/json/2/${model}/${method}`;
+  console.log('[Odoo JSON2] URL:', url);
+  console.log('[Odoo JSON2] API Key:', ODOO_API_KEY ? 'Present' : 'Missing');
+  console.log('[Odoo JSON2] Params:', JSON.stringify(params));
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${ODOO_API_KEY}`,
+    },
+    body: JSON.stringify(params),
+  });
+
+  const json = await response.json();
+
+  if (json.error) {
+    const msg = json.error.data?.message || json.error.message || 'Odoo JSON 2 error';
+    throw new Error(msg);
+  }
+
+  return json.result ?? json;
+};
 
 /**
- * Get commission plan for a specific vehicle/team
+ * Get commission achievement rates by product for a specific team
+ * Uses the new JSON 2 API endpoint: /json/2/sale.commission.plan.achievement/search_read
  * @param {string} teamName - The team name (license plate like "LN-7041")
- * @returns {Promise<Array>} Commission plan data
+ * @returns {Promise<Array>} Commission achievement data with per-product rates
  */
-export const getCommissionPlanByTeam = async (teamName) => {
+export const getCommissionAchievementByTeam = async (teamName) => {
   try {
-    const result = await callOdoo(
-      "sale.commission.plan",
+    const result = await callOdooJson2(
+      "sale.commission.plan.achievement",
       "search_read",
-      [
-        [["team_id.name", "=", teamName]]
-      ],
       {
-        fields: [
-          "name",
-          "team_id",
-          "date_from",
-          "date_to",
-          "periodicity",
-          "commission_amount",
-          // "commission_percentage",/// todo : set this property accordingly by discussing the api team (default percentage is set to 1% for now)
-          "state"
-        ]
+        domain: [["plan_id.team_id.name", "=", teamName]],
+        fields: ["type", "product_id", "product_categ_id", "rate"]
       }
     );
-    console.log('[Commission API] teamName:', teamName, 'response:', JSON.stringify(result, null, 2));
-    return result;
+    // console.log('[Commission API] teamName:', teamName, 'response:', JSON.stringify(result, null, 2));
+    return result || [];
   } catch (error) {
-    console.error('[Commission API] Error fetching commission plan:', error);
-    throw error;
+    console.error('[Commission API] Error fetching commission achievement:', error);
+    return [];
   }
 };
 
 /**
- * Get active commission plan for a team (current date falls within date_from and date_to)
- * @param {string} teamName - The team name (license plate)
- * @returns {Promise<Object|null>} Active commission plan or null
+ * Build a map of product_id -> commission rate (percentage)
+ * @param {Array} achievements - Commission achievement data from API
+ * @returns {Object} Map of productId -> rate
+ */
+export const buildProductRateMap = (achievements) => {
+  const rateMap = {};
+  (achievements || []).forEach(item => {
+    const productId = Array.isArray(item.product_id) ? item.product_id[0] : item.product_id;
+    if (productId && item.rate != null) {
+      rateMap[productId] = item.rate;
+    }
+  });
+  return rateMap;
+};
+
+/**
+ * Get average commission rate from achievements (fallback for display)
+ * @param {Array} achievements - Commission achievement data
+ * @param {number} defaultRate - Default rate if no data (default: 1%)
+ * @returns {number} Average rate or default
+ */
+export const getAverageCommissionRate = (achievements, defaultRate = 1) => {
+  if (!achievements || achievements.length === 0) return defaultRate;
+
+  const rates = achievements.map(a => a.rate).filter(r => r != null && r > 0);
+  if (rates.length === 0) return defaultRate;
+
+  const sum = rates.reduce((acc, r) => acc + r, 0);
+  return sum / rates.length;
+};
+
+/**
+ * Calculate commission based on order lines and per-product rates
+ *
+ * @param {Array} orderLines - Array of order lines with product_id and price_total
+ * @param {Object} productRateMap - Map of productId -> commission rate
+ * @param {number} defaultRate - Default rate for products not in map (default: 1%)
+ * @returns {number} Total commission amount
+ */
+export const calculateCommissionByProducts = (orderLines, productRateMap, defaultRate = 1) => {
+  if (!orderLines || orderLines.length === 0) return 0;
+
+  let totalCommission = 0;
+
+  for (const line of orderLines) {
+    const productId = Array.isArray(line.product_id) ? line.product_id[0] : line.product_id;
+    const priceTotal = Number(line.price_total) || Number(line.price_subtotal) || 0;
+    const rate = productRateMap[productId] ?? defaultRate;
+
+    totalCommission += (priceTotal * rate) / 100;
+  }
+
+  return Math.round(totalCommission * 100) / 100; // Round to 2 decimal places
+};
+
+/**
+ * Calculate commission progress with per-product rates
+ *
+ * Target = Sum of (each order line price_total × product commission rate)
+ * Achieved = Sum of (each delivered order line price_total × product commission rate)
+ *
+ * @param {Array} allOrderLines - All order lines (for target calculation)
+ * @param {Array} deliveredOrderLines - Delivered order lines (for achieved calculation)
+ * @param {Object} productRateMap - Map of productId -> commission rate
+ * @param {number} defaultRate - Default rate for products not in map (default: 1%)
+ * @returns {Object} Progress data with target, achieved, percentage, and displayRate
+ */
+export const calculateCommissionProgressByProducts = (
+  allOrderLines,
+  deliveredOrderLines,
+  productRateMap,
+  defaultRate = 1
+) => {
+  const target = calculateCommissionByProducts(allOrderLines, productRateMap, defaultRate);
+
+
+  const achieved = calculateCommissionByProducts(deliveredOrderLines, productRateMap, defaultRate);
+
+  const percentage = target > 0 ? Math.min(100, Math.round((achieved / target) * 100)) : 0;
+
+  return {
+    target,
+    achieved,
+    percentage,
+    isCompleted: percentage >= 100
+  };
+};
+
+
+/**
+ * @deprecated Use getCommissionAchievementByTeam instead
  */
 export const getActiveCommissionPlan = async (teamName) => {
   try {
-    const plans = await getCommissionPlanByTeam(teamName);
+    const achievements = await getCommissionAchievementByTeam(teamName);
 
-    if (!plans || plans.length === 0) {
-      return null;
+    if (!achievements || achievements.length === 0) {
+      return {
+        achievements: [],
+        productRateMap: {},
+        commission_percentage: 1, // Default 1%
+        hasData: false
+      };
     }
 
-    const today = new Date().toISOString().split('T')[0];
+    const productRateMap = buildProductRateMap(achievements);
+    const averageRate = getAverageCommissionRate(achievements, 1);
 
-    // Find active plan where today is between date_from and date_to
-    const activePlan = plans.find(plan => {
-      const dateFrom = plan.date_from;
-      const dateTo = plan.date_to;
-      return dateFrom <= today && today <= dateTo && plan.state === 'active';
-    });
-
-    // If no active plan found, return the first one or most recent
-    return activePlan || plans[0] || null;
+    return {
+      achievements,
+      productRateMap,
+      commission_percentage: averageRate,
+      hasData: true
+    };
   } catch (error) {
     console.error('[Commission API] Error getting active plan:', error);
-    return null;
+    return {
+      achievements: [],
+      productRateMap: {},
+      commission_percentage: 1,
+      hasData: false
+    };
   }
 };
 
 /**
- * Calculate commission based on sales and commission percentage
- * @param {number} totalSales - Total sales amount
- * @param {number} commissionPercentage - Commission percentage (e.g., 5 for 5%)
- * @returns {number} Calculated commission amount
- */
-export const calculateCommission = (totalSales, commissionPercentage) => {
-  if (!totalSales || !commissionPercentage) return 0;
-  return Math.round((totalSales * commissionPercentage) / 100);
-};
-
-/**
- * Calculate commission progress towards target
- * Target = All orders total × commission percentage
- * Achieved = Delivered orders total × commission percentage
- *
- * @param {number} allOrdersTotal - Total amount from all orders (for target calculation)
- * @param {number} deliveredOrdersTotal - Total amount from delivered orders (for achieved calculation)
- * @param {number} commissionPercentage - Commission percentage (e.g., 5 for 5%)
- * @returns {Object} Progress data with target, achieved, percentage and status
+ * @deprecated Use calculateCommissionProgressByProducts instead
+ * Calculate commission progress towards target (simple percentage-based)
  */
 export const calculateCommissionProgress = (allOrdersTotal, deliveredOrdersTotal, commissionPercentage) => {
   if (!commissionPercentage || commissionPercentage <= 0) {
@@ -96,10 +191,10 @@ export const calculateCommissionProgress = (allOrdersTotal, deliveredOrdersTotal
   }
 
   // Target = All orders total × commission %
-  const target = Math.round((allOrdersTotal * commissionPercentage) / 100);
+  const target = Math.round((allOrdersTotal * commissionPercentage) / 100 * 100) / 100;
 
   // Achieved = Delivered orders total × commission %
-  const achieved = Math.round((deliveredOrdersTotal * commissionPercentage) / 100);
+  const achieved = Math.round((deliveredOrdersTotal * commissionPercentage) / 100 * 100) / 100;
 
   // Progress percentage
   const percentage = target > 0 ? Math.min(100, Math.round((achieved / target) * 100)) : 0;
