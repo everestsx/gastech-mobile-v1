@@ -39,6 +39,7 @@ export function setSyncStateListener(fn) {
 const KEYS = {
   USER: '@gastech_user',
   LAST_SYNC: '@gastech_last_sync',
+  LAST_VEHICLE_ID: '@gastech_last_vehicle_id',
 };
 
 const SYNC_INTERVAL_MS = 600 * 1000; // 1 minute auto-sync when online
@@ -73,6 +74,23 @@ export async function getUserSession() {
 export async function saveUserSession(user) {
   const storage = await getAsyncStorage();
   await storage.setItem(KEYS.USER, JSON.stringify(user));
+}
+
+export async function saveLastVehicleId(vehicleId) {
+  try {
+    const storage = await getAsyncStorage();
+    await storage.setItem(KEYS.LAST_VEHICLE_ID, String(vehicleId));
+  } catch (_) {}
+}
+
+export async function getLastVehicleId() {
+  try {
+    const storage = await getAsyncStorage();
+    const raw = await storage.getItem(KEYS.LAST_VEHICLE_ID);
+    return raw != null && raw !== '' ? raw : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function logout() {
@@ -326,7 +344,7 @@ async function processSyncQueue() {
           }
         }
       }
-      await syncQueueDb.markSynced(item.id);
+      await syncQueueDb.markSynced(Number(item.id));
       log('queue', `delivery synced id=${item.id}`);
     } catch (e) {
       logWarn('queue delivery', e);
@@ -429,7 +447,7 @@ async function processSyncQueue() {
       });
 
       if (chatterPostedInThisRun.has(soId)) {
-        await syncQueueDb.markSynced(item.id);
+        await syncQueueDb.markSynced(Number(item.id));
         alreadySyncedSaleOrderIds.add(soId);
         log('queue', `payment synced id=${item.id} (chatter already posted for SO ${soId})`);
         continue;
@@ -454,13 +472,13 @@ async function processSyncQueue() {
         try {
           const info = await FileSystem.getInfoAsync(att.local_file_path, { size: false });
           if (!info?.exists) {
-            await offlineAttachmentsDb.markFailed(att.id, `File missing: ${att.local_file_path}`);
+            await offlineAttachmentsDb.markFailed(Number(att.id), `File missing: ${att.local_file_path}`);
             logWarn('queue payment proof', new Error('File missing'));
             continue;
           }
           const normalized = await imageFileToBase64String(FileSystem, att.local_file_path);
           if (!normalized) {
-            await offlineAttachmentsDb.markFailed(att.id, 'Invalid or too short base64');
+            await offlineAttachmentsDb.markFailed(Number(att.id), 'Invalid or too short base64');
             logWarn('queue payment proof', new Error('Invalid base64'));
             continue;
           }
@@ -472,7 +490,7 @@ async function processSyncQueue() {
             log('queue', `create attachment API result: attachment_id=${aid}`);
           }
         } catch (attErr) {
-          await offlineAttachmentsDb.incrementRetry(att.id, attErr?.message || 'Read error');
+          await offlineAttachmentsDb.incrementRetry(Number(att.id), attErr?.message || 'Read error');
           logWarn('queue payment proof attachment', attErr);
         }
       }
@@ -526,10 +544,11 @@ async function processSyncQueue() {
       try {
         log('queue', `message_post API (sale.order) SO ${soId} attachment_ids=[${attachmentIds.join(', ')}]`);
         await postPaymentProofToChatterWithAttachmentIds(soId, { body: chatterBody, attachmentIds });
-        const pendingById = new Map((pendingAttachments || []).map((a) => [a.id, a]));
+        const pendingById = new Map((pendingAttachments || []).map((a) => [Number(a.id), a]));
         for (const id of syncedAttachmentIds) {
-          await offlineAttachmentsDb.markSynced(id);
-          const att = pendingById.get(id);
+          const idNum = Number(id);
+          await offlineAttachmentsDb.markSynced(idNum);
+          const att = pendingById.get(idNum);
           if (att?.local_file_path) {
             try {
               await FileSystem.deleteAsync(att.local_file_path, { idempotent: true });
@@ -540,13 +559,13 @@ async function processSyncQueue() {
         log('queue', `chatter posted to SO ${soId} (${attachmentIds.length} images)`);
       } catch (chatterErr) {
         for (const id of syncedAttachmentIds) {
-          await offlineAttachmentsDb.incrementRetry(id, chatterErr?.message || 'API error');
+          await offlineAttachmentsDb.incrementRetry(Number(id), chatterErr?.message || 'API error');
         }
         logWarn('queue payment chatter', chatterErr);
         continue;
       }
 
-      await syncQueueDb.markSynced(item.id);
+      await syncQueueDb.markSynced(Number(item.id));
       alreadySyncedSaleOrderIds.add(soId);
       log('queue', `payment synced id=${item.id}`);
     } catch (e) {
