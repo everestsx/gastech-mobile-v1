@@ -84,6 +84,7 @@ export async function getAllSaleOrders(vehicleId = null) {
     route_id: row.route_id != null ? [row.route_id, row.route_name ?? ''] : null,
     vehicle_id: row.vehicle_id != null ? [row.vehicle_id, row.vehicle_name ?? ''] : null,
     payment_type: row.payment_type ?? null,
+    amount_credit: row.amount_credit != null ? row.amount_credit : null,
   }));
 }
 
@@ -157,13 +158,20 @@ export async function updateSaleOrderInvoiceStatusLocal(orderId, invoiceStatus) 
 }
 
 /**
- * Update sale order payment_type locally when user completes payment. Values: 'cash' | 'cheque' | 'credit'.
+ * Update sale order payment_type (and optional amount_credit) locally when user completes payment.
+ * Values: 'cash' | 'cheque' | 'credit'. amountCredit: optional number for credit portion (split payments).
  */
-export async function updateSaleOrderPaymentTypeLocal(orderId, paymentType) {
+export async function updateSaleOrderPaymentTypeLocal(orderId, paymentType, amountCredit = null) {
   const db = await getDb();
-  const type = paymentType === 'cash' || paymentType === 'cheque' || paymentType === 'credit' ? paymentType : null;
+  const typeStr =
+    paymentType === 'cash' || paymentType === 'cheque' || paymentType === 'credit'
+      ? String(paymentType)
+      : '';
+  const creditNum =
+    amountCredit != null && !Number.isNaN(Number(amountCredit)) ? Number(amountCredit) : 0;
+  const orderIdNum = num(orderId);
   await db.runAsync(
-    `UPDATE sale_orders SET payment_type = ?, updated_at = ? WHERE id = ?`,
-    [type, iso(), num(orderId)]
+    `UPDATE sale_orders SET payment_type = ?, amount_credit = ?, updated_at = ? WHERE id = ?`,
+    [typeStr, creditNum, iso(), orderIdNum]
   );
 }

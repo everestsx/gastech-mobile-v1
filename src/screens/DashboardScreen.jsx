@@ -229,7 +229,7 @@ export default function DashboardScreen({ navigation }) {
     .reduce((s, o) => s + (Number(o.amount_total) || 0), 0);
   const creditTotal = deliveredTodayOrders
     .filter((o) => (o.payment_type || '').toLowerCase() === 'credit')
-    .reduce((s, o) => s + (Number(o.amount_total) || 0), 0);
+    .reduce((s, o) => s + (Number(o.amount_credit) ?? Number(o.amount_total) ?? 0), 0);
   const collectionTotal = cashTotal + chequeTotal + creditTotal || 1;
   const cashPct = Math.round((cashTotal / collectionTotal) * 100);
   const chequePct = Math.round((chequeTotal / collectionTotal) * 100);
