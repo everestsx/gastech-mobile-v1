@@ -403,87 +403,39 @@ async function processSyncQueue() {
       const attachmentIds = [];
       const syncedAttachmentIds = [];
       const pendingCount = (pendingAttachments || []).length;
-      const payloadBase64Count = (p.proofPhotoBase64 || []).length;
-      log('queue', `payment proof (SO ${soId}): ${pendingCount} pending files in local DB, ${payloadBase64Count} base64 in payload — will create attachment then message_post`);
-      if (pendingCount === 0 && payloadBase64Count === 0) {
-        log('queue', `payment proof: no images to attach (add photos on Proceed Payment screen and confirm to see [Payment] base64 conversion logs)`);
-      }
 
-      // 1) Prefer saved files (offline_attachments): read file → base64 → API 1 create ir.attachment
+      // Doc: read pending URIs from offline_attachments → base64 → ir.attachment.create → collect ids → message_post(attachment_ids).
+      log('queue', `payment proof (SO ${soId}): ${pendingCount} pending in offline_attachments — URI→base64→create→message_post`);
+
       for (const att of pendingAttachments || []) {
         if (!att.local_file_path || !att.file_name) continue;
         try {
-          const info = await FileSystem.getInfoAsync(att.local_file_path, { size: false });
-          if (!info?.exists) {
+          const exists = await FileSystem.getInfoAsync(att.local_file_path, { size: false });
+          if (!exists?.exists) {
             await offlineAttachmentsDb.markFailed(att.id, `File missing: ${att.local_file_path}`);
-            logWarn('queue payment proof', new Error('File missing'));
+            logWarn('queue payment proof', new Error(`File missing: ${att.local_file_path}`));
             continue;
           }
-          const normalized = await imageFileToBase64String(FileSystem, att.local_file_path);
-          if (!normalized) {
+          const base64 = await imageFileToBase64String(FileSystem, att.local_file_path);
+          if (!base64 || base64.length < 50) {
             await offlineAttachmentsDb.markFailed(att.id, 'Invalid or too short base64');
-            logWarn('queue payment proof', new Error('Invalid base64'));
             continue;
           }
-          log('queue', `create attachment API (ir.attachment create) SO ${soId} file ${att.file_name} datas length ${normalized.length}`);
-          const aid = await createProofAttachment(soId, normalized, att.file_name);
-          if (aid != null) {
-            attachmentIds.push(aid);
-            syncedAttachmentIds.push(att.id);
-            log('queue', `create attachment API result: attachment_id=${aid}`);
-          }
+          const aid = await createProofAttachment(soId, base64, att.file_name);
+          attachmentIds.push(aid);
+          syncedAttachmentIds.push(att.id);
+          log('queue', `ir.attachment.create SO ${soId} → attachment_id=${aid}`);
         } catch (attErr) {
-          await offlineAttachmentsDb.incrementRetry(att.id, attErr?.message || 'Read error');
+          await offlineAttachmentsDb.incrementRetry(att.id, attErr?.message || 'Upload error');
           logWarn('queue payment proof attachment', attErr);
         }
       }
 
-      // 2) Fallback: proofPhotoBase64 from payload (if no attachments from files)
-      if (attachmentIds.length === 0) {
-        const proofPhotoBase64 = p.proofPhotoBase64 || [];
-        for (let i = 0; i < proofPhotoBase64.length; i++) {
-          const item = proofPhotoBase64[i];
-          const filename = item?.filename || `payment_proof_${i + 1}.jpg`;
-          const base64 = item?.base64;
-          if (!base64 || typeof base64 !== 'string') continue;
-          try {
-            log('queue', `create attachment API (ir.attachment create) SO ${soId} from payload ${filename} datas length ${base64.length}`);
-            const aid = await createProofAttachment(soId, base64, filename);
-            if (aid != null) {
-              attachmentIds.push(aid);
-              log('queue', `create attachment API result: attachment_id=${aid}`);
-            }
-          } catch (createErr) {
-            logWarn('queue payment proof create attachment', createErr);
-          }
-        }
-        if (attachmentIds.length > 0) {
-          for (const att of pendingAttachments || []) syncedAttachmentIds.push(att.id);
-        }
+      if (pendingCount > 0 && attachmentIds.length === 0) {
+        logWarn('queue payment proof', new Error('Had pending proof photos but no attachment ids — check file path and createProofAttachment'));
       }
 
-      // 3) Last fallback: read from deliveryPhotoUris (URIs may be stale after app restart)
-      const deliveryPhotoUris = p.deliveryPhotoUris || [];
-      if (attachmentIds.length === 0 && deliveryPhotoUris.length > 0) {
-        for (let i = 0; i < deliveryPhotoUris.length; i++) {
-          const uri = deliveryPhotoUris[i];
-          if (!uri || typeof uri !== 'string') continue;
-          try {
-            const normalized = await imageFileToBase64String(FileSystem, uri);
-            if (normalized) {
-              const ext = (uri.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg';
-              const filename = `payment_proof_${i + 1}.${ext}`;
-              log('queue', `create attachment API (ir.attachment create) SO ${soId} from URI datas length ${normalized.length}`);
-              const aid = await createProofAttachment(soId, normalized, filename);
-              if (aid != null) attachmentIds.push(aid);
-            }
-          } catch (photoErr) {
-            logWarn('queue payment proof photo', photoErr);
-          }
-        }
-      }
-
-      // API 2: Post message to sale order chat (body + attachment_ids so captured photo shows)
+      // API 2: Post message with attachment_ids (required so captured photos appear in sale order chatter)
       try {
         log('queue', `message_post API (sale.order) SO ${soId} attachment_ids=[${attachmentIds.join(', ')}]`);
         await postPaymentProofToChatterWithAttachmentIds(soId, { body: chatterBody, attachmentIds });

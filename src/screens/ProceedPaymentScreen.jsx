@@ -26,7 +26,6 @@ import { JOURNAL_CODE_CASH, JOURNAL_CODE_CHEQUE } from '../constants/journals';
 import { SRI_LANKA_BANKS } from '../constants/sriLankaBanks';
 import { formatAmount } from '../utils/format';
 import { getOrAssignInvoiceNumber } from '../utils/invoiceNumber';
-import { normalizeBase64ForUpload } from '../services/proofAttachment.service';
 
 const PAYMENT_CASH = 'cash';
 const PAYMENT_CHECK = 'cheque';
@@ -225,55 +224,43 @@ export default function ProceedPaymentScreen({ route, navigation }) {
 
       const soId = Number(saleOrderId);
       const timestamp = Date.now();
-      const proofPhotoBase64 = [];
       const photoCount = deliveryPhotos.length;
-      console.log(`[Payment] Captured proof photos count: ${photoCount}. Converting to base64 and storing in local DB...`);
-      if (photoCount === 0) {
-        console.log('[Payment] No proof photos attached — add at least 1 photo (Evidence of delivery) so it appears in sale order chat.');
-      }
+      // Doc: store URI only in SQLite (no base64 in payload). Copy image to persistent path; sync will read path→base64→ir.attachment.create→message_post.
+      console.log(`[Payment] Proof photos: ${photoCount}. Storing in offline_attachments (sync will attach).`);
       for (let i = 0; i < deliveryPhotos.length; i++) {
         const uri = deliveryPhotos[i];
         if (!uri || typeof uri !== 'string') continue;
         try {
           const rawBase64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
-          const normalized = normalizeBase64ForUpload(rawBase64);
-          if (normalized) {
-            console.log(`[Payment] Proof photo ${i + 1}/${photoCount}: converted to base64 string (length=${normalized.length}), prefix data:image/...;base64, removed for datas`);
-            const ext = (uri.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg';
-            const fileName = `payment_${soId}_${timestamp}_${i}.${ext}`;
-            const destPath = `${FileSystem.documentDirectory}proof_${fileName}`;
-            await FileSystem.writeAsStringAsync(destPath, rawBase64, { encoding: FileSystem.EncodingType.Base64 });
-            await offlineAttachmentsDb.insert({
-              sale_order_id: soId,
-              local_file_path: destPath,
-              file_name: fileName,
-              mime_type: ext === 'png' ? 'image/png' : 'image/jpeg',
-            });
-            console.log(`[Payment] Proof photo ${i + 1}: stored in local DB (offline_attachments) file=${fileName}`);
-            proofPhotoBase64.push({ filename: fileName, base64: normalized });
-          } else {
-            console.warn(`[Payment] Proof photo ${i + 1}: base64 conversion returned empty (uri length=${(rawBase64 && rawBase64.length) || 0})`);
-          }
+          if (!rawBase64 || rawBase64.length < 100) continue;
+          const ext = (uri.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg';
+          const fileName = `proof_${soId}_${timestamp}_${i}.${ext}`;
+          const destPath = `${FileSystem.documentDirectory}${fileName}`;
+          await FileSystem.writeAsStringAsync(destPath, rawBase64, { encoding: FileSystem.EncodingType.Base64 });
+          await offlineAttachmentsDb.insert({
+            sale_order_id: soId,
+            local_file_path: destPath,
+            file_name: fileName,
+            mime_type: ext === 'png' ? 'image/png' : 'image/jpeg',
+          });
+          console.log(`[Payment] Proof ${i + 1}: saved to ${destPath}, row in offline_attachments.`);
         } catch (e) {
           console.warn('[Payment] save proof photo', i, e?.message ?? e);
         }
       }
-      console.log(`[Payment] Total proof photos stored for sync: ${proofPhotoBase64.length}. On sync: ir.attachment create → message_post with attachment_ids.`);
 
       const queuePayload = {
-        saleOrderId,
+        saleOrderId: soId,
         partnerId,
         orderName,
         invoiceNumber,
         total: orderTotal,
         payments,
-        proofPhotoBase64: proofPhotoBase64.length > 0 ? proofPhotoBase64 : undefined,
-        deliveryPhotoUris: deliveryPhotos,
         chequeBankName: needsCheck ? selectedLocalBank?.name : undefined,
         checkNumber: needsCheck ? (checkNumberTrimmed || undefined) : undefined,
       };
       await syncQueueDb.enqueue(syncQueueDb.ACTION_PAYMENT, queuePayload);
-      console.log(`[Payment] Stored in local DB (sync_queue): payment for SO ${saleOrderId}, proof photos=${proofPhotoBase64.length}. On sync: create attachment API → message_post API.`);
+      console.log(`[Payment] Enqueued payment for SO ${saleOrderId}. Sync will: read proof URIs → base64 → ir.attachment.create → message_post(attachment_ids).`);
 
       const primaryPaymentType = needsCredit ? 'credit' : needsCheck ? 'cheque' : 'cash';
       await saleOrdersDb.updateSaleOrderPaymentTypeLocal(saleOrderId, primaryPaymentType);
