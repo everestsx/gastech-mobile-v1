@@ -17,7 +17,7 @@ import {
   getUserSession,
   logout,
   getSyncIntervalMinutes,
-  deleteLocalData,
+  deleteLocalData, clearAllTables,setIsLoggingOut
 } from '../services/sync.service';
 import CustomAlert from '../components/CustomAlert';
 export default function MenuScreen({ navigation }) {
@@ -94,15 +94,32 @@ export default function MenuScreen({ navigation }) {
 
   const handleLogout = () => {
     showAlert('Log out', 'Are you sure?', [
-      { text: 'Cancel', style: 'cancel', onPress:hideAlert },
+      { text: 'Cancel', style: 'cancel', onPress: hideAlert },
       {
         text: 'Log out',
         style: 'destructive',
         onPress: async () => {
-          await logout();
-          const root = navigation.getParent?.();
-          if (root?.reset) root.reset({ index: 0, routes: [{ name: 'Login' }] });
-          else navigation.reset({ index: 0, routes: [{ name: 'Login' }] });
+          try {
+
+            setIsLoggingOut(true);
+            await logout();
+            hideAlert();
+            clearAllTables().then(() => {
+              console.log('Database cleanup finished in background');
+            });
+
+            const root = navigation.getParent();
+            if (root) {
+              root.reset({ index: 0, routes: [{ name: 'Login' }] });
+            } else {
+              navigation.reset({ index: 0, routes: [{ name: 'Login' }] });
+            }
+
+          } catch (error) {
+            console.error('Logout UI error:', error);
+            await logout();
+            navigation.navigate('Login');
+          }
         },
       },
     ]);

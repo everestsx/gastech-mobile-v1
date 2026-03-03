@@ -237,7 +237,23 @@ async function runMigrations(db) {
     await db.runAsync('PRAGMA user_version = 6');
   }
 
+  // Migration 7: Add is_locally_modified column to vehicle_inventories
   if (current < 7) {
+    try {
+      const info = await db.getAllAsync('PRAGMA table_info(vehicle_inventories)');
+      const hasLocallyModified = (info || []).some((c) => c.name === 'is_locally_modified');
+      if (!hasLocallyModified) {
+        await db.runAsync('ALTER TABLE vehicle_inventories ADD COLUMN is_locally_modified INTEGER DEFAULT 0');
+        console.log('[Migration] Added is_locally_modified column to vehicle_inventories');
+      }
+    } catch (e) {
+      console.warn('[Migration] Error adding is_locally_modified:', e);
+    }
+    await db.runAsync('PRAGMA user_version = 7');
+  }
+
+  // Migration 8: Add offline_attachments table
+  if (current < 8) {
     await db.execAsync(`
     CREATE TABLE IF NOT EXISTS offline_attachments (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -252,10 +268,10 @@ async function runMigrations(db) {
     CREATE INDEX IF NOT EXISTS idx_offline_attachments_sale_order ON offline_attachments(sale_order_id);
     CREATE INDEX IF NOT EXISTS idx_offline_attachments_sync_status ON offline_attachments(sync_status);
     `);
-    await db.runAsync('PRAGMA user_version = 7');
+    await db.runAsync('PRAGMA user_version = 8');
   }
 
-  if (current < 8) {
+  if (current < 9) {
     try {
       const info = await db.getAllAsync('PRAGMA table_info(offline_attachments)');
       const names = new Set((info || []).map((c) => c.name));
@@ -268,9 +284,23 @@ async function runMigrations(db) {
     } catch (e) {
       console.warn('[Migration] offline_attachments last_error/synced_at:', e);
     }
-    await db.runAsync('PRAGMA user_version = 8');
+    await db.runAsync('PRAGMA user_version = 9');
   }
 
+  // Migration 10: Ensure vehicle_inventories has is_locally_modified (fix for DBs that skipped migration 7)
+  if (current < 10) {
+    try {
+      const info = await db.getAllAsync('PRAGMA table_info(vehicle_inventories)');
+      const hasLocallyModified = (info || []).some((c) => c.name === 'is_locally_modified');
+      if (!hasLocallyModified) {
+        await db.runAsync('ALTER TABLE vehicle_inventories ADD COLUMN is_locally_modified INTEGER DEFAULT 0');
+        console.log('[Migration] Added is_locally_modified column to vehicle_inventories');
+      }
+    } catch (e) {
+      console.warn('[Migration] Error adding is_locally_modified:', e);
+    }
+    await db.runAsync('PRAGMA user_version = 10');
+  }
 }
 
 /**
