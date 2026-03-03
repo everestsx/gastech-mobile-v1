@@ -672,7 +672,7 @@ export default function DashboardScreen({ navigation }) {
             {/*</Text>*/}
           </View>
           <Text style={styles.commissionAmount}>
-            {formatCurrency(commissionEarned)} / {formatCurrency(commissionTarget)}
+            {formatCurrency(commissionEarned)} / {commissionTarget}
           </Text>
           <Text style={styles.commissionPct}>
             {commissionPct}% of target achieved
