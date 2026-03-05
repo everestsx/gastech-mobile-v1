@@ -24,6 +24,7 @@ import {
   getOrderLineTotalsFromDB,
   getPickingsBySaleIdsFromDB,
   getOrderLinesByOrderIdsFromDB,
+  getCollectionTotalsFromOdoo,
 } from '../services/sync.service';
 import {
   getActiveCommissionPlan,
@@ -271,6 +272,35 @@ export default function DashboardScreen({ navigation }) {
   const cashPct = Math.round((cashTotal / collectionTotal) * 100);
   const chequePct = Math.round((chequeTotal / collectionTotal) * 100);
   const creditPct = Math.round((creditTotal / collectionTotal) * 100);
+
+  // Use Odoo collection totals when available so credit (unpaid invoice amounts) shows correctly
+  const cashTotalDisplay = collectionFromOdoo != null ? (collectionFromOdoo.cashTotal ?? cashTotal) : cashTotal;
+  const chequeTotalDisplay = collectionFromOdoo != null ? (collectionFromOdoo.chequeTotal ?? chequeTotal) : chequeTotal;
+  const creditTotalDisplay = collectionFromOdoo != null ? (collectionFromOdoo.creditTotal ?? creditTotal) : creditTotal;
+  const collectionTotalDisplay = cashTotalDisplay + chequeTotalDisplay + creditTotalDisplay || 1;
+  const cashPctDisplay = Math.round((cashTotalDisplay / collectionTotalDisplay) * 100);
+  const chequePctDisplay = Math.round((chequeTotalDisplay / collectionTotalDisplay) * 100);
+  const creditPctDisplay = Math.round((creditTotalDisplay / collectionTotalDisplay) * 100);
+
+  const deliveredTodayOrderNames = useMemo(
+    () => deliveredTodayOrders.map((o) => (o.name || String(o.id)).trim()).filter(Boolean),
+    [deliveredTodayOrders]
+  );
+  useEffect(() => {
+    if (deliveredTodayOrderNames.length === 0) {
+      setCollectionFromOdoo(null);
+      return;
+    }
+    let cancelled = false;
+    getCollectionTotalsFromOdoo(deliveredTodayOrderNames)
+      .then((totals) => {
+        if (!cancelled && totals) setCollectionFromOdoo(totals);
+      })
+      .catch(() => {
+        if (!cancelled) setCollectionFromOdoo(null);
+      });
+    return () => { cancelled = true; };
+  }, [deliveredTodayOrderNames.join(',')]);
 
   const routeFromOrder = todayOrders[0]?.route_id?.[1];
   const routeName = routeFromOrder || (routes[0]?.name) || '—';
@@ -688,31 +718,31 @@ export default function DashboardScreen({ navigation }) {
           </Text>
         </View>
 
-        {/* 3. Collection today - Cash, Cheque, Credit (actual full amounts from delivered orders) */}
+        {/* 3. Collection today - Cash, Cheque, Credit (from Odoo when available so credit amount shows) */}
         <View style={styles.collectionRow}>
           <View style={[styles.collectionCard, { borderColor: colors.cash ?? '#059669' }]}>
             <Ionicons name="cash-outline" size={28} color={colors.cash ?? '#059669'} />
             <Text style={[styles.collectionAmount, { color: colors.cash ?? '#059669' }]} numberOfLines={1}>
-              {formatCurrency(cashTotal)}
+              {formatCurrency(cashTotalDisplay)}
             </Text>
             <Text style={styles.collectionLabel}>CASH</Text>
-            <Text style={[styles.collectionPct, { color: colors.cash ?? '#059669' }]}> ( {cashPct}%)</Text>
+            <Text style={[styles.collectionPct, { color: colors.cash ?? '#059669' }]}> ( {cashPctDisplay}%)</Text>
           </View>
           <View style={[styles.collectionCard, { borderColor: colors.cheque ?? '#d97706' }]}>
             <Ionicons name="card-outline" size={28} color={colors.cheque ?? '#d97706'} />
             <Text style={[styles.collectionAmount, { color: colors.cheque ?? '#d97706' }]} numberOfLines={1}>
-              {formatCurrency(chequeTotal)}
+              {formatCurrency(chequeTotalDisplay)}
             </Text>
             <Text style={styles.collectionLabel}>CHEQUE</Text>
-            <Text style={[styles.collectionPct, { color: colors.cheque ?? '#d97706' }]}> ( {chequePct}%)</Text>
+            <Text style={[styles.collectionPct, { color: colors.cheque ?? '#d97706' }]}> ( {chequePctDisplay}%)</Text>
           </View>
           <View style={[styles.collectionCard, { borderColor: colors.credit ?? '#6366f1' }]}>
             <Ionicons name="wallet-outline" size={28} color={colors.credit ?? '#6366f1'} />
             <Text style={[styles.collectionAmount, { color: colors.credit ?? '#6366f1' }]} numberOfLines={1}>
-              {formatCurrency(creditTotal)}
+              {formatCurrency(creditTotalDisplay)}
             </Text>
             <Text style={styles.collectionLabel}>CREDIT</Text>
-            <Text style={[styles.collectionPct, { color: colors.credit ?? '#6366f1' }]}> ( {creditPct}%)</Text>
+            <Text style={[styles.collectionPct, { color: colors.credit ?? '#6366f1' }]}> ( {creditPctDisplay}%)</Text>
           </View>
         </View>
 
