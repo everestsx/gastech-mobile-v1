@@ -378,6 +378,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         cashInput: { flex: 1, fontSize: 14, color: colors.text, paddingVertical: 12 },
         cashInputSuffix: { fontSize: 12, fontWeight: '600', color: colors.textSecondary, marginLeft: spacing.sm },
         cashHint: { fontSize: 12, color: colors.textSecondary, marginBottom: spacing.md },
+        amountHalfCol: { flex: 1 },
         checkAmountRow: {
           flexDirection: 'row',
           gap: spacing.md,

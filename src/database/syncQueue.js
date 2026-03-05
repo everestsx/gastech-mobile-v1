@@ -9,6 +9,8 @@ import { empty, num, iso } from './dbHelpers.js';
 export const ACTION_DELIVERY = 'delivery';
 /** Payment: create invoice and payments. Payload: { saleOrderId, partnerId, orderName, total, payments[], deliveryPhotoUris? } */
 export const ACTION_PAYMENT = 'payment';
+/** Vehicle inventory update after delivery. Payload: { vehicleId, locationId, updates[] } */
+export const ACTION_INVENTORY_UPDATE = 'inventory_update';
 
 export async function enqueue(actionType, payload) {
   const db = await getDb();

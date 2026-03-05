@@ -266,14 +266,16 @@ export async function getCachedJournals() {
   }
 }
 
-/**
- * Classify journal as 'cash' or 'cheque' from Odoo journal_id [id, name].
- * Cash journal → 'cash'; Cheque journal → 'cheque'. Used for Delivered tabs and Dashboard.
- */
-function journalToPaymentType(journalId) {
+/** Classify payment type by journal code (CSH1 = cash, CSH2 = cheque) or fallback by journal name. */
+function paymentTypeFromJournal(journalId, codeMap = {}) {
+  const id = Array.isArray(journalId) ? journalId[0] : journalId;
+  const code = id != null ? (codeMap[id] || '').toUpperCase().trim() : '';
   const jName = Array.isArray(journalId) ? (journalId[1] || '') : String(journalId || '');
   const j = jName.toLowerCase();
-  if (j.includes('cheque')) return 'cheque';
+  // Prefer Odoo journal code so Cheque (CSH2) is never misclassified as cash
+  if (code === 'CSH2') return 'cheque';
+  if (code === 'CSH1') return 'cash';
+  if (j.includes('cheque') || j.includes('check')) return 'cheque';
   if (j.includes('cash')) return 'cash';
   return 'cheque';
 }
@@ -309,6 +311,11 @@ export async function refreshPaymentTypesFromOdoo(syncedOrders) {
 
     if (paidInvoiceIds.length > 0) {
       const payments = await getPaymentsByInvoiceIds(paidInvoiceIds);
+      const journalIds = (payments || [])
+        .map((pm) => (Array.isArray(pm.journal_id) ? pm.journal_id[0] : pm.journal_id))
+        .filter((id) => id != null);
+      const { getJournalCodesByIds } = await import('./journal.service.js');
+      const journalCodeMap = journalIds.length > 0 ? await getJournalCodesByIds(journalIds) : {};
       const invoiceIdToPayments = {};
       for (const pm of payments || []) {
         const invIds = Array.isArray(pm.reconciled_invoice_ids) ? pm.reconciled_invoice_ids : [];
@@ -326,11 +333,18 @@ export async function refreshPaymentTypesFromOdoo(syncedOrders) {
         let chequeSum = 0;
         for (const pm of pms) {
           const amt = Number(pm.amount) || 0;
-          const type = journalToPaymentType(pm.journal_id);
+          const type = paymentTypeFromJournal(pm.journal_id, journalCodeMap);
           if (type === 'cash') cashSum += amt;
           else chequeSum += amt;
         }
-        const orderType = chequeSum > 0 && cashSum === 0 ? 'cheque' : cashSum > 0 ? 'cash' : 'cheque';
+        const orderType =
+          chequeSum > 0 && cashSum === 0
+            ? 'cheque'
+            : cashSum > 0
+              ? 'cash'
+              : chequeSum > 0
+                ? 'cheque'
+                : 'credit';
         orderNameToType[inv.invoice_origin] = orderType;
       }
     }
@@ -374,9 +388,14 @@ export async function getCollectionTotalsFromOdoo(orderNames) {
 
     if (paidInvoiceIds.length > 0) {
       const payments = await getPaymentsByInvoiceIds(paidInvoiceIds);
+      const journalIds = (payments || [])
+        .map((pm) => (Array.isArray(pm.journal_id) ? pm.journal_id[0] : pm.journal_id))
+        .filter((id) => id != null);
+      const { getJournalCodesByIds } = await import('./journal.service.js');
+      const journalCodeMap = journalIds.length > 0 ? await getJournalCodesByIds(journalIds) : {};
       for (const pm of payments || []) {
         const amount = Number(pm.amount) || 0;
-        const type = journalToPaymentType(pm.journal_id);
+        const type = paymentTypeFromJournal(pm.journal_id, journalCodeMap);
         if (type === 'cash') cashTotal += amount;
         else chequeTotal += amount;
       }

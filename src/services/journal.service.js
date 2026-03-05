@@ -43,3 +43,24 @@ export async function getCashTypeJournalIds() {
   }
   return { cashJournalId, chequeJournalId };
 }
+
+/**
+ * Get journal codes by ids (for classifying payments as cash vs cheque by code CSH1/CSH2).
+ * Returns { [journalId]: code }.
+ */
+export async function getJournalCodesByIds(journalIds) {
+  if (!Array.isArray(journalIds) || journalIds.length === 0) return {};
+  const ids = [...new Set(journalIds)].filter((id) => id != null);
+  if (ids.length === 0) return {};
+  const rows = await callOdoo(
+    "account.journal",
+    "search_read",
+    [[["id", "in", ids]]],
+    { fields: ["id", "code"] }
+  );
+  const map = {};
+  for (const r of rows || []) {
+    if (r.id != null) map[r.id] = (r.code || "").trim().toUpperCase();
+  }
+  return map;
+}
