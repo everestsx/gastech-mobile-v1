@@ -23,15 +23,18 @@ import {
   getUserSession,
   getOrderLineTotalsFromDB,
   getPickingsBySaleIdsFromDB,
-  getCollectionTotalsFromOdoo,
+  getOrderLinesByOrderIdsFromDB,
 } from '../services/sync.service';
+import {
+  getActiveCommissionPlan,
+  calculateCommissionProgressByProducts,
+} from '../services/commission.service';
 import DeliveryProgressBarChart from '../components/DeliveryProgressBarChart';
 import SyncIndicator from '../components/SyncIndicator';
 import { useSync } from '../context/SyncContext';
 
-const COMMISSION_TARGET = 6000;
-const SHOPS_TARGET = 60;
-const GAS_TARGET = 6000;
+// const SHOPS_TARGET = 60;
+// const GAS_TARGET = 6000;
 
 /** Sample data for Delivery Progress by Shop when no real data. */
 const SAMPLE_DELIVERY_BY_SHOP = [
@@ -44,7 +47,7 @@ const SAMPLE_DELIVERY_BY_SHOP = [
 ];
 
 function formatCurrency(amount) {
-  return `Rs. ${Number(amount).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
+  return `Rs. ${Number(amount).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 function formatShort(amount) {
   const n = Number(amount) || 0;
@@ -76,6 +79,11 @@ export default function DashboardScreen({ navigation }) {
   const [chartPickingsBySaleId, setChartPickingsBySaleId] = useState([]);
   const [collectionFromOdoo, setCollectionFromOdoo] = useState(null);
 
+  // Commission state
+  const [commissionPlan, setCommissionPlan] = useState(null);
+  const [commissionLoading, setCommissionLoading] = useState(false);
+  const [todayOrderLines, setTodayOrderLines] = useState([]);
+
   const loadData = useCallback(async () => {
     try {
       const [userData, routesData] = await Promise.all([
@@ -91,30 +99,40 @@ export default function DashboardScreen({ navigation }) {
       const today = new Date().toISOString().split('T')[0];
       const todayOrders = (Array.isArray(data) ? data : []).filter((o) => (o.date_order || '').startsWith(today));
       const orderIds = todayOrders.map((o) => o.id);
-      const [totals, pickings] = await Promise.all([
+      const [totals, pickings, orderLines] = await Promise.all([
         getOrderLineTotalsFromDB(todayOrders),
         orderIds.length ? getPickingsBySaleIdsFromDB(orderIds) : Promise.resolve([]),
+        orderIds.length ? getOrderLinesByOrderIdsFromDB(orderIds) : Promise.resolve([]),
       ]);
       setLineTotalsByOrder(totals || {});
       setPickingsBySaleId(pickings || []);
-
-      const saleIdToDone = {};
-      (pickings || []).forEach((p) => {
-        const sid = Array.isArray(p.sale_id) ? p.sale_id[0] : p.sale_id;
-        if (sid != null && (p.state || '').toLowerCase() === 'done') saleIdToDone[sid] = true;
-      });
-      const deliveredOrderNames = todayOrders.filter((o) => saleIdToDone[o.id]).map((o) => o.name).filter(Boolean);
-      const odooTotals = await getCollectionTotalsFromOdoo(deliveredOrderNames);
-      setCollectionFromOdoo(odooTotals);
+      setTodayOrderLines(orderLines || []);
     } catch (_) {
       setOrders([]);
       setLineTotalsByOrder({});
       setPickingsBySaleId([]);
-      setCollectionFromOdoo(null);
+      setTodayOrderLines([]);
     } finally {
       setLoading(false);
     }
   }, []);
+
+
+  const loadCommissionData = useCallback(async () => {
+    if (!user?.licensePlate) return;
+
+    setCommissionLoading(true);
+    try {
+      const plan = await getActiveCommissionPlan(user.licensePlate);
+      console.log('[Commission] Loaded plan:', plan);
+      setCommissionPlan(plan);
+    } catch (error) {
+      console.error('[Commission] Error loading plan:', error);
+      setCommissionPlan(null);
+    } finally {
+      setCommissionLoading(false);
+    }
+  }, [user?.licensePlate]);
 
   const loadSyncStatus = useCallback(async () => {
     try {
@@ -137,6 +155,13 @@ export default function DashboardScreen({ navigation }) {
     loadSyncStatus();
     return () => unsub?.();
   }, [loadData, loadSyncStatus, navigation]);
+
+
+  useEffect(() => {
+    if (user?.licensePlate) {
+      loadCommissionData();
+    }
+  }, [user?.licensePlate, loadCommissionData]);
 
   // Short delayed reload on first mount so dashboard amounts update immediately after first-time login
   useEffect(() => {
@@ -195,6 +220,7 @@ export default function DashboardScreen({ navigation }) {
     setRefreshing(true);
     await loadData();
     await loadSyncStatus();
+    await loadCommissionData();
     setRefreshing(false);
   };
 
@@ -228,26 +254,19 @@ export default function DashboardScreen({ navigation }) {
 
   /** Today's orders that are actually delivered (picking state 'done') for this vehicle */
   const deliveredTodayOrders = useMemo(
-    () => todayOrders.filter((o) => (pickingStateBySaleId[o.id] || '') === 'done'),
-    [todayOrders, pickingStateBySaleId]
+      () => todayOrders.filter((o) => (pickingStateBySaleId[o.id] || '') === 'done'),
+      [todayOrders, pickingStateBySaleId]
   );
 
-  const totalSales = todayOrders.reduce((s, o) => s + (Number(o.amount_total) || 0), 0);
-
-  const localCashTotal = deliveredTodayOrders
-    .filter((o) => (o.payment_type || '').toLowerCase() === 'cash')
-    .reduce((s, o) => s + (Number(o.amount_total) || 0), 0);
-  const localChequeTotal = deliveredTodayOrders
-    .filter((o) => (o.payment_type || '').toLowerCase() === 'cheque')
-    .reduce((s, o) => s + (Number(o.amount_total) || 0), 0);
-  const localCreditTotal = deliveredTodayOrders
+  const cashTotal = deliveredTodayOrders
+      .filter((o) => (o.payment_type || '').toLowerCase() === 'cash')
+      .reduce((s, o) => s + (Number(o.amount_total) || 0), 0);
+  const chequeTotal = deliveredTodayOrders
+      .filter((o) => (o.payment_type || '').toLowerCase() === 'cheque')
+      .reduce((s, o) => s + (Number(o.amount_total) || 0), 0);
+  const creditTotal = deliveredTodayOrders
     .filter((o) => (o.payment_type || '').toLowerCase() === 'credit')
-    .reduce((s, o) => s + (Number(o.amount_total) || 0), 0);
-
-  const cashTotal = collectionFromOdoo != null ? collectionFromOdoo.cashTotal : localCashTotal;
-  const chequeTotal = collectionFromOdoo != null ? collectionFromOdoo.chequeTotal : localChequeTotal;
-  const creditTotal = collectionFromOdoo != null ? collectionFromOdoo.creditTotal : localCreditTotal;
-
+    .reduce((s, o) => s + (Number(o.amount_credit) ?? Number(o.amount_total) ?? 0), 0);
   const collectionTotal = cashTotal + chequeTotal + creditTotal || 1;
   const cashPct = Math.round((cashTotal / collectionTotal) * 100);
   const chequePct = Math.round((chequeTotal / collectionTotal) * 100);
@@ -256,25 +275,55 @@ export default function DashboardScreen({ navigation }) {
   const routeFromOrder = todayOrders[0]?.route_id?.[1];
   const routeName = routeFromOrder || (routes[0]?.name) || '—';
   const vehicleName = user?.licensePlate || user?.vehicleName || 'Vehicle';
-  const commissionEarned = Math.round(totalSales * 0.1) || 0;
-  const commissionPct = Math.min(100, Math.round((commissionEarned / COMMISSION_TARGET) * 100));
+
+
+  // Use commission rate from API, default to Rs. 1 per item if not available
+  const commissionPercentage = commissionPlan?.commission_percentage || 1;
+  const productRateMap = commissionPlan?.productRateMap || {};
+
+  // Calculate totals for fallback commission calculation
+  const allOrdersTotal = todayOrders.reduce((s, o) => s + (Number(o.amount_total) || 0), 0);
+  const deliveredOrdersTotal = deliveredTodayOrders.reduce((s, o) => s + (Number(o.amount_total) || 0), 0);
+
+  // Get order lines for delivered orders (for achieved commission)
+  const deliveredOrderIds = new Set(deliveredTodayOrders.map(o => o.id));
+  const deliveredOrderLines = todayOrderLines.filter(line => {
+    const orderId = Array.isArray(line.order_id) ? line.order_id[0] : line.order_id;
+    return deliveredOrderIds.has(orderId);
+  });
+
+
+  const hasProductRates = Object.keys(productRateMap).length > 0;
+  const defaultRate = hasProductRates ? commissionPercentage : 1;
+
+
+  const commissionProgress = calculateCommissionProgressByProducts(
+    todayOrderLines,
+    deliveredOrderLines,
+    productRateMap,
+    defaultRate
+  );
+
+  const commissionTarget = commissionProgress.target;
+  const commissionEarned = commissionProgress.achieved;
+  const commissionPct = commissionProgress.percentage;
 
   const shopsCompleted = deliveredTodayOrders.length;
   const totalShopsToday = todayOrders.length;
   const shopsPct = totalShopsToday > 0 ? Math.min(100, Math.round((shopsCompleted / totalShopsToday) * 100)) : 0;
   const totalGasDelivered = deliveredTodayOrders.reduce(
-    (s, o) => s + (Number(lineTotalsByOrder[o.id]) || 0),
-    0
+      (s, o) => s + (Number(lineTotalsByOrder[o.id]) || 0),
+      0
   );
   const totalGasInOrders = todayOrders.reduce(
-    (s, o) => s + (Number(lineTotalsByOrder[o.id]) || 0),
-    0
+      (s, o) => s + (Number(lineTotalsByOrder[o.id]) || 0),
+      0
   );
   const gasPct = totalGasInOrders > 0 ? Math.min(100, Math.round((totalGasDelivered / totalGasInOrders) * 100)) : 0;
 
   const chartDateOrders = useMemo(
-    () => orders.filter((o) => (o.date_order || '').startsWith(selectedChartDate)),
-    [orders, selectedChartDate]
+      () => orders.filter((o) => (o.date_order || '').startsWith(selectedChartDate)),
+      [orders, selectedChartDate]
   );
   const chartPickingStateBySaleId = useMemo(() => {
     const map = {};
@@ -554,9 +603,9 @@ export default function DashboardScreen({ navigation }) {
 
   if (loading) {
     return (
-      <View style={styles.center}>
-        <ActivityIndicator size="large" color={colors.primary} />
-      </View>
+        <View style={styles.center}>
+          <ActivityIndicator size="large" color={colors.primary} />
+        </View>
     );
   }
 
@@ -618,68 +667,76 @@ export default function DashboardScreen({ navigation }) {
               <Ionicons name="calendar-outline" size={20} color="#fff" />
               <Text style={styles.dailyVisitBtnTopText}>Visit</Text>
             </TouchableOpacity> */}
+            </View>
           </View>
         </View>
-      </View>
 
-      {/* 2. Commission card - green */}
-      <View style={styles.commissionCard}>
-        <Text style={styles.commissionTitle}>YOUR COMMISSION TODAY</Text>
-        <Text style={styles.commissionAmount}>
-          Rs. {commissionEarned.toLocaleString('en-IN')} / {COMMISSION_TARGET.toLocaleString('en-IN')}
-        </Text>
-        <Text style={styles.commissionPct}>{commissionPct}% of target achieved</Text>
-      </View>
-
-      {/* 3. Collection today - Cash, Cheque, Credit (actual full amounts from delivered orders) */}
-      <View style={styles.collectionRow}>
-        <View style={[styles.collectionCard, { borderColor: colors.cash ?? '#059669' }]}>
-          <Ionicons name="cash-outline" size={28} color={colors.cash ?? '#059669'} />
-          <Text style={[styles.collectionAmount, { color: colors.cash ?? '#059669' }]} numberOfLines={1}>
-            {formatCurrency(cashTotal)}
-          </Text>
-          <Text style={styles.collectionLabel}>CASH</Text>
-          <Text style={[styles.collectionPct, { color: colors.cash ?? '#059669' }]}> ( {cashPct}%)</Text>
-        </View>
-        <View style={[styles.collectionCard, { borderColor: colors.cheque ?? '#d97706' }]}>
-          <Ionicons name="card-outline" size={28} color={colors.cheque ?? '#d97706'} />
-          <Text style={[styles.collectionAmount, { color: colors.cheque ?? '#d97706' }]} numberOfLines={1}>
-            {formatCurrency(chequeTotal)}
-          </Text>
-          <Text style={styles.collectionLabel}>CHEQUE</Text>
-          <Text style={[styles.collectionPct, { color: colors.cheque ?? '#d97706' }]}> ( {chequePct}%)</Text>
-        </View>
-        <View style={[styles.collectionCard, { borderColor: colors.credit ?? '#6366f1' }]}>
-          <Ionicons name="wallet-outline" size={28} color={colors.credit ?? '#6366f1'} />
-          <Text style={[styles.collectionAmount, { color: colors.credit ?? '#6366f1' }]} numberOfLines={1}>
-            {formatCurrency(creditTotal)}
-          </Text>
-          <Text style={styles.collectionLabel}>CREDIT</Text>
-          <Text style={[styles.collectionPct, { color: colors.credit ?? '#6366f1' }]}> ( {creditPct}%)</Text>
-        </View>
-      </View>
-
-      {/* 4. Shops Completed (delivered/total) & Gas Delivered (delivered/total) */}
-      <View style={styles.shopsGasRow}>
-        <View style={styles.shopsGasCard}>
-          <View style={{ flexDirection: 'row', alignItems: 'baseline' }}>
-            <Text style={[styles.shopsGasValue, { color: colors.primary }]}>{shopsCompleted}</Text>
-            <Text style={[styles.shopsGasTarget, { color: colors.textSecondary }]}>/{totalShopsToday}</Text>
+        {/* 2. Commission card */}
+        <View style={styles.commissionCard}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+            <Text style={styles.commissionTitle}>YOUR COMMISSION TODAY</Text>
+            {/*<Text style={[styles.commissionTitle, { opacity: 0.8 }]}>*/}
+            {/*  {commissionPercentage}% Rate*/}
+            {/*</Text>*/}
           </View>
-          <Text style={styles.shopsGasLabel}>SHOPS COMPLETED</Text>
-          <Text style={styles.shopsGasPct}>{shopsPct}% Complete</Text>
+          <Text style={styles.commissionAmount}>
+            {formatCurrency(commissionEarned)} / {Number(commissionTarget).toFixed(2)}
+          </Text>
+          <Text style={styles.commissionPct}>
+            {commissionPct}% of target achieved
+            {commissionLoading && ' (loading...)'}
+          </Text>
         </View>
-        <View style={styles.shopsGasCard}>
-          <View style={{ flexDirection: 'row', alignItems: 'baseline' }}>
-            <Text style={[styles.shopsGasValue, { color: colors.warning ?? '#d97706' }]}>
-              {totalGasDelivered.toLocaleString('en-IN')}
+
+        {/* 3. Collection today - Cash, Cheque, Credit (actual full amounts from delivered orders) */}
+        <View style={styles.collectionRow}>
+          <View style={[styles.collectionCard, { borderColor: colors.cash ?? '#059669' }]}>
+            <Ionicons name="cash-outline" size={28} color={colors.cash ?? '#059669'} />
+            <Text style={[styles.collectionAmount, { color: colors.cash ?? '#059669' }]} numberOfLines={1}>
+              {formatCurrency(cashTotal)}
             </Text>
-            <Text style={[styles.shopsGasTarget, { color: colors.textSecondary }]}>/{totalGasInOrders.toLocaleString('en-IN')}</Text>
+            <Text style={styles.collectionLabel}>CASH</Text>
+            <Text style={[styles.collectionPct, { color: colors.cash ?? '#059669' }]}> ( {cashPct}%)</Text>
           </View>
-          <Text style={styles.shopsGasLabel}>GAS DELIVERED</Text>
-          <Text style={styles.shopsGasPct}>{gasPct}% Complete</Text>
+          <View style={[styles.collectionCard, { borderColor: colors.cheque ?? '#d97706' }]}>
+            <Ionicons name="card-outline" size={28} color={colors.cheque ?? '#d97706'} />
+            <Text style={[styles.collectionAmount, { color: colors.cheque ?? '#d97706' }]} numberOfLines={1}>
+              {formatCurrency(chequeTotal)}
+            </Text>
+            <Text style={styles.collectionLabel}>CHEQUE</Text>
+            <Text style={[styles.collectionPct, { color: colors.cheque ?? '#d97706' }]}> ( {chequePct}%)</Text>
+          </View>
+          <View style={[styles.collectionCard, { borderColor: colors.credit ?? '#6366f1' }]}>
+            <Ionicons name="wallet-outline" size={28} color={colors.credit ?? '#6366f1'} />
+            <Text style={[styles.collectionAmount, { color: colors.credit ?? '#6366f1' }]} numberOfLines={1}>
+              {formatCurrency(creditTotal)}
+            </Text>
+            <Text style={styles.collectionLabel}>CREDIT</Text>
+            <Text style={[styles.collectionPct, { color: colors.credit ?? '#6366f1' }]}> ( {creditPct}%)</Text>
+          </View>
         </View>
-      </View>
+
+        {/* 4. Shops Completed (delivered/total) & Gas Delivered (delivered/total) */}
+        <View style={styles.shopsGasRow}>
+          <View style={styles.shopsGasCard}>
+            <View style={{ flexDirection: 'row', alignItems: 'baseline' }}>
+              <Text style={[styles.shopsGasValue, { color: colors.primary }]}>{shopsCompleted}</Text>
+              <Text style={[styles.shopsGasTarget, { color: colors.textSecondary }]}>/{totalShopsToday}</Text>
+            </View>
+            <Text style={styles.shopsGasLabel}>SHOPS COMPLETED</Text>
+            <Text style={styles.shopsGasPct}>{shopsPct}% Complete</Text>
+          </View>
+          <View style={styles.shopsGasCard}>
+            <View style={{ flexDirection: 'row', alignItems: 'baseline' }}>
+              <Text style={[styles.shopsGasValue, { color: colors.warning ?? '#d97706' }]}>
+                {totalGasDelivered.toLocaleString('en-IN')}
+              </Text>
+              <Text style={[styles.shopsGasTarget, { color: colors.textSecondary }]}>/{totalGasInOrders.toLocaleString('en-IN')}</Text>
+            </View>
+            <Text style={styles.shopsGasLabel}>GAS DELIVERED</Text>
+            <Text style={styles.shopsGasPct}>{gasPct}% Complete</Text>
+          </View>
+        </View>
 
       {/* 5. Delivery Progress by Shop - bar chart with date picker (default today) */}
       <View style={{ paddingHorizontal: spacing.md }}>
@@ -746,35 +803,35 @@ export default function DashboardScreen({ navigation }) {
         />
       </View>
 
-      {/* 6. Configurable: Create Sales Order & Return */}
-      {(showCreateSalesOrder || showReturnOrder) && (
-        <View style={[styles.actionsRow, { paddingHorizontal: spacing.md, marginBottom: spacing.lg }]}>
-          {showCreateSalesOrder && (
-            <TouchableOpacity
-              style={styles.actionCard}
-              onPress={() => navigation.navigate('Orders', { customerId: null })}
-              activeOpacity={0.8}
-            >
-              <View style={styles.actionIconWrap}>
-                <Ionicons name="add" size={32} color={colors.primary} />
-              </View>
-              <Text style={styles.actionLabel}>Create Sales Order</Text>
-            </TouchableOpacity>
-          )}
-          {showReturnOrder && (
-            <TouchableOpacity
-              style={styles.actionCard}
-              onPress={() => navigation.navigate('Orders')}
-              activeOpacity={0.8}
-            >
-              <View style={styles.actionIconWrap}>
-                <Ionicons name="return-down-back-outline" size={28} color={colors.primary} />
-              </View>
-              <Text style={styles.actionLabel}>Return Order</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-      )}
-    </ScrollView>
+        {/* 6. Configurable: Create Sales Order & Return */}
+        {(showCreateSalesOrder || showReturnOrder) && (
+            <View style={[styles.actionsRow, { paddingHorizontal: spacing.md, marginBottom: spacing.lg }]}>
+              {showCreateSalesOrder && (
+                  <TouchableOpacity
+                      style={styles.actionCard}
+                      onPress={() => navigation.navigate('Orders', { customerId: null })}
+                      activeOpacity={0.8}
+                  >
+                    <View style={styles.actionIconWrap}>
+                      <Ionicons name="add" size={32} color={colors.primary} />
+                    </View>
+                    <Text style={styles.actionLabel}>Create Sales Order</Text>
+                  </TouchableOpacity>
+              )}
+              {showReturnOrder && (
+                  <TouchableOpacity
+                      style={styles.actionCard}
+                      onPress={() => navigation.navigate('Orders')}
+                      activeOpacity={0.8}
+                  >
+                    <View style={styles.actionIconWrap}>
+                      <Ionicons name="return-down-back-outline" size={28} color={colors.primary} />
+                    </View>
+                    <Text style={styles.actionLabel}>Return Order</Text>
+                  </TouchableOpacity>
+              )}
+            </View>
+        )}
+      </ScrollView>
   );
 }

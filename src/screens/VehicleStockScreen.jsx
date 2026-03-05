@@ -80,12 +80,12 @@ function StockCard({ item, colors, cardWidth, isLeft }) {
           {name}
         </Text>
         <View style={styles.cardQtyRow}>
-          <Text style={[styles.cardQtyValue, { color: colors.text }]}>{qty}</Text>
+          <Text style={[styles.cardQtyValue, { color: colors.text }]}>{available}</Text>
           <Text style={[styles.cardQtyLabel, { color: colors.textSecondary }]}>On hand</Text>
         </View>
         <View style={[styles.badge, { backgroundColor: lowStock ? colors.error + '20' : colors.primarySurface }]}>
           <Text style={[styles.badgeText, { color: lowStock ? colors.error : colors.primary }]}>
-            {available} available
+            {qty} Total
           </Text>
         </View>
       </View>

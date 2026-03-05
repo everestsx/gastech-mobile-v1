@@ -165,9 +165,10 @@ export default function OrderCard({ order, onPress, isDelivered, orderLines = []
           {order.name || '—'}
         </Text>
         <View style={styles.badgesRight}>
-          <View style={[styles.badge, getOrderTypeBadgeStyle(state)]}>
+          {/* TODO: Keep this commented out for future use */}
+          {/* <View style={[styles.badge, getOrderTypeBadgeStyle(state)]}>
             <Text style={styles.badgeText}>{String(state).toUpperCase()}</Text>
-          </View>
+          </View> */}
           <View style={[styles.badge, getOrderStatusBadgeStyle()]}>
             <Text
               style={isStatusDarkText ? styles.badgeStatusTextInvoiced : styles.badgeStatusText}
