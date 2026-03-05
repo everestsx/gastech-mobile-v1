@@ -13,6 +13,8 @@ import {
 import QRCode from "react-native-qrcode-svg";
 import * as MediaLibrary from "expo-media-library";
 import * as FileSystem from "expo-file-system";
+
+const BASE64 = (FileSystem.EncodingType && FileSystem.EncodingType.Base64) || "base64";
 import { Ionicons } from "@expo/vector-icons";
 
 import { useTheme } from "../context/ThemeContext";
@@ -151,7 +153,7 @@ export default function QrGenerateScreen({ navigation }) {
       const fileUri = FileSystem.cacheDirectory + `customer_${selectedCustomer.id}.png`;
 
       await FileSystem.writeAsStringAsync(fileUri, dataUrl, {
-        encoding: FileSystem.EncodingType.Base64,
+        encoding: BASE64,
       });
 
       await MediaLibrary.saveToLibraryAsync(fileUri);

@@ -46,8 +46,9 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
   const [showPicker, setShowPicker] = useState(false);
   const [activeTab, setActiveTab] = useState(TAB_CASH);
 
+  /** All delivered orders (with or without payment). Cash/Cheque/Credit tabs filter by payment_type. */
   const deliveredOrders = useMemo(
-    () => orders.filter((o) => o.isDelivered && String(o.invoice_status) === 'invoiced'),
+    () => orders.filter((o) => o.isDelivered),
     [orders]
   );
 
@@ -237,10 +238,19 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
   };
 
   const onOrderPress = (order) => {
-    navigation.navigate('InvoiceScreen', {
-      saleOrderId: order.id,
-      total: order.amount_total,
-    });
+    const isInvoiced = String(order.invoice_status) === 'invoiced';
+    if (isInvoiced) {
+      navigation.navigate('InvoiceScreen', {
+        saleOrderId: order.id,
+        total: order.amount_total,
+      });
+    } else {
+      navigation.navigate('ProceedPayment', {
+        saleOrderId: order.id,
+        total: order.amount_total,
+        deliveryDone: true,
+      });
+    }
   };
 
   if (loading) {

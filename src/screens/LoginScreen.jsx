@@ -59,20 +59,16 @@ export default function LoginScreen({ navigation }) {
     }
   }, []);
 
+  /** On login screen load: always fetch fleet.vehicle from Odoo (search_read), then refresh local list. */
   const initData = useCallback(async () => {
-    const localData = await loadVehicles();
-
-
-    if (localData.length > 0) return;
-
+    await loadVehicles();
     setSyncing(true);
     try {
       const success = await syncVehiclesOnly();
       if (success) await loadVehicles();
     } catch (e) {
-      console.log("Background sync failed", e);
+      console.log("Vehicle fetch failed", e);
     } finally {
-
       setTimeout(() => setSyncing(false), 500);
     }
   }, [loadVehicles]);

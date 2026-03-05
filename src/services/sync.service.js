@@ -227,6 +227,129 @@ export async function getCachedJournals() {
   }
 }
 
+/**
+ * Classify journal as 'cash' or 'cheque' from Odoo journal_id [id, name].
+ * Cash journal → 'cash'; Cheque journal → 'cheque'. Used for Delivered tabs and Dashboard.
+ */
+function journalToPaymentType(journalId) {
+  const jName = Array.isArray(journalId) ? (journalId[1] || '') : String(journalId || '');
+  const j = jName.toLowerCase();
+  if (j.includes('cheque')) return 'cheque';
+  if (j.includes('cash')) return 'cash';
+  return 'cheque';
+}
+
+/**
+ * Refresh payment_type from Odoo so Delivered tabs and Dashboard show correct Cash/Cheque/Credit on all devices.
+ * Flow: (1) Only invoiced orders. (2) If invoice payment_state is not 'paid' (e.g. in_payment, not_paid) → credit.
+ * (3) If paid → get account.payment by reconciled_invoice_ids; by journal_id (Cash vs Cheque) set cash or cheque.
+ * @param {Array<{ name?: string, invoice_status?: string }>} syncedOrders - orders just synced from Odoo
+ */
+export async function refreshPaymentTypesFromOdoo(syncedOrders) {
+  const orderNames = (syncedOrders || [])
+    .filter((o) => String(o.invoice_status || '') === 'invoiced' && o.name)
+    .map((o) => o.name);
+  if (orderNames.length === 0) return;
+  try {
+    const { getInvoicesByOrigins, getPaymentsByInvoiceIds } = await import('./invoice.service');
+    const invoices = await getInvoicesByOrigins(orderNames);
+    if (!invoices?.length) return;
+
+    const paidInvoiceIds = [];
+    const orderNameToType = {};
+
+    for (const inv of invoices) {
+      const origin = inv.invoice_origin;
+      const state = (inv.payment_state || '').toLowerCase();
+      if (state === 'paid') {
+        paidInvoiceIds.push(inv.id);
+      } else {
+        if (origin) orderNameToType[origin] = 'credit';
+      }
+    }
+
+    if (paidInvoiceIds.length > 0) {
+      const payments = await getPaymentsByInvoiceIds(paidInvoiceIds);
+      const invoiceIdToPayments = {};
+      for (const pm of payments || []) {
+        const invIds = Array.isArray(pm.reconciled_invoice_ids) ? pm.reconciled_invoice_ids : [];
+        invIds.forEach((id) => {
+          const invId = Array.isArray(id) ? id[0] : id;
+          if (invId == null) return;
+          if (!invoiceIdToPayments[invId]) invoiceIdToPayments[invId] = [];
+          invoiceIdToPayments[invId].push(pm);
+        });
+      }
+      for (const inv of invoices) {
+        if ((inv.payment_state || '').toLowerCase() !== 'paid' || !inv.invoice_origin) continue;
+        const pms = invoiceIdToPayments[inv.id] || [];
+        let cashSum = 0;
+        let chequeSum = 0;
+        for (const pm of pms) {
+          const amt = Number(pm.amount) || 0;
+          const type = journalToPaymentType(pm.journal_id);
+          if (type === 'cash') cashSum += amt;
+          else chequeSum += amt;
+        }
+        const orderType = chequeSum > 0 && cashSum === 0 ? 'cheque' : cashSum > 0 ? 'cash' : 'cheque';
+        orderNameToType[inv.invoice_origin] = orderType;
+      }
+    }
+
+    for (const name of Object.keys(orderNameToType)) {
+      await saleOrdersDb.updatePaymentTypeByOrderName(name, orderNameToType[name]);
+    }
+    log('refresh', `payment_type updated for ${Object.keys(orderNameToType).length} orders from Odoo`);
+  } catch (e) {
+    logWarn('refresh payment_type from Odoo', e);
+  }
+}
+
+/**
+ * Fetch Cash/Cheque/Credit totals from Odoo for given order names (e.g. today's delivered).
+ * Flow: (1) Invoiced orders only (invoices by invoice_origin). (2) If not paid (payment_state !== 'paid', e.g. in_payment) → add to creditTotal. (3) If paid → get payments by reconciled_invoice_ids; by journal (Cash vs Cheque) add amount to cashTotal or chequeTotal. Returns actual values for Dashboard.
+ */
+export async function getCollectionTotalsFromOdoo(orderNames) {
+  if (!Array.isArray(orderNames) || orderNames.length === 0) {
+    return { cashTotal: 0, chequeTotal: 0, creditTotal: 0 };
+  }
+  try {
+    const { getInvoicesByOrigins, getPaymentsByInvoiceIds } = await import('./invoice.service');
+    const invoices = await getInvoicesByOrigins(orderNames);
+    if (!invoices?.length) return { cashTotal: 0, chequeTotal: 0, creditTotal: 0 };
+
+    let cashTotal = 0;
+    let chequeTotal = 0;
+    let creditTotal = 0;
+    const paidInvoiceIds = [];
+
+    for (const inv of invoices) {
+      const state = (inv.payment_state || '').toLowerCase();
+      const amount = Number(inv.amount_total) || 0;
+      if (state === 'paid') {
+        paidInvoiceIds.push(inv.id);
+      } else {
+        creditTotal += amount;
+      }
+    }
+
+    if (paidInvoiceIds.length > 0) {
+      const payments = await getPaymentsByInvoiceIds(paidInvoiceIds);
+      for (const pm of payments || []) {
+        const amount = Number(pm.amount) || 0;
+        const type = journalToPaymentType(pm.journal_id);
+        if (type === 'cash') cashTotal += amount;
+        else chequeTotal += amount;
+      }
+    }
+
+    return { cashTotal, chequeTotal, creditTotal };
+  } catch (e) {
+    console.warn('getCollectionTotalsFromOdoo', e);
+    return null;
+  }
+}
+
 /** Process pending sync queue: push delivery and payment actions to Odoo. Run at start of runSync. */
 async function processSyncQueue() {
   const pending = await syncQueueDb.getPending();
@@ -256,6 +379,7 @@ async function processSyncQueue() {
     createInvoicesFromWizard,
     postInvoice,
     createPayment,
+    postPaymentAndReconcile,
   } = await import('./invoice.service');
 
   for (const item of delivery) {
@@ -298,6 +422,7 @@ async function processSyncQueue() {
   const chatterPostedInThisRun = new Set();
 
   for (const item of payment) {
+    let invoiceBlockFailedNoItemsToInvoice = false;
     try {
       const p = item.payload || {};
       const saleOrderId = p.saleOrderId ?? p.sale_id;
@@ -331,6 +456,8 @@ async function processSyncQueue() {
                 }
               }
 
+              // Credit = invoice created + posted only (no account.payment). Invoice stays
+              // payment_state=not_paid, amount_residual=total → shows as credit under delivery tab.
               if (!invoiceAlreadyPosted) {
                 let invoiceId = null;
                 if (existingInvoiceIds.length > 0) {
@@ -344,30 +471,72 @@ async function processSyncQueue() {
                     if (invoiceId != null) await postInvoice(invoiceId);
                   }
                 }
+                // Credit-only: invoice created + posted is enough; no payment → shows under delivery tab as credit.
+                const onlyCredit = payments.length > 0 && payments.every((pm) => pm.type === 'credit');
+                if (onlyCredit && invoiceId != null) {
+                  log('queue', `credit only: invoice ${invoiceId} posted (no payment) → shows as credit under delivery`);
+                }
+                // Resolve Cash/Cheque journal from Odoo when missing so cheque is handled like cash (post + reconcile).
+                const needsJournalResolve = payments.some(
+                  (pm) => (pm.type === 'cash' || pm.type === 'check') && !pm.journalId
+                );
+                let resolvedCashId = null;
+                let resolvedChequeId = null;
+                if (needsJournalResolve) {
+                  try {
+                    const { getCashTypeJournalIds } = await import('./journal.service.js');
+                    const ids = await getCashTypeJournalIds();
+                    resolvedCashId = ids.cashJournalId ?? null;
+                    resolvedChequeId = ids.chequeJournalId ?? null;
+                    if (resolvedChequeId != null || resolvedCashId != null) {
+                      log('queue', `resolved journals from Odoo: cash=${resolvedCashId ?? '—'} cheque=${resolvedChequeId ?? '—'}`);
+                    }
+                  } catch (resolveErr) {
+                    logWarn('queue payment resolve journals', resolveErr);
+                  }
+                }
                 const dateStr = new Date().toISOString().slice(0, 10);
                 const baseMemo = p.invoiceNumber
                   ? `Payment for Invoice ${p.invoiceNumber} / Order ${orderName}`
                   : `Payment for Invoice / Order ${orderName}`;
                 for (const pm of payments) {
+                  // Credit: no account.payment; invoice stays not_paid → shows in delivery tab under credit.
                   if (pm.type === 'credit') continue;
                   const amount = Number(pm.amount);
-                  if (!amount || !pm.journalId) continue;
-                  await createPayment({
+                  const journalId = pm.journalId ?? (pm.type === 'cash' ? resolvedCashId : pm.type === 'check' ? resolvedChequeId : null);
+                  if (!amount || journalId == null) {
+                    if (amount && journalId == null) logWarn('queue payment', new Error(`No journal for ${pm.type}; skipping payment amount ${amount}`));
+                    continue;
+                  }
+                  const paymentId = await createPayment({
                     partnerId,
                     amount,
                     currencyId: 1,
-                    journalId: pm.journalId,
+                    journalId,
                     date: dateStr,
                     memo: `${baseMemo} (${pm.type || 'payment'})${pm.checkNumber ? ` #${pm.checkNumber}` : ''}`,
                     invoiceId,
                   });
+                  if (paymentId != null && invoiceId != null) {
+                    await postPaymentAndReconcile(paymentId, invoiceId);
+                    const methodLabel = pm.type === 'check' ? 'cheque' : pm.type === 'cash' ? 'cash' : 'payment';
+                    log('queue', `payment created, posted and reconciled (${methodLabel}) id=${paymentId} with invoice ${invoiceId}`);
+                  } else if (paymentId != null) {
+                    logWarn('queue payment', new Error('Payment created but no invoiceId to reconcile'));
+                  }
                 }
               }
             }
           }
         } catch (invoiceErr) {
-          logWarn('queue payment (invoice/payments)', invoiceErr);
-          // Continue to post chatter + proof images so sale order chat still gets message and photo
+          const msg = (invoiceErr?.message || String(invoiceErr)).toLowerCase();
+          if (msg.includes('no items are available to invoice') || msg.includes('nothing to invoice')) {
+            invoiceBlockFailedNoItemsToInvoice = true;
+            logWarn('queue payment (invoice/payments)', new Error('Invoice creation failed: delivery not done or no quantities. Complete delivery in Odoo first, then sync again for cheque/credit.'));
+          } else {
+            logWarn('queue payment (invoice/payments)', invoiceErr);
+          }
+          // Continue to post chatter + proof images when possible
         }
       }
 
@@ -459,6 +628,10 @@ async function processSyncQueue() {
         continue;
       }
 
+      if (invoiceBlockFailedNoItemsToInvoice) {
+        log('queue', `payment item ${item.id} NOT marked synced (invoice not created — deliver first, then sync again for cheque/credit)`);
+        continue;
+      }
       await syncQueueDb.markSynced(item.id);
       alreadySyncedSaleOrderIds.add(soId);
       log('queue', `payment synced id=${item.id}`);
@@ -562,6 +735,8 @@ export async function runSync() {
     await partnersDb.upsertPartners(customers || []);
     log('db', 'sale_orders');
     await saleOrdersDb.upsertSaleOrders(orders || []);
+
+    await refreshPaymentTypesFromOdoo(orders || []);
 
     const orderIds = (orders || []).map((o) => o.id);
     let allLines = [];

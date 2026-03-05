@@ -25,6 +25,7 @@ import {
   getUserSession,
   getOrderLineTotalsFromDB,
   getPickingsBySaleIdsFromDB,
+  getCollectionTotalsFromOdoo,
 } from '../services/sync.service';
 import DeliveryProgressBarChart from '../components/DeliveryProgressBarChart';
 
@@ -72,6 +73,7 @@ export default function DashboardScreen({ navigation }) {
   const [showChartDatePicker, setShowChartDatePicker] = useState(false);
   const [chartLineTotalsByOrder, setChartLineTotalsByOrder] = useState({});
   const [chartPickingsBySaleId, setChartPickingsBySaleId] = useState([]);
+  const [collectionFromOdoo, setCollectionFromOdoo] = useState(null);
 
   const loadData = useCallback(async () => {
     try {
@@ -94,10 +96,20 @@ export default function DashboardScreen({ navigation }) {
       ]);
       setLineTotalsByOrder(totals || {});
       setPickingsBySaleId(pickings || []);
+
+      const saleIdToDone = {};
+      (pickings || []).forEach((p) => {
+        const sid = Array.isArray(p.sale_id) ? p.sale_id[0] : p.sale_id;
+        if (sid != null && (p.state || '').toLowerCase() === 'done') saleIdToDone[sid] = true;
+      });
+      const deliveredOrderNames = todayOrders.filter((o) => saleIdToDone[o.id]).map((o) => o.name).filter(Boolean);
+      const odooTotals = await getCollectionTotalsFromOdoo(deliveredOrderNames);
+      setCollectionFromOdoo(odooTotals);
     } catch (_) {
       setOrders([]);
       setLineTotalsByOrder({});
       setPickingsBySaleId([]);
+      setCollectionFromOdoo(null);
     } finally {
       setLoading(false);
     }
@@ -220,15 +232,21 @@ export default function DashboardScreen({ navigation }) {
   );
 
   const totalSales = todayOrders.reduce((s, o) => s + (Number(o.amount_total) || 0), 0);
-  const cashTotal = deliveredTodayOrders
+
+  const localCashTotal = deliveredTodayOrders
     .filter((o) => (o.payment_type || '').toLowerCase() === 'cash')
     .reduce((s, o) => s + (Number(o.amount_total) || 0), 0);
-  const chequeTotal = deliveredTodayOrders
+  const localChequeTotal = deliveredTodayOrders
     .filter((o) => (o.payment_type || '').toLowerCase() === 'cheque')
     .reduce((s, o) => s + (Number(o.amount_total) || 0), 0);
-  const creditTotal = deliveredTodayOrders
+  const localCreditTotal = deliveredTodayOrders
     .filter((o) => (o.payment_type || '').toLowerCase() === 'credit')
     .reduce((s, o) => s + (Number(o.amount_total) || 0), 0);
+
+  const cashTotal = collectionFromOdoo != null ? collectionFromOdoo.cashTotal : localCashTotal;
+  const chequeTotal = collectionFromOdoo != null ? collectionFromOdoo.chequeTotal : localChequeTotal;
+  const creditTotal = collectionFromOdoo != null ? collectionFromOdoo.creditTotal : localCreditTotal;
+
   const collectionTotal = cashTotal + chequeTotal + creditTotal || 1;
   const cashPct = Math.round((cashTotal / collectionTotal) * 100);
   const chequePct = Math.round((chequeTotal / collectionTotal) * 100);

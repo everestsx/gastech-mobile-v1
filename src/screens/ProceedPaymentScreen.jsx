@@ -22,6 +22,9 @@ import * as saleOrdersDb from '../database/saleOrders.js';
 import * as syncQueueDb from '../database/syncQueue.js';
 import * as offlineAttachmentsDb from '../database/offlineAttachments.js';
 import * as FileSystem from 'expo-file-system';
+
+/** Base64 encoding for readAsStringAsync/writeAsStringAsync (EncodingType may be undefined in some envs). */
+const BASE64 = (FileSystem.EncodingType && FileSystem.EncodingType.Base64) || 'base64';
 import { JOURNAL_CODE_CASH, JOURNAL_CODE_CHEQUE } from '../constants/journals';
 import { SRI_LANKA_BANKS } from '../constants/sriLankaBanks';
 import { formatAmount } from '../utils/format';
@@ -231,12 +234,12 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         const uri = deliveryPhotos[i];
         if (!uri || typeof uri !== 'string') continue;
         try {
-          const rawBase64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
+          const rawBase64 = await FileSystem.readAsStringAsync(uri, { encoding: BASE64 });
           if (!rawBase64 || rawBase64.length < 100) continue;
           const ext = (uri.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg';
           const fileName = `proof_${soId}_${timestamp}_${i}.${ext}`;
           const destPath = `${FileSystem.documentDirectory}${fileName}`;
-          await FileSystem.writeAsStringAsync(destPath, rawBase64, { encoding: FileSystem.EncodingType.Base64 });
+          await FileSystem.writeAsStringAsync(destPath, rawBase64, { encoding: BASE64 });
           await offlineAttachmentsDb.insert({
             sale_order_id: soId,
             local_file_path: destPath,

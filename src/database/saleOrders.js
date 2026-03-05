@@ -167,3 +167,16 @@ export async function updateSaleOrderPaymentTypeLocal(orderId, paymentType) {
     [type, iso(), num(orderId)]
   );
 }
+
+/**
+ * Update payment_type by order name (used when syncing from Odoo so all devices show correct Cash/Cheque/Credit).
+ */
+export async function updatePaymentTypeByOrderName(orderName, paymentType) {
+  if (orderName == null || orderName === '') return;
+  const db = await getDb();
+  const type = paymentType === 'cash' || paymentType === 'cheque' || paymentType === 'credit' ? paymentType : null;
+  await db.runAsync(
+    `UPDATE sale_orders SET payment_type = ?, updated_at = ? WHERE name = ?`,
+    [type, iso(), String(orderName)]
+  );
+}
