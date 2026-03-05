@@ -27,7 +27,6 @@ import {
 } from '../services/sync.service';
 import {
   getActiveCommissionPlan,
-  calculateCommissionProgress,
   calculateCommissionProgressByProducts,
 } from '../services/commission.service';
 import DeliveryProgressBarChart from '../components/DeliveryProgressBarChart';
@@ -277,7 +276,7 @@ export default function DashboardScreen({ navigation }) {
   const vehicleName = user?.licensePlate || user?.vehicleName || 'Vehicle';
 
 
-  // Use commission_percentage from API, default to 1% if not available
+  // Use commission rate from API, default to Rs. 1 per item if not available
   const commissionPercentage = commissionPlan?.commission_percentage || 1;
   const productRateMap = commissionPlan?.productRateMap || {};
 
@@ -292,10 +291,18 @@ export default function DashboardScreen({ navigation }) {
     return deliveredOrderIds.has(orderId);
   });
 
-  // Calculate commission using per-product rates if available, else use simple percentage
-  const commissionProgress = commissionPlan?.hasData
-    ? calculateCommissionProgressByProducts(todayOrderLines, deliveredOrderLines, productRateMap, 1)
-    : calculateCommissionProgress(allOrdersTotal, deliveredOrdersTotal, commissionPercentage);
+
+  const hasProductRates = Object.keys(productRateMap).length > 0;
+  const defaultRate = hasProductRates ? commissionPercentage : 1;
+
+
+  const commissionProgress = calculateCommissionProgressByProducts(
+    todayOrderLines,
+    deliveredOrderLines,
+    productRateMap,
+    defaultRate
+  );
+
   const commissionTarget = commissionProgress.target;
   const commissionEarned = commissionProgress.achieved;
   const commissionPct = commissionProgress.percentage;
@@ -672,7 +679,7 @@ export default function DashboardScreen({ navigation }) {
             {/*</Text>*/}
           </View>
           <Text style={styles.commissionAmount}>
-            {formatCurrency(commissionEarned)} / {commissionTarget}
+            {formatCurrency(commissionEarned)} / {Number(commissionTarget).toFixed(2)}
           </Text>
           <Text style={styles.commissionPct}>
             {commissionPct}% of target achieved
