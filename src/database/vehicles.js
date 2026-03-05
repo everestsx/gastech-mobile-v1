@@ -16,11 +16,32 @@ function strOrNull(v) {
 }
 
 
+// export async function getAllVehicles() {
+//   const db = await getDb();
+//   const rows = await db.getAllAsync(
+//     'SELECT id, name, license_plate, model_id FROM vehicles ORDER BY name ASC'
+//   );
+//   return (rows || []).map((row) => ({
+//     id: row.id,
+//     name: row.name,
+//     license_plate: row.license_plate,
+//     model_id: row.model_id != null ? [row.model_id, null] : null,
+//   }));
+// }
 export async function getAllVehicles() {
   const db = await getDb();
   const rows = await db.getAllAsync(
-    'SELECT id, name, license_plate, model_id FROM vehicles ORDER BY name ASC'
+      'SELECT id, name, license_plate, model_id FROM vehicles ORDER BY name ASC'
   );
+
+  // --- DEBUG LOGS ---
+  console.log(`--- Total Vehicles in DB: ${rows.length} ---`);
+  rows.forEach((row, index) => {
+    console.log(`Vehicle [${index}]: ID=${row.id} | Plate=${row.license_plate} | Name=${row.name}`);
+  });
+  console.log('------------------------------------------');
+  // ------------------
+
   return (rows || []).map((row) => ({
     id: row.id,
     name: row.name,
@@ -28,7 +49,6 @@ export async function getAllVehicles() {
     model_id: row.model_id != null ? [row.model_id, null] : null,
   }));
 }
-
 
 export async function upsertVehicles(rows) {
   if (!rows?.length) return;

@@ -25,13 +25,23 @@ import * as vehicleInventoriesDb from '../database/vehicleInventories.js';
 import * as productsDb from '../database/products.js';
 import * as syncLogDb from '../database/syncLog.js';
 import * as syncQueueDb from '../database/syncQueue.js';
+import {getDb} from "@/src/database/db";
+export let isLoggingOut = false;
+export const setIsLoggingOut = (value) => {
+  isLoggingOut = value;
+};
 
+/** Optional listener for sync state (true = syncing, false = idle). Used by SyncContext for global indicator. */
+let _syncStateListener = null;
+export function setSyncStateListener(fn) {
+  _syncStateListener = fn;
+}
 const KEYS = {
   USER: '@gastech_user',
   LAST_SYNC: '@gastech_last_sync',
 };
 
-const SYNC_INTERVAL_MS = 3600 * 1000; // 1 minute auto-sync when online
+const SYNC_INTERVAL_MS = 600 * 1000; // 1 minute auto-sync when online
 
 const LOG_TAG = '[Sync]';
 
@@ -114,6 +124,35 @@ export async function getCachedVehicleInventory(vehicleId) {
     return await vehicleInventoriesDb.getVehicleInventoryByVehicleId(vehicleId);
   } catch (e) {
     console.warn('getCachedVehicleInventory', e);
+    return [];
+  }
+}
+
+/**
+ * Get the location_id (stock.location id) for a given vehicle from local DB.
+ * @param {number} vehicleId
+ * @returns {Promise<number|null>}
+ */
+export async function getVehicleLocationId(vehicleId) {
+  try {
+    const warehouse = await vehicleWarehousesDb.getVehicleWarehouseByVehicleId(vehicleId);
+    return warehouse?.id ?? null;
+  } catch (e) {
+    console.warn('getVehicleLocationId', e);
+    return null;
+  }
+}
+
+/**
+ * Get cached vehicle inventory by location_id from local DB.
+ * @param {number} locationId
+ * @returns {Promise<Array>}
+ */
+export async function getCachedVehicleInventoryByLocation(locationId) {
+  try {
+    return await vehicleInventoriesDb.getVehicleInventoryByLocationId(locationId);
+  } catch (e) {
+    console.warn('getCachedVehicleInventoryByLocation', e);
     return [];
   }
 }
@@ -687,11 +726,20 @@ export function getSyncIntervalMinutes() {
 // ---------- Sync: pull from Odoo and store in SQLite ----------
 
 export async function runSync() {
+  if (_syncStateListener) _syncStateListener(true);
+  log('start', new Date().toISOString());
   const result = { customers: 0, orders: 0, orderLines: 0, pickings: 0, moves: 0, moveLines: 0, journals: 0, routes: 0, vehicles: 0, vehicleWarehouses: 0, vehicleInventories: 0, error: null };
   const syncAt = new Date().toISOString();
   log('start', syncAt);
 
   try {
+    if (isLoggingOut) {
+      return { error: 'Logout in progress' };
+    }
+    const session = await getUserSession();
+    if (!session) {
+      return { error: 'No active session' };
+    }
     await processSyncQueue();
 
     const user = await getUserSession();
@@ -730,7 +778,7 @@ export async function runSync() {
     result.customers = (customers || []).length;
     result.orders = (orders || []).length;
     log('fetch', `customers=${result.customers} orders=${result.orders}`);
-
+    if (isLoggingOut) return { error: 'Logout in progress' };
     log('db', 'partners');
     await partnersDb.upsertPartners(customers || []);
     log('db', 'sale_orders');
@@ -897,7 +945,7 @@ export async function runSync() {
             name: loc.name,
             complete_name: loc.complete_name,
           });
-          log('fetch', `vehicle inventory location ${loc.id}`);
+          log('fetch', `vehicle inventory location ${loc.id}  ${vehicleId}`);
           const quants = await getVehicleInventoryByLocation(loc.id).catch(() => []);
           (quants || []).forEach((q) => {
             allVehicleInventories.push({
@@ -906,6 +954,7 @@ export async function runSync() {
               vehicle_id: vId,
             });
           });
+          await vehicleInventoriesDb.upsertVehicleInventories(allVehicleInventories);
         }
       } catch (e) {
         logWarn(`vehicle ${vId} warehouse/inventory`, e);
@@ -921,12 +970,12 @@ export async function runSync() {
       log('db', 'vehicle_inventories');
       await vehicleInventoriesDb.upsertVehicleInventories(allVehicleInventories);
     }
-    // await syncLogDb.appendLog({
-    //   sync_at: syncAt,
-    //   status: 'success',
-    //   message: null,
-    //   counts: result,
-    // });
+    await syncLogDb.appendLog({
+      sync_at: syncAt,
+      status: 'success',
+      message: null,
+      counts: result,
+    });
     const storage = await getAsyncStorage();
     await storage.setItem(KEYS.LAST_SYNC, syncAt);
     log('done', JSON.stringify(result));
@@ -935,13 +984,20 @@ export async function runSync() {
     result.error = err?.message || 'Sync failed';
     logWarn('error', err);
     console.warn(`${LOG_TAG} error detail`, err);
-    await syncLogDb.appendLog({
-      sync_at: syncAt,
-      status: 'error',
-      message: result.error,
-      counts: result,
-    });
+    //TODO: there is a bug here
+    try {
+      await syncLogDb.appendLog({
+        sync_at: syncAt,
+        status: 'error',
+        message: typeof result.error === 'string' ? result.error : String(result.error ?? 'Sync failed'),
+        counts: JSON.stringify(result),
+      });
+    } catch (logErr) {
+      console.warn(`${LOG_TAG} could not append error to sync_log`, logErr?.message ?? logErr);
+    }
     return result;
+  } finally {
+    if (_syncStateListener) _syncStateListener(false);
   }
 }
 
@@ -959,4 +1015,43 @@ export async function syncVehiclesOnly() {
     console.error("Vehicle sync failed", e);
   }
   return false;
+}
+
+/**
+ * Clear all data from all tables (for logout).
+ */
+export async function clearAllTables() {
+
+  setIsLoggingOut(true);
+  const db = await getDb();
+
+  // Removed 'vehicles' and 'vehicle_warehouses' from this list
+  const tables = [
+    'partners',
+    'sale_orders',
+    'sale_order_lines',
+    'products',
+    'stock_pickings',
+    'stock_moves',
+    'stock_move_lines',
+    'account_journals',
+    'routes',
+    'vehicle_inventories',
+    'sync_queue',
+    'sync_log'
+  ];
+
+
+  try {
+    for (const table of tables) {
+      console.log(`[DB] Clearing ${table}...`);
+      await db.runAsync(`DELETE FROM ${table}`);
+    }
+
+    isLoggingOut = false;
+    return true;
+  } catch (error) {
+    isLoggingOut = false;
+    return false;
+  }
 }

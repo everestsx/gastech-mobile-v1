@@ -1,10 +1,12 @@
 import React, { useEffect, useRef } from 'react';
-import { AppState } from 'react-native';
+import { AppState, View, StyleSheet } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import SyncIndicator from '../components/SyncIndicator';
+import { useSync } from '../context/SyncContext';
 
 import SplashScreen from '../screens/SplashScreen';
 import LoginScreen from '../screens/LoginScreen';
@@ -202,9 +204,13 @@ function MainStackScreen() {
   );
 }
 
+const INDICATOR_BOTTOM_MARGIN = 8;
+
 export default function AppNavigator() {
   const syncIntervalRef = useRef(null);
   const appStateRef = useRef(AppState.currentState);
+  const insets = useSafeAreaInsets();
+  const { isSyncing } = useSync();
 
   useEffect(() => {
     const intervalMs = getSyncIntervalMs();
@@ -236,18 +242,33 @@ export default function AppNavigator() {
 
   return (
     <NavigationContainer>
-      <RootStack.Navigator
-        initialRouteName="Splash"
-        screenOptions={{ headerShown: false }}
-      >
-        <RootStack.Screen name="Splash" component={SplashScreen} />
-        <RootStack.Screen name="Login" component={LoginScreen} />
-        <RootStack.Screen
-          name="Main"
-          component={MainStackScreen}
-          options={{ headerShown: false }}
-        />
-      </RootStack.Navigator>
+      <View style={styles.navWrap}>
+        {isSyncing && (
+          <View style={[styles.globalSyncIndicator, { paddingTop: insets.top + 6, marginBottom: INDICATOR_BOTTOM_MARGIN }]} pointerEvents="none">
+            <SyncIndicator />
+          </View>
+        )}
+        <View style={styles.navContent}>
+          <RootStack.Navigator
+            initialRouteName="Splash"
+            screenOptions={{ headerShown: false }}
+          >
+            <RootStack.Screen name="Splash" component={SplashScreen} />
+            <RootStack.Screen name="Login" component={LoginScreen} />
+            <RootStack.Screen
+              name="Main"
+              component={MainStackScreen}
+              options={{ headerShown: false }}
+            />
+          </RootStack.Navigator>
+        </View>
+      </View>
     </NavigationContainer>
   );
 }
+
+const styles = StyleSheet.create({
+  navWrap: { flex: 1 },
+  globalSyncIndicator: { alignItems: 'center', justifyContent: 'center', zIndex: 10 },
+  navContent: { flex: 1 },
+});

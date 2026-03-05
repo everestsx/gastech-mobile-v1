@@ -11,7 +11,7 @@ export const GAS_PRODUCT_CODES = ['GAS2.3', 'GAS5', 'GAS12.5', 'GAS37.5'];
  */
 export async function getVehicleInventoryByLocation(locationId) {
   if (locationId == null) return [];
-  return callOdoo(
+  const response = await callOdoo(
     'stock.quant',
     'search_read',
     [
@@ -22,4 +22,6 @@ export async function getVehicleInventoryByLocation(locationId) {
     ],
     { fields: ['product_id', 'quantity', 'available_quantity'] }
   );
+    console.log('[Vehicle Inventory API] locationId:', locationId, 'response:', JSON.stringify(response, null, 2));
+    return response;
 }
