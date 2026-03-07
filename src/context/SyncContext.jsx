@@ -5,15 +5,17 @@ const SyncContext = createContext(null);
 
 export function useSync() {
   const ctx = useContext(SyncContext);
-  return ctx ?? { isSyncing: false, syncJustCompleted: false, syncCompleteTimestamp: 0 };
+  return ctx ?? { isSyncing: false, syncJustCompleted: false, syncCompleteTimestamp: 0, syncResult: null, syncErrorMessage: null };
 }
 
-const SUCCESS_MODAL_DURATION_MS = 2500;
+const RESULT_MODAL_DURATION_MS = 2500;
 
 export function SyncProvider({ children }) {
   const [isSyncing, setSyncing] = useState(false);
   const [syncJustCompleted, setSyncJustCompleted] = useState(false);
   const [syncCompleteTimestamp, setSyncCompleteTimestamp] = useState(0);
+  const [syncResult, setSyncResult] = useState(null);
+  const [syncErrorMessage, setSyncErrorMessage] = useState(null);
   const timeoutRef = useRef(null);
 
   useEffect(() => {
@@ -22,16 +24,23 @@ export function SyncProvider({ children }) {
   }, []);
 
   useEffect(() => {
-    setSyncCompleteListener((success) => {
+    setSyncCompleteListener((success, errorMessage) => {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
       if (success) {
         setSyncCompleteTimestamp((t) => t + 1);
-        if (timeoutRef.current) clearTimeout(timeoutRef.current);
         setSyncJustCompleted(true);
-        timeoutRef.current = setTimeout(() => {
-          setSyncJustCompleted(false);
-          timeoutRef.current = null;
-        }, SUCCESS_MODAL_DURATION_MS);
+        setSyncResult('success');
+        setSyncErrorMessage(null);
+      } else {
+        setSyncResult('failed');
+        setSyncErrorMessage(errorMessage || 'Could not sync. Will retry when online.');
       }
+      timeoutRef.current = setTimeout(() => {
+        setSyncJustCompleted(false);
+        setSyncResult(null);
+        setSyncErrorMessage(null);
+        timeoutRef.current = null;
+      }, RESULT_MODAL_DURATION_MS);
     });
     return () => {
       setSyncCompleteListener(null);
@@ -40,7 +49,7 @@ export function SyncProvider({ children }) {
   }, []);
 
   return (
-    <SyncContext.Provider value={{ isSyncing, syncJustCompleted, syncCompleteTimestamp }}>
+    <SyncContext.Provider value={{ isSyncing, syncJustCompleted, syncCompleteTimestamp, syncResult, syncErrorMessage }}>
       {children}
     </SyncContext.Provider>
   );

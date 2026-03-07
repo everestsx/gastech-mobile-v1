@@ -55,14 +55,14 @@ export default function MenuScreen({ navigation }) {
     try {
       const result = await runSync();
       await refreshLastSync();
-      if (result.error) {
-        showAlert('Sync failed', result.error);
-      } else {
-        showAlert(
-          'Sync complete',
-          `Customers: ${result.customers}, Orders: ${result.orders}`
-        );
-      }
+      // if (result.error) {
+      //   showAlert('Sync failed', result.error);
+      // } else {
+      //   showAlert(
+      //     'Sync complete',
+      //     `Customers: ${result.customers}, Orders: ${result.orders}`
+      //   );
+      // }
     } finally {
       setSyncing(false);
     }

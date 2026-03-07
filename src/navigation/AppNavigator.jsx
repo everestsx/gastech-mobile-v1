@@ -7,7 +7,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import SyncIndicator from '../components/SyncIndicator';
 import { useSync } from '../context/SyncContext';
-
+import { colors } from '../constants/theme';
 import SplashScreen from '../screens/SplashScreen';
 import LoginScreen from '../screens/LoginScreen';
 import DashboardScreen from '../screens/DashboardScreen';
@@ -208,7 +208,8 @@ export default function AppNavigator() {
   const syncIntervalRef = useRef(null);
   const appStateRef = useRef(AppState.currentState);
   const insets = useSafeAreaInsets();
-  const { isSyncing, syncJustCompleted } = useSync();
+  const { isSyncing, syncResult, syncErrorMessage } = useSync();
+  const showSyncResultModal = syncResult === 'success' || syncResult === 'failed';
 
   useEffect(() => {
     const intervalMs = getSyncIntervalMs();
@@ -261,7 +262,7 @@ export default function AppNavigator() {
           </View>
         )}
         <Modal
-          visible={!!syncJustCompleted}
+          visible={showSyncResultModal}
           transparent
           animationType="fade"
           statusBarTranslucent
@@ -269,10 +270,21 @@ export default function AppNavigator() {
           <View style={styles.successModalBackdrop}>
             <View style={styles.successModalCard}>
               <View style={styles.successModalIconWrap}>
-                <Ionicons name="checkmark-circle" size={56} color="#22c55e" />
+                {syncResult === 'success' && (
+                  <Ionicons name="checkmark-circle" size={56} color="#22c55e" />
+                )}
+                {syncResult === 'failed' && (
+                  <Ionicons name="alert-circle" size={56} color="#ef4444" />
+                )}
               </View>
-              <Text style={styles.successModalTitle}>Sync complete</Text>
-              <Text style={styles.successModalSubtitle}>All data is up to date</Text>
+              <Text style={styles.successModalTitle}>
+                {syncResult === 'success' && 'Sync complete'}
+                {syncResult === 'failed' && 'Sync failed'}
+              </Text>
+              <Text style={styles.successModalSubtitle}>
+                {syncResult === 'success' && 'All data is up to date'}
+                {syncResult === 'failed' && (syncErrorMessage || 'Could not sync. Will retry when online.')}
+              </Text>
             </View>
           </View>
         </Modal>
@@ -305,7 +317,7 @@ const styles = StyleSheet.create({
     padding: 24,
   },
   successModalCard: {
-    backgroundColor: '#fff',
+    backgroundColor: "rgba(0,0,0,0.4)",
     borderRadius: 20,
     paddingVertical: 28,
     paddingHorizontal: 32,
@@ -323,12 +335,12 @@ const styles = StyleSheet.create({
   successModalTitle: {
     fontSize: 20,
     fontWeight: '700',
-    color: '#0f172a',
+    color: "white",
     marginBottom: 6,
   },
   successModalSubtitle: {
     fontSize: 14,
-    color: '#64748b',
+    color: "white",
     fontWeight: '400',
   },
 });

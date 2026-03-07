@@ -1054,7 +1054,8 @@ export async function runSync() {
     }
     if (_syncCompleteListener) {
       try {
-        _syncCompleteListener(false);
+        const msg = typeof result.error === 'string' ? result.error : String(result.error ?? 'Sync failed');
+        _syncCompleteListener(false, msg);
       } catch (e) {
         console.warn(`${LOG_TAG} syncCompleteListener`, e?.message ?? e);
       }

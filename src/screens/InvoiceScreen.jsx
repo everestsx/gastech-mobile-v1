@@ -403,10 +403,10 @@ export default function InvoiceScreen({ route, navigation }) {
     loadInvoice();
   }, [loadInvoice]);
 
-  useEffect(() => {
-    if (!saleOrderId) return;
-    runSync().catch((err) => console.warn('InvoiceScreen background sync', err?.message ?? err));
-  }, [saleOrderId]);
+  // useEffect(() => {
+  //   if (!saleOrderId) return;
+  //   runSync().catch((err) => console.warn('InvoiceScreen background sync', err?.message ?? err));
+  // }, [saleOrderId]);
 
   const handlePrint = useCallback(async () => {
     if (!order) return;
@@ -417,7 +417,7 @@ export default function InvoiceScreen({ route, navigation }) {
       Animated.spring(scaleAnim, { toValue: 1, useNativeDriver: true, friction: 8 }),
     ]).start();
     try {
-      await runSync();
+      // await runSync();
       setDoneState('success');
       Animated.timing(fadeAnim, { toValue: 1, duration: 150, useNativeDriver: true }).start();
     } catch (err) {
@@ -639,7 +639,7 @@ export default function InvoiceScreen({ route, navigation }) {
         </View>
       </View>
 
-      {doneState && (
+      {/* {doneState && (
         <Animated.View
           style={[
             styles.syncOverlay,
@@ -673,7 +673,7 @@ export default function InvoiceScreen({ route, navigation }) {
             </Text>
           </Animated.View>
         </Animated.View>
-      )}
+      )} */}
     </ScrollView>
   );
 }
