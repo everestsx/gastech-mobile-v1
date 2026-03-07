@@ -1009,11 +1009,12 @@ export async function runSync() {
       log('db', 'vehicle_inventories');
       await vehicleInventoriesDb.upsertVehicleInventories(allVehicleInventories);
     }
+    //TODO: count column should renamed to results
     await syncLogDb.appendLog({
       sync_at: syncAt,
       status: 'success',
-      message: null,
-      counts: result,
+      message: result.error ? result.error : 'Sync successful',      
+      counts: JSON.stringify(result),
     });
     const storage = await getAsyncStorage();
     await storage.setItem(KEYS.LAST_SYNC, syncAt);
@@ -1023,7 +1024,7 @@ export async function runSync() {
     result.error = err?.message || 'Sync failed';
     logWarn('error', err);
     console.warn(`${LOG_TAG} error detail`, err);
-    //TODO: there is a bug here
+    //TODO: count column should renamed to results
     try {
       await syncLogDb.appendLog({
         sync_at: syncAt,
