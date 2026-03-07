@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import { AppState, View, StyleSheet } from 'react-native';
+import { AppState, View, Text, StyleSheet, Modal } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
@@ -204,13 +204,11 @@ function MainStackScreen() {
   );
 }
 
-const INDICATOR_BOTTOM_MARGIN = 8;
-
 export default function AppNavigator() {
   const syncIntervalRef = useRef(null);
   const appStateRef = useRef(AppState.currentState);
   const insets = useSafeAreaInsets();
-  const { isSyncing } = useSync();
+  const { isSyncing, syncJustCompleted } = useSync();
 
   useEffect(() => {
     const intervalMs = getSyncIntervalMs();
@@ -243,11 +241,6 @@ export default function AppNavigator() {
   return (
     <NavigationContainer>
       <View style={styles.navWrap}>
-        {isSyncing && (
-          <View style={[styles.globalSyncIndicator, { paddingTop: insets.top + 6, marginBottom: INDICATOR_BOTTOM_MARGIN }]} pointerEvents="none">
-            <SyncIndicator />
-          </View>
-        )}
         <View style={styles.navContent}>
           <RootStack.Navigator
             initialRouteName="Splash"
@@ -262,6 +255,27 @@ export default function AppNavigator() {
             />
           </RootStack.Navigator>
         </View>
+        {isSyncing && (
+          <View style={styles.globalSyncIndicator} pointerEvents="none">
+            <SyncIndicator />
+          </View>
+        )}
+        <Modal
+          visible={!!syncJustCompleted}
+          transparent
+          animationType="fade"
+          statusBarTranslucent
+        >
+          <View style={styles.successModalBackdrop}>
+            <View style={styles.successModalCard}>
+              <View style={styles.successModalIconWrap}>
+                <Ionicons name="checkmark-circle" size={56} color="#22c55e" />
+              </View>
+              <Text style={styles.successModalTitle}>Sync complete</Text>
+              <Text style={styles.successModalSubtitle}>All data is up to date</Text>
+            </View>
+          </View>
+        </Modal>
       </View>
     </NavigationContainer>
   );
@@ -269,6 +283,52 @@ export default function AppNavigator() {
 
 const styles = StyleSheet.create({
   navWrap: { flex: 1 },
-  globalSyncIndicator: { alignItems: 'center', justifyContent: 'center', zIndex: 10 },
   navContent: { flex: 1 },
+  globalSyncIndicator: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 10,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    width: '100%',
+    height: '100%',
+  },
+  successModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  successModalCard: {
+    backgroundColor: '#fff',
+    borderRadius: 20,
+    paddingVertical: 28,
+    paddingHorizontal: 32,
+    alignItems: 'center',
+    minWidth: 260,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.15,
+    shadowRadius: 24,
+    elevation: 12,
+  },
+  successModalIconWrap: {
+    marginBottom: 16,
+  },
+  successModalTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#0f172a',
+    marginBottom: 6,
+  },
+  successModalSubtitle: {
+    fontSize: 14,
+    color: '#64748b',
+    fontWeight: '400',
+  },
 });

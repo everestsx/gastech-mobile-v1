@@ -36,6 +36,12 @@ let _syncStateListener = null;
 export function setSyncStateListener(fn) {
   _syncStateListener = fn;
 }
+
+/** Optional listener called when sync completes (success or error). Used by Dashboard to refresh data and last sync time. */
+let _syncCompleteListener = null;
+export function setSyncCompleteListener(fn) {
+  _syncCompleteListener = fn;
+}
 const KEYS = {
   USER: '@gastech_user',
   LAST_SYNC: '@gastech_last_sync',
@@ -260,7 +266,11 @@ export async function getOrderLinesByOrderIdsFromDB(orderIds) {
 
 export async function getLastSyncTime() {
   try {
-    return await syncLogDb.getLastSyncTime();
+    const fromLog = await syncLogDb.getLastSyncTime();
+    if (fromLog != null && fromLog !== '') return fromLog;
+    const storage = await getAsyncStorage();
+    const fromStorage = await storage.getItem(KEYS.LAST_SYNC);
+    return fromStorage || null;
   } catch {
     return null;
   }
@@ -1019,6 +1029,13 @@ export async function runSync() {
     const storage = await getAsyncStorage();
     await storage.setItem(KEYS.LAST_SYNC, syncAt);
     log('done', JSON.stringify(result));
+    if (_syncCompleteListener) {
+      try {
+        _syncCompleteListener(true);
+      } catch (e) {
+        console.warn(`${LOG_TAG} syncCompleteListener`, e?.message ?? e);
+      }
+    }
     return result;
   } catch (err) {
     result.error = err?.message || 'Sync failed';
@@ -1034,6 +1051,13 @@ export async function runSync() {
       });
     } catch (logErr) {
       console.warn(`${LOG_TAG} could not append error to sync_log`, logErr?.message ?? logErr);
+    }
+    if (_syncCompleteListener) {
+      try {
+        _syncCompleteListener(false);
+      } catch (e) {
+        console.warn(`${LOG_TAG} syncCompleteListener`, e?.message ?? e);
+      }
     }
     return result;
   } finally {

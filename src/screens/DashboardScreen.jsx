@@ -8,7 +8,13 @@ import {
   RefreshControl,
   ActivityIndicator,
   Platform,
+  LayoutAnimation,
+  UIManager,
 } from 'react-native';
+
+if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -60,7 +66,7 @@ const SYNC_INDICATOR_GAP = 12;
 
 export default function DashboardScreen({ navigation }) {
   const insets = useSafeAreaInsets();
-  const { isSyncing } = useSync();
+  const { isSyncing, syncCompleteTimestamp } = useSync();
   const { colors, showCreateSalesOrder: userShowCreate, showReturnOrder: userShowReturn } = useTheme();
   // Visibility from config file; user preference (theme/settings) can further hide when config allows
   const showCreateSalesOrder = dashboardConfig.showCreateSalesOrder && userShowCreate;
@@ -84,6 +90,14 @@ export default function DashboardScreen({ navigation }) {
   const [commissionPlan, setCommissionPlan] = useState(null);
   const [commissionLoading, setCommissionLoading] = useState(false);
   const [todayOrderLines, setTodayOrderLines] = useState([]);
+
+  // Collection cards: tap to expand one (shows full amount), tap again to collapse
+  const [expandedCollectionCard, setExpandedCollectionCard] = useState(null);
+
+  const toggleCollectionCard = useCallback((key) => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setExpandedCollectionCard((p) => (p === key ? null : key));
+  }, []);
 
   const loadData = useCallback(async () => {
     try {
@@ -157,6 +171,13 @@ export default function DashboardScreen({ navigation }) {
     return () => unsub?.();
   }, [loadData, loadSyncStatus, navigation]);
 
+  // When sync completes (from SyncContext), refresh dashboard data and last synced time
+  useEffect(() => {
+    if (syncCompleteTimestamp > 0) {
+      loadData();
+      loadSyncStatus();
+    }
+  }, [syncCompleteTimestamp, loadData, loadSyncStatus]);
 
   useEffect(() => {
     if (user?.licensePlate) {
@@ -481,22 +502,37 @@ export default function DashboardScreen({ navigation }) {
         commissionPct: { fontSize: 14, color: colors.text, marginTop: 4 },
         collectionRow: {
           flexDirection: 'row',
-          gap: spacing.sm,
+          gap: spacing.xs,
           paddingHorizontal: spacing.md,
           marginBottom: spacing.md,
         },
         collectionCard: {
           flex: 1,
           backgroundColor: colors.surface,
-          borderRadius: borderRadius.lg,
-          padding: spacing.md,
-          borderWidth: 2,
+          borderRadius: borderRadius.md,
+          padding: spacing.sm,
+          borderWidth: 1.5,
           alignItems: 'center',
+          justifyContent: 'center',
+          minWidth: 0,
         },
-        collectionIcon: { width: 28, height: 28 },
-        collectionAmount: { fontSize: 18, fontWeight: '800', marginTop: 4 },
-        collectionLabel: { fontSize: 12, fontWeight: '700', color: colors.text, marginTop: 4 },
-        collectionPct: { fontSize: 12, fontWeight: '600', marginTop: 2 },
+        collectionCardExpanded: {
+          flex: 2.5,
+          paddingVertical: spacing.sm,
+          paddingHorizontal: spacing.md,
+        },
+        collectionCardSqueezed: {
+          flex: 0.5,
+          paddingVertical: spacing.xs,
+          paddingHorizontal: 4,
+        },
+        collectionIcon: { width: 20, height: 20 },
+        collectionAmount: { fontSize: 12, fontWeight: '800', marginTop: 2 },
+        collectionAmountExpanded: { fontSize: 12, fontWeight: '800', marginTop: 2 },
+        collectionLabel: { fontSize: 9, fontWeight: '700', color: colors.text, marginTop: 2 },
+        collectionLabelExpanded: { fontSize: 9, marginTop: 2 },
+        collectionPct: { fontSize: 9, fontWeight: '600', marginTop: 1 },
+        collectionPctExpanded: { fontSize: 9, marginTop: 1 },
         shopsGasRow: {
           flexDirection: 'row',
           gap: spacing.md,
@@ -718,32 +754,95 @@ export default function DashboardScreen({ navigation }) {
           </Text>
         </View>
 
-        {/* 3. Collection today - Cash, Cheque, Credit (from Odoo when available so credit amount shows) */}
+        {/* 3. Collection today - Cash, Cheque, Credit (tap to expand / tap again to collapse) */}
         <View style={styles.collectionRow}>
-          <View style={[styles.collectionCard, { borderColor: colors.cash ?? '#059669' }]}>
-            <Ionicons name="cash-outline" size={28} color={colors.cash ?? '#059669'} />
-            <Text style={[styles.collectionAmount, { color: colors.cash ?? '#059669' }]} numberOfLines={1}>
-              {formatCurrency(cashTotalDisplay)}
-            </Text>
-            <Text style={styles.collectionLabel}>CASH</Text>
-            <Text style={[styles.collectionPct, { color: colors.cash ?? '#059669' }]}> ( {cashPctDisplay}%)</Text>
-          </View>
-          <View style={[styles.collectionCard, { borderColor: colors.cheque ?? '#d97706' }]}>
-            <Ionicons name="card-outline" size={28} color={colors.cheque ?? '#d97706'} />
-            <Text style={[styles.collectionAmount, { color: colors.cheque ?? '#d97706' }]} numberOfLines={1}>
-              {formatCurrency(chequeTotalDisplay)}
-            </Text>
-            <Text style={styles.collectionLabel}>CHEQUE</Text>
-            <Text style={[styles.collectionPct, { color: colors.cheque ?? '#d97706' }]}> ( {chequePctDisplay}%)</Text>
-          </View>
-          <View style={[styles.collectionCard, { borderColor: colors.credit ?? '#6366f1' }]}>
-            <Ionicons name="wallet-outline" size={28} color={colors.credit ?? '#6366f1'} />
-            <Text style={[styles.collectionAmount, { color: colors.credit ?? '#6366f1' }]} numberOfLines={1}>
-              {formatCurrency(creditTotalDisplay)}
-            </Text>
-            <Text style={styles.collectionLabel}>CREDIT</Text>
-            <Text style={[styles.collectionPct, { color: colors.credit ?? '#6366f1' }]}> ( {creditPctDisplay}%)</Text>
-          </View>
+          <TouchableOpacity
+            activeOpacity={0.8}
+            style={[
+              styles.collectionCard,
+              { borderColor: colors.cash ?? '#059669' },
+              expandedCollectionCard === 'cash' && styles.collectionCardExpanded,
+              expandedCollectionCard != null && expandedCollectionCard !== 'cash' && styles.collectionCardSqueezed,
+            ]}
+            onPress={() => toggleCollectionCard('cash')}
+          >
+            <Ionicons name="cash-outline" size={20} color={colors.cash ?? '#059669'} />
+            {(expandedCollectionCard == null || expandedCollectionCard === 'cash') && (
+              <>
+                <Text
+                  style={[
+                    expandedCollectionCard === 'cash' ? styles.collectionAmountExpanded : styles.collectionAmount,
+                    { color: colors.cash ?? '#059669' },
+                  ]}
+                  numberOfLines={expandedCollectionCard === 'cash' ? 2 : 1}
+                >
+                  {expandedCollectionCard === 'cash' ? formatCurrency(cashTotalDisplay) : formatShort(cashTotalDisplay)}
+                </Text>
+                <Text style={[styles.collectionLabel, expandedCollectionCard === 'cash' && styles.collectionLabelExpanded]}>CASH</Text>
+                <Text style={[styles.collectionPct, expandedCollectionCard === 'cash' && styles.collectionPctExpanded, { color: colors.cash ?? '#059669' }]}>
+                  ( {cashPctDisplay}%)
+                </Text>
+              </>
+            )}
+          </TouchableOpacity>
+          <TouchableOpacity
+            activeOpacity={0.8}
+            style={[
+              styles.collectionCard,
+              { borderColor: colors.cheque ?? '#d97706' },
+              expandedCollectionCard === 'cheque' && styles.collectionCardExpanded,
+              expandedCollectionCard != null && expandedCollectionCard !== 'cheque' && styles.collectionCardSqueezed,
+            ]}
+            onPress={() => toggleCollectionCard('cheque')}
+          >
+            <Ionicons name="card-outline" size={20} color={colors.cheque ?? '#d97706'} />
+            {(expandedCollectionCard == null || expandedCollectionCard === 'cheque') && (
+              <>
+                <Text
+                  style={[
+                    expandedCollectionCard === 'cheque' ? styles.collectionAmountExpanded : styles.collectionAmount,
+                    { color: colors.cheque ?? '#d97706' },
+                  ]}
+                  numberOfLines={expandedCollectionCard === 'cheque' ? 2 : 1}
+                >
+                  {expandedCollectionCard === 'cheque' ? formatCurrency(chequeTotalDisplay) : formatShort(chequeTotalDisplay)}
+                </Text>
+                <Text style={[styles.collectionLabel, expandedCollectionCard === 'cheque' && styles.collectionLabelExpanded]}>CHEQUE</Text>
+                <Text style={[styles.collectionPct, expandedCollectionCard === 'cheque' && styles.collectionPctExpanded, { color: colors.cheque ?? '#d97706' }]}>
+                  ( {chequePctDisplay}%)
+                </Text>
+              </>
+            )}
+          </TouchableOpacity>
+          <TouchableOpacity
+            activeOpacity={0.8}
+            style={[
+              styles.collectionCard,
+              { borderColor: colors.credit ?? '#6366f1' },
+              expandedCollectionCard === 'credit' && styles.collectionCardExpanded,
+              expandedCollectionCard != null && expandedCollectionCard !== 'credit' && styles.collectionCardSqueezed,
+            ]}
+            onPress={() => toggleCollectionCard('credit')}
+          >
+            <Ionicons name="wallet-outline" size={20} color={colors.credit ?? '#6366f1'} />
+            {(expandedCollectionCard == null || expandedCollectionCard === 'credit') && (
+              <>
+                <Text
+                  style={[
+                    expandedCollectionCard === 'credit' ? styles.collectionAmountExpanded : styles.collectionAmount,
+                    { color: colors.credit ?? '#6366f1' },
+                  ]}
+                  numberOfLines={expandedCollectionCard === 'credit' ? 2 : 1}
+                >
+                  {expandedCollectionCard === 'credit' ? formatCurrency(creditTotalDisplay) : formatShort(creditTotalDisplay)}
+                </Text>
+                <Text style={[styles.collectionLabel, expandedCollectionCard === 'credit' && styles.collectionLabelExpanded]}>CREDIT</Text>
+                <Text style={[styles.collectionPct, expandedCollectionCard === 'credit' && styles.collectionPctExpanded, { color: colors.credit ?? '#6366f1' }]}>
+                  ( {creditPctDisplay}%)
+                </Text>
+              </>
+            )}
+          </TouchableOpacity>
         </View>
 
         {/* 4. Shops Completed (delivered/total) & Gas Delivered (delivered/total) */}
@@ -753,7 +852,7 @@ export default function DashboardScreen({ navigation }) {
               <Text style={[styles.shopsGasValue, { color: colors.primary }]}>{shopsCompleted}</Text>
               <Text style={[styles.shopsGasTarget, { color: colors.textSecondary }]}>/{totalShopsToday}</Text>
             </View>
-            <Text style={styles.shopsGasLabel}>SHOPS COMPLETED</Text>
+            <Text style={styles.shopsGasLabel}>ORDERS COMPLETED</Text>
             <Text style={styles.shopsGasPct}>{shopsPct}% Complete</Text>
           </View>
           <View style={styles.shopsGasCard}>
