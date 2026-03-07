@@ -208,12 +208,17 @@ export default function AppNavigator() {
   const syncIntervalRef = useRef(null);
   const appStateRef = useRef(AppState.currentState);
   const insets = useSafeAreaInsets();
-  const { isSyncing, syncResult, syncErrorMessage } = useSync();
+  const { isSyncing, syncResult, syncErrorMessage, hideSyncIndicator } = useSync();
   const showSyncResultModal = syncResult === 'success' || syncResult === 'failed';
+  const hideSyncRef = useRef(hideSyncIndicator);
+  hideSyncRef.current = hideSyncIndicator;
 
   useEffect(() => {
     const intervalMs = getSyncIntervalMs();
-    const run = () => runSync().catch(() => {});
+    const run = () => {
+      if (hideSyncRef.current) return;
+      runSync().catch(() => {});
+    };
 
     const sub = AppState.addEventListener('change', (nextState) => {
       if (nextState === 'active' && appStateRef.current !== 'active') {
@@ -256,7 +261,7 @@ export default function AppNavigator() {
             />
           </RootStack.Navigator>
         </View>
-        {isSyncing && (
+        {isSyncing && !hideSyncIndicator && (
           <View style={styles.globalSyncIndicator} pointerEvents="none">
             <SyncIndicator />
           </View>

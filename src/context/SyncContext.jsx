@@ -5,7 +5,7 @@ const SyncContext = createContext(null);
 
 export function useSync() {
   const ctx = useContext(SyncContext);
-  return ctx ?? { isSyncing: false, syncJustCompleted: false, syncCompleteTimestamp: 0, syncResult: null, syncErrorMessage: null };
+  return ctx ?? { isSyncing: false, syncJustCompleted: false, syncCompleteTimestamp: 0, syncResult: null, syncErrorMessage: null, hideSyncIndicator: false, setHideSyncIndicator: () => {} };
 }
 
 const RESULT_MODAL_DURATION_MS = 2500;
@@ -16,6 +16,7 @@ export function SyncProvider({ children }) {
   const [syncCompleteTimestamp, setSyncCompleteTimestamp] = useState(0);
   const [syncResult, setSyncResult] = useState(null);
   const [syncErrorMessage, setSyncErrorMessage] = useState(null);
+  const [hideSyncIndicator, setHideSyncIndicator] = useState(false);
   const timeoutRef = useRef(null);
 
   useEffect(() => {
@@ -49,7 +50,7 @@ export function SyncProvider({ children }) {
   }, []);
 
   return (
-    <SyncContext.Provider value={{ isSyncing, syncJustCompleted, syncCompleteTimestamp, syncResult, syncErrorMessage }}>
+    <SyncContext.Provider value={{ isSyncing, syncJustCompleted, syncCompleteTimestamp, syncResult, syncErrorMessage, hideSyncIndicator, setHideSyncIndicator }}>
       {children}
     </SyncContext.Provider>
   );

@@ -16,11 +16,13 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
+import { useSync } from '../context/SyncContext';
 import { spacing, borderRadius } from '../constants/theme';
-import { getCachedJournals, getSaleOrderDetailsFromDB } from '../services/sync.service';
+import { getCachedJournals, getSaleOrderDetailsFromDB, getDeliveryDataFromDB } from '../services/sync.service';
 import * as saleOrdersDb from '../database/saleOrders.js';
 import * as syncQueueDb from '../database/syncQueue.js';
 import * as offlineAttachmentsDb from '../database/offlineAttachments.js';
+import * as stockPickingsDb from '../database/stockPickings.js';
 import * as FileSystem from 'expo-file-system';
 
 /** Base64 encoding for readAsStringAsync/writeAsStringAsync (EncodingType may be undefined in some envs). */
@@ -37,6 +39,7 @@ const PAYMENT_CREDIT = 'credit';
 export default function ProceedPaymentScreen({ route, navigation }) {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
+  const { setHideSyncIndicator } = useSync();
   const { saleOrderId, total, deliveryDone } = route.params || {};
   const orderTotal = Number(total) || 0;
   const [loading, setLoading] = useState(false);
@@ -143,6 +146,11 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       setSelectedJournalId(chequeJournals[0].id);
     }
   }, [selectedPaymentMethods, chequeJournals]);
+
+  useEffect(() => {
+    setHideSyncIndicator(true);
+    return () => setHideSyncIndicator(false);
+  }, [setHideSyncIndicator]);
 
   // Auto-select Credit when cash + check is less than total (remaining goes to credit)
   useEffect(() => {
@@ -266,6 +274,11 @@ export default function ProceedPaymentScreen({ route, navigation }) {
 
       const primaryPaymentType = needsCredit ? 'credit' : needsCheck ? 'cheque' : 'cash';
       await saleOrdersDb.updateSaleOrderPaymentTypeLocal(saleOrderId, primaryPaymentType);
+
+      const { picking } = await getDeliveryDataFromDB(saleOrderId);
+      if (picking?.id) {
+        await stockPickingsDb.updatePickingStateLocal(picking.id, 'done');
+      }
 
       navigation.replace('InvoiceScreen', {
         saleOrderId,
