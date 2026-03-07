@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import { View, Animated, StyleSheet } from 'react-native';
+import { View, Text, Animated, StyleSheet } from 'react-native';
 import { useSync } from '../context/SyncContext';
 
 const DOT_SIZE = 6;
@@ -50,15 +50,20 @@ export default function SyncIndicator({ dotSize = DOT_SIZE, gap = GAP, style }) 
 
   const color = '#22c55e';
   return (
-    <View style={[styles.row, style]}>
-      <Animated.View style={[styles.dot, { width: dotSize, height: dotSize, borderRadius: dotSize / 2, backgroundColor: color, opacity: a1 }]} />
-      <Animated.View style={[styles.dot, { width: dotSize, height: dotSize, borderRadius: dotSize / 2, backgroundColor: color, opacity: a2, marginLeft: gap }]} />
-      <Animated.View style={[styles.dot, { width: dotSize, height: dotSize, borderRadius: dotSize / 2, backgroundColor: color, opacity: a3, marginLeft: gap }]} />
+    <View style={[styles.wrap, style]}>
+      <Text style={styles.label}>Device Syncing...</Text>
+      <View style={styles.row}>
+        <Animated.View style={[styles.dot, { width: dotSize, height: dotSize, borderRadius: dotSize / 2, backgroundColor: color, opacity: a1 }]} />
+        <Animated.View style={[styles.dot, { width: dotSize, height: dotSize, borderRadius: dotSize / 2, backgroundColor: color, opacity: a2, marginLeft: gap }]} />
+        <Animated.View style={[styles.dot, { width: dotSize, height: dotSize, borderRadius: dotSize / 2, backgroundColor: color, opacity: a3, marginLeft: gap }]} />
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  wrap: { alignItems: 'center', justifyContent: 'center' },
+  label: { fontSize: 14, fontWeight: '300', color: 'rgba(255,255,255,0.95)', marginBottom: 6, letterSpacing: 0.3 },
   row: { flexDirection: 'row', alignItems: 'center' },
   dot: {},
 });

@@ -36,6 +36,12 @@ let _syncStateListener = null;
 export function setSyncStateListener(fn) {
   _syncStateListener = fn;
 }
+
+/** Optional listener called when sync completes (success or error). Used by Dashboard to refresh data and last sync time. */
+let _syncCompleteListener = null;
+export function setSyncCompleteListener(fn) {
+  _syncCompleteListener = fn;
+}
 const KEYS = {
   USER: '@gastech_user',
   LAST_SYNC: '@gastech_last_sync',
@@ -260,7 +266,11 @@ export async function getOrderLinesByOrderIdsFromDB(orderIds) {
 
 export async function getLastSyncTime() {
   try {
-    return await syncLogDb.getLastSyncTime();
+    const fromLog = await syncLogDb.getLastSyncTime();
+    if (fromLog != null && fromLog !== '') return fromLog;
+    const storage = await getAsyncStorage();
+    const fromStorage = await storage.getItem(KEYS.LAST_SYNC);
+    return fromStorage || null;
   } catch {
     return null;
   }
@@ -281,6 +291,148 @@ export async function getCachedJournals() {
   } catch (e) {
     console.warn('getCachedJournals', e);
     return [];
+  }
+}
+
+/** Classify payment type by journal code (CSH1 = cash, CSH2 = cheque) or fallback by journal name. */
+function paymentTypeFromJournal(journalId, codeMap = {}) {
+  const id = Array.isArray(journalId) ? journalId[0] : journalId;
+  const code = id != null ? (codeMap[id] || '').toUpperCase().trim() : '';
+  const jName = Array.isArray(journalId) ? (journalId[1] || '') : String(journalId || '');
+  const j = jName.toLowerCase();
+  // Prefer Odoo journal code so Cheque (CSH2) is never misclassified as cash
+  if (code === 'CSH2') return 'cheque';
+  if (code === 'CSH1') return 'cash';
+  if (j.includes('cheque') || j.includes('check')) return 'cheque';
+  if (j.includes('cash')) return 'cash';
+  return 'cheque';
+}
+
+/**
+ * Refresh payment_type from Odoo so Delivered tabs and Dashboard show correct Cash/Cheque/Credit on all devices.
+ * Flow: (1) Only invoiced orders. (2) If invoice payment_state is not 'paid' (e.g. in_payment, not_paid) → credit.
+ * (3) If paid → get account.payment by reconciled_invoice_ids; by journal_id (Cash vs Cheque) set cash or cheque.
+ * @param {Array<{ name?: string, invoice_status?: string }>} syncedOrders - orders just synced from Odoo
+ */
+export async function refreshPaymentTypesFromOdoo(syncedOrders) {
+  const orderNames = (syncedOrders || [])
+    .filter((o) => String(o.invoice_status || '') === 'invoiced' && o.name)
+    .map((o) => o.name);
+  if (orderNames.length === 0) return;
+  try {
+    const { getInvoicesByOrigins, getPaymentsByInvoiceIds } = await import('./invoice.service');
+    const invoices = await getInvoicesByOrigins(orderNames);
+    if (!invoices?.length) return;
+
+    const paidInvoiceIds = [];
+    const orderNameToType = {};
+
+    for (const inv of invoices) {
+      const origin = inv.invoice_origin;
+      const state = (inv.payment_state || '').toLowerCase();
+      if (state === 'paid') {
+        paidInvoiceIds.push(inv.id);
+      } else {
+        if (origin) orderNameToType[origin] = 'credit';
+      }
+    }
+
+    if (paidInvoiceIds.length > 0) {
+      const payments = await getPaymentsByInvoiceIds(paidInvoiceIds);
+      const journalIds = (payments || [])
+        .map((pm) => (Array.isArray(pm.journal_id) ? pm.journal_id[0] : pm.journal_id))
+        .filter((id) => id != null);
+      const { getJournalCodesByIds } = await import('./journal.service.js');
+      const journalCodeMap = journalIds.length > 0 ? await getJournalCodesByIds(journalIds) : {};
+      const invoiceIdToPayments = {};
+      for (const pm of payments || []) {
+        const invIds = Array.isArray(pm.reconciled_invoice_ids) ? pm.reconciled_invoice_ids : [];
+        invIds.forEach((id) => {
+          const invId = Array.isArray(id) ? id[0] : id;
+          if (invId == null) return;
+          if (!invoiceIdToPayments[invId]) invoiceIdToPayments[invId] = [];
+          invoiceIdToPayments[invId].push(pm);
+        });
+      }
+      for (const inv of invoices) {
+        if ((inv.payment_state || '').toLowerCase() !== 'paid' || !inv.invoice_origin) continue;
+        const pms = invoiceIdToPayments[inv.id] || [];
+        let cashSum = 0;
+        let chequeSum = 0;
+        for (const pm of pms) {
+          const amt = Number(pm.amount) || 0;
+          const type = paymentTypeFromJournal(pm.journal_id, journalCodeMap);
+          if (type === 'cash') cashSum += amt;
+          else chequeSum += amt;
+        }
+        const orderType =
+          chequeSum > 0 && cashSum === 0
+            ? 'cheque'
+            : cashSum > 0
+              ? 'cash'
+              : chequeSum > 0
+                ? 'cheque'
+                : 'credit';
+        orderNameToType[inv.invoice_origin] = orderType;
+      }
+    }
+
+    for (const name of Object.keys(orderNameToType)) {
+      await saleOrdersDb.updatePaymentTypeByOrderName(name, orderNameToType[name]);
+    }
+    log('refresh', `payment_type updated for ${Object.keys(orderNameToType).length} orders from Odoo`);
+  } catch (e) {
+    logWarn('refresh payment_type from Odoo', e);
+  }
+}
+
+/**
+ * Fetch Cash/Cheque/Credit totals from Odoo for given order names (e.g. today's delivered).
+ * Flow: (1) Invoiced orders only (invoices by invoice_origin). (2) If not paid (payment_state !== 'paid', e.g. in_payment) → add to creditTotal. (3) If paid → get payments by reconciled_invoice_ids; by journal (Cash vs Cheque) add amount to cashTotal or chequeTotal. Returns actual values for Dashboard.
+ */
+export async function getCollectionTotalsFromOdoo(orderNames) {
+  if (!Array.isArray(orderNames) || orderNames.length === 0) {
+    return { cashTotal: 0, chequeTotal: 0, creditTotal: 0 };
+  }
+  try {
+    const { getInvoicesByOrigins, getPaymentsByInvoiceIds } = await import('./invoice.service');
+    const invoices = await getInvoicesByOrigins(orderNames);
+    if (!invoices?.length) return { cashTotal: 0, chequeTotal: 0, creditTotal: 0 };
+
+    let cashTotal = 0;
+    let chequeTotal = 0;
+    let creditTotal = 0;
+    const paidInvoiceIds = [];
+
+    for (const inv of invoices) {
+      const state = (inv.payment_state || '').toLowerCase();
+      const amount = Number(inv.amount_total) || 0;
+      if (state === 'paid') {
+        paidInvoiceIds.push(inv.id);
+      } else {
+        creditTotal += amount;
+      }
+    }
+
+    if (paidInvoiceIds.length > 0) {
+      const payments = await getPaymentsByInvoiceIds(paidInvoiceIds);
+      const journalIds = (payments || [])
+        .map((pm) => (Array.isArray(pm.journal_id) ? pm.journal_id[0] : pm.journal_id))
+        .filter((id) => id != null);
+      const { getJournalCodesByIds } = await import('./journal.service.js');
+      const journalCodeMap = journalIds.length > 0 ? await getJournalCodesByIds(journalIds) : {};
+      for (const pm of payments || []) {
+        const amount = Number(pm.amount) || 0;
+        const type = paymentTypeFromJournal(pm.journal_id, journalCodeMap);
+        if (type === 'cash') cashTotal += amount;
+        else chequeTotal += amount;
+      }
+    }
+
+    return { cashTotal, chequeTotal, creditTotal };
+  } catch (e) {
+    console.warn('getCollectionTotalsFromOdoo', e);
+    return null;
   }
 }
 
@@ -313,6 +465,7 @@ async function processSyncQueue() {
     createInvoicesFromWizard,
     postInvoice,
     createPayment,
+    postPaymentAndReconcile,
   } = await import('./invoice.service');
 
   for (const item of delivery) {
@@ -355,6 +508,7 @@ async function processSyncQueue() {
   const chatterPostedInThisRun = new Set();
 
   for (const item of payment) {
+    let invoiceBlockFailedNoItemsToInvoice = false;
     try {
       const p = item.payload || {};
       const saleOrderId = p.saleOrderId ?? p.sale_id;
@@ -388,6 +542,8 @@ async function processSyncQueue() {
                 }
               }
 
+              // Credit = invoice created + posted only (no account.payment). Invoice stays
+              // payment_state=not_paid, amount_residual=total → shows as credit under delivery tab.
               if (!invoiceAlreadyPosted) {
                 let invoiceId = null;
                 if (existingInvoiceIds.length > 0) {
@@ -401,30 +557,72 @@ async function processSyncQueue() {
                     if (invoiceId != null) await postInvoice(invoiceId);
                   }
                 }
+                // Credit-only: invoice created + posted is enough; no payment → shows under delivery tab as credit.
+                const onlyCredit = payments.length > 0 && payments.every((pm) => pm.type === 'credit');
+                if (onlyCredit && invoiceId != null) {
+                  log('queue', `credit only: invoice ${invoiceId} posted (no payment) → shows as credit under delivery`);
+                }
+                // Resolve Cash/Cheque journal from Odoo when missing so cheque is handled like cash (post + reconcile).
+                const needsJournalResolve = payments.some(
+                  (pm) => (pm.type === 'cash' || pm.type === 'check') && !pm.journalId
+                );
+                let resolvedCashId = null;
+                let resolvedChequeId = null;
+                if (needsJournalResolve) {
+                  try {
+                    const { getCashTypeJournalIds } = await import('./journal.service.js');
+                    const ids = await getCashTypeJournalIds();
+                    resolvedCashId = ids.cashJournalId ?? null;
+                    resolvedChequeId = ids.chequeJournalId ?? null;
+                    if (resolvedChequeId != null || resolvedCashId != null) {
+                      log('queue', `resolved journals from Odoo: cash=${resolvedCashId ?? '—'} cheque=${resolvedChequeId ?? '—'}`);
+                    }
+                  } catch (resolveErr) {
+                    logWarn('queue payment resolve journals', resolveErr);
+                  }
+                }
                 const dateStr = new Date().toISOString().slice(0, 10);
                 const baseMemo = p.invoiceNumber
                   ? `Payment for Invoice ${p.invoiceNumber} / Order ${orderName}`
                   : `Payment for Invoice / Order ${orderName}`;
                 for (const pm of payments) {
+                  // Credit: no account.payment; invoice stays not_paid → shows in delivery tab under credit.
                   if (pm.type === 'credit') continue;
                   const amount = Number(pm.amount);
-                  if (!amount || !pm.journalId) continue;
-                  await createPayment({
+                  const journalId = pm.journalId ?? (pm.type === 'cash' ? resolvedCashId : pm.type === 'check' ? resolvedChequeId : null);
+                  if (!amount || journalId == null) {
+                    if (amount && journalId == null) logWarn('queue payment', new Error(`No journal for ${pm.type}; skipping payment amount ${amount}`));
+                    continue;
+                  }
+                  const paymentId = await createPayment({
                     partnerId,
                     amount,
                     currencyId: 1,
-                    journalId: pm.journalId,
+                    journalId,
                     date: dateStr,
                     memo: `${baseMemo} (${pm.type || 'payment'})${pm.checkNumber ? ` #${pm.checkNumber}` : ''}`,
                     invoiceId,
                   });
+                  if (paymentId != null && invoiceId != null) {
+                    await postPaymentAndReconcile(paymentId, invoiceId);
+                    const methodLabel = pm.type === 'check' ? 'cheque' : pm.type === 'cash' ? 'cash' : 'payment';
+                    log('queue', `payment created, posted and reconciled (${methodLabel}) id=${paymentId} with invoice ${invoiceId}`);
+                  } else if (paymentId != null) {
+                    logWarn('queue payment', new Error('Payment created but no invoiceId to reconcile'));
+                  }
                 }
               }
             }
           }
         } catch (invoiceErr) {
-          logWarn('queue payment (invoice/payments)', invoiceErr);
-          // Continue to post chatter + proof images so sale order chat still gets message and photo
+          const msg = (invoiceErr?.message || String(invoiceErr)).toLowerCase();
+          if (msg.includes('no items are available to invoice') || msg.includes('nothing to invoice')) {
+            invoiceBlockFailedNoItemsToInvoice = true;
+            logWarn('queue payment (invoice/payments)', new Error('Invoice creation failed: delivery not done or no quantities. Complete delivery in Odoo first, then sync again for cheque/credit.'));
+          } else {
+            logWarn('queue payment (invoice/payments)', invoiceErr);
+          }
+          // Continue to post chatter + proof images when possible
         }
       }
 
@@ -460,13 +658,10 @@ async function processSyncQueue() {
       const attachmentIds = [];
       const syncedAttachmentIds = [];
       const pendingCount = (pendingAttachments || []).length;
-      const payloadBase64Count = (p.proofPhotoBase64 || []).length;
-      log('queue', `payment proof (SO ${soId}): ${pendingCount} pending files in local DB, ${payloadBase64Count} base64 in payload — will create attachment then message_post`);
-      if (pendingCount === 0 && payloadBase64Count === 0) {
-        log('queue', `payment proof: no images to attach (add photos on Proceed Payment screen and confirm to see [Payment] base64 conversion logs)`);
-      }
 
-      // 1) Prefer saved files (offline_attachments): read file → base64 → API 1 create ir.attachment
+      // Doc: read pending URIs from offline_attachments → base64 → ir.attachment.create → collect ids → message_post(attachment_ids).
+      log('queue', `payment proof (SO ${soId}): ${pendingCount} pending in offline_attachments — URI→base64→create→message_post`);
+
       for (const att of pendingAttachments || []) {
         if (!att.local_file_path || !att.file_name) continue;
         try {
@@ -482,65 +677,21 @@ async function processSyncQueue() {
             logWarn('queue payment proof', new Error('Invalid base64'));
             continue;
           }
-          log('queue', `create attachment API (ir.attachment create) SO ${soId} file ${att.file_name} datas length ${normalized.length}`);
-          const aid = await createProofAttachment(soId, normalized, att.file_name);
-          if (aid != null) {
-            attachmentIds.push(aid);
-            syncedAttachmentIds.push(att.id);
-            log('queue', `create attachment API result: attachment_id=${aid}`);
-          }
+          const aid = await createProofAttachment(soId, base64, att.file_name);
+          attachmentIds.push(aid);
+          syncedAttachmentIds.push(att.id);
+          log('queue', `ir.attachment.create SO ${soId} → attachment_id=${aid}`);
         } catch (attErr) {
-          await offlineAttachmentsDb.incrementRetry(Number(att.id), attErr?.message || 'Read error');
+          await offlineAttachmentsDb.incrementRetry(att.id, attErr?.message || 'Upload error');
           logWarn('queue payment proof attachment', attErr);
         }
       }
 
-      // 2) Fallback: proofPhotoBase64 from payload (if no attachments from files)
-      if (attachmentIds.length === 0) {
-        const proofPhotoBase64 = p.proofPhotoBase64 || [];
-        for (let i = 0; i < proofPhotoBase64.length; i++) {
-          const item = proofPhotoBase64[i];
-          const filename = item?.filename || `payment_proof_${i + 1}.jpg`;
-          const base64 = item?.base64;
-          if (!base64 || typeof base64 !== 'string') continue;
-          try {
-            log('queue', `create attachment API (ir.attachment create) SO ${soId} from payload ${filename} datas length ${base64.length}`);
-            const aid = await createProofAttachment(soId, base64, filename);
-            if (aid != null) {
-              attachmentIds.push(aid);
-              log('queue', `create attachment API result: attachment_id=${aid}`);
-            }
-          } catch (createErr) {
-            logWarn('queue payment proof create attachment', createErr);
-          }
-        }
-        if (attachmentIds.length > 0) {
-          for (const att of pendingAttachments || []) syncedAttachmentIds.push(att.id);
-        }
+      if (pendingCount > 0 && attachmentIds.length === 0) {
+        logWarn('queue payment proof', new Error('Had pending proof photos but no attachment ids — check file path and createProofAttachment'));
       }
 
-      // 3) Last fallback: read from deliveryPhotoUris (URIs may be stale after app restart)
-      const deliveryPhotoUris = p.deliveryPhotoUris || [];
-      if (attachmentIds.length === 0 && deliveryPhotoUris.length > 0) {
-        for (let i = 0; i < deliveryPhotoUris.length; i++) {
-          const uri = deliveryPhotoUris[i];
-          if (!uri || typeof uri !== 'string') continue;
-          try {
-            const normalized = await imageFileToBase64String(FileSystem, uri);
-            if (normalized) {
-              const ext = (uri.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg';
-              const filename = `payment_proof_${i + 1}.${ext}`;
-              log('queue', `create attachment API (ir.attachment create) SO ${soId} from URI datas length ${normalized.length}`);
-              const aid = await createProofAttachment(soId, normalized, filename);
-              if (aid != null) attachmentIds.push(aid);
-            }
-          } catch (photoErr) {
-            logWarn('queue payment proof photo', photoErr);
-          }
-        }
-      }
-
-      // API 2: Post message to sale order chat (body + attachment_ids so captured photo shows)
+      // API 2: Post message with attachment_ids (required so captured photos appear in sale order chatter)
       try {
         log('queue', `message_post API (sale.order) SO ${soId} attachment_ids=[${attachmentIds.join(', ')}]`);
         await postPaymentProofToChatterWithAttachmentIds(soId, { body: chatterBody, attachmentIds });
@@ -565,7 +716,11 @@ async function processSyncQueue() {
         continue;
       }
 
-      await syncQueueDb.markSynced(Number(item.id));
+      if (invoiceBlockFailedNoItemsToInvoice) {
+        log('queue', `payment item ${item.id} NOT marked synced (invoice not created — deliver first, then sync again for cheque/credit)`);
+        continue;
+      }
+      await syncQueueDb.markSynced(item.id);
       alreadySyncedSaleOrderIds.add(soId);
       log('queue', `payment synced id=${item.id}`);
     } catch (e) {
@@ -677,6 +832,8 @@ export async function runSync() {
     await partnersDb.upsertPartners(customers || []);
     log('db', 'sale_orders');
     await saleOrdersDb.upsertSaleOrders(orders || []);
+
+    await refreshPaymentTypesFromOdoo(orders || []);
 
     const orderIds = (orders || []).map((o) => o.id);
     let allLines = [];
@@ -862,21 +1019,29 @@ export async function runSync() {
       log('db', 'vehicle_inventories');
       await vehicleInventoriesDb.upsertVehicleInventories(allVehicleInventories);
     }
+    //TODO: count column should renamed to results
     await syncLogDb.appendLog({
       sync_at: syncAt,
       status: 'success',
-      message: null,
-      counts: result,
+      message: result.error ? result.error : 'Sync successful',      
+      counts: JSON.stringify(result),
     });
     const storage = await getAsyncStorage();
     await storage.setItem(KEYS.LAST_SYNC, syncAt);
     log('done', JSON.stringify(result));
+    if (_syncCompleteListener) {
+      try {
+        _syncCompleteListener(true);
+      } catch (e) {
+        console.warn(`${LOG_TAG} syncCompleteListener`, e?.message ?? e);
+      }
+    }
     return result;
   } catch (err) {
     result.error = err?.message || 'Sync failed';
     logWarn('error', err);
     console.warn(`${LOG_TAG} error detail`, err);
-    //TODO: there is a bug here
+    //TODO: count column should renamed to results
     try {
       await syncLogDb.appendLog({
         sync_at: syncAt,
@@ -886,6 +1051,13 @@ export async function runSync() {
       });
     } catch (logErr) {
       console.warn(`${LOG_TAG} could not append error to sync_log`, logErr?.message ?? logErr);
+    }
+    if (_syncCompleteListener) {
+      try {
+        _syncCompleteListener(false);
+      } catch (e) {
+        console.warn(`${LOG_TAG} syncCompleteListener`, e?.message ?? e);
+      }
     }
     return result;
   } finally {

@@ -42,7 +42,6 @@ export const getCommissionAchievementByTeam = async (teamName) => {
         fields: ["type", "product_id", "product_categ_id", "rate"]
       }
     );
-    // console.log('[Commission API] teamName:', teamName, 'response:', JSON.stringify(result, null, 2));
     return result || [];
   } catch (error) {
     console.error('[Commission API] Error fetching commission achievement:', error);
@@ -51,9 +50,7 @@ export const getCommissionAchievementByTeam = async (teamName) => {
 };
 
 /**
- * Build a map of product_id -> commission rate (percentage)
  * @param {Array} achievements - Commission achievement data from API
- * @returns {Object} Map of productId -> rate
  */
 export const buildProductRateMap = (achievements) => {
   const rateMap = {};
@@ -69,7 +66,6 @@ export const buildProductRateMap = (achievements) => {
 /**
  * Get average commission rate from achievements (fallback for display)
  * @param {Array} achievements - Commission achievement data
- * @param {number} defaultRate - Default rate if no data (default: 1%)
  * @returns {number} Average rate or default
  */
 export const getAverageCommissionRate = (achievements, defaultRate = 1) => {
@@ -85,9 +81,11 @@ export const getAverageCommissionRate = (achievements, defaultRate = 1) => {
 /**
  * Calculate commission based on order lines and per-product rates
  *
- * @param {Array} orderLines - Array of order lines with product_id and price_total
- * @param {Object} productRateMap - Map of productId -> commission rate
- * @param {number} defaultRate - Default rate for products not in map (default: 1%)
+ * NOTE: Rate is a FIXED AMOUNT per item (e.g., Rs. 1 per item), NOT a percentage!
+ *
+ * @param {Array} orderLines - Array of order lines with product_id, product_uom_qty, and price_total
+ * @param {Object} productRateMap - Map of productId -> commission rate (Rs per item)
+ * @param {number} defaultRate - Default rate for products not in map (default: Rs. 1 per item)
  * @returns {number} Total commission amount
  */
 export const calculateCommissionByProducts = (orderLines, productRateMap, defaultRate = 1) => {
@@ -97,25 +95,33 @@ export const calculateCommissionByProducts = (orderLines, productRateMap, defaul
 
   for (const line of orderLines) {
     const productId = Array.isArray(line.product_id) ? line.product_id[0] : line.product_id;
-    const priceTotal = Number(line.price_total) || Number(line.price_subtotal) || 0;
+    const productName = Array.isArray(line.product_id) ? line.product_id[1] : 'Unknown';
+    const quantity = Number(line.product_uom_qty) || Number(line.quantity) || 0;
     const rate = productRateMap[productId] ?? defaultRate;
 
-    totalCommission += (priceTotal * rate) / 100;
+    // Commission = quantity × rate (rate is Rs per item, NOT percentage!)
+    const lineCommission = quantity * rate;
+    totalCommission += lineCommission;
+
   }
 
-  return Math.round(totalCommission * 100) / 100; // Round to 2 decimal places
+  const finalCommission = Math.round(totalCommission * 100) / 100;
+
+  return finalCommission;
 };
 
 /**
  * Calculate commission progress with per-product rates
  *
- * Target = Sum of (each order line price_total × product commission rate)
- * Achieved = Sum of (each delivered order line price_total × product commission rate)
+ * NOTE: Rate is a FIXED AMOUNT per item (e.g., Rs. 1 per item), NOT a percentage!
+ *
+ * Target = Sum of (each order line quantity × product commission rate in Rs)
+ * Achieved = Sum of (each delivered order line quantity × product commission rate in Rs)
  *
  * @param {Array} allOrderLines - All order lines (for target calculation)
  * @param {Array} deliveredOrderLines - Delivered order lines (for achieved calculation)
- * @param {Object} productRateMap - Map of productId -> commission rate
- * @param {number} defaultRate - Default rate for products not in map (default: 1%)
+ * @param {Object} productRateMap - Map of productId -> commission rate (Rs per item)
+ * @param {number} defaultRate - Default rate for products not in map (default: Rs. 1 per item)
  * @returns {Object} Progress data with target, achieved, percentage, and displayRate
  */
 export const calculateCommissionProgressByProducts = (
@@ -124,13 +130,16 @@ export const calculateCommissionProgressByProducts = (
   productRateMap,
   defaultRate = 1
 ) => {
+
+
   const target = calculateCommissionByProducts(allOrderLines, productRateMap, defaultRate);
+
 
 
   const achieved = calculateCommissionByProducts(deliveredOrderLines, productRateMap, defaultRate);
 
-  const percentage = target > 0 ? Math.min(100, Math.round((achieved / target) * 100)) : 0;
 
+  const percentage = target > 0 ? Math.min(100, Math.round((achieved / target) * 100)) : 0;
   return {
     target,
     achieved,
@@ -151,7 +160,7 @@ export const getActiveCommissionPlan = async (teamName) => {
       return {
         achievements: [],
         productRateMap: {},
-        commission_percentage: 1, // Default 1%
+        commission_percentage: 1, // Default Rs. 1 per item (named "percentage" for backward compatibility)
         hasData: false
       };
     }
@@ -162,7 +171,7 @@ export const getActiveCommissionPlan = async (teamName) => {
     return {
       achievements,
       productRateMap,
-      commission_percentage: averageRate,
+      commission_percentage: averageRate, // Actually Rs per item, not percentage (kept for backward compatibility)
       hasData: true
     };
   } catch (error) {

@@ -1,6 +1,8 @@
 // services/index.service.js
 import { ODOO_URL, ODOO_DB, ODOO_API_KEY, UID } from '@env';
 
+const REQUEST_TIMEOUT_MS = 35000;
+
 let API_KEY = ODOO_API_KEY;
 let USE_SESSION = false;
 
@@ -33,6 +35,43 @@ function getOdooConfig() {
   return { url, db, uid, apiKey };
 }
 
+function getHostFromUrl(u) {
+  try {
+    const parsed = typeof u === 'string' ? new URL(u) : null;
+    return parsed ? parsed.host : '(unknown)';
+  } catch {
+    return '(invalid url)';
+  }
+}
+
+if (__DEV__) {
+  try {
+    const c = getOdooConfig();
+    console.log('[Odoo] Using server:', getHostFromUrl(c.url));
+  } catch (_) {}
+}
+
+/** fetch with a real timeout (React Native fetch ignores timeout option). */
+async function fetchWithTimeout(url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    clearTimeout(id);
+    return res;
+  } catch (e) {
+    clearTimeout(id);
+    if (__DEV__) {
+      const host = getHostFromUrl(url);
+      console.warn(`[Odoo] Request failed to ${host}:`, e?.message || e);
+    }
+    throw e;
+  }
+}
+
 export const callOdoo = async (model, method, domain = [], options = {}) => {
   const { url, db, uid, apiKey } = getOdooConfig();
   const args = USE_SESSION
@@ -50,13 +89,24 @@ export const callOdoo = async (model, method, domain = [], options = {}) => {
     id: Date.now(),
   };
 
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-    credentials: USE_SESSION ? 'include' : 'omit',
-    timeout: 30000,
-  });
+  let response;
+  try {
+    response = await fetchWithTimeout(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      credentials: USE_SESSION ? 'include' : 'omit',
+    });
+  } catch (networkErr) {
+    const msg = networkErr?.message || String(networkErr);
+    const host = getHostFromUrl(url);
+    const isAbort = msg.includes('abort') || networkErr?.name === 'AbortError';
+    throw new Error(
+      isAbort
+        ? `Request timed out (${REQUEST_TIMEOUT_MS / 1000}s). Check your connection and try again.`
+        : `Cannot reach server (${host}). ${msg}. Try another network (e.g. WiFi vs mobile data) or check if the URL is reachable from this device.`
+    );
+  }
 
   const json = await response.json();
   // console.log(`[Odoo Response] ${model}.${method}:`, JSON.stringify(json, null, 2));
@@ -89,13 +139,24 @@ export const callOdooArgs = async (model, method, positionalArgs) => {
     id: Date.now(),
   };
 
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-    credentials: USE_SESSION ? 'include' : 'omit',
-    timeout: 30000,
-  });
+  let response;
+  try {
+    response = await fetchWithTimeout(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      credentials: USE_SESSION ? 'include' : 'omit',
+    });
+  } catch (networkErr) {
+    const msg = networkErr?.message || String(networkErr);
+    const host = getHostFromUrl(url);
+    const isAbort = msg.includes('abort') || networkErr?.name === 'AbortError';
+    throw new Error(
+      isAbort
+        ? `Request timed out (${REQUEST_TIMEOUT_MS / 1000}s). Check your connection and try again.`
+        : `Cannot reach server (${host}). ${msg} Try another network or check if the URL is reachable from this device.`
+    );
+  }
 
   const json = await response.json();
   // console.log(`[Odoo Response] ${model}.${method}:`, JSON.stringify(json, null, 2));
@@ -125,12 +186,24 @@ export const callOdooArgsKwargs = async (model, method, positionalArgs, kwargs =
     id: Date.now(),
   };
 
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-    credentials: USE_SESSION ? 'include' : 'omit',
-  });
+  let response;
+  try {
+    response = await fetchWithTimeout(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      credentials: USE_SESSION ? 'include' : 'omit',
+    });
+  } catch (networkErr) {
+    const msg = networkErr?.message || String(networkErr);
+    const host = getHostFromUrl(url);
+    const isAbort = msg.includes('abort') || networkErr?.name === 'AbortError';
+    throw new Error(
+      isAbort
+        ? `Request timed out (${REQUEST_TIMEOUT_MS / 1000}s). Check your connection and try again.`
+        : `Cannot reach server (${host}). ${msg} Try another network or check if the URL is reachable from this device.`
+    );
+  }
 
   const json = await response.json();
   // console.log(`[Odoo Response] ${model}.${method}:`, JSON.stringify(json, null, 2));

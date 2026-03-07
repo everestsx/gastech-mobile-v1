@@ -301,6 +301,21 @@ async function runMigrations(db) {
     }
     await db.runAsync('PRAGMA user_version = 10');
   }
+
+  // Migration 11: Add amount_credit to sale_orders (credit portion for split payments / dashboard)
+  if (current < 11) {
+    try {
+      const info = await db.getAllAsync('PRAGMA table_info(sale_orders)');
+      const hasAmountCredit = (info || []).some((c) => c.name === 'amount_credit');
+      if (!hasAmountCredit) {
+        await db.runAsync('ALTER TABLE sale_orders ADD COLUMN amount_credit REAL');
+        console.log('[Migration] Added amount_credit column to sale_orders');
+      }
+    } catch (e) {
+      console.warn('[Migration] Error adding amount_credit:', e);
+    }
+    await db.runAsync('PRAGMA user_version = 11');
+  }
 }
 
 /**
