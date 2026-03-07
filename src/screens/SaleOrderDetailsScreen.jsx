@@ -139,7 +139,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
           backgroundColor: colors.surface,
           padding: spacing.md,
           borderRadius: borderRadius.lg,
-          marginBottom: spacing.sm,
+          marginBottom: spacing.xs,
           elevation: 2,
           shadowColor: '#000',
           shadowOffset: { width: 0, height: 2 },

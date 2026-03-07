@@ -164,7 +164,6 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       const has = prev.includes(method);
       if (has) {
         const next = prev.filter((m) => m !== method);
-        if (next.length === 0) return prev;
         if (method === PAYMENT_CASH) setCashAmount('');
         if (method === PAYMENT_CHECK) {
           setCheckAmount('');
