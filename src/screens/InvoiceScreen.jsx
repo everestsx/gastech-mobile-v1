@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -6,16 +6,15 @@ import {
   ScrollView,
   TouchableOpacity,
   ActivityIndicator,
-  Alert,
   Platform,
-  Animated,
   Image,
+  Modal,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Print from 'expo-print';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
-import { getSaleOrderDetailsFromDB, runSync } from '../services/sync.service';
+import { getSaleOrderDetailsFromDB } from '../services/sync.service';
 import { getOrAssignInvoiceNumber } from '../utils/invoiceNumber';
 import { getProductDisplayName } from '../utils/productDisplay';
 import { formatAmount } from '../utils/format';
@@ -217,9 +216,8 @@ export default function InvoiceScreen({ route, navigation }) {
   const [invoiceNumber, setInvoiceNumber] = useState(null);
   const [loading, setLoading] = useState(true);
   const [printing, setPrinting] = useState(false);
-  const [doneState, setDoneState] = useState(null);
-  const fadeAnim = useRef(new Animated.Value(0)).current;
-  const scaleAnim = useRef(new Animated.Value(0.9)).current;
+  const [printResult, setPrintResult] = useState(null);
+  const [printError, setPrintError] = useState(null);
 
   const styles = useMemo(
     () =>
@@ -330,37 +328,51 @@ export default function InvoiceScreen({ route, navigation }) {
         printerNoteTextWrap: { flex: 1 },
         printerNoteTitle: { fontSize: 14, fontWeight: '700', color: colors.text, marginBottom: 4 },
         printerNoteText: { fontSize: 12, color: colors.textSecondary, lineHeight: 18 },
-        syncOverlay: {
+        printOverlay: {
           ...StyleSheet.absoluteFillObject,
-          backgroundColor: 'rgba(0,0,0,0.5)',
+          backgroundColor: 'rgba(0,0,0,0.6)',
           justifyContent: 'center',
           alignItems: 'center',
-          padding: spacing.xl,
+          zIndex: 20,
         },
-        syncCard: {
-          backgroundColor: colors.surface,
-          borderRadius: borderRadius.xl,
-          padding: spacing.xl * 1.5,
+        printOverlayText: { fontSize: 18, fontWeight: '700', color: '#fff', marginTop: spacing.md },
+        resultModalBackdrop: {
+          flex: 1,
+          backgroundColor: 'rgba(0,0,0,0.6)',
+          justifyContent: 'center',
+          alignItems: 'center',
+          padding: 24,
+        },
+        resultModalCard: {
+          backgroundColor: '#fff',
+          borderRadius: 20,
+          paddingVertical: 28,
+          paddingHorizontal: 32,
           alignItems: 'center',
           minWidth: 280,
-          maxWidth: 320,
-          elevation: 8,
           shadowColor: '#000',
-          shadowOffset: { width: 0, height: 4 },
+          shadowOffset: { width: 0, height: 8 },
           shadowOpacity: 0.15,
-          shadowRadius: 12,
+          shadowRadius: 24,
+          elevation: 12,
         },
-        syncIconWrap: {
-          width: 72,
-          height: 72,
-          borderRadius: 36,
-          backgroundColor: colors.background,
-          justifyContent: 'center',
+        resultModalIconWrap: { marginBottom: 16 },
+        resultModalTitle: { fontSize: 20, fontWeight: '700', color: '#0f172a', marginBottom: 8, textAlign: 'center' },
+        resultModalSub: { fontSize: 14, color: '#64748b', textAlign: 'center', marginBottom: 24 },
+        resultModalBtnRow: { flexDirection: 'row', gap: 12, width: '100%' },
+        resultModalBtn: {
+          flex: 1,
+          flexDirection: 'row',
           alignItems: 'center',
-          marginBottom: spacing.lg,
+          justifyContent: 'center',
+          gap: 8,
+          paddingVertical: 14,
+          borderRadius: 12,
         },
-        syncTitle: { fontSize: 18, fontWeight: '800', color: colors.text, marginBottom: spacing.sm, textAlign: 'center' },
-        syncSub: { fontSize: 14, color: colors.textSecondary, textAlign: 'center', lineHeight: 20 },
+        resultModalBtnPrimary: { backgroundColor: colors.primary },
+        resultModalBtnSecondary: { backgroundColor: colors.surface, borderWidth: 2, borderColor: colors.primary },
+        resultModalBtnTextPrimary: { fontSize: 16, fontWeight: '700', color: '#fff' },
+        resultModalBtnTextSecondary: { fontSize: 16, fontWeight: '700', color: colors.primary },
         creditStepsCard: {
           backgroundColor: colors.surface,
           borderRadius: borderRadius.lg,
@@ -403,42 +415,27 @@ export default function InvoiceScreen({ route, navigation }) {
     loadInvoice();
   }, [loadInvoice]);
 
-  // useEffect(() => {
-  //   if (!saleOrderId) return;
-  //   runSync().catch((err) => console.warn('InvoiceScreen background sync', err?.message ?? err));
-  // }, [saleOrderId]);
-
   const handlePrint = useCallback(async () => {
     if (!order) return;
     setPrinting(true);
-    setDoneState('syncing');
-    Animated.parallel([
-      Animated.timing(fadeAnim, { toValue: 1, duration: 200, useNativeDriver: true }),
-      Animated.spring(scaleAnim, { toValue: 1, useNativeDriver: true, friction: 8 }),
-    ]).start();
-    try {
-      // await runSync();
-      setDoneState('success');
-      Animated.timing(fadeAnim, { toValue: 1, duration: 150, useNativeDriver: true }).start();
-    } catch (err) {
-      setDoneState('offline');
-    }
+    setPrintResult(null);
+    setPrintError(null);
     try {
       const html = buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSplit, logoUri, customerSignatureDataUrl, chequeBankName, checkNumber, invoiceNumber);
-      await Print.printAsync({
-        html,
-      });
+      await Print.printAsync({ html });
+      setPrintResult('success');
     } catch (err) {
       console.error(err);
-      Alert.alert(
-        'Print',
-        err.message || 'Could not open print dialog. Ensure a printer is available (Bluetooth, USB, or Network).'
-      );
+      setPrintResult('failed');
+      setPrintError(err?.message || 'Could not print. Ensure a printer is available (Bluetooth, USB, or Network).');
     } finally {
       setPrinting(false);
-      setTimeout(() => setDoneState(null), 2000);
     }
-  }, [order, lines, invoiceNumber, paymentType, selectedBankName, paymentSplit, logoUri, customerSignatureDataUrl, chequeBankName, checkNumber, fadeAnim, scaleAnim]);
+  }, [order, lines, invoiceNumber, paymentType, selectedBankName, paymentSplit, logoUri, customerSignatureDataUrl, chequeBankName, checkNumber]);
+
+  const goToHome = useCallback(() => {
+    navigation.navigate('MainTabs', { screen: 'Dashboard' });
+  }, [navigation]);
 
   /** Subtotal from lines: sum of price_subtotal */
   const computedSubtotal = useMemo(() => {
@@ -607,22 +604,84 @@ export default function InvoiceScreen({ route, navigation }) {
         </View>
       )}
 
-      {/* Print invoice button */}
-      <TouchableOpacity
-        style={styles.printBtn}
-        onPress={handlePrint}
-        disabled={printing}
-        activeOpacity={0.8}
+      {/* Print invoice button - hidden after print so modal offers Re-print */}
+      {printResult == null && (
+        <TouchableOpacity
+          style={styles.printBtn}
+          onPress={handlePrint}
+          disabled={printing}
+          activeOpacity={0.8}
+        >
+          {printing ? (
+            <ActivityIndicator size="small" color="#fff" />
+          ) : (
+            <>
+              <Ionicons name="print-outline" size={24} color="#fff" />
+              <Text style={styles.printBtnText}>Print invoice</Text>
+            </>
+          )}
+        </TouchableOpacity>
+      )}
+
+      {/* Printing overlay - full screen until print request completes */}
+      {printing && (
+        <View style={styles.printOverlay} pointerEvents="box-only">
+          <ActivityIndicator size="large" color="#fff" />
+          <Text style={styles.printOverlayText}>Printing…</Text>
+        </View>
+      )}
+
+      {/* After print: modal with Re-print or Go to home */}
+      <Modal
+        visible={printResult != null && !printing}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => setPrintResult(null)}
       >
-        {printing ? (
-          <ActivityIndicator size="small" color="#fff" />
-        ) : (
-          <>
-            <Ionicons name="print-outline" size={24} color="#fff" />
-            <Text style={styles.printBtnText}>Print invoice</Text>
-          </>
-        )}
-      </TouchableOpacity>
+        <View style={styles.resultModalBackdrop}>
+          <View style={styles.resultModalCard}>
+            <View style={styles.resultModalIconWrap}>
+              {printResult === 'success' && (
+                <Ionicons name="checkmark-circle" size={56} color="#22c55e" />
+              )}
+              {printResult === 'failed' && (
+                <Ionicons name="alert-circle" size={56} color="#ef4444" />
+              )}
+            </View>
+            <Text style={styles.resultModalTitle}>
+              {printResult === 'success' ? 'Print sent' : 'Print failed'}
+            </Text>
+            <Text style={styles.resultModalSub}>
+              {printResult === 'success'
+                ? 'Invoice sent to printer.'
+                : (printError || 'Could not print.')}
+            </Text>
+            <View style={styles.resultModalBtnRow}>
+              <TouchableOpacity
+                style={[styles.resultModalBtn, styles.resultModalBtnPrimary]}
+                onPress={() => {
+                  setPrintResult(null);
+                  setPrintError(null);
+                  handlePrint();
+                }}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="print-outline" size={22} color="#fff" />
+                <Text style={styles.resultModalBtnTextPrimary}>Re-print</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.resultModalBtn, styles.resultModalBtnSecondary]}
+                onPress={goToHome}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="home-outline" size={22} color={colors.primary} />
+                <Text style={styles.resultModalBtnTextSecondary}>Go to home</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       {/* Printer connection note */}
       <View style={styles.printerNote}>
@@ -639,41 +698,6 @@ export default function InvoiceScreen({ route, navigation }) {
         </View>
       </View>
 
-      {/* {doneState && (
-        <Animated.View
-          style={[
-            styles.syncOverlay,
-            {
-              opacity: fadeAnim,
-            },
-          ]}
-          pointerEvents="box-only"
-        >
-          <Animated.View style={[styles.syncCard, { transform: [{ scale: scaleAnim }] }]}>
-            <View style={styles.syncIconWrap}>
-              {doneState === 'syncing' && (
-                <ActivityIndicator size="large" color={colors.primary} />
-              )}
-              {doneState === 'success' && (
-                <Ionicons name="checkmark-circle" size={48} color={colors.primary} />
-              )}
-              {doneState === 'offline' && (
-                <Ionicons name="cloud-offline-outline" size={48} color={colors.textSecondary} />
-              )}
-            </View>
-            <Text style={styles.syncTitle}>
-              {doneState === 'syncing' && 'Syncing your payment'}
-              {doneState === 'success' && 'All synced!'}
-              {doneState === 'offline' && 'Saved locally'}
-            </Text>
-            <Text style={styles.syncSub}>
-              {doneState === 'syncing' && 'Pushing to server…'}
-              {doneState === 'success' && 'Taking you to dashboard…'}
-              {doneState === 'offline' && 'Will sync when you\'re back online.'}
-            </Text>
-          </Animated.View>
-        </Animated.View>
-      )} */}
     </ScrollView>
   );
 }
