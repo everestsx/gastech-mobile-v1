@@ -312,13 +312,17 @@ function paymentTypeFromJournal(journalId, codeMap = {}) {
  * Refresh payment_type from Odoo so Delivered tabs and Dashboard show correct Cash/Cheque/Credit on all devices.
  * Flow: (1) Only invoiced orders. (2) If invoice payment_state is not 'paid' (e.g. in_payment, not_paid) → credit.
  * (3) If paid → get account.payment by reconciled_invoice_ids; by journal_id (Cash vs Cheque) set cash or cheque.
- * @param {Array<{ name?: string, invoice_status?: string }>} syncedOrders - orders just synced from Odoo
+ * @param {Array<{ id?: number, name?: string, invoice_status?: string }>} syncedOrders - orders just synced from Odoo
+ * @param {{ skipOrderIds?: Set<number> }} [options] - When set, do not overwrite payment_type for these order ids (e.g. orders with pending upload).
  */
-export async function refreshPaymentTypesFromOdoo(syncedOrders) {
+export async function refreshPaymentTypesFromOdoo(syncedOrders, options = {}) {
+  const skipOrderIds = options.skipOrderIds;
   const orderNames = (syncedOrders || [])
     .filter((o) => String(o.invoice_status || '') === 'invoiced' && o.name)
     .map((o) => o.name);
   if (orderNames.length === 0) return;
+  const orderNameToId = {};
+  (syncedOrders || []).forEach((o) => { if (o.name && o.id != null) orderNameToId[o.name] = o.id; });
   try {
     const { getInvoicesByOrigins, getPaymentsByInvoiceIds } = await import('./invoice.service');
     const invoices = await getInvoicesByOrigins(orderNames);
@@ -377,10 +381,13 @@ export async function refreshPaymentTypesFromOdoo(syncedOrders) {
       }
     }
 
+    let updated = 0;
     for (const name of Object.keys(orderNameToType)) {
+      if (skipOrderIds?.size && skipOrderIds.has(Number(orderNameToId[name]))) continue;
       await saleOrdersDb.updatePaymentTypeByOrderName(name, orderNameToType[name]);
+      updated++;
     }
-    log('refresh', `payment_type updated for ${Object.keys(orderNameToType).length} orders from Odoo`);
+    log('refresh', `payment_type updated for ${updated} orders from Odoo (skipped ${Object.keys(orderNameToType).length - updated} with pending upload)`);
   } catch (e) {
     logWarn('refresh payment_type from Odoo', e);
   }
@@ -477,23 +484,43 @@ async function processSyncQueue() {
       const moveUpdates = p.moveUpdates || [];
       const moveLineUpdates = p.moveLineUpdates || [];
 
-      for (const u of orderLineUpdates) {
-        await updateSaleOrderLineQty(u.lineId, u.product_uom_qty);
+      try {
+        for (const u of orderLineUpdates) {
+          await updateSaleOrderLineQty(u.lineId, u.product_uom_qty);
+        }
+        for (const u of moveUpdates) {
+          await updateStockMoveQty(u.moveId, u.product_uom_qty);
+        }
+        for (const u of moveLineUpdates) {
+          await updateMoveLineQty(u.moveLineId, u.qty_done);
+        }
+      } catch (updateErr) {
+        const msg = (updateErr?.message || String(updateErr)).toLowerCase();
+        const recordDeleted = msg.includes('does not exist or has been deleted') || msg.includes('has been deleted');
+        if (recordDeleted) {
+          log('queue', `delivery updates skipped (record deleted in Odoo — delivery may already be validated): ${msg.slice(0, 80)}`);
+        } else {
+          throw updateErr;
+        }
       }
-      for (const u of moveUpdates) {
-        await updateStockMoveQty(u.moveId, u.product_uom_qty);
-      }
-      for (const u of moveLineUpdates) {
-        await updateMoveLineQty(u.moveLineId, u.qty_done);
-      }
+
       if (pickingId != null) {
-        const validateResult = await validatePicking(pickingId);
-        if (validateResult != null && typeof validateResult === 'object') {
-          const pickIds = validateResult.pick_ids ?? validateResult.backorder_pick_ids ?? [];
-          const ids = (Array.isArray(pickIds) ? pickIds : []).map((id) => (Array.isArray(id) ? id[0] : id)).filter(Boolean);
-          if (ids.length > 0) {
-            const wizardId = await createBackorderConfirmation(ids);
-            if (wizardId != null) await processBackorderConfirmation(wizardId);
+        try {
+          const validateResult = await validatePicking(pickingId);
+          if (validateResult != null && typeof validateResult === 'object') {
+            const pickIds = validateResult.pick_ids ?? validateResult.backorder_pick_ids ?? [];
+            const ids = (Array.isArray(pickIds) ? pickIds : []).map((id) => (Array.isArray(id) ? id[0] : id)).filter(Boolean);
+            if (ids.length > 0) {
+              const wizardId = await createBackorderConfirmation(ids);
+              if (wizardId != null) await processBackorderConfirmation(wizardId);
+            }
+          }
+        } catch (validateErr) {
+          const vMsg = (validateErr?.message || String(validateErr)).toLowerCase();
+          if (vMsg.includes('does not exist or has been deleted') || vMsg.includes('has been deleted') || vMsg.includes('already')) {
+            log('queue', `delivery validate skipped (picking already done or deleted): ${vMsg.slice(0, 60)}`);
+          } else {
+            throw validateErr;
           }
         }
       }
@@ -644,6 +671,10 @@ async function processSyncQueue() {
         checkNumber: paymentMethod === 'cheque' ? (chequeNumber || undefined) : undefined,
       });
 
+      if (invoiceBlockFailedNoItemsToInvoice) {
+        log('queue', `payment item ${item.id} NOT marked synced (invoice not created — deliver first, then sync again for cheque/credit)`);
+        continue;
+      }
       if (chatterPostedInThisRun.has(soId)) {
         await syncQueueDb.markSynced(Number(item.id));
         alreadySyncedSaleOrderIds.add(soId);
@@ -751,6 +782,8 @@ export async function deleteLocalData() {
     'vehicle_warehouses',
     'vehicle_inventories',
     'offline_attachments',
+    'local_payments',
+    'local_invoices',
     'sync_log',
     'sync_queue',
   ];
@@ -828,12 +861,14 @@ export async function runSync() {
     result.orders = (orders || []).length;
     log('fetch', `customers=${result.customers} orders=${result.orders}`);
     if (isLoggingOut) return { error: 'Logout in progress' };
+    // Dashboard and order lists read from local DB only; preserve local state for orders with pending upload.
+    const pendingSaleOrderIds = await syncQueueDb.getPendingSaleOrderIds();
     log('db', 'partners');
     await partnersDb.upsertPartners(customers || []);
     log('db', 'sale_orders');
-    await saleOrdersDb.upsertSaleOrders(orders || []);
+    await saleOrdersDb.upsertSaleOrders(orders || [], { preserveLocalForSaleOrderIds: pendingSaleOrderIds });
 
-    await refreshPaymentTypesFromOdoo(orders || []);
+    await refreshPaymentTypesFromOdoo(orders || [], { skipOrderIds: pendingSaleOrderIds });
 
     const orderIds = (orders || []).map((o) => o.id);
     let allLines = [];
@@ -901,7 +936,7 @@ export async function runSync() {
     log('db', 'sale_order_lines');
     await saleOrderLinesDb.upsertSaleOrderLines(allLines);
     log('db', 'stock_pickings');
-    await stockPickingsDb.upsertStockPickings(allPickings);
+    await stockPickingsDb.upsertStockPickings(allPickings, { preserveLocalStateForSaleOrderIds: pendingSaleOrderIds });
     log('db', 'stock_moves');
     await stockMovesDb.upsertStockMoves(allMoves);
     log('db', 'stock_move_lines');
@@ -1102,6 +1137,8 @@ export async function clearAllTables() {
     'account_journals',
     'routes',
     'vehicle_inventories',
+    'local_payments',
+    'local_invoices',
     'sync_queue',
     'sync_log'
   ];

@@ -9,22 +9,50 @@ function odooRel(idName) {
   return { id: idName, name: null };
 }
 
-export async function upsertSaleOrders(rows) {
+/**
+ * @param {Array} rows - Orders from Odoo (or merged).
+ * @param {{ preserveLocalForSaleOrderIds?: Set<number> | number[] }} [options] - When set, for these sale order ids we keep existing local invoice_status, payment_type, amount_credit (so sync download does not overwrite unuploaded local state).
+ */
+export async function upsertSaleOrders(rows, options = {}) {
   if (!rows?.length) return;
   const db = await getDb();
   const now = iso();
+  const preserveSet = options.preserveLocalForSaleOrderIds;
+  const preserveIds = preserveSet instanceof Set ? Array.from(preserveSet) : (Array.isArray(preserveSet) ? preserveSet : []);
 
   await db.withTransactionAsync(async (tx) => {
+    let localMap = {};
+    if (preserveIds.length > 0) {
+      const placeholders = preserveIds.map(() => '?').join(',');
+      const localRows = await tx.getAllAsync(
+        `SELECT id, invoice_status, payment_type, amount_credit FROM sale_orders WHERE id IN (${placeholders})`,
+        preserveIds
+      );
+      for (const row of localRows || []) {
+        localMap[num(row.id)] = {
+          invoice_status: row.invoice_status ?? '',
+          payment_type: row.payment_type ?? '',
+          amount_credit: row.amount_credit,
+        };
+      }
+    }
+
     for (const r of rows) {
       const partner = odooRel(r.partner_id);
       const route = odooRel(r.route_id);
       const vehicle = odooRel(r.vehicle_id);
+      const rid = num(r.id);
+      const useLocal = preserveIds.length > 0 && localMap[rid];
+      const invoiceStatus = useLocal ? (localMap[rid].invoice_status ?? '') : empty(r.invoice_status);
+      const paymentType = useLocal ? (localMap[rid].payment_type ?? '') : empty(r.payment_type ?? '');
+      const amountCredit = useLocal && localMap[rid].amount_credit != null ? localMap[rid].amount_credit : (r.amount_credit != null ? num(r.amount_credit) : null);
+
       await tx.runAsync(
         `INSERT INTO sale_orders (
           id, name, partner_id, partner_name, state, date_order,
           amount_total, amount_untaxed, amount_tax, invoice_status, order_line,
-          route_id, route_name, vehicle_id, vehicle_name, updated_at, payload, payment_type
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          route_id, route_name, vehicle_id, vehicle_name, updated_at, payload, payment_type, amount_credit
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           name=excluded.name, partner_id=excluded.partner_id, partner_name=excluded.partner_name,
           state=excluded.state, date_order=excluded.date_order,
@@ -33,9 +61,10 @@ export async function upsertSaleOrders(rows) {
           route_id=excluded.route_id, route_name=excluded.route_name,
           vehicle_id=excluded.vehicle_id, vehicle_name=excluded.vehicle_name,
           updated_at=excluded.updated_at, payload=excluded.payload,
-          payment_type=CASE WHEN excluded.payment_type IS NOT NULL AND excluded.payment_type != '' THEN excluded.payment_type ELSE sale_orders.payment_type END`,
+          payment_type=excluded.payment_type,
+          amount_credit=excluded.amount_credit`,
         [
-          num(r.id),
+          rid,
           empty(r.name),
           numOrNull(partner.id),
           empty(partner.name),
@@ -44,7 +73,7 @@ export async function upsertSaleOrders(rows) {
           num(r.amount_total),
           num(r.amount_untaxed),
           num(r.amount_tax),
-          empty(r.invoice_status),
+          invoiceStatus,
           jsonArr(r.order_line),
           numOrNull(route.id),
           empty(route.name),
@@ -52,7 +81,8 @@ export async function upsertSaleOrders(rows) {
           empty(vehicle.name),
           now,
           empty(r.payload),
-          empty(r.payment_type ?? '')
+          paymentType,
+          amountCredit,
         ]
       );
     }

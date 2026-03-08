@@ -26,6 +26,7 @@ import SettingsScreen from '../screens/SettingsScreen';
 import PlaceholderScreen from '../screens/PlaceholderScreen';
 import VehicleStockScreen from '../screens/VehicleStockScreen';
 import SyncHistoryScreen from '../screens/SyncHistoryScreen';
+import LocalInvoicesScreen from '../screens/LocalInvoicesScreen';
 
 import { useTheme } from '../context/ThemeContext';
 import { runSync, getSyncIntervalMs } from '../services/sync.service';
@@ -164,6 +165,11 @@ function MainStackScreen() {
         name="SyncHistory"
         component={SyncHistoryScreen}
         options={{ ...headerScreenOptions, title: 'Sync History' }}
+      />
+      <MainStack.Screen
+        name="LocalInvoices"
+        component={LocalInvoicesScreen}
+        options={{ ...headerScreenOptions, title: 'Local Invoices' }}
       />
       <MainStack.Screen
         name="Settings"
@@ -330,7 +336,6 @@ const styles = StyleSheet.create({
     minWidth: 260,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.15,
     shadowRadius: 24,
     elevation: 12,
   },

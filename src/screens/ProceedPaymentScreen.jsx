@@ -23,6 +23,8 @@ import * as saleOrdersDb from '../database/saleOrders.js';
 import * as syncQueueDb from '../database/syncQueue.js';
 import * as offlineAttachmentsDb from '../database/offlineAttachments.js';
 import * as stockPickingsDb from '../database/stockPickings.js';
+import * as localInvoicesDb from '../database/localInvoices.js';
+import * as localPaymentsDb from '../database/localPayments.js';
 import * as FileSystem from 'expo-file-system';
 
 /** Base64 encoding for readAsStringAsync/writeAsStringAsync (EncodingType may be undefined in some envs). */
@@ -279,6 +281,26 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       if (picking?.id) {
         await stockPickingsDb.updatePickingStateLocal(picking.id, 'done');
       }
+
+      const amountUntaxed = orderInfo.amount_untaxed != null ? Number(orderInfo.amount_untaxed) : orderTotal;
+      const amountTax = orderInfo.amount_tax != null ? Number(orderInfo.amount_tax) : 0;
+      const invoiceId = await localInvoicesDb.upsertLocalInvoice({
+        sale_order_id: soId,
+        invoice_number: invoiceNumber,
+        amount_total: orderTotal,
+        amount_untaxed: amountUntaxed,
+        amount_tax: amountTax,
+        state: 'posted',
+      });
+      const paymentRows = payments.map((p) => ({
+        sale_order_id: soId,
+        payment_type: p.type === 'check' ? 'cheque' : p.type,
+        amount: p.amount,
+        journal_id: p.journalId ?? null,
+        check_number: p.type === 'check' ? (p.checkNumber || checkNumberTrimmed || '') : '',
+        bank_name: p.type === 'check' ? (selectedLocalBank?.name ?? '') : '',
+      }));
+      await localPaymentsDb.replacePaymentsForInvoice(invoiceId, paymentRows);
 
       navigation.replace('InvoiceScreen', {
         saleOrderId,

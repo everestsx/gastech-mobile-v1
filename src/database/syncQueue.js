@@ -63,6 +63,38 @@ export async function getSyncedPaymentSaleOrderIds() {
   return ids;
 }
 
+/** Get sale order ids that have pending (not yet synced) delivery or payment in the queue. Used to preserve local state during sync download. */
+export async function getPendingSaleOrderIds() {
+  const db = await getDb();
+  const rows = await db.getAllAsync(
+    `SELECT action_type, payload FROM sync_queue WHERE synced_at IS NULL`
+  );
+  const ids = new Set();
+  for (const row of rows || []) {
+    const p = safeParseJson(row.payload, {});
+    const soId = p.saleOrderId ?? p.sale_id;
+    if (soId != null) ids.add(Number(soId));
+  }
+  return ids;
+}
+
+/** Get synced_at for payment queue item by sale order id. Returns null if not synced or no payment queued. */
+export async function getPaymentSyncedAtForSaleOrder(saleOrderId) {
+  if (saleOrderId == null) return null;
+  const db = await getDb();
+  const rows = await db.getAllAsync(
+    `SELECT payload, synced_at FROM sync_queue WHERE action_type = ? AND synced_at IS NOT NULL`,
+    [ACTION_PAYMENT]
+  );
+  const soId = Number(saleOrderId);
+  for (const row of rows || []) {
+    const p = safeParseJson(row.payload, {});
+    const id = p.saleOrderId ?? p.sale_order_id;
+    if (id != null && Number(id) === soId) return row.synced_at;
+  }
+  return null;
+}
+
 function safeParseJson(str, fallback) {
   if (str == null || str === '') return fallback;
   try {

@@ -316,6 +316,45 @@ async function runMigrations(db) {
     }
     await db.runAsync('PRAGMA user_version = 11');
   }
+
+  // Migration 12: Local invoices and payments (offline invoicing cycle; upload to Odoo from queue)
+  if (current < 12) {
+    await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS local_invoices (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sale_order_id INTEGER NOT NULL UNIQUE,
+      invoice_number TEXT NOT NULL,
+      amount_total REAL NOT NULL,
+      amount_untaxed REAL,
+      amount_tax REAL,
+      state TEXT NOT NULL DEFAULT 'posted',
+      created_at TEXT NOT NULL,
+      updated_at TEXT,
+      synced_at TEXT,
+      odoo_invoice_id INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS local_payments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      invoice_id INTEGER NOT NULL,
+      sale_order_id INTEGER NOT NULL,
+      payment_type TEXT NOT NULL,
+      amount REAL NOT NULL,
+      journal_id INTEGER,
+      check_number TEXT,
+      bank_name TEXT,
+      created_at TEXT NOT NULL,
+      synced_at TEXT,
+      odoo_payment_id INTEGER,
+      FOREIGN KEY (invoice_id) REFERENCES local_invoices(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_local_invoices_sale_order ON local_invoices(sale_order_id);
+    CREATE INDEX IF NOT EXISTS idx_local_invoices_synced ON local_invoices(synced_at);
+    CREATE INDEX IF NOT EXISTS idx_local_payments_invoice ON local_payments(invoice_id);
+    CREATE INDEX IF NOT EXISTS idx_local_payments_sale_order ON local_payments(sale_order_id);
+    CREATE INDEX IF NOT EXISTS idx_local_payments_type ON local_payments(payment_type);
+    `);
+    await db.runAsync('PRAGMA user_version = 12');
+  }
 }
 
 /**

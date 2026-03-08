@@ -30,7 +30,6 @@ import {
   getOrderLineTotalsFromDB,
   getPickingsBySaleIdsFromDB,
   getOrderLinesByOrderIdsFromDB,
-  getCollectionTotalsFromOdoo,
 } from '../services/sync.service';
 import {
   getActiveCommissionPlan,
@@ -84,8 +83,6 @@ export default function DashboardScreen({ navigation }) {
   const [showChartDatePicker, setShowChartDatePicker] = useState(false);
   const [chartLineTotalsByOrder, setChartLineTotalsByOrder] = useState({});
   const [chartPickingsBySaleId, setChartPickingsBySaleId] = useState([]);
-  const [collectionFromOdoo, setCollectionFromOdoo] = useState(null);
-
   // Commission state
   const [commissionPlan, setCommissionPlan] = useState(null);
   const [commissionLoading, setCommissionLoading] = useState(false);
@@ -280,6 +277,7 @@ export default function DashboardScreen({ navigation }) {
       [todayOrders, pickingStateBySaleId]
   );
 
+  // Collection totals from local DB only (delivered today orders + payment_type). Ensures cash/cheque/credit show correctly as soon as user records payment, before upload to Odoo.
   const cashTotal = deliveredTodayOrders
       .filter((o) => (o.payment_type || '').toLowerCase() === 'cash')
       .reduce((s, o) => s + (Number(o.amount_total) || 0), 0);
@@ -290,38 +288,13 @@ export default function DashboardScreen({ navigation }) {
     .filter((o) => (o.payment_type || '').toLowerCase() === 'credit')
     .reduce((s, o) => s + (Number(o.amount_credit) ?? Number(o.amount_total) ?? 0), 0);
   const collectionTotal = cashTotal + chequeTotal + creditTotal || 1;
-  const cashPct = Math.round((cashTotal / collectionTotal) * 100);
-  const chequePct = Math.round((chequeTotal / collectionTotal) * 100);
-  const creditPct = Math.round((creditTotal / collectionTotal) * 100);
-
-  // Use Odoo collection totals when available so credit (unpaid invoice amounts) shows correctly
-  const cashTotalDisplay = collectionFromOdoo != null ? (collectionFromOdoo.cashTotal ?? cashTotal) : cashTotal;
-  const chequeTotalDisplay = collectionFromOdoo != null ? (collectionFromOdoo.chequeTotal ?? chequeTotal) : chequeTotal;
-  const creditTotalDisplay = collectionFromOdoo != null ? (collectionFromOdoo.creditTotal ?? creditTotal) : creditTotal;
+  const cashTotalDisplay = cashTotal;
+  const chequeTotalDisplay = chequeTotal;
+  const creditTotalDisplay = creditTotal;
   const collectionTotalDisplay = cashTotalDisplay + chequeTotalDisplay + creditTotalDisplay || 1;
   const cashPctDisplay = Math.round((cashTotalDisplay / collectionTotalDisplay) * 100);
   const chequePctDisplay = Math.round((chequeTotalDisplay / collectionTotalDisplay) * 100);
   const creditPctDisplay = Math.round((creditTotalDisplay / collectionTotalDisplay) * 100);
-
-  const deliveredTodayOrderNames = useMemo(
-    () => deliveredTodayOrders.map((o) => (o.name || String(o.id)).trim()).filter(Boolean),
-    [deliveredTodayOrders]
-  );
-  useEffect(() => {
-    if (deliveredTodayOrderNames.length === 0) {
-      setCollectionFromOdoo(null);
-      return;
-    }
-    let cancelled = false;
-    getCollectionTotalsFromOdoo(deliveredTodayOrderNames)
-      .then((totals) => {
-        if (!cancelled && totals) setCollectionFromOdoo(totals);
-      })
-      .catch(() => {
-        if (!cancelled) setCollectionFromOdoo(null);
-      });
-    return () => { cancelled = true; };
-  }, [deliveredTodayOrderNames.join(',')]);
 
   const routeFromOrder = todayOrders[0]?.route_id?.[1];
   const routeName = routeFromOrder || (routes[0]?.name) || '—';

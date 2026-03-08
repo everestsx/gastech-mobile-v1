@@ -1,16 +1,40 @@
 /**
  * Local CRUD for stock_pickings (Odoo stock.picking mirror).
  */
+
 import { getDb } from './db.js';
 import { empty, num, numOrNull, iso, jsonArr } from './dbHelpers.js';
 
-export async function upsertStockPickings(rows) {
+/**
+ * @param {Array} rows - Pickings from Odoo (or merged).
+ * @param {{ preserveLocalStateForSaleOrderIds?: Set<number> | number[] }} [options] - When set, for pickings whose sale_id is in this set we keep existing local state (so sync download does not overwrite e.g. 'done' with Odoo value).
+ */
+export async function upsertStockPickings(rows, options = {}) {
   if (!rows?.length) return;
   const db = await getDb();
   const now = iso();
+  const preserveSet = options.preserveLocalStateForSaleOrderIds;
+  const preserveIds = preserveSet instanceof Set ? Array.from(preserveSet) : (Array.isArray(preserveSet) ? preserveSet : []);
+
   await db.withTransactionAsync(async (tx) => {
+    let stateByPickingId = {};
+    if (preserveIds.length > 0) {
+      const placeholders = preserveIds.map(() => '?').join(',');
+      const localRows = await tx.getAllAsync(
+        `SELECT id, state FROM stock_pickings WHERE sale_id IN (${placeholders})`,
+        preserveIds
+      );
+      for (const row of localRows || []) {
+        stateByPickingId[num(row.id)] = row.state ?? '';
+      }
+    }
+
     for (const r of rows) {
       const saleId = Array.isArray(r.sale_id) ? r.sale_id[0] : r.sale_id;
+      const sid = numOrNull(saleId);
+      const useLocal = preserveIds.length > 0 && sid != null && preserveIds.includes(sid) && stateByPickingId[num(r.id)] !== undefined;
+      const stateVal = useLocal ? (stateByPickingId[num(r.id)] ?? '') : (empty(r.state) || null);
+
       await tx.runAsync(
         `INSERT OR REPLACE INTO stock_pickings (
           id, name, sale_id, state, move_ids, backorder_ids, updated_at
@@ -18,8 +42,8 @@ export async function upsertStockPickings(rows) {
         [
           num(r.id),
           empty(r.name) || null,
-          numOrNull(saleId),
-          empty(r.state) || null,
+          sid,
+          stateVal,
           jsonArr(r.move_ids),
           jsonArr(r.backorder_ids),
           now,

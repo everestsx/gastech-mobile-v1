@@ -203,6 +203,16 @@ export default function MenuScreen({ navigation }) {
 
       <TouchableOpacity
         style={[styles.menuItem, { backgroundColor: colors.surface, borderColor: colors.border }]}
+        onPress={() => navigation.navigate('LocalInvoices')}
+        activeOpacity={0.8}
+      >
+        <Ionicons name="document-text-outline" size={24} color={colors.primary} />
+        <Text style={[styles.menuItemText, { color: colors.text }]}>Local Invoices</Text>
+        <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={[styles.menuItem, { backgroundColor: colors.surface, borderColor: colors.border }]}
         onPress={() => navigation.navigate('SyncHistory')}
         activeOpacity={0.8}
       >

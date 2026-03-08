@@ -13,8 +13,9 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import * as Print from 'expo-print';
 import { useTheme } from '../context/ThemeContext';
+import { useSync } from '../context/SyncContext';
 import { spacing, borderRadius } from '../constants/theme';
-import { getSaleOrderDetailsFromDB } from '../services/sync.service';
+import { getSaleOrderDetailsFromDB, runSync } from '../services/sync.service';
 import { getOrAssignInvoiceNumber } from '../utils/invoiceNumber';
 import { getProductDisplayName } from '../utils/productDisplay';
 import { formatAmount } from '../utils/format';
@@ -211,6 +212,7 @@ export default function InvoiceScreen({ route, navigation }) {
     customerSignatureDataUrl,
   } = route.params ?? {};
 
+  const { setHideSyncIndicator } = useSync();
   const [order, setOrder] = useState(null);
   const [lines, setLines] = useState([]);
   const [invoiceNumber, setInvoiceNumber] = useState(null);
@@ -415,6 +417,11 @@ export default function InvoiceScreen({ route, navigation }) {
     loadInvoice();
   }, [loadInvoice]);
 
+  useEffect(() => {
+    setHideSyncIndicator(true);
+    return () => setHideSyncIndicator(false);
+  }, [setHideSyncIndicator]);
+
   const handlePrint = useCallback(async () => {
     if (!order) return;
     setPrinting(true);
@@ -430,6 +437,8 @@ export default function InvoiceScreen({ route, navigation }) {
       setPrintError(err?.message || 'Could not print. Ensure a printer is available (Bluetooth, USB, or Network).');
     } finally {
       setPrinting(false);
+      setHideSyncIndicator(false);
+      runSync().catch((e) => console.warn('[InvoiceScreen] sync after print', e?.message ?? e));
     }
   }, [order, lines, invoiceNumber, paymentType, selectedBankName, paymentSplit, logoUri, customerSignatureDataUrl, chequeBankName, checkNumber]);
 
