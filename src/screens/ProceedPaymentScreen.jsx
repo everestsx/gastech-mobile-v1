@@ -275,11 +275,12 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       console.log(`[Payment] Enqueued payment for SO ${saleOrderId}. Sync will: read proof URIs → base64 → ir.attachment.create → message_post(attachment_ids).`);
 
       const primaryPaymentType = needsCredit ? 'credit' : needsCheck ? 'cheque' : 'cash';
-      await saleOrdersDb.updateSaleOrderPaymentTypeLocal(saleOrderId, primaryPaymentType);
+      const creditAmountForDb = primaryPaymentType === 'credit' ? (paymentSplit.credit ?? orderTotal) : null;
+      await saleOrdersDb.updateSaleOrderPaymentTypeLocal(saleOrderId, primaryPaymentType, creditAmountForDb);
 
       const { picking } = await getDeliveryDataFromDB(saleOrderId);
-      if (picking?.id) {
-        await stockPickingsDb.updatePickingStateLocal(picking.id, 'done');
+      if (picking?.id != null) {
+        await stockPickingsDb.updatePickingStateLocal(Number(picking.id) || 0, 'done');
       }
 
       const amountUntaxed = orderInfo.amount_untaxed != null ? Number(orderInfo.amount_untaxed) : orderTotal;
@@ -854,7 +855,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           <Text style={styles.sectionLabel}>Credit</Text>
           <View style={styles.creditAmountWrap}>
             <Ionicons name="wallet-outline" size={24} color={colors.textSecondary} />
-            <Text style={styles.creditAmountHint}>Remaining after Cash & Check</Text>
+            <Text style={styles.creditAmountHint}>Remaining after Cash & Cheque</Text>
             <Text style={styles.creditAmountText}> Rs. {formatAmount(creditAmountNum)}</Text>
           </View>
         </>

@@ -98,8 +98,11 @@ function safeParseJson(str, fallback) {
  */
 export async function updatePickingStateLocal(pickingId, state) {
   const db = await getDb();
+  const stateStr = typeof state === 'string' && state ? state : 'done';
+  const nowStr = iso();
+  const idNum = num(pickingId);
   await db.runAsync(
     'UPDATE stock_pickings SET state = ?, updated_at = ? WHERE id = ?',
-    [empty(state) || 'done', iso(), num(pickingId)]
+    [stateStr, nowStr, idNum]
   );
 }

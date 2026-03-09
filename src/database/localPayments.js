@@ -33,20 +33,21 @@ export async function insertLocalPayment(row) {
  */
 export async function replacePaymentsForInvoice(invoiceId, paymentRows) {
   const db = await getDb();
+  const invoiceIdNum = num(invoiceId);
+  const now = iso();
   await db.withTransactionAsync(async (tx) => {
-    await tx.runAsync('DELETE FROM local_payments WHERE invoice_id = ?', [num(invoiceId)]);
-    const now = iso();
+    await tx.runAsync('DELETE FROM local_payments WHERE invoice_id = ?', [invoiceIdNum]);
     for (const row of paymentRows || []) {
       if (num(row.amount) <= 0) continue;
       await tx.runAsync(
         `INSERT INTO local_payments (invoice_id, sale_order_id, payment_type, amount, journal_id, check_number, bank_name, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          num(invoiceId),
+          invoiceIdNum,
           num(row.sale_order_id),
           empty(row.payment_type),
           num(row.amount),
-          numOrNull(row.journal_id),
+          numOrNull(row.journal_id) ?? null,
           empty(row.check_number),
           empty(row.bank_name),
           now,

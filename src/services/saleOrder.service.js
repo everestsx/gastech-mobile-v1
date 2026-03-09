@@ -1,5 +1,12 @@
 import { callOdoo } from "./index.service";
 
+/**
+ * Fields requested from sale.order search_read.
+ * Standard Odoo sale.order does NOT have payment_type or amount_credit; payment method
+ * (cash/cheque/credit) is derived from invoices + account.payment in refreshPaymentTypesFromOdoo.
+ * If your Odoo has custom fields (e.g. payment_type, amount_credit, x_payment_type),
+ * add them here so they are returned when present.
+ */
 const SALE_ORDER_FIELDS = [
   "id",
   "name",
@@ -7,10 +14,16 @@ const SALE_ORDER_FIELDS = [
   "state",
   "date_order",
   "amount_total",
+  "amount_untaxed",
+  "amount_tax",
   "invoice_status",
   "order_line",
   "route_id",
   "vehicle_id",
+  // Optional: add if your Odoo has these on sale.order (standard does not):
+  // "amount_credit",
+  // "payment_type",
+  // "x_payment_type",
 ];
 
 /**

@@ -29,14 +29,14 @@ export async function upsertLocalInvoice(row) {
       `UPDATE local_invoices SET invoice_number = ?, amount_total = ?, amount_untaxed = ?, amount_tax = ?, state = ?, updated_at = ? WHERE sale_order_id = ?`,
       [invoiceNumber, amountTotal, amountUntaxed, amountTax, state, now, saleOrderId]
     );
-    return existing.id;
+    return num(existing.id);
   }
   const result = await db.runAsync(
     `INSERT INTO local_invoices (sale_order_id, invoice_number, amount_total, amount_untaxed, amount_tax, state, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     [saleOrderId, invoiceNumber, amountTotal, amountUntaxed, amountTax, state, now, now]
   );
-  return result.lastInsertRowId;
+  return num(result.lastInsertRowId);
 }
 
 export async function getLocalInvoiceBySaleOrderId(saleOrderId) {

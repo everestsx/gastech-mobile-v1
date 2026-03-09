@@ -4,6 +4,7 @@
  * All access serialized to avoid "database is locked" errors.
  */
 import * as SQLite from 'expo-sqlite';
+import * as FileSystem from 'expo-file-system';
 
 const DB_NAME = 'gastech.db';
 
@@ -382,4 +383,33 @@ export async function getDb() {
     withTransactionAsync: (fn) =>
       enqueue((db) => db.withTransactionAsync(() => fn(db))),
   };
+}
+
+/**
+ * Delete the database completely and allow it to be recreated on next access.
+ * Use for recovery from schema/state corruption or to start fresh (dev only).
+ * Flow: drain queue → close DB → delete file → clear ref. Next getDb() opens a new DB and runs migrations.
+ */
+export async function resetDatabaseAndRecreate() {
+  await _queue;
+  const db = await getRawDb();
+  rawDbPromise = null;
+  try {
+    if (typeof db.closeAsync === 'function') await db.closeAsync();
+  } catch (e) {
+    console.warn('[DB] close:', e?.message ?? e);
+  }
+  try {
+    const path = db.databasePath ?? (FileSystem.documentDirectory + `SQLite/${DB_NAME}`);
+    const exists = await FileSystem.getInfoAsync(path, { size: false });
+    if (exists.exists) {
+      await FileSystem.deleteAsync(path, { idempotent: true });
+      console.log('[DB] Deleted', path);
+    }
+  } catch (e) {
+    console.warn('[DB] delete file:', e?.message ?? e);
+  }
+  try {
+    if (typeof db.deleteAsync === 'function') await db.deleteAsync();
+  } catch (_) {}
 }

@@ -4,69 +4,67 @@
 import { getDb } from './db.js';
 import { empty, num, numOrNull, iso, jsonArr } from './dbHelpers.js';
 
+const LOG = '[saleOrders]';
+
 function odooRel(idName) {
   if (Array.isArray(idName)) return { id: idName[0], name: idName[1] ?? null };
   return { id: idName, name: null };
 }
 
+function logQuery(operation, detail = '') {
+  if (detail) console.log(`${LOG} ${operation} ${detail}`);
+  else console.log(`${LOG} ${operation}`);
+}
+
+function logError(operation, paramsSummary, err) {
+  console.warn(`${LOG} ${operation} failed`, paramsSummary, err?.message ?? err);
+}
+
 /**
  * @param {Array} rows - Orders from Odoo (or merged).
- * @param {{ preserveLocalForSaleOrderIds?: Set<number> | number[] }} [options] - When set, for these sale order ids we keep existing local invoice_status, payment_type, amount_credit (so sync download does not overwrite unuploaded local state).
+ * @param {{ preserveLocalForSaleOrderIds?: Set<number> | number[] }} [options] - When set, for these sale order ids we keep existing local invoice_status and payment_type (so sync download does not overwrite unuploaded local state). amount_credit is not synced from Odoo; it is set only locally when user completes payment.
  */
 export async function upsertSaleOrders(rows, options = {}) {
   if (!rows?.length) return;
+  const op = 'upsertSaleOrders';
+  logQuery(op, `rows=${rows.length}`);
   const db = await getDb();
   const now = iso();
   const preserveSet = options.preserveLocalForSaleOrderIds;
-  const preserveIds = preserveSet instanceof Set ? Array.from(preserveSet) : (Array.isArray(preserveSet) ? preserveSet : []);
+  const preserveIds = (preserveSet instanceof Set ? Array.from(preserveSet) : (Array.isArray(preserveSet) ? preserveSet : [])).map((id) => num(id));
+  if (preserveIds.length > 0) logQuery(op, `preserveLocalForIds=[${preserveIds.slice(0, 5).join(',')}${preserveIds.length > 5 ? '...' : ''}] (${preserveIds.length})`);
 
-  await db.withTransactionAsync(async (tx) => {
-    let localMap = {};
-    if (preserveIds.length > 0) {
-      const placeholders = preserveIds.map(() => '?').join(',');
-      const localRows = await tx.getAllAsync(
-        `SELECT id, invoice_status, payment_type, amount_credit FROM sale_orders WHERE id IN (${placeholders})`,
-        preserveIds
-      );
-      for (const row of localRows || []) {
-        localMap[num(row.id)] = {
-          invoice_status: row.invoice_status ?? '',
-          payment_type: row.payment_type ?? '',
-          amount_credit: row.amount_credit,
-        };
+  try {
+    await db.withTransactionAsync(async (tx) => {
+      let localMap = {};
+      if (preserveIds.length > 0) {
+        const placeholders = preserveIds.map(() => '?').join(',');
+        const selectSql = `SELECT id, invoice_status, payment_type FROM sale_orders WHERE id IN (${placeholders})`;
+        const localRows = await tx.getAllAsync(selectSql, preserveIds);
+        for (const row of localRows || []) {
+          const idKey = num(row.id);
+          localMap[idKey] = {
+            invoice_status: empty(row.invoice_status),
+            payment_type: empty(row.payment_type),
+          };
+        }
+        logQuery(op, `SELECT preserve local rows=${(localRows || []).length}`);
       }
-    }
 
-    for (const r of rows) {
-      const partner = odooRel(r.partner_id);
-      const route = odooRel(r.route_id);
-      const vehicle = odooRel(r.vehicle_id);
-      const rid = num(r.id);
-      const useLocal = preserveIds.length > 0 && localMap[rid];
-      const invoiceStatus = useLocal ? (localMap[rid].invoice_status ?? '') : empty(r.invoice_status);
-      const paymentType = useLocal ? (localMap[rid].payment_type ?? '') : empty(r.payment_type ?? '');
-      const amountCredit = useLocal && localMap[rid].amount_credit != null ? localMap[rid].amount_credit : (r.amount_credit != null ? num(r.amount_credit) : null);
+      for (let i = 0; i < rows.length; i++) {
+        const r = rows[i];
+        const partner = odooRel(r.partner_id);
+        const route = odooRel(r.route_id);
+        const vehicle = odooRel(r.vehicle_id);
+        const rid = num(r.id);
+        const useLocal = preserveIds.length > 0 && localMap[rid];
+        const invoiceStatus = useLocal ? (localMap[rid].invoice_status || empty(r.invoice_status)) : empty(r.invoice_status);
+        const paymentType = useLocal ? (localMap[rid].payment_type || empty(r.payment_type ?? '')) : empty(r.payment_type ?? '');
 
-      await tx.runAsync(
-        `INSERT INTO sale_orders (
-          id, name, partner_id, partner_name, state, date_order,
-          amount_total, amount_untaxed, amount_tax, invoice_status, order_line,
-          route_id, route_name, vehicle_id, vehicle_name, updated_at, payload, payment_type, amount_credit
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-          name=excluded.name, partner_id=excluded.partner_id, partner_name=excluded.partner_name,
-          state=excluded.state, date_order=excluded.date_order,
-          amount_total=excluded.amount_total, amount_untaxed=excluded.amount_untaxed, amount_tax=excluded.amount_tax,
-          invoice_status=excluded.invoice_status, order_line=excluded.order_line,
-          route_id=excluded.route_id, route_name=excluded.route_name,
-          vehicle_id=excluded.vehicle_id, vehicle_name=excluded.vehicle_name,
-          updated_at=excluded.updated_at, payload=excluded.payload,
-          payment_type=excluded.payment_type,
-          amount_credit=excluded.amount_credit`,
-        [
+        const params = [
           rid,
           empty(r.name),
-          numOrNull(partner.id),
+          numOrNull(partner.id) ?? null,
           empty(partner.name),
           empty(r.state),
           empty(r.date_order),
@@ -75,32 +73,60 @@ export async function upsertSaleOrders(rows, options = {}) {
           num(r.amount_tax),
           invoiceStatus,
           jsonArr(r.order_line),
-          numOrNull(route.id),
+          numOrNull(route.id) ?? null,
           empty(route.name),
-          numOrNull(vehicle.id),
+          numOrNull(vehicle.id) ?? null,
           empty(vehicle.name),
           now,
           empty(r.payload),
           paymentType,
-          amountCredit,
-        ]
-      );
-    }
-  });
+        ];
+        try {
+          await tx.runAsync(
+            `INSERT INTO sale_orders (
+              id, name, partner_id, partner_name, state, date_order,
+              amount_total, amount_untaxed, amount_tax, invoice_status, order_line,
+              route_id, route_name, vehicle_id, vehicle_name, updated_at, payload, payment_type
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+              name=excluded.name, partner_id=excluded.partner_id, partner_name=excluded.partner_name,
+              state=excluded.state, date_order=excluded.date_order,
+              amount_total=excluded.amount_total, amount_untaxed=excluded.amount_untaxed, amount_tax=excluded.amount_tax,
+              invoice_status=excluded.invoice_status, order_line=excluded.order_line,
+              route_id=excluded.route_id, route_name=excluded.route_name,
+              vehicle_id=excluded.vehicle_id, vehicle_name=excluded.vehicle_name,
+              updated_at=excluded.updated_at, payload=excluded.payload,
+              payment_type=excluded.payment_type`,
+            params
+          );
+        } catch (rowErr) {
+          logError(op, `row index=${i} id=${rid} name=${empty(r.name)} paramsTypes=[${params.map((p) => typeof p).join(',')}]`, rowErr);
+          throw rowErr;
+        }
+      }
+    });
+    logQuery(op, `done upserted ${rows.length} rows`);
+  } catch (err) {
+    logError(op, `rows=${rows.length} preserveIds=${preserveIds.length}`, err);
+    throw err;
+  }
 }
 
 /**
  * @param {number | null} [vehicleId] - When set, return only sale orders for this vehicle.
  */
 export async function getAllSaleOrders(vehicleId = null) {
+  const op = 'getAllSaleOrders';
+  logQuery(op, `vehicleId=${vehicleId ?? 'null'}`);
   const db = await getDb();
   const sql =
     vehicleId != null
       ? `SELECT * FROM sale_orders WHERE vehicle_id = ? ORDER BY date_order DESC LIMIT 500`
       : `SELECT * FROM sale_orders ORDER BY date_order DESC LIMIT 500`;
   const args = vehicleId != null ? [vehicleId] : [];
-  const rows = await db.getAllAsync(sql, args);
-  return (rows || []).map((row) => ({
+  try {
+    const rows = await db.getAllAsync(sql, args);
+    const result = (rows || []).map((row) => ({
     id: row.id,
     name: row.name,
     partner_id: row.partner_id != null ? [row.partner_id, row.partner_name ?? ''] : null,
@@ -116,9 +142,17 @@ export async function getAllSaleOrders(vehicleId = null) {
     payment_type: row.payment_type ?? null,
     amount_credit: row.amount_credit != null ? row.amount_credit : null,
   }));
+    logQuery(op, `done count=${result.length}`);
+    return result;
+  } catch (err) {
+    logError(op, `vehicleId=${vehicleId} sql=${sql.slice(0, 60)}... args=${JSON.stringify(args)}`, err);
+    throw err;
+  }
 }
 
 export async function getSaleOrderById(id) {
+  const op = 'getSaleOrderById';
+  logQuery(op, `id=${id}`);
   const db = await getDb();
   try {
     const row = await db.getFirstAsync(`
@@ -138,8 +172,14 @@ export async function getSaleOrderById(id) {
       order_line: safeParseJson(row.order_line, []),
     };
   } catch (e) {
-    console.warn("SQL Error in getSaleOrderById:", e);
-    return await db.getFirstAsync('SELECT * FROM sale_orders WHERE id = ?', [id]);
+    logError(op, `id=${id} (with JOIN)`, e);
+    try {
+      const row = await db.getFirstAsync('SELECT * FROM sale_orders WHERE id = ?', [id]);
+      return row ? { ...row, order_line: safeParseJson(row.order_line, []) } : null;
+    } catch (fallbackErr) {
+      logError(op, `id=${id} fallback SELECT`, fallbackErr);
+      throw fallbackErr;
+    }
   }
 }
 function safeParseJson(str, fallback) {
@@ -156,35 +196,53 @@ function safeParseJson(str, fallback) {
  * Recompute sale order amounts from its lines (offline). Updates amount_untaxed, amount_tax, amount_total.
  */
 export async function updateSaleOrderAmountsFromLines(orderId) {
+  const op = 'updateSaleOrderAmountsFromLines';
+  logQuery(op, `orderId=${orderId}`);
   const db = await getDb();
-  const lineRows = await db.getAllAsync(
-    'SELECT price_subtotal, price_total FROM sale_order_lines WHERE order_id = ?',
-    [num(orderId)]
-  );
-  let amountUntaxed = 0;
-  let amountTax = 0;
-  (lineRows || []).forEach((r) => {
-    const sub = num(r.price_subtotal);
-    const total = num(r.price_total);
-    amountUntaxed += sub;
-    amountTax += total - sub;
-  });
-  const amountTotal = amountUntaxed + amountTax;
-  await db.runAsync(
-    `UPDATE sale_orders SET amount_untaxed = ?, amount_tax = ?, amount_total = ?, updated_at = ? WHERE id = ?`,
-    [amountUntaxed, amountTax, amountTotal, iso(), num(orderId)]
-  );
+  const orderIdNum = num(orderId);
+  try {
+    const lineRows = await db.getAllAsync(
+      'SELECT price_subtotal, price_total FROM sale_order_lines WHERE order_id = ?',
+      [orderIdNum]
+    );
+    let amountUntaxed = 0;
+    let amountTax = 0;
+    (lineRows || []).forEach((r) => {
+      const sub = num(r.price_subtotal);
+      const total = num(r.price_total);
+      amountUntaxed += sub;
+      amountTax += total - sub;
+    });
+    const amountTotal = amountUntaxed + amountTax;
+    await db.runAsync(
+      `UPDATE sale_orders SET amount_untaxed = ?, amount_tax = ?, amount_total = ?, updated_at = ? WHERE id = ?`,
+      [amountUntaxed, amountTax, amountTotal, iso(), orderIdNum]
+    );
+    logQuery(op, `done orderId=${orderId} total=${amountTotal}`);
+  } catch (err) {
+    logError(op, `orderId=${orderId}`, err);
+    throw err;
+  }
 }
 
 /**
  * Update sale order invoice_status locally (offline). e.g. 'invoiced'.
  */
 export async function updateSaleOrderInvoiceStatusLocal(orderId, invoiceStatus) {
+  const op = 'updateSaleOrderInvoiceStatusLocal';
+  logQuery(op, `orderId=${orderId} status=${invoiceStatus}`);
   const db = await getDb();
-  await db.runAsync(
-    `UPDATE sale_orders SET invoice_status = ?, updated_at = ? WHERE id = ?`,
-    [empty(invoiceStatus) || 'invoiced', iso(), num(orderId)]
-  );
+  const params = [empty(invoiceStatus) || 'invoiced', iso(), num(orderId)];
+  try {
+    await db.runAsync(
+      `UPDATE sale_orders SET invoice_status = ?, updated_at = ? WHERE id = ?`,
+      params
+    );
+    logQuery(op, `done orderId=${orderId}`);
+  } catch (err) {
+    logError(op, `orderId=${orderId} params=${JSON.stringify(params)}`, err);
+    throw err;
+  }
 }
 
 /**
@@ -192,18 +250,29 @@ export async function updateSaleOrderInvoiceStatusLocal(orderId, invoiceStatus) 
  * Values: 'cash' | 'cheque' | 'credit'. amountCredit: optional number for credit portion (split payments).
  */
 export async function updateSaleOrderPaymentTypeLocal(orderId, paymentType, amountCredit = null) {
+  const op = 'updateSaleOrderPaymentTypeLocal';
+  logQuery(op, `orderId=${orderId} paymentType=${paymentType} amountCredit=${amountCredit}`);
   const db = await getDb();
   const typeStr =
     paymentType === 'cash' || paymentType === 'cheque' || paymentType === 'credit'
       ? String(paymentType)
       : '';
   const creditNum =
-    amountCredit != null && !Number.isNaN(Number(amountCredit)) ? Number(amountCredit) : 0;
+    amountCredit != null && typeof amountCredit !== 'object' && !Number.isNaN(Number(amountCredit))
+      ? Number(amountCredit)
+      : 0;
   const orderIdNum = num(orderId);
-  await db.runAsync(
-    `UPDATE sale_orders SET payment_type = ?, amount_credit = ?, updated_at = ? WHERE id = ?`,
-    [typeStr, creditNum, iso(), orderIdNum]
-  );
+  const params = [typeStr, creditNum, iso(), orderIdNum];
+  try {
+    await db.runAsync(
+      `UPDATE sale_orders SET payment_type = ?, amount_credit = ?, updated_at = ? WHERE id = ?`,
+      params
+    );
+    logQuery(op, `done orderId=${orderId}`);
+  } catch (err) {
+    logError(op, `orderId=${orderId} params=[${params.map((p) => typeof p).join(',')}]`, err);
+    throw err;
+  }
 }
 
 /**
@@ -211,10 +280,19 @@ export async function updateSaleOrderPaymentTypeLocal(orderId, paymentType, amou
  */
 export async function updatePaymentTypeByOrderName(orderName, paymentType) {
   if (orderName == null || orderName === '') return;
+  const op = 'updatePaymentTypeByOrderName';
+  logQuery(op, `name=${orderName} paymentType=${paymentType}`);
   const db = await getDb();
   const type = paymentType === 'cash' || paymentType === 'cheque' || paymentType === 'credit' ? paymentType : null;
-  await db.runAsync(
-    `UPDATE sale_orders SET payment_type = ?, updated_at = ? WHERE name = ?`,
-    [type, iso(), String(orderName)]
-  );
+  const params = [type, iso(), String(orderName)];
+  try {
+    await db.runAsync(
+      `UPDATE sale_orders SET payment_type = ?, updated_at = ? WHERE name = ?`,
+      params
+    );
+    logQuery(op, `done name=${orderName}`);
+  } catch (err) {
+    logError(op, `name=${orderName} paymentType=${paymentType}`, err);
+    throw err;
+  }
 }
