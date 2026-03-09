@@ -274,12 +274,12 @@ export default function DashboardScreen({ navigation }) {
 
   /** Today's orders that are actually delivered (picking state 'done') for this vehicle */
   //Check and Uncomment this if you want to use the pickingStateBySaleId to get the delivered today orders
-  // const deliveredTodayOrders = useMemo(
-  //     () => todayOrders.filter((o) => (pickingStateBySaleId[o.id] || '') === 'done'),
-  //     [todayOrders, pickingStateBySaleId]
-  // );
+  const deliveredTodayOrders = useMemo(
+      () => todayOrders.filter((o) => (pickingStateBySaleId[o.id] || '') === 'done'),
+      [todayOrders, pickingStateBySaleId]
+  );
 
-  const deliveredTodayOrders = todayOrders;
+  // const deliveredTodayOrders = todayOrders;
 
   // Collection totals from local DB only (delivered today orders + payment_type). Ensures cash/cheque/credit show correctly as soon as user records payment, before upload to Odoo.
   const cashTotal = deliveredTodayOrders
@@ -370,8 +370,8 @@ export default function DashboardScreen({ navigation }) {
       if (!byPartner[key]) byPartner[key] = { shopId: `S${partnerId}`, shopName: partnerName, delivered: 0, pending: 0 };
       const qty = Math.round(Number(chartLineTotalsByOrder[o.id]) || 0);
       //Check and Uncomment this if you want to use the chartPickingStateBySaleId to get the delivered today orders
-      // const isDone = (chartPickingStateBySaleId[o.id] || '') === 'done';
-      const isDone = true;
+      const isDone = (chartPickingStateBySaleId[o.id] || '') === 'done';
+      // const isDone = true;
       if (isDone) byPartner[key].delivered += qty;
       else byPartner[key].pending += qty;
     });
