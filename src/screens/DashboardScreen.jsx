@@ -110,6 +110,7 @@ export default function DashboardScreen({ navigation }) {
       setOrders(Array.isArray(data) ? data : []);
       const today = new Date().toISOString().split('T')[0];
       const todayOrders = (Array.isArray(data) ? data : []).filter((o) => (o.date_order || '').startsWith(today));
+      console.log('todayOrders', todayOrders);
       const orderIds = todayOrders.map((o) => o.id);
       const [totals, pickings, orderLines] = await Promise.all([
         getOrderLineTotalsFromDB(todayOrders),
@@ -272,10 +273,13 @@ export default function DashboardScreen({ navigation }) {
   }, [pickingsBySaleId]);
 
   /** Today's orders that are actually delivered (picking state 'done') for this vehicle */
-  const deliveredTodayOrders = useMemo(
-      () => todayOrders.filter((o) => (pickingStateBySaleId[o.id] || '') === 'done'),
-      [todayOrders, pickingStateBySaleId]
-  );
+  //Check and Uncomment this if you want to use the pickingStateBySaleId to get the delivered today orders
+  // const deliveredTodayOrders = useMemo(
+  //     () => todayOrders.filter((o) => (pickingStateBySaleId[o.id] || '') === 'done'),
+  //     [todayOrders, pickingStateBySaleId]
+  // );
+
+  const deliveredTodayOrders = todayOrders;
 
   // Collection totals from local DB only (delivered today orders + payment_type). Ensures cash/cheque/credit show correctly as soon as user records payment, before upload to Odoo.
   const cashTotal = deliveredTodayOrders
@@ -286,7 +290,7 @@ export default function DashboardScreen({ navigation }) {
       .reduce((s, o) => s + (Number(o.amount_total) || 0), 0);
   const creditTotal = deliveredTodayOrders
     .filter((o) => (o.payment_type || '').toLowerCase() === 'credit')
-    .reduce((s, o) => s + (Number(o.amount_credit) ?? Number(o.amount_total) ?? 0), 0);
+    .reduce((s, o) => s + (Number(o.amount_total) ?? Number(o.amount_total) ?? 0), 0);
   const collectionTotal = cashTotal + chequeTotal + creditTotal || 1;
   const cashTotalDisplay = cashTotal;
   const chequeTotalDisplay = chequeTotal;
@@ -365,7 +369,9 @@ export default function DashboardScreen({ navigation }) {
       const key = partnerId ?? 'unknown';
       if (!byPartner[key]) byPartner[key] = { shopId: `S${partnerId}`, shopName: partnerName, delivered: 0, pending: 0 };
       const qty = Math.round(Number(chartLineTotalsByOrder[o.id]) || 0);
-      const isDone = (chartPickingStateBySaleId[o.id] || '') === 'done';
+      //Check and Uncomment this if you want to use the chartPickingStateBySaleId to get the delivered today orders
+      // const isDone = (chartPickingStateBySaleId[o.id] || '') === 'done';
+      const isDone = true;
       if (isDone) byPartner[key].delivered += qty;
       else byPartner[key].pending += qty;
     });
