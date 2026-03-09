@@ -5,6 +5,16 @@
 import { getDb } from './db.js';
 import { empty, num, numOrNull, iso, jsonArr } from './dbHelpers.js';
 
+const LOG = '[stockPickings]';
+
+function logQuery(operation, detail = '') {
+  if (detail) console.log(`${LOG} ${operation} ${detail}`);
+  else console.log(`${LOG} ${operation}`);
+}
+
+function logError(operation, paramsSummary, err) {
+  console.warn(`${LOG} ${operation} failed`, paramsSummary, err?.message ?? err);
+}
 /**
  * @param {Array} rows - Pickings from Odoo (or merged).
  * @param {{ preserveLocalStateForSaleOrderIds?: Set<number> | number[] }} [options] - When set, for pickings whose sale_id is in this set we keep existing local state (so sync download does not overwrite e.g. 'done' with Odoo value).
@@ -97,6 +107,9 @@ function safeParseJson(str, fallback) {
  * Update picking state locally (offline). e.g. 'done' after delivery validation.
  */
 export async function updatePickingStateLocal(pickingId, state) {
+  console.log('updatePickingStateLocal', pickingId, state);
+  const op = 'updatePickingStateLocal';
+  logQuery(op, `pickingId=${pickingId} state=${state}`);
   const db = await getDb();
   const stateStr = typeof state === 'string' && state ? state : 'done';
   const nowStr = iso();
@@ -105,4 +118,5 @@ export async function updatePickingStateLocal(pickingId, state) {
     'UPDATE stock_pickings SET state = ?, updated_at = ? WHERE id = ?',
     [stateStr, nowStr, idNum]
   );
+  logQuery(op, `done pickingId=${pickingId}`);
 }

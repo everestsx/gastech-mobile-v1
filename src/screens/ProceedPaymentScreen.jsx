@@ -279,6 +279,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       await saleOrdersDb.updateSaleOrderPaymentTypeLocal(saleOrderId, primaryPaymentType, creditAmountForDb);
 
       const { picking } = await getDeliveryDataFromDB(saleOrderId);
+      console.log('picking', picking);
       if (picking?.id != null) {
         await stockPickingsDb.updatePickingStateLocal(Number(picking.id) || 0, 'done');
       }
@@ -469,7 +470,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           flexDirection: 'row',
           alignItems: 'center',
           justifyContent: 'center',
-          gap: 8,
+          gap: 6,
           paddingVertical: 12,
           paddingHorizontal: spacing.lg,
           borderRadius: borderRadius.md,
@@ -493,7 +494,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           justifyContent: 'center',
         },
         checkboxBoxSelected: { borderColor: '#fff', backgroundColor: 'transparent' },
-        radioLabel: { fontSize: 14, fontWeight: '600', color: colors.text },
+        radioLabel: { fontSize: 12, fontWeight: '600', color: colors.text },
         radioLabelSelected: { color: '#fff' },
         searchWrap: {
           flexDirection: 'row',
@@ -694,7 +695,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
             {selectedPaymentMethods.includes(PAYMENT_CHECK) && <Ionicons name="checkmark" size={14} color="#fff" />}
           </View>
           <Ionicons name="card-outline" size={22} color={selectedPaymentMethods.includes(PAYMENT_CHECK) ? '#fff' : colors.text} />
-          <Text style={[styles.radioLabel, selectedPaymentMethods.includes(PAYMENT_CHECK) && styles.radioLabelSelected]}>Check</Text>
+          <Text style={[styles.radioLabel, selectedPaymentMethods.includes(PAYMENT_CHECK) && styles.radioLabelSelected]}>Cheque</Text>
         </TouchableOpacity>
 
         <TouchableOpacity
@@ -806,7 +807,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
                       activeOpacity={0.8}
                     >
                       <Ionicons name="swap-horizontal-outline" size={18} color={colors.primary} />
-                      <Text style={styles.changeBankText}>Switch bank</Text>
+                      <Text style={styles.changeBankText}>Change bank</Text>
                     </TouchableOpacity>
                   </>
                 ) : filteredBanks.length === 0 ? (
