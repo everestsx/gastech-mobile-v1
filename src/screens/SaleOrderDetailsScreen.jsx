@@ -424,6 +424,13 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
     loadDetails();
   }, [loadDetails]);
 
+  useEffect(() => {
+    if (order?.name != null || order?.id != null) {
+      const orderLabel = order.name ?? `#${order.id}`;
+      navigation.setOptions({ title: `Order Details (${orderLabel})` });
+    }
+  }, [navigation, order?.name, order?.id]);
+
     const setLineQty = useCallback((lineId, value) => {
       setUpdateError(null);
       const trimmed = value.replace(/[^0-9.]/g, '');
@@ -639,6 +646,18 @@ const handleProceedToPayment = useCallback(async () => {
     setUpdating(false);
   }
 }, [order, lines, validateQuantities, hasQtyChanges, applyQtyDoneAndValidate, updateVehicleInventory, navigation]);
+  /** Per-product total qty in this order (current newQty values). Used for dynamic "remaining after order" stock. */
+  const totalQtyByProductId = useMemo(() => {
+    const map = {};
+    lines.forEach((l) => {
+      const pid = l.product_id != null && Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
+      if (pid != null) {
+        map[pid] = (map[pid] || 0) + (Number(l.newQty) || 0);
+      }
+    });
+    return map;
+  }, [lines]);
+
   /** Subtotal from lines: sum of price_subtotal, or when qty changed sum of price_unit * newQty */
   const computedSubtotal = useMemo(() => {
     if (!lines.length) return 0;
@@ -676,6 +695,8 @@ const handleProceedToPayment = useCallback(async () => {
     const productName = item.product_id?.[1] ?? item.name ?? '';
     const productId = item.product_id != null && Array.isArray(item.product_id) ? item.product_id[0] : item.product_id;
     const availableStock = productId != null ? productIdToAvailable[productId] : undefined;
+    const totalOrderedForProduct = productId != null ? (totalQtyByProductId[productId] ?? 0) : 0;
+    const remainingAfterOrder = availableStock !== undefined ? availableStock - totalOrderedForProduct : undefined;
     const imageSource = getProductImageSource(productName);
 
     return (
@@ -724,7 +745,15 @@ const handleProceedToPayment = useCallback(async () => {
                 {availableStock !== undefined && (
                   <View style={styles.availableStockRow}>
                     <Text style={styles.availableStockText}>
-                      Available Stock: {availableStock}
+                      Available: {availableStock}
+                      {remainingAfterOrder !== undefined && (
+                        <>
+                          {'  ·  '}
+                          <Text style={[styles.availableStockText, remainingAfterOrder < 0 && { color: colors.error || '#c00', fontWeight: '700' }]}>
+                            After this order: {remainingAfterOrder}
+                          </Text>
+                        </>
+                      )}
                     </Text>
                   </View>
                 )}
@@ -785,10 +814,18 @@ const handleProceedToPayment = useCallback(async () => {
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
-        {/* Customer (left only; Modify is with Order lines) */}
+        {/* Order ID + Customer */}
           <View style={styles.customerRow}>
               <View style={styles.customerLeft}>
                   <View style={{ flex: 1 }}>
+                      {(order.name || order.id) && (
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: 4 }}>
+                              <Text style={[styles.customerLabel, { marginBottom: 0 }]}>Order</Text>
+                              <Text style={[styles.customerName, { fontSize: 15 }]} numberOfLines={1}>
+                                  {order.name ?? `#${order.id}`}
+                              </Text>
+                          </View>
+                      )}
                       <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.sm }}>
                           <Text style={styles.customerName} numberOfLines={1}>
                               {order.partner_id?.[1] ?? '—'}
@@ -845,7 +882,7 @@ const handleProceedToPayment = useCallback(async () => {
                 {updating ? (
                   <ActivityIndicator size="small" color={colors.primary} />
                 ) : (
-                  <Text style={[styles.modifyUpdateBtnText]}>Update</Text>
+                  <Text style={[styles.modifyUpdateBtnText]}>Save</Text>
                 )}
               </TouchableOpacity>
             ) : (
@@ -854,7 +891,7 @@ const handleProceedToPayment = useCallback(async () => {
                 onPress={() => setModifyEnabled(true)}
                 activeOpacity={0.8}
               >
-                <Text style={styles.modifyUpdateBtnText}>Modify</Text>
+                <Text style={styles.modifyUpdateBtnText}>Modify Order</Text>
               </TouchableOpacity>
             )
           )}
