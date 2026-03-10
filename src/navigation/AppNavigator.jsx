@@ -24,6 +24,7 @@ import MenuScreen from '../screens/MenuScreen';
 import CustomersScreen from '../screens/CustomersScreen';
 import SettingsScreen from '../screens/SettingsScreen';
 import PlaceholderScreen from '../screens/PlaceholderScreen';
+import MyCommissionScreen from '../screens/MyCommissionScreen';
 import VehicleStockScreen from '../screens/VehicleStockScreen';
 import SyncHistoryScreen from '../screens/SyncHistoryScreen';
 import LocalInvoicesScreen from '../screens/LocalInvoicesScreen';
@@ -157,8 +158,7 @@ function MainStackScreen() {
       />
       <MainStack.Screen
         name="MyCommissions"
-        component={PlaceholderScreen}
-        initialParams={{ title: 'My Commissions' }}
+        component={MyCommissionScreen}
         options={{ ...headerScreenOptions, title: 'My Commissions' }}
       />
       <MainStack.Screen
