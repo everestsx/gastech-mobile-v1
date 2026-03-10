@@ -479,6 +479,14 @@ export default function DashboardScreen({ navigation }) {
         commissionTitle: { fontSize: 12, fontWeight: '700', color: colors.text, letterSpacing: 0.5 },
         commissionAmount: { fontSize: 28, fontWeight: '800', color: colors.text, marginTop: 4 },
         commissionPct: { fontSize: 14, color: colors.text, marginTop: 4 },
+        collectionSectionLabel: {
+          fontSize: 12,
+          fontWeight: '700',
+          color: colors.textSecondary,
+          letterSpacing: 0.5,
+          paddingHorizontal: spacing.md,
+          marginBottom: spacing.xs,
+        },
         collectionRow: {
           flexDirection: 'row',
           gap: spacing.xs,
@@ -716,13 +724,15 @@ export default function DashboardScreen({ navigation }) {
           </View>
         </View>
 
-        {/* 2. Commission card */}
-        <View style={styles.commissionCard}>
+        {/* 2. Commission card - tap to open My Commission */}
+        <TouchableOpacity
+          style={styles.commissionCard}
+          activeOpacity={0.8}
+          onPress={() => navigation.navigate('MyCommissions')}
+        >
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
             <Text style={styles.commissionTitle}>YOUR COMMISSION TODAY</Text>
-            {/*<Text style={[styles.commissionTitle, { opacity: 0.8 }]}>*/}
-            {/*  {commissionPercentage}% Rate*/}
-            {/*</Text>*/}
+            <Ionicons name="chevron-forward" size={20} color={colors.text} />
           </View>
           <Text style={styles.commissionAmount}>
             {formatCurrency(commissionEarned)} / {Number(commissionTarget).toFixed(2)}
@@ -731,9 +741,10 @@ export default function DashboardScreen({ navigation }) {
             {commissionPct}% of target achieved
             {commissionLoading && ' (loading...)'}
           </Text>
-        </View>
+        </TouchableOpacity>
 
         {/* 3. Collection today - Cash, Cheque, Credit (tap to expand / tap again to collapse) */}
+        <Text style={styles.collectionSectionLabel}>Sales Today</Text>
         <View style={styles.collectionRow}>
           <TouchableOpacity
             activeOpacity={0.8}
@@ -824,17 +835,25 @@ export default function DashboardScreen({ navigation }) {
           </TouchableOpacity>
         </View>
 
-        {/* 4. Shops Completed (delivered/total) & Gas Delivered (delivered/total) */}
+        {/* 4. Shops Completed (delivered/total) & Gas Delivered (delivered/total) - tap to open Orders / Delivered tab */}
         <View style={styles.shopsGasRow}>
-          <View style={styles.shopsGasCard}>
+          <TouchableOpacity
+            style={styles.shopsGasCard}
+            onPress={() => navigation.navigate('Orders')}
+            activeOpacity={0.8}
+          >
             <View style={{ flexDirection: 'row', alignItems: 'baseline' }}>
               <Text style={[styles.shopsGasValue, { color: colors.primary }]}>{shopsCompleted}</Text>
               <Text style={[styles.shopsGasTarget, { color: colors.textSecondary }]}>/{totalShopsToday}</Text>
             </View>
             <Text style={styles.shopsGasLabel}>ORDERS COMPLETED</Text>
             <Text style={styles.shopsGasPct}>{shopsPct}% Complete</Text>
-          </View>
-          <View style={styles.shopsGasCard}>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.shopsGasCard}
+            onPress={() => navigation.navigate('DeliveredOrders')}
+            activeOpacity={0.8}
+          >
             <View style={{ flexDirection: 'row', alignItems: 'baseline' }}>
               <Text style={[styles.shopsGasValue, { color: colors.warning ?? '#d97706' }]}>
                 {totalGasDelivered.toLocaleString('en-IN')}
@@ -843,7 +862,7 @@ export default function DashboardScreen({ navigation }) {
             </View>
             <Text style={styles.shopsGasLabel}>GAS DELIVERED</Text>
             <Text style={styles.shopsGasPct}>{gasPct}% Complete</Text>
-          </View>
+          </TouchableOpacity>
         </View>
 
       {/* 5. Delivery Progress by Shop - bar chart with date picker (default today) */}

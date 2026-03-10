@@ -4,10 +4,10 @@ import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { spacing } from '../constants/theme';
 
-const CHART_HEIGHT = 200;
-const BAR_GAP = 6;
-const FIXED_BAR_WIDTH = 24;
-const LABEL_HEIGHT = 36;
+const CHART_HEIGHT = 140;
+const BAR_GAP = 4;
+const FIXED_BAR_WIDTH = 18;
+const LABEL_HEIGHT = 28;
 
 /**
  * Vertical bar chart: Delivery Progress by Shop.
@@ -42,61 +42,61 @@ export default function DeliveryProgressBarChart({ data = [], title = 'Delivery 
       StyleSheet.create({
         card: {
           backgroundColor: colors.surface,
-          borderRadius: 12,
-          padding: spacing.md,
-          marginBottom: spacing.md,
+          borderRadius: 10,
+          padding: spacing.sm,
+          marginBottom: spacing.sm,
           overflow: 'hidden',
         },
         titleRow: {
           flexDirection: 'row',
           alignItems: 'center',
-          marginBottom: spacing.md,
-          gap: 8,
+          marginBottom: spacing.sm,
+          gap: 6,
         },
-        title: { fontSize: 16, fontWeight: '700', color: colors.text },
+        title: { fontSize: 14, fontWeight: '700', color: colors.text },
         scrollHint: {
-          fontSize: 12,
+          fontSize: 10,
           color: colors.textSecondary,
-          marginTop: spacing.sm,
+          marginTop: spacing.xs,
           textAlign: 'center',
         },
         legendRow: {
           flexDirection: 'row',
           alignItems: 'center',
           justifyContent: 'center',
-          gap: spacing.lg,
-          marginTop: spacing.md,
+          gap: spacing.md,
+          marginTop: spacing.sm,
         },
-        legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-        legendBox: { width: 14, height: 14, borderRadius: 3 },
-        legendText: { fontSize: 13, fontWeight: '600' },
+        legendItem: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+        legendBox: { width: 12, height: 12, borderRadius: 2 },
+        legendText: { fontSize: 11, fontWeight: '600' },
         tooltipWrap: {
           position: 'absolute',
-          left: spacing.md,
-          right: spacing.md,
-          top: 52,
+          left: spacing.sm,
+          right: spacing.sm,
+          top: 40,
           zIndex: 10,
           alignItems: 'center',
         },
         tooltip: {
           backgroundColor: colors.surface,
-          borderRadius: 10,
-          paddingVertical: 10,
-          paddingHorizontal: 14,
-          minWidth: 160,
-          maxWidth: 220,
+          borderRadius: 8,
+          paddingVertical: 8,
+          paddingHorizontal: 12,
+          minWidth: 140,
+          maxWidth: 200,
           shadowColor: '#000',
           shadowOffset: { width: 0, height: 2 },
           shadowOpacity: 0.2,
-          shadowRadius: 6,
+          shadowRadius: 4,
           elevation: 6,
           borderWidth: 1,
           borderColor: colors.border || 'rgba(0,0,0,0.08)',
         },
-        tooltipTitle: { fontSize: 12, fontWeight: '700', color: colors.textSecondary, marginBottom: 6 },
-        tooltipRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 },
-        tooltipLabel: { fontSize: 12, color: colors.textSecondary },
-        tooltipValue: { fontSize: 13, fontWeight: '600', color: colors.text },
+        tooltipTitle: { fontSize: 11, fontWeight: '700', color: colors.textSecondary, marginBottom: 4 },
+        tooltipRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 2 },
+        tooltipLabel: { fontSize: 11, color: colors.textSecondary },
+        tooltipValue: { fontSize: 12, fontWeight: '600', color: colors.text },
       }),
     [colors]
   );
@@ -124,17 +124,15 @@ export default function DeliveryProgressBarChart({ data = [], title = 'Delivery 
   return (
     <View style={styles.card}>
       <View style={styles.titleRow}>
-        <Ionicons name="bar-chart-outline" size={20} color={colors.primary} />
+        <Ionicons name="bar-chart-outline" size={18} color={colors.primary} />
         <Text style={[styles.title, { flex: 1 }]}>{title}</Text>
         {rightElement}
       </View>
       {selectedRow != null && (
         <View style={styles.tooltipWrap} pointerEvents="box-none">
           <View style={styles.tooltip}>
-            <Text style={styles.tooltipTitle}>Shop details</Text>
             <View style={styles.tooltipRow}>
-              <Text style={styles.tooltipLabel}>Customer</Text>
-              <Text style={[styles.tooltipValue, { flex: 1, marginLeft: 8, textAlign: 'right' }]} numberOfLines={2}>
+              <Text style={[styles.tooltipValue, { flex: 1, marginLeft: 8, textAlign: 'left' }]} numberOfLines={2}>
                 {selectedRow.shopName || selectedRow.shopId || `Shop ${selectedIndex + 1}`}
               </Text>
             </View>
@@ -168,7 +166,7 @@ export default function DeliveryProgressBarChart({ data = [], title = 'Delivery 
               const total = delivered + pending || 0;
               const isFullyDelivered = pending === 0 && total > 0;
               const barColor = isFullyDelivered ? deliveredColor : toDeliverColor;
-              const barHeight = total > 0 ? Math.max(8, (total / maxVal) * (CHART_HEIGHT - LABEL_HEIGHT - 12)) : 0;
+              const barHeight = total > 0 ? Math.max(6, (total / maxVal) * (CHART_HEIGHT - LABEL_HEIGHT - 10)) : 0;
               const isSelected = selectedIndex === i;
               return (
                 <Pressable
@@ -187,10 +185,10 @@ export default function DeliveryProgressBarChart({ data = [], title = 'Delivery 
                 >
                   <Text
                     style={{
-                      fontSize: 11,
+                      fontSize: 10,
                       fontWeight: '700',
                       color: colors.text,
-                      marginBottom: 4,
+                      marginBottom: 2,
                     }}
                   >
                     {total}
@@ -223,7 +221,7 @@ export default function DeliveryProgressBarChart({ data = [], title = 'Delivery 
                 >
                   <Text
                     style={{
-                      fontSize: 10,
+                      fontSize: 9,
                       fontWeight: '600',
                       color: colors.textSecondary,
                       textAlign: 'center',
