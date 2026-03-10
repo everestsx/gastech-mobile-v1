@@ -334,7 +334,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 32,
     alignItems: 'center',
     minWidth: 260,
-    shadowColor: '#000',
+    shadowColor: "rgba(0,0,0,0.4)",
     shadowOffset: { width: 0, height: 8 },
     shadowRadius: 24,
     elevation: 12,

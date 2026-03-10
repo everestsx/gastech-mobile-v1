@@ -61,26 +61,56 @@ export async function getCustomersByVehicle(vehicleId) {
   }
 }
 
-export async function getCustomersByVehicleRoute(vehicleId) {
+/**
+ * Fetches customers (partners) for a vehicle with order count.
+ * @param {string|number|null} vehicleId - Vehicle ID to filter by.
+ * @param {string|null} [dateStr] - Optional date (YYYY-MM-DD). When provided, total_orders is the count of orders for that date only (e.g. today).
+ */
+export async function getCustomersByVehicleRoute(vehicleId, dateStr = null) {
   const db = await getDb();
 
-  const query = `
-    SELECT 
-      p.id, 
-      p.name, 
-      p.phone, 
-      p.city, 
-      COUNT(s.id) as total_orders
-    FROM partners p
-    INNER JOIN sale_orders s ON p.id = s.partner_id
-    WHERE s.vehicle_id = ?
-    GROUP BY p.id
-    ORDER BY p.name ASC
-  `;
+  let query;
+  let params;
+
+  if (dateStr) {
+    // Count only orders for the given date (e.g. today)
+    const datePrefix = String(dateStr).trim().slice(0, 10) + '%';
+    query = `
+      SELECT 
+        p.id, 
+        p.name, 
+        p.phone, 
+        p.city, 
+        SUM(CASE WHEN s.date_order LIKE ? THEN 1 ELSE 0 END) as total_orders
+      FROM partners p
+      INNER JOIN sale_orders s ON p.id = s.partner_id AND s.vehicle_id = ?
+      GROUP BY p.id
+      ORDER BY p.name ASC
+    `;
+    params = [datePrefix, vehicleId];
+  } else {
+    query = `
+      SELECT 
+        p.id, 
+        p.name, 
+        p.phone, 
+        p.city, 
+        COUNT(s.id) as total_orders
+      FROM partners p
+      INNER JOIN sale_orders s ON p.id = s.partner_id
+      WHERE s.vehicle_id = ?
+      GROUP BY p.id
+      ORDER BY p.name ASC
+    `;
+    params = [vehicleId];
+  }
 
   try {
-    const results = await db.getAllAsync(query, [vehicleId]);
-    return results || [];
+    const results = await db.getAllAsync(query, params);
+    return (results || []).map((row) => ({
+      ...row,
+      total_orders: Number(row.total_orders) || 0,
+    }));
   } catch (error) {
     console.error("Error fetching customers with order count:", error);
     return [];

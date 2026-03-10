@@ -69,9 +69,9 @@ export default function CustomersScreen({ navigation }) {
     try {
         const session = await getUserSession();
         const vehicleId = session?.vehicleId;
-        const data = await getCustomersByVehicleRoute(vehicleId);
+        const today = new Date().toISOString().split('T')[0];
+        const data = await getCustomersByVehicleRoute(vehicleId, today);
 
-        // const data = await getFilteredCustomers(vehicleId);
         setCustomers(Array.isArray(data) ? data : []);
     } catch (_) {
       setCustomers([]);
@@ -93,7 +93,10 @@ export default function CustomersScreen({ navigation }) {
   };
 
   const onCustomerPress = (customer) => {
-    // navigation.navigate('Orders', { customerId: customer.id });
+    navigation.navigate('MainTabs', {
+      screen: 'Orders',
+      params: { customerId: customer.id, customerName: customer.name },
+    });
   };
 
     const renderItem = ({ item }) => (
@@ -134,7 +137,7 @@ export default function CustomersScreen({ navigation }) {
                     fontSize: 12,
                     fontWeight: '700'
                 }}>
-                    {item.total_orders} {item.total_orders === 1 ? 'Order' : 'Orders'}
+                    {item.total_orders} {item.total_orders === 1 ? 'order' : 'orders'} today
                 </Text>
             </View>
 

@@ -112,12 +112,25 @@ export default function SaleOrderListScreen({ route, navigation }) {
           justifyContent: 'center',
           minWidth: 0,
         },
+        countPill: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'center',
+          paddingVertical: 6,
+          paddingHorizontal: 10,
+          borderRadius: 10,
+          backgroundColor: colors.primary + '18',
+          borderWidth: 1,
+          borderColor: colors.primary + '40',
+        },
+        countPillText: { fontSize: 13, fontWeight: '700', color: colors.primary },
         headerRight: {
           flex: 1,
           flexDirection: 'row',
           alignItems: 'center',
           justifyContent: 'flex-end',
           minWidth: 0,
+          gap: spacing.sm,
         },
         headerBtn: { padding: 4, minWidth: 40, alignItems: 'flex-start' },
         headerBtnRight: { alignItems: 'flex-end' },
@@ -363,12 +376,18 @@ export default function SaleOrderListScreen({ route, navigation }) {
           </View>
         </View>
         <View style={styles.headerRight}>
+        <View style={styles.countPill}>
+            <Text style={styles.countPillText}>
+              {ordersFilteredBySearch.length}
+            </Text>
+          </View>
           <TouchableOpacity
             onPress={() => navigation.navigate('ScanQRCode')}
             style={[styles.headerBtn, styles.headerBtnRight]}
           >
             <Ionicons name="qr-code-outline" size={28} color={colors.primary} />
           </TouchableOpacity>
+          
         </View>
       </View>
 

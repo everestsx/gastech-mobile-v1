@@ -91,6 +91,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
           borderBottomColor: colors.border,
         },
         headerLeft: { flex: 1, minWidth: 0 },
+        headerBtn: { padding: 4, minWidth: 40, alignItems: 'flex-start' },
         headerCenter: {
           flex: 1,
           flexDirection: 'row',
@@ -98,7 +99,19 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
           justifyContent: 'center',
           minWidth: 0,
         },
-        headerRight: { flex: 1, minWidth: 0 },
+        headerRight: { flex: 1, flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', minWidth: 0 },
+        countPill: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'center',
+          paddingVertical: 6,
+          paddingHorizontal: 10,
+          borderRadius: 10,
+          backgroundColor: colors.primary + '18',
+          borderWidth: 1,
+          borderColor: colors.primary + '40',
+        },
+        countPillText: { fontSize: 13, fontWeight: '700', color: colors.primary },
         dateNav: {
           flexDirection: 'row',
           alignItems: 'center',
@@ -237,6 +250,10 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
     if (date) setSelectedDate(date);
   };
 
+  const onBackPress = () => {
+    navigation.navigate('Dashboard');
+  };
+
   const onOrderPress = (order) => {
     const isInvoiced = String(order.invoice_status) === 'invoiced';
     if (isInvoiced) {
@@ -264,7 +281,11 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <View style={styles.headerLeft} />
+        <View style={styles.headerLeft}>
+          <TouchableOpacity onPress={onBackPress} style={styles.headerBtn}>
+            <Ionicons name="arrow-back" size={24} color={colors.primary} />
+          </TouchableOpacity>
+        </View>
         <View style={styles.headerCenter}>
           <View style={styles.dateNav}>
             <TouchableOpacity onPress={goToPreviousDay} style={styles.dateNavChevron} activeOpacity={0.7}>
@@ -283,7 +304,13 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
             </TouchableOpacity>
           </View>
         </View>
-        <View style={styles.headerRight} />
+        <View style={styles.headerRight}>
+          <View style={styles.countPill}>
+            <Text style={styles.countPillText}>
+              {deliveredOrders.length}
+            </Text>
+          </View>
+        </View>
       </View>
 
       {showPicker && (

@@ -746,14 +746,14 @@ const handleProceedToPayment = useCallback(async () => {
                   <View style={styles.availableStockRow}>
                     <Text style={styles.availableStockText}>
                       Available: {availableStock}
-                      {remainingAfterOrder !== undefined && (
+                      {/* {remainingAfterOrder !== undefined && (
                         <>
                           {'  ·  '}
                           <Text style={[styles.availableStockText, remainingAfterOrder < 0 && { color: colors.error || '#c00', fontWeight: '700' }]}>
                             After this order: {remainingAfterOrder}
                           </Text>
                         </>
-                      )}
+                      )} */}
                     </Text>
                   </View>
                 )}
