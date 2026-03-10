@@ -228,6 +228,8 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
           backgroundColor: colors.background,
         },
         qtyControls: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+        qtyControlsDisabled: { opacity: 0.7 },
+        qtyInputDisabled: { backgroundColor: colors.border + '40', color: colors.textSecondary },
         qtyIconBtn: {
           width: 40,
           height: 40,
@@ -431,6 +433,21 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
     }
   }, [navigation, order?.name, order?.id]);
 
+  // When available quantity is 0 for a product, force delivered quantity to 0
+  useEffect(() => {
+    if (Object.keys(productIdToAvailable).length === 0) return;
+    setLines((prev) =>
+      prev.map((l) => {
+        const productId = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
+        const available = productId != null ? productIdToAvailable[productId] : undefined;
+        if (available !== undefined && available === 0) {
+          return { ...l, newQty: '0' };
+        }
+        return l;
+      })
+    );
+  }, [productIdToAvailable]);
+
     const setLineQty = useCallback((lineId, value) => {
       setUpdateError(null);
       const trimmed = value.replace(/[^0-9.]/g, '');
@@ -474,7 +491,11 @@ const changeQtyBy = useCallback((lineId, delta) => {
       const productId = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
       if (productId != null && productIdToAvailable[productId] !== undefined) {
         const maxAllowed = Math.min(MAX_QTY, productIdToAvailable[productId]);
-        next = Math.max(1, Math.min(maxAllowed, next));
+        if (maxAllowed === 0) {
+          next = 0;
+        } else {
+          next = Math.max(1, Math.min(maxAllowed, next));
+        }
       } else {
         next = Math.max(1, Math.min(MAX_QTY, next));
       }
@@ -495,18 +516,22 @@ const validateQuantities = useCallback(() => {
     const qty = Number(l.newQty);
     const productName = getProductDisplayName(l.product_id?.[1] ?? l.name ?? '');
 
+    const productId = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
+    const availableStock = productId != null ? productIdToAvailable[productId] : undefined;
+
+    if (availableStock !== undefined && availableStock === 0) {
+      if (qty !== 0) {
+        return `No stock available for "${productName}". Delivered quantity must be 0.`;
+      }
+      continue;
+    }
 
     if (Number.isNaN(qty) || qty < 1) {
       return `Quantity for "${productName}" must be at least 1 (cannot be 0)`;
     }
 
-
-    const productId = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
-    if (productId != null && productIdToAvailable[productId] !== undefined) {
-      const availableStock = productIdToAvailable[productId];
-      if (qty > availableStock) {
-        return `Insufficient stock for "${productName}". Available: ${availableStock}, Requested: ${qty}`;
-      }
+    if (availableStock !== undefined && qty > availableStock) {
+      return `Insufficient stock for "${productName}". Available: ${availableStock}, Requested: ${qty}`;
     }
   }
   return null;
@@ -698,6 +723,7 @@ const handleProceedToPayment = useCallback(async () => {
     const totalOrderedForProduct = productId != null ? (totalQtyByProductId[productId] ?? 0) : 0;
     const remainingAfterOrder = availableStock !== undefined ? availableStock - totalOrderedForProduct : undefined;
     const imageSource = getProductImageSource(productName);
+    const isZeroStock = availableStock !== undefined && availableStock === 0;
 
     return (
       <View style={[styles.lineCard]}>
@@ -716,29 +742,32 @@ const handleProceedToPayment = useCallback(async () => {
                   <Text style={styles.lineProductName} numberOfLines={1}>
                     {getProductDisplayName(productName) || 'Unknown'} ×
                   </Text>
-                  <View style={styles.qtyControls}>
+                  <View style={[styles.qtyControls, isZeroStock && styles.qtyControlsDisabled]}>
                     <TouchableOpacity
                       style={styles.qtyIconBtn}
-                      onPress={() => changeQtyBy(item.id, -1)}
+                      onPress={isZeroStock ? undefined : () => changeQtyBy(item.id, -1)}
                       activeOpacity={0.8}
+                      disabled={isZeroStock}
                     >
-                      <Ionicons name="remove" size={22} color={colors.primary} />
+                      <Ionicons name="remove" size={22} color={isZeroStock ? colors.textSecondary : colors.primary} />
                     </TouchableOpacity>
                     <TextInput
-                      style={styles.qtyInput}
+                      style={[styles.qtyInput, isZeroStock && styles.qtyInputDisabled]}
                       value={item.newQty}
-                      onChangeText={(text) => setLineQty(item.id, text)}
+                      onChangeText={isZeroStock ? undefined : (text) => setLineQty(item.id, text)}
                       keyboardType="decimal-pad"
                       placeholder="0"
                       placeholderTextColor={colors.textSecondary}
                       selectTextOnFocus
+                      editable={!isZeroStock}
                     />
                     <TouchableOpacity
                       style={styles.qtyIconBtn}
-                      onPress={() => changeQtyBy(item.id, 1)}
+                      onPress={isZeroStock ? undefined : () => changeQtyBy(item.id, 1)}
                       activeOpacity={0.8}
+                      disabled={isZeroStock}
                     >
-                      <Ionicons name="add" size={22} color={colors.primary} />
+                      <Ionicons name="add" size={22} color={isZeroStock ? colors.textSecondary : colors.primary} />
                     </TouchableOpacity>
                   </View>
                 </View>

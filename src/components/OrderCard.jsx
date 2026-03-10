@@ -82,7 +82,7 @@ export default function OrderCard({ order, onPress, isDelivered, orderLines = []
         badgeCancel: { backgroundColor: colors.error },
         badgeStatusToDeliver: { backgroundColor: '#93c5fd' },
         badgeStatusInvoiced: { backgroundColor: colors.primarySurface || '#e0e7ff' },
-        badgeStatusDelivered: { backgroundColor: colors.primaryLight || colors.secondary || '#4f46e5' },
+        badgeStatusDelivered: { backgroundColor: colors.success ?? '#059669' },
         badgeText: { fontSize: 10, fontWeight: '700', color: '#fff' },
         badgeStatusText: { fontSize: 12, fontWeight: '700', color: colors.text },
         badgeStatusTextInvoiced: { fontSize: 11, fontWeight: '600', color: colors.text },

@@ -114,7 +114,7 @@ export default function DeliveryProgressBarChart({ data = [], title = 'Delivery 
     );
   }
 
-  const deliveredColor = colors.success ?? '#059669';
+  const deliveredColor = colors.successDark ?? '#059669';
   const toDeliverColor = colors.error ?? '#dc2626';
 
   const selectedRow = selectedIndex != null ? sortedData[selectedIndex] : null;

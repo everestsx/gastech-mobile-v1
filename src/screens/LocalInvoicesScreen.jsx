@@ -12,6 +12,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
 import { formatAmount } from '../utils/format';
+import { getUserSession } from '../services/sync.service';
 import * as localInvoicesDb from '../database/localInvoices.js';
 import * as saleOrdersDb from '../database/saleOrders.js';
 import * as syncQueueDb from '../database/syncQueue.js';
@@ -21,9 +22,12 @@ export default function LocalInvoicesScreen({ navigation }) {
   const [invoices, setInvoices] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [vehicleNumber, setVehicleNumber] = useState('');
 
   const loadInvoices = useCallback(async () => {
     try {
+      const session = await getUserSession();
+      setVehicleNumber(session?.licensePlate ?? session?.vehicleName ?? '');
       const list = await localInvoicesDb.getAllLocalInvoices(false);
       const enriched = await Promise.all(
         (list || []).map(async (inv) => {
@@ -98,7 +102,7 @@ export default function LocalInvoicesScreen({ navigation }) {
       }
       showsVerticalScrollIndicator={false}
     >
-      <Text style={[styles.title, { color: colors.text }]}>Local Invoices</Text>
+      <Text style={[styles.title, { color: colors.text }]}>Invoices</Text>
       <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
         Invoices created on this device. Status shows if payment was uploaded to Odoo.
       </Text>
@@ -115,7 +119,7 @@ export default function LocalInvoicesScreen({ navigation }) {
         </View>
       ) : (
         invoices.map((inv) => (
-          <View
+          <TouchableOpacity
             key={inv.id}
             style={[
               styles.card,
@@ -124,10 +128,18 @@ export default function LocalInvoicesScreen({ navigation }) {
                 borderColor: colors.border,
               },
             ]}
+            activeOpacity={0.8}
+            onPress={() =>
+              navigation.navigate('InvoiceScreen', {
+                saleOrderId: inv.sale_order_id,
+                total: inv.amount_total,
+                invoiceNumber: inv.invoice_number,
+              })
+            }
           >
             <View style={styles.cardHeader}>
-              <Text style={[styles.invoiceNumber, { color: colors.primary }]}>
-                {inv.invoice_number}
+              <Text style={[styles.invoiceNumber, { color: colors.primary }]} numberOfLines={1}>
+                {vehicleNumber ? `${vehicleNumber}/${inv.invoice_number}` : inv.invoice_number}
               </Text>
               <View
                 style={[
@@ -161,29 +173,22 @@ export default function LocalInvoicesScreen({ navigation }) {
                 </Text>
               </View>
             </View>
-            <Text style={[styles.dateLabel, { color: colors.textSecondary }]}>
-              Invoice date
-            </Text>
-            <Text style={[styles.dateValue, { color: colors.text }]}>
-              {formatDate(inv.created_at)}
-            </Text>
-            <View style={styles.divider} />
-            <Text style={[styles.label, { color: colors.textSecondary }]}>
-              Order
-            </Text>
+            <View style={styles.metaRow}>
+              <View style={styles.metaBlock}>
+                <Text style={[styles.label, { color: colors.textSecondary }]}>Invoice date</Text>
+                <Text style={[styles.value, { color: colors.text }]}>{formatDate(inv.created_at)}</Text>
+              </View>
+              <View style={[styles.metaBlock, styles.metaBlockRight]}>
+                <Text style={[styles.label, { color: colors.textSecondary }]}>Order</Text>
+                <Text style={[styles.value, { color: colors.text }]} numberOfLines={1}>{inv.orderName}</Text>
+              </View>
+            </View>
+            <Text style={[styles.label, { color: colors.textSecondary }]}>Customer</Text>
             <Text style={[styles.value, { color: colors.text }]} numberOfLines={1}>
-              {inv.orderName}
-            </Text>
-            <Text style={[styles.label, { color: colors.textSecondary }]}>
-              Customer
-            </Text>
-            <Text style={[styles.value, { color: colors.text }]} numberOfLines={2}>
               {inv.partnerName}
             </Text>
             <View style={styles.amountRow}>
-              <Text style={[styles.amountLabel, { color: colors.textSecondary }]}>
-                Total
-              </Text>
+              <Text style={[styles.amountLabel, { color: colors.textSecondary }]}>Total</Text>
               <Text style={[styles.amountValue, { color: colors.text }]}>
                 Rs. {formatAmount(inv.amount_total)}
               </Text>
@@ -193,7 +198,7 @@ export default function LocalInvoicesScreen({ navigation }) {
                 Synced {formatDate(inv.syncedAt)}
               </Text>
             ) : null}
-          </View>
+          </TouchableOpacity>
         ))
       )}
     </ScrollView>
@@ -215,8 +220,8 @@ const styles = StyleSheet.create({
   card: {
     borderRadius: borderRadius.lg,
     borderWidth: 1,
-    padding: spacing.md,
-    marginBottom: spacing.md,
+    padding: spacing.sm,
+    marginBottom: spacing.sm,
     elevation: 2,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
@@ -227,35 +232,34 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: spacing.sm,
+    marginBottom: spacing.xs,
   },
-  invoiceNumber: { fontSize: 16, fontWeight: '700' },
+  invoiceNumber: { fontSize: 14, fontWeight: '700', flex: 1, marginRight: 8 },
   badge: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
     borderRadius: borderRadius.sm,
     borderWidth: 1,
   },
-  badgeText: { fontSize: 12, fontWeight: '600' },
-  dateLabel: { fontSize: 12, marginBottom: 2 },
-  dateValue: { fontSize: 14, fontWeight: '600', marginBottom: spacing.sm },
-  divider: {
-    height: 1,
-    backgroundColor: '#e5e7eb',
-    marginVertical: spacing.sm,
+  badgeText: { fontSize: 11, fontWeight: '600' },
+  metaRow: {
+    flexDirection: 'row',
+    marginBottom: spacing.xs,
   },
-  label: { fontSize: 12, marginBottom: 2 },
-  value: { fontSize: 14, fontWeight: '600', marginBottom: spacing.sm },
+  metaBlock: { flex: 1, minWidth: 0 },
+  metaBlockRight: { marginLeft: spacing.sm },
+  label: { fontSize: 11, marginBottom: 1 },
+  value: { fontSize: 13, fontWeight: '600', marginBottom: spacing.xs },
   amountRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginTop: spacing.xs,
+    marginTop: 2,
   },
-  amountLabel: { fontSize: 13 },
-  amountValue: { fontSize: 16, fontWeight: '700' },
-  syncedAt: { fontSize: 11, marginTop: 4 },
+  amountLabel: { fontSize: 12 },
+  amountValue: { fontSize: 15, fontWeight: '700' },
+  syncedAt: { fontSize: 10, marginTop: 2 },
 });

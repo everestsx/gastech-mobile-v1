@@ -169,7 +169,7 @@ function MainStackScreen() {
       <MainStack.Screen
         name="LocalInvoices"
         component={LocalInvoicesScreen}
-        options={{ ...headerScreenOptions, title: 'Local Invoices' }}
+        options={{ ...headerScreenOptions, title: 'My Invoices' }}
       />
       <MainStack.Screen
         name="Settings"
@@ -278,24 +278,26 @@ export default function AppNavigator() {
           animationType="fade"
           statusBarTranslucent
         >
-          <View style={styles.successModalBackdrop}>
-            <View style={styles.successModalCard}>
-              <View style={styles.successModalIconWrap}>
+          <View style={[styles.toastBackdrop, { paddingTop: insets.top + 8 }]}>
+            <View style={styles.toastBar}>
+              <View style={styles.toastIconWrap}>
                 {syncResult === 'success' && (
-                  <Ionicons name="checkmark-circle" size={56} color="#22c55e" />
+                  <Ionicons name="checkmark-circle" size={24} color="#22c55e" />
                 )}
                 {syncResult === 'failed' && (
-                  <Ionicons name="alert-circle" size={56} color="#ef4444" />
+                  <Ionicons name="alert-circle" size={24} color="#ef4444" />
                 )}
               </View>
-              <Text style={styles.successModalTitle}>
-                {syncResult === 'success' && 'Sync complete'}
-                {syncResult === 'failed' && 'Sync failed'}
-              </Text>
-              <Text style={styles.successModalSubtitle}>
-                {syncResult === 'success' && 'All data is up to date'}
-                {syncResult === 'failed' && (syncErrorMessage || 'Could not sync. Will retry when online.')}
-              </Text>
+              <View style={styles.toastTextWrap}>
+                <Text style={styles.toastTitle}>
+                  {syncResult === 'success' && 'Sync complete'}
+                  {syncResult === 'failed' && 'Sync failed'}
+                </Text>
+                <Text style={styles.toastSubtitle} numberOfLines={1}>
+                  {syncResult === 'success' && 'All data is up to date'}
+                  {syncResult === 'failed' && (syncErrorMessage || 'Could not sync. Will retry when online.')}
+                </Text>
+              </View>
             </View>
           </View>
         </Modal>
@@ -320,37 +322,41 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '100%',
   },
-  successModalBackdrop: {
+  toastBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.4)',
+    backgroundColor: 'transparent',
     alignItems: 'center',
-    justifyContent: 'center',
-    padding: 24,
+    paddingHorizontal: 16,
   },
-  successModalCard: {
-    backgroundColor: "rgba(0,0,0,0.4)",
-    borderRadius: 20,
-    paddingVertical: 28,
-    paddingHorizontal: 32,
+  toastBar: {
+    flexDirection: 'row',
     alignItems: 'center',
-    minWidth: 260,
-    shadowColor: "rgba(0,0,0,0.4)",
-    shadowOffset: { width: 0, height: 8 },
-    shadowRadius: 24,
-    elevation: 12,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    minHeight: 48,
+    maxWidth: '100%',
+    shadowColor: 'rgba(0,0,0,0.4)',
+    shadowOffset: { width: 0, height: 4 },
+    shadowRadius: 12,
+    elevation: 8,
   },
-  successModalIconWrap: {
-    marginBottom: 16,
+  toastIconWrap: {
+    marginRight: 12,
   },
-  successModalTitle: {
-    fontSize: 20,
+  toastTextWrap: {
+    flex: 1,
+    minWidth: 0,
+  },
+  toastTitle: {
+    fontSize: 15,
     fontWeight: '700',
-    color: "white",
-    marginBottom: 6,
+    color: 'white',
   },
-  successModalSubtitle: {
-    fontSize: 14,
-    color: "white",
-    fontWeight: '400',
+  toastSubtitle: {
+    fontSize: 13,
+    color: 'rgba(255,255,255,0.9)',
+    marginTop: 2,
   },
 });
