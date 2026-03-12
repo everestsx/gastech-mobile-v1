@@ -42,8 +42,10 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const { setHideSyncIndicator } = useSync();
-  const { saleOrderId, total, deliveryDone } = route.params || {};
+  const { saleOrderId, total, subtotal, tax, deliveryDone } = route.params || {};
   const orderTotal = Number(total) || 0;
+  const orderSubtotal = subtotal != null ? Number(subtotal) : null;
+  const orderTax = tax != null ? Number(tax) : null;
   const [loading, setLoading] = useState(false);
   const [journalsLoading, setJournalsLoading] = useState(true);
   const [journals, setJournals] = useState([]);
@@ -667,8 +669,31 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       keyboardShouldPersistTaps="handled"
     >
       <View style={styles.totalCard}>
-        <Text style={styles.totalLabel}>Total Amount</Text>
-        <Text style={styles.total}>Rs. {formatAmount(total)}</Text>
+        {(orderSubtotal != null || orderTax != null) ? (
+          <>
+            {orderSubtotal != null && (
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 }}>
+                <Text style={styles.totalLabel}>Sub total</Text>
+                <Text style={[styles.totalLabel, { fontWeight: '600', color: colors.text }]}>Rs. {formatAmount(orderSubtotal)}</Text>
+              </View>
+            )}
+            {orderTax != null && (
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 }}>
+                <Text style={styles.totalLabel}>VAT (18%)</Text>
+                <Text style={[styles.totalLabel, { fontWeight: '600', color: colors.text }]}>Rs. {formatAmount(orderTax)}</Text>
+              </View>
+            )}
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 6, paddingTop: 8, borderTopWidth: 1, borderTopColor: colors.border }}>
+              <Text style={[styles.totalLabel, { fontWeight: '700', fontSize: 15 }]}>Payment total</Text>
+              <Text style={styles.total}>Rs. {formatAmount(total)}</Text>
+            </View>
+          </>
+        ) : (
+          <>
+            <Text style={styles.totalLabel}>Total Amount</Text>
+            <Text style={styles.total}>Rs. {formatAmount(total)}</Text>
+          </>
+        )}
       </View>
 
       {/* Payment method: checkboxes (multi-select) */}

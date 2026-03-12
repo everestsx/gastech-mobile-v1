@@ -44,7 +44,13 @@ export const getCommissionAchievementByTeam = async (teamName) => {
     );
     return result || [];
   } catch (error) {
-    console.error('[Commission API] Error fetching commission achievement:', error);
+    const isNetworkError =
+      (error?.message || '').toLowerCase().includes('network') ||
+      (error?.message || '').toLowerCase().includes('failed') ||
+      error?.name === 'TypeError';
+    if (__DEV__ && !isNetworkError) {
+      console.warn('[Commission API] Error fetching commission achievement:', error?.message || error);
+    }
     return [];
   }
 };
@@ -175,7 +181,13 @@ export const getActiveCommissionPlan = async (teamName) => {
       hasData: true
     };
   } catch (error) {
-    console.error('[Commission API] Error getting active plan:', error);
+    const isNetworkError =
+      (error?.message || '').toLowerCase().includes('network') ||
+      (error?.message || '').toLowerCase().includes('failed') ||
+      error?.name === 'TypeError';
+    if (__DEV__ && !isNetworkError) {
+      console.warn('[Commission API] Error getting active plan:', error?.message || error);
+    }
     return {
       achievements: [],
       productRateMap: {},

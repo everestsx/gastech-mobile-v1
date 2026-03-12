@@ -190,15 +190,13 @@ export async function getCachedRoutes() {
   }
 }
 
-/** Sale order details from local DB (order + lines). Same shape as API. */
+/** Sale order details from local DB (order + lines). Same shape as API. Lines loaded by order_id so they appear even if order_line was empty on sync. */
 export async function getSaleOrderDetailsFromDB(saleOrderId) {
   try {
     const order = await saleOrdersDb.getSaleOrderById(Number(saleOrderId));
     if (!order) return { order: null, lines: [] };
-    const orderLineIds = order.order_line || [];
-    if (orderLineIds.length === 0) return { order, lines: [] };
     const lines = await saleOrderLinesDb.getSaleOrderLinesByOrderIds([order.id]);
-    return { order, lines };
+    return { order, lines: lines || [] };
   } catch (e) {
     console.warn('getSaleOrderDetailsFromDB', e);
     return { order: null, lines: [] };
@@ -456,11 +454,13 @@ async function processSyncQueue() {
   } = await import('./saleOrderLine.service');
   const {
     getPickingBySaleOrder,
+    getPickingState,
     getStockMovesByPickingId,
     getStockMoveLinesByMoveIds,
     updateMoveLineQty,
     updateStockMoveQty,
-    validatePicking,
+    createMoveLine,
+    validatePickingWithContext,
     createBackorderConfirmation,
     processBackorderConfirmation,
   } = await import('./delivery.service');
@@ -468,21 +468,51 @@ async function processSyncQueue() {
     getSaleOrderForPayment,
     getSaleOrderInvoiceIds,
     getInvoiceState,
+    getInvoiceIdAfterCreate,
+    firstInvoiceId,
     createAdvancePaymentWizard,
     createInvoicesFromWizard,
     postInvoice,
-    createPayment,
-    postPaymentAndReconcile,
+    createPaymentRegisterWizard,
+    executePaymentRegister,
   } = await import('./invoice.service');
 
   for (const item of delivery) {
     try {
       const p = item.payload || {};
       const saleOrderId = p.saleOrderId ?? p.sale_id;
-      const pickingId = p.pickingId ?? p.picking_id;
+      let pickingId = p.pickingId ?? p.picking_id;
       const orderLineUpdates = p.orderLineUpdates || [];
       const moveUpdates = p.moveUpdates || [];
       const moveLineUpdates = p.moveLineUpdates || [];
+      const deliveryLines = p.deliveryLines || [];
+
+      // Step 1 — Resolve picking (by sale_order_id if not in payload)
+      if (pickingId == null && saleOrderId != null) {
+        const pickings = await getPickingBySaleOrder(saleOrderId);
+        const first = Array.isArray(pickings) ? pickings[0] : null;
+        if (first?.state === 'done') {
+          await syncQueueDb.markSynced(Number(item.id));
+          log('queue', `delivery already done (SO ${saleOrderId}), synced id=${item.id}`);
+          continue;
+        }
+        pickingId = first?.id ?? null;
+      }
+      if (pickingId == null) {
+        logWarn('queue delivery', new Error('No picking found for sale order ' + saleOrderId));
+        continue;
+      }
+
+      // Check picking state (skip if already done)
+      try {
+        const stateRows = await getPickingState(pickingId);
+        const pick = Array.isArray(stateRows) ? stateRows[0] : stateRows;
+        if (pick?.state === 'done') {
+          await syncQueueDb.markSynced(Number(item.id));
+          log('queue', `delivery already done picking ${pickingId}, synced id=${item.id}`);
+          continue;
+        }
+      } catch (_) {}
 
       try {
         for (const u of orderLineUpdates) {
@@ -491,8 +521,20 @@ async function processSyncQueue() {
         for (const u of moveUpdates) {
           await updateStockMoveQty(u.moveId, u.product_uom_qty);
         }
-        for (const u of moveLineUpdates) {
-          await updateMoveLineQty(u.moveLineId, u.qty_done);
+        if (deliveryLines.length > 0) {
+          // Step 2 & 3 — Create stock.move.line (qty_done) for each product (offline 4-step flow)
+          for (const line of deliveryLines) {
+            const moveId = line.moveId ?? line.move_id;
+            const productId = line.productId ?? line.product_id;
+            const qty = line.qty_done;
+            if (moveId != null && productId != null && qty != null) {
+              await createMoveLine(pickingId, moveId, productId, qty);
+            }
+          }
+        } else {
+          for (const u of moveLineUpdates) {
+            await updateMoveLineQty(u.moveLineId, u.qty_done);
+          }
         }
       } catch (updateErr) {
         const msg = (updateErr?.message || String(updateErr)).toLowerCase();
@@ -504,24 +546,16 @@ async function processSyncQueue() {
         }
       }
 
-      if (pickingId != null) {
-        try {
-          const validateResult = await validatePicking(pickingId);
-          if (validateResult != null && typeof validateResult === 'object') {
-            const pickIds = validateResult.pick_ids ?? validateResult.backorder_pick_ids ?? [];
-            const ids = (Array.isArray(pickIds) ? pickIds : []).map((id) => (Array.isArray(id) ? id[0] : id)).filter(Boolean);
-            if (ids.length > 0) {
-              const wizardId = await createBackorderConfirmation(ids);
-              if (wizardId != null) await processBackorderConfirmation(wizardId);
-            }
-          }
-        } catch (validateErr) {
-          const vMsg = (validateErr?.message || String(validateErr)).toLowerCase();
-          if (vMsg.includes('does not exist or has been deleted') || vMsg.includes('has been deleted') || vMsg.includes('already')) {
-            log('queue', `delivery validate skipped (picking already done or deleted): ${vMsg.slice(0, 60)}`);
-          } else {
-            throw validateErr;
-          }
+      // Step 4 — Validate picking with skip_backorder
+      try {
+        await validatePickingWithContext(pickingId, { skip_backorder: true });
+        log('queue', `delivery validated picking ${pickingId} (skip_backorder)`);
+      } catch (validateErr) {
+        const vMsg = (validateErr?.message || String(validateErr)).toLowerCase();
+        if (vMsg.includes('does not exist or has been deleted') || vMsg.includes('has been deleted') || vMsg.includes('already')) {
+          log('queue', `delivery validate skipped (picking already done or deleted): ${vMsg.slice(0, 60)}`);
+        } else {
+          throw validateErr;
         }
       }
       await syncQueueDb.markSynced(Number(item.id));
@@ -553,93 +587,97 @@ async function processSyncQueue() {
         try {
           const orderInfo = await getSaleOrderForPayment(saleOrderId);
           if (!orderInfo) {
-            logWarn('queue payment', new Error('Sale order not found'));
-          } else {
-            const partnerId = Array.isArray(orderInfo.partner_id) ? orderInfo.partner_id[0] : orderInfo.partner_id;
-            if (partnerId != null) {
-              const existingInvoiceIds = orderInfo.invoice_ids ?? [];
-              let invoiceAlreadyPosted = false;
-              if (existingInvoiceIds.length > 0) {
-                const invoiceId = Array.isArray(existingInvoiceIds) ? existingInvoiceIds[0] : existingInvoiceIds;
-                const invState = await getInvoiceState(invoiceId).catch(() => ({}));
-                if (invState?.state === 'posted') {
-                  invoiceAlreadyPosted = true;
-                } else if (invState?.state === 'draft') {
-                  await postInvoice(invoiceId);
-                }
-              }
+            logWarn('queue payment', new Error('Sale order not found — will retry on next sync'));
+            continue;
+          }
+          const existingInvoiceIds = orderInfo.invoice_ids ?? [];
+          let resId = firstInvoiceId(existingInvoiceIds);
+          let invoiceAlreadyPosted = false;
+          if (resId != null) {
+            const invState = await getInvoiceState(resId).catch(() => ({}));
+            if (invState?.state === 'posted') {
+              invoiceAlreadyPosted = true;
+            } else if (invState?.state === 'draft') {
+              log('queue', `payment SO ${saleOrderId}: post existing draft invoice res_id=${resId}`);
+              await postInvoice(resId);
+              invoiceAlreadyPosted = true;
+            }
+          }
 
-              // Credit = invoice created + posted only (no account.payment). Invoice stays
-              // payment_state=not_paid, amount_residual=total → shows as credit under delivery tab.
-              if (!invoiceAlreadyPosted) {
-                let invoiceId = null;
-                if (existingInvoiceIds.length > 0) {
-                  invoiceId = Array.isArray(existingInvoiceIds) ? existingInvoiceIds[0] : existingInvoiceIds;
+          if (!invoiceAlreadyPosted) {
+            if (resId != null) {
+              log('queue', `payment SO ${saleOrderId}: post existing invoice res_id=${resId}`);
+              await postInvoice(resId);
+            } else {
+              log('queue', `payment SO ${saleOrderId}: Step 1 — create advance payment wizard (context active_ids [${saleOrderId}])`);
+              const wizardId = await createAdvancePaymentWizard(saleOrderId);
+              if (wizardId == null) {
+                logWarn('queue payment', new Error('Step 1 failed: advance payment wizard create returned null'));
+              } else {
+                log('queue', `payment SO ${saleOrderId}: Step 2 — create_invoices [[${wizardId}]]`);
+                const createResult = await createInvoicesFromWizard(wizardId);
+                resId = getInvoiceIdAfterCreate(createResult) ?? firstInvoiceId(await getSaleOrderInvoiceIds(saleOrderId));
+                if (resId == null) {
+                  logWarn('queue payment', new Error('Step 2 failed: no res_id in create_invoices result'));
                 } else {
-                  const wizardId = await createAdvancePaymentWizard(saleOrderId);
-                  if (wizardId != null) {
-                    await createInvoicesFromWizard(wizardId, saleOrderId);
-                    const invoiceIds = await getSaleOrderInvoiceIds(saleOrderId);
-                    invoiceId = Array.isArray(invoiceIds) ? invoiceIds[0] : invoiceIds;
-                    if (invoiceId != null) await postInvoice(invoiceId);
-                  }
-                }
-                // Credit-only: invoice created + posted is enough; no payment → shows under delivery tab as credit.
-                const onlyCredit = payments.length > 0 && payments.every((pm) => pm.type === 'credit');
-                if (onlyCredit && invoiceId != null) {
-                  log('queue', `credit only: invoice ${invoiceId} posted (no payment) → shows as credit under delivery`);
-                }
-                // Resolve Cash/Cheque journal from Odoo when missing so cheque is handled like cash (post + reconcile).
-                const needsJournalResolve = payments.some(
-                  (pm) => (pm.type === 'cash' || pm.type === 'check') && !pm.journalId
-                );
-                let resolvedCashId = null;
-                let resolvedChequeId = null;
-                if (needsJournalResolve) {
-                  try {
-                    const { getCashTypeJournalIds } = await import('./journal.service.js');
-                    const ids = await getCashTypeJournalIds();
-                    resolvedCashId = ids.cashJournalId ?? null;
-                    resolvedChequeId = ids.chequeJournalId ?? null;
-                    if (resolvedChequeId != null || resolvedCashId != null) {
-                      log('queue', `resolved journals from Odoo: cash=${resolvedCashId ?? '—'} cheque=${resolvedChequeId ?? '—'}`);
-                    }
-                  } catch (resolveErr) {
-                    logWarn('queue payment resolve journals', resolveErr);
-                  }
-                }
-                const dateStr = new Date().toISOString().slice(0, 10);
-                const baseMemo = p.invoiceNumber
-                  ? `Payment for Invoice ${p.invoiceNumber} / Order ${orderName}`
-                  : `Payment for Invoice / Order ${orderName}`;
-                for (const pm of payments) {
-                  // Credit: no account.payment; invoice stays not_paid → shows in delivery tab under credit.
-                  if (pm.type === 'credit') continue;
-                  const amount = Number(pm.amount);
-                  const journalId = pm.journalId ?? (pm.type === 'cash' ? resolvedCashId : pm.type === 'check' ? resolvedChequeId : null);
-                  if (!amount || journalId == null) {
-                    if (amount && journalId == null) logWarn('queue payment', new Error(`No journal for ${pm.type}; skipping payment amount ${amount}`));
-                    continue;
-                  }
-                  const paymentId = await createPayment({
-                    partnerId,
-                    amount,
-                    currencyId: 1,
-                    journalId,
-                    date: dateStr,
-                    memo: `${baseMemo} (${pm.type || 'payment'})${pm.checkNumber ? ` #${pm.checkNumber}` : ''}`,
-                    invoiceId,
-                  });
-                  if (paymentId != null && invoiceId != null) {
-                    await postPaymentAndReconcile(paymentId, invoiceId);
-                    const methodLabel = pm.type === 'check' ? 'cheque' : pm.type === 'cash' ? 'cash' : 'payment';
-                    log('queue', `payment created, posted and reconciled (${methodLabel}) id=${paymentId} with invoice ${invoiceId}`);
-                  } else if (paymentId != null) {
-                    logWarn('queue payment', new Error('Payment created but no invoiceId to reconcile'));
-                  }
+                  log('queue', `payment SO ${saleOrderId}: Step 3 — action_post [[${resId}]]`);
+                  await postInvoice(resId);
+                  log('queue', `payment SO ${saleOrderId}: invoice created and posted res_id=${resId}`);
                 }
               }
             }
+            const onlyCredit = payments.length > 0 && payments.every((pm) => pm.type === 'credit');
+            if (onlyCredit && resId != null) {
+              log('queue', `payment SO ${saleOrderId}: credit only — invoice posted res_id=${resId}, no payment register`);
+            }
+          }
+
+          const hasCashOrCheque = payments.some((pm) => pm.type === 'cash' || pm.type === 'check');
+          if (hasCashOrCheque && resId != null) {
+            let resolvedCashId = null;
+            let resolvedChequeId = null;
+            try {
+              const { getCashTypeJournalIds } = await import('./journal.service.js');
+              const ids = await getCashTypeJournalIds();
+              resolvedCashId = ids.cashJournalId ?? null;
+              resolvedChequeId = ids.chequeJournalId ?? null;
+              log('queue', `payment SO ${saleOrderId}: journals from Odoo cash(CSH1)=${resolvedCashId ?? '—'} cheque(CSH2)=${resolvedChequeId ?? '—'}`);
+            } catch (resolveErr) {
+              logWarn('queue payment resolve journals', resolveErr);
+            }
+            const dateStr = p.paymentDate || new Date().toISOString().slice(0, 10);
+            for (const pm of payments) {
+              if (pm.type === 'credit') continue;
+              const amount = Number(pm.amount);
+              const journalId = pm.type === 'cash' ? resolvedCashId : pm.type === 'check' ? resolvedChequeId : null;
+              if (!amount || journalId == null) {
+                logWarn('queue payment', new Error(`${pm.type === 'cash' ? 'Cash' : 'Cheque'} journal id not found. Skipping amount ${amount}`));
+                continue;
+              }
+              try {
+                log('queue', `payment SO ${saleOrderId}: Step 5 — payment register create amount=${amount} journal_id=${journalId} active_ids=[${resId}]`);
+                const registerWizardId = await createPaymentRegisterWizard(resId, {
+                  amount,
+                  journalId,
+                  paymentDate: dateStr,
+                });
+                if (registerWizardId != null) {
+                  log('queue', `payment SO ${saleOrderId}: Step 6 — action_create_payments [[${registerWizardId}]]`);
+                  await executePaymentRegister(registerWizardId);
+                  const methodLabel = pm.type === 'check' ? 'cheque' : 'cash';
+                  log('queue', `payment SO ${saleOrderId}: ${methodLabel} payment executed wizard=${registerWizardId} invoice res_id=${resId}`);
+                }
+              } catch (registerErr) {
+                const msg = (registerErr?.message || String(registerErr)).toLowerCase();
+                if (msg.includes('already') || msg.includes('reconciled')) {
+                  log('queue', `payment register skipped (already paid/reconciled) invoice ${resId}`);
+                } else {
+                  throw registerErr;
+                }
+              }
+            }
+          } else if (hasCashOrCheque && resId == null) {
+            logWarn('queue payment', new Error('No invoice res_id for cash/cheque — create invoice first'));
           }
         } catch (invoiceErr) {
           const msg = (invoiceErr?.message || String(invoiceErr)).toLowerCase();
@@ -708,7 +746,7 @@ async function processSyncQueue() {
             logWarn('queue payment proof', new Error('Invalid base64'));
             continue;
           }
-          const aid = await createProofAttachment(soId, base64, att.file_name);
+          const aid = await createProofAttachment(soId, normalized, att.file_name);
           attachmentIds.push(aid);
           syncedAttachmentIds.push(att.id);
           log('queue', `ir.attachment.create SO ${soId} → attachment_id=${aid}`);
@@ -882,7 +920,10 @@ export async function runSync() {
     if (orderIds.length > 0) {
       const lineIds = [];
       (orders || []).forEach((o) => {
-        (o.order_line || []).forEach((id) => lineIds.push(id));
+        (o.order_line || []).forEach((entry) => {
+          const id = Array.isArray(entry) ? entry[0] : entry;
+          if (id != null) lineIds.push(id);
+        });
       });
       if (lineIds.length > 0) {
         log('fetch', `order lines (${lineIds.length} ids)`);

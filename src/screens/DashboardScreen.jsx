@@ -139,8 +139,7 @@ export default function DashboardScreen({ navigation }) {
       const plan = await getActiveCommissionPlan(user.licensePlate);
       console.log('[Commission] Loaded plan:', plan);
       setCommissionPlan(plan);
-    } catch (error) {
-      console.error('[Commission] Error loading plan:', error);
+    } catch (_) {
       setCommissionPlan(null);
     } finally {
       setCommissionLoading(false);

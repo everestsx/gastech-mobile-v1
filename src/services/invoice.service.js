@@ -7,34 +7,43 @@ export const createInvoice = (saleOrderId) =>
 export const assignJournal = (invoiceId, journalId) =>
   callOdooArgs("account.move", "write", [[invoiceId], { journal_id: journalId }]);
 
-/** Post (validate) an invoice. Uses action_post on account.move. */
+/** Step 3 — Post the invoice. Same as Postman: account.move action_post [[res_id]]. */
 export const postInvoice = (invoiceId) =>
-  callOdooArgs("account.move", "action_post", [[invoiceId]]);
+  callOdooArgs("account.move", "action_post", [[Number(invoiceId)]]);
 
 /* ---------------- Invoice creation wizard (after delivery validation) ---------------- */
 
-/** Create advance payment wizard for delivered quantities. Returns wizard record id (integer). */
+/** Step 1 — Create advance payment wizard (with context). Same as Postman: create with context active_model/active_ids. Returns wizard id (e.g. 679). */
 export const createAdvancePaymentWizard = (saleOrderId) =>
-  callOdooArgs("sale.advance.payment.inv", "create", [
-    {
-      advance_payment_method: "delivered",
-      sale_order_ids: [saleOrderId],
-    },
-  ]);
-
-/** Create invoices from wizard. Call after createAdvancePaymentWizard. Pass wizard id and sale order id for context. */
-export const createInvoicesFromWizard = (wizardId, saleOrderId) =>
   callOdooArgsKwargs(
     "sale.advance.payment.inv",
-    "create_invoices",
-    [[wizardId]],
+    "create",
+    [[{ advance_payment_method: "delivered" }]],
     {
       context: {
         active_model: "sale.order",
-        active_ids: [saleOrderId],
+        active_ids: [Number(saleOrderId)],
       },
     }
   );
+
+/** Step 2 — Create invoice from wizard. Same as Postman: create_invoices [[wizardId]]. Returns action dict with res_id = invoice id (e.g. 92). */
+export const createInvoicesFromWizard = (wizardId) =>
+  callOdooArgs("sale.advance.payment.inv", "create_invoices", [[Number(wizardId)]]);
+
+/** Get invoice id (res_id) from create_invoices result. Use this id for action_post and payment register. */
+export const getInvoiceIdAfterCreate = (createInvoicesResult) => {
+  const resId = createInvoicesResult?.res_id;
+  if (resId != null) return Number(resId);
+  return null;
+};
+
+/** Normalize Odoo invoice_ids entry to numeric id (handles [id, name] or id). */
+export const firstInvoiceId = (invoiceIds) => {
+  if (invoiceIds == null || !Array.isArray(invoiceIds) || invoiceIds.length === 0) return null;
+  const first = invoiceIds[0];
+  return Array.isArray(first) ? first[0] : first;
+};
 
 /** Get sale order invoice ids. Call after createInvoicesFromWizard to get new invoice id, or to check existing. */
 export const getSaleOrderInvoiceIds = async (saleOrderId) => {
@@ -138,6 +147,38 @@ export const getPaymentReceivableLine = async (paymentMoveId) => {
 /** Reconcile two (or more) move lines so the invoice shows payment_state = paid and amount_residual = 0. */
 export const reconcileMoveLines = (lineIds) =>
   callOdooArgs("account.move.line", "reconcile", [lineIds]);
+
+/* ---------------- Payment register wizard (for sync: cash/cheque on posted invoice) ---------------- */
+
+/** Step 5 — Create payment register wizard. Same as Postman: account.payment.register create [{ amount, journal_id, payment_date }], context active_ids [res_id]. Returns wizard id (e.g. 14). */
+export const createPaymentRegisterWizard = (invoiceResId, { amount, journalId, paymentDate }) => {
+  const dateStr = paymentDate && String(paymentDate).match(/^\d{4}-\d{2}-\d{2}/)
+    ? String(paymentDate).slice(0, 10)
+    : new Date().toISOString().slice(0, 10);
+  return callOdooArgsKwargs(
+    "account.payment.register",
+    "create",
+    [
+      [
+        {
+          amount: Number(amount),
+          journal_id: Number(journalId),
+          payment_date: dateStr,
+        },
+      ],
+    ],
+    {
+      context: {
+        active_model: "account.move",
+        active_ids: [Number(invoiceResId)],
+      },
+    }
+  );
+};
+
+/** Step 6 — Execute payment. Same as Postman: account.payment.register action_create_payments [[wizardId]]. */
+export const executePaymentRegister = (wizardId) =>
+  callOdooArgs("account.payment.register", "action_create_payments", [[Number(wizardId)]]);
 
 /**
  * Post the payment and reconcile it with the invoice in one flow.

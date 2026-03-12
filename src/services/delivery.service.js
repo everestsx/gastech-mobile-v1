@@ -1,4 +1,4 @@
-import { callOdoo, callOdooArgs } from "./index.service";
+import { callOdoo, callOdooArgs, callOdooArgsKwargs } from "./index.service";
 
 /** Get picking(s) for a sale order with move_ids and backorder_ids for delivery flow */
 export const getPickingBySaleOrder = (saleOrderId) =>
@@ -64,7 +64,22 @@ export const updateStockMoveQty = (moveId, qty) =>
 
 /** Validate delivery order (picking). Returns true or backorder wizard info */
 export const validatePicking = (pickingId) =>
-  callOdoo("stock.picking", "button_validate", [[pickingId]]);
+  callOdooArgs("stock.picking", "button_validate", [[pickingId]]);
+
+/** Validate picking with context (e.g. skip_backorder to avoid backorder wizard). */
+export const validatePickingWithContext = (pickingId, context = {}) =>
+  callOdooArgsKwargs(
+    "stock.picking",
+    "button_validate",
+    [[pickingId]],
+    { context: { ...context } }
+  );
+
+/** Create stock.move.line with qty_done (for offline sync: set delivered qty per move). */
+export const createMoveLine = (pickingId, moveId, productId, qtyDone) =>
+  callOdooArgs("stock.move.line", "create", [
+    [{ move_id: moveId, picking_id: pickingId, product_id: productId, qty_done: Number(qtyDone) }],
+  ]);
 
 /** Create backorder confirmation wizard. pickIds = [59] -> pick_ids [[4, 59, 0]] */
 export const createBackorderConfirmation = (pickIds) =>

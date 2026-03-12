@@ -547,6 +547,8 @@ const validateQuantities = useCallback(() => {
       const orderLineUpdates = [];
       const moveUpdates = [];
       const moveLineUpdates = [];
+      /** Per-product qty_done for sync 4-step flow (get picking → get moves → create move lines → validate). */
+      const deliveryLines = [];
 
       for (let i = 0; i < lines.length; i++) {
         const l = lines[i];
@@ -564,6 +566,10 @@ const validateQuantities = useCallback(() => {
             await stockMovesDb.updateStockMoveQtyLocal(moveId, newVal);
             moveUpdates.push({ moveId, product_uom_qty: newVal });
           }
+        }
+        const moveId = productIdToMoveId[productId];
+        if (moveId != null) {
+          deliveryLines.push({ moveId, productId, qty_done: newVal });
         }
         const moveLineId = productIdToMoveLineId[productId];
         if (moveLineId != null) {
@@ -584,6 +590,7 @@ const validateQuantities = useCallback(() => {
         orderLineUpdates,
         moveUpdates,
         moveLineUpdates,
+        deliveryLines,
       });
     },
     [order?.id, lines]
@@ -663,6 +670,8 @@ const handleProceedToPayment = useCallback(async () => {
     navigation.navigate('ProceedPayment', {
       saleOrderId: order.id,
       total: total ?? order.amount_total,
+      subtotal,
+      tax,
       deliveryDone: true,
     });
   } catch (err) {
@@ -683,40 +692,47 @@ const handleProceedToPayment = useCallback(async () => {
     return map;
   }, [lines]);
 
-  /** Subtotal from lines: sum of price_subtotal, or when qty changed sum of price_unit * newQty */
+  /** Subtotal from lines; fallback to order.amount_untaxed when no lines or sum is 0 */
   const computedSubtotal = useMemo(() => {
-    if (!lines.length) return 0;
-    return lines.reduce((sum, l) => {
+    if (!lines.length) return Number(order?.amount_untaxed) || 0;
+    const sum = lines.reduce((s, l) => {
       const qtyChanged = Number(l.newQty) !== Number(l.product_uom_qty);
-      if (qtyChanged) return sum + (Number(l.price_unit) || 0) * (Number(l.newQty) || 0);
-      return sum + (Number(l.price_subtotal) || 0);
+      if (qtyChanged) return s + (Number(l.price_unit) || 0) * (Number(l.newQty) || 0);
+      return s + (Number(l.price_subtotal) || 0);
     }, 0);
-  }, [lines]);
+    return sum > 0 ? sum : (Number(order?.amount_untaxed) || 0);
+  }, [lines, order?.amount_untaxed]);
 
-  /** Tax from lines: sum of (price_total - price_subtotal) per line; when qty changed, proportional by newQty */
+  /** Tax from lines; fallback to order.amount_tax when no lines or sum is 0 */
   const computedTax = useMemo(() => {
-    if (!lines.length) return 0;
-    return lines.reduce((sum, l) => {
+    if (!lines.length) return Number(order?.amount_tax) || 0;
+    const sum = lines.reduce((s, l) => {
       const lineTax = (Number(l.price_total) || 0) - (Number(l.price_subtotal) || 0);
       const qtyChanged = Number(l.newQty) !== Number(l.product_uom_qty);
       if (qtyChanged) {
         const origQty = Number(l.product_uom_qty) || 1;
-        return sum + (origQty ? (lineTax / origQty) * (Number(l.newQty) || 0) : 0);
+        return s + (origQty ? (lineTax / origQty) * (Number(l.newQty) || 0) : 0);
       }
-      return sum + lineTax;
+      return s + lineTax;
     }, 0);
-  }, [lines]);
+    return sum > 0 ? sum : (Number(order?.amount_tax) || 0);
+  }, [lines, order?.amount_tax]);
 
-  const computedTotal = computedSubtotal + computedTax;
+  /** Total (subtotal + tax); fallback to order.amount_total */
+  const computedTotal = useMemo(() => {
+    const t = computedSubtotal + computedTax;
+    return t > 0 ? t : (Number(order?.amount_total) || 0);
+  }, [computedSubtotal, computedTax, order?.amount_total]);
 
   const renderItem = ({ item }) => {
     const qtyNum = Number(item.newQty);
     const qtyChangedForLine =
       Number(item.newQty) !== Number(item.product_uom_qty);
     const unitPrice = Number(item.price_unit) || 0;
+    const lineSubtotal = Number(item.price_subtotal) || 0;
     const displayLineTotal = qtyChangedForLine
       ? unitPrice * (Number.isNaN(qtyNum) ? 0 : qtyNum)
-      : (item.price_subtotal ?? 0);
+      : (lineSubtotal > 0 ? lineSubtotal : unitPrice * (Number.isNaN(qtyNum) ? 0 : qtyNum));
     const productName = item.product_id?.[1] ?? item.name ?? '';
     const productId = item.product_id != null && Array.isArray(item.product_id) ? item.product_id[0] : item.product_id;
     const availableStock = productId != null ? productIdToAvailable[productId] : undefined;
@@ -972,6 +988,8 @@ const handleProceedToPayment = useCallback(async () => {
               navigation.navigate('ProceedPayment', {
                 saleOrderId: order.id,
                 total: computedTotal,
+                subtotal: computedSubtotal,
+                tax: computedTax,
                 deliveryDone: true,
               });
             } else {
