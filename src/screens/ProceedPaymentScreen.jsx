@@ -287,7 +287,6 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       await saleOrdersDb.updateSaleOrderPaymentTypeLocal(saleOrderId, primaryPaymentType, creditAmountForDb);
 
       const { picking } = await getDeliveryDataFromDB(saleOrderId);
-      console.log('picking', picking);
       if (picking?.id != null) {
         await stockPickingsDb.updatePickingStateLocal(Number(picking.id) || 0, 'done');
       }
@@ -310,57 +309,36 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         check_number: p.type === 'check' ? (p.checkNumber || checkNumberTrimmed || '') : '',
         bank_name: p.type === 'check' ? (selectedLocalBank?.name ?? '') : '',
       }));
+      console.log('========= REPLACE PAYMENTS FOR INVOICE =========');
+      console.log('invoiceId', invoiceId);
+      console.log('paymentRows', paymentRows);
+      console.log('===============================================');
+      // TODO: Credit Journal ID is not being set
       await localPaymentsDb.replacePaymentsForInvoice(invoiceId, paymentRows);
-
-      navigation.replace('InvoiceScreen', {
-        saleOrderId,
-        total,
-        invoiceNumber,
-        paymentType: 'split',
-        paymentSplit,
-        selectedBankId: needsCheck ? checkJournalId : null,
-        selectedBankName: needsCheck ? selectedLocalBank?.name : undefined,
-        chequeBankName: needsCheck ? (selectedLocalBank?.name ?? undefined) : undefined,
-        deliveryPhotoUris: deliveryPhotos,
-        cashAmount: paymentSplit.cash,
-        checkNumber: needsCheck ? (checkNumber || undefined) : undefined,
-        customerSignatureDataUrl: customerSignatureDataUrl ?? undefined,
-      });
     } catch (err) {
       console.error(err);
       const msg = err?.message || String(err);
-      const isRunAsyncError =
-        /runAsync|cannot convert|kotlin|coroutine type/i.test(msg) ||
-        (msg && msg.includes('object Object'));
-      if (isRunAsyncError) {
-        // APK build can throw this even when DB write succeeded; hide from user and proceed
-        const fallbackSplit = {
-          cash: cashAmountNum,
-          check: checkAmountNum,
-          credit: creditAmountNum,
-        };
-        navigation.replace('InvoiceScreen', {
-          saleOrderId,
-          total,
-          invoiceNumber: '',
-          paymentType: 'split',
-          paymentSplit: fallbackSplit,
-          selectedBankId: chequeJournalInternal?.id ?? selectedJournalId ?? null,
-          selectedBankName: selectedLocalBank?.name,
-          chequeBankName: selectedLocalBank?.name,
-          deliveryPhotoUris: deliveryPhotos,
-          cashAmount: cashAmountNum,
-          checkNumber: checkNumberTrimmed || undefined,
-          customerSignatureDataUrl: customerSignatureDataUrl ?? undefined,
-        });
-        return;
-      }
+      
       Alert.alert(
         'Error',
         err?.message || 'Failed to save payment (will sync when online)'
       );
     } finally {
       setLoading(false);
+      navigation.replace('InvoiceScreen', {
+        saleOrderId,
+        total,
+        invoiceNumber: '',
+        paymentType: 'split',
+        paymentSplit: fallbackSplit,
+        selectedBankId: chequeJournalInternal?.id ?? selectedJournalId ?? null,
+        selectedBankName: selectedLocalBank?.name,
+        chequeBankName: selectedLocalBank?.name,
+        deliveryPhotoUris: deliveryPhotos,
+        cashAmount: cashAmountNum,
+        checkNumber: checkNumberTrimmed || undefined,
+        customerSignatureDataUrl: customerSignatureDataUrl ?? undefined,
+      });
     }
   };
 

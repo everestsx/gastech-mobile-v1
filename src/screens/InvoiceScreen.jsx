@@ -595,24 +595,6 @@ export default function InvoiceScreen({ route, navigation }) {
         ) : null}
       </View>
 
-      {/* Credit payment: Create invoice → Post invoice → Customer account */}
-      {hasCreditPayment && (
-        <View style={styles.creditStepsCard}>
-          <Text style={styles.creditStepsTitle}>Credit payment flow</Text>
-          <View style={styles.creditStepRow}>
-            <Ionicons name="checkmark-circle" size={20} color={colors.primary} style={styles.creditStepCheck} />
-            <Text style={styles.creditStepText}>Create invoice</Text>
-          </View>
-          <View style={styles.creditStepRow}>
-            <Ionicons name="checkmark-circle" size={20} color={colors.primary} style={styles.creditStepCheck} />
-            <Text style={styles.creditStepText}>Post invoice</Text>
-          </View>
-          <Text style={styles.creditStepNote}>
-            Then it automatically appears in the customer account (receivable). When the customer pays later, record the payment against this invoice in Odoo.
-          </Text>
-        </View>
-      )}
-
       {/* Print invoice button - hidden after print so modal offers Re-print */}
       {printResult == null && (
         <TouchableOpacity
