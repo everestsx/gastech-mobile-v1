@@ -629,6 +629,8 @@ async function processSyncQueue() {
             const onlyCredit = payments.length > 0 && payments.every((pm) => pm.type === 'credit');
             if (onlyCredit && resId != null) {
               log('queue', `payment SO ${saleOrderId}: credit only — invoice posted res_id=${resId}, no payment register`);
+              await syncQueueDb.markSynced(Number(item.id));
+              alreadySyncedSaleOrderIds.add(soId);
             }
           }
 
@@ -676,6 +678,9 @@ async function processSyncQueue() {
                 }
               }
             }
+            await syncQueueDb.markSynced(Number(item.id));
+            alreadySyncedSaleOrderIds.add(soId);
+            log('queue', `payment item ${item.id} marked synced (invoice + payments created, chatter next)`);
           } else if (hasCashOrCheque && resId == null) {
             logWarn('queue payment', new Error('No invoice res_id for cash/cheque — create invoice first'));
           }

@@ -31,12 +31,17 @@ export async function upsertLocalInvoice(row) {
     );
     return num(existing.id);
   }
-  const result = await db.runAsync(
+  // Avoid using runAsync return value (can trigger "Cannot convert to Kotlin type" on Android APK)
+  await db.runAsync(
     `INSERT INTO local_invoices (sale_order_id, invoice_number, amount_total, amount_untaxed, amount_tax, state, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     [saleOrderId, invoiceNumber, amountTotal, amountUntaxed, amountTax, state, now, now]
   );
-  return num(result.lastInsertRowId);
+  const inserted = await db.getFirstAsync(
+    'SELECT id FROM local_invoices WHERE sale_order_id = ? ORDER BY id DESC LIMIT 1',
+    [saleOrderId]
+  );
+  return num(inserted?.id);
 }
 
 export async function getLocalInvoiceBySaleOrderId(saleOrderId) {

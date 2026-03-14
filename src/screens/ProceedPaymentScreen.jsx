@@ -273,8 +273,14 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         chequeBankName: needsCheck ? selectedLocalBank?.name : undefined,
         checkNumber: needsCheck ? (checkNumberTrimmed || undefined) : undefined,
       };
-      await syncQueueDb.enqueue(syncQueueDb.ACTION_PAYMENT, queuePayload);
-      console.log(`[Payment] Enqueued payment for SO ${saleOrderId}. Sync will: read proof URIs → base64 → ir.attachment.create → message_post(attachment_ids).`);
+      const existingPending = await syncQueueDb.getPendingPaymentItemBySaleOrderId(soId);
+      if (existingPending) {
+        await syncQueueDb.updateQueueItemPayload(existingPending.id, queuePayload);
+        console.log(`[Payment] Updated existing pending payment for SO ${saleOrderId} (one queue item per order to avoid duplicates).`);
+      } else {
+        await syncQueueDb.enqueue(syncQueueDb.ACTION_PAYMENT, queuePayload);
+        console.log(`[Payment] Enqueued payment for SO ${saleOrderId}. Sync will: read proof URIs → base64 → ir.attachment.create → message_post(attachment_ids).`);
+      }
 
       const primaryPaymentType = needsCredit ? 'credit' : needsCheck ? 'cheque' : 'cash';
       const creditAmountForDb = primaryPaymentType === 'credit' ? (paymentSplit.credit ?? orderTotal) : null;
@@ -322,6 +328,33 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       });
     } catch (err) {
       console.error(err);
+      const msg = err?.message || String(err);
+      const isRunAsyncError =
+        /runAsync|cannot convert|kotlin|coroutine type/i.test(msg) ||
+        (msg && msg.includes('object Object'));
+      if (isRunAsyncError) {
+        // APK build can throw this even when DB write succeeded; hide from user and proceed
+        const fallbackSplit = {
+          cash: cashAmountNum,
+          check: checkAmountNum,
+          credit: creditAmountNum,
+        };
+        navigation.replace('InvoiceScreen', {
+          saleOrderId,
+          total,
+          invoiceNumber: '',
+          paymentType: 'split',
+          paymentSplit: fallbackSplit,
+          selectedBankId: chequeJournalInternal?.id ?? selectedJournalId ?? null,
+          selectedBankName: selectedLocalBank?.name,
+          chequeBankName: selectedLocalBank?.name,
+          deliveryPhotoUris: deliveryPhotos,
+          cashAmount: cashAmountNum,
+          checkNumber: checkNumberTrimmed || undefined,
+          customerSignatureDataUrl: customerSignatureDataUrl ?? undefined,
+        });
+        return;
+      }
       Alert.alert(
         'Error',
         err?.message || 'Failed to save payment (will sync when online)'

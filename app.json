@@ -28,7 +28,8 @@
       "permissions": [
         "android.permission.INTERNET",
         "android.permission.ACCESS_NETWORK_STATE",
-        "android.permission.CAMERA"
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
       ]
     },
     "web": {
@@ -42,17 +43,18 @@
         }
       ]
     ],
-    "extra": {
-      "eas": {
-        "projectId": "352e0e00-e9cb-457f-91d1-90c7bf324a91"
-      }
-    },
     "build": {
       "preview": {
         "android": {
           "buildType": "apk"
         }
       }
-    }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "fb10e6b3-f5ab-4960-a520-cc96cff26408"
+      }
+    },
+    "owner": "syd_moulana"
   }
 }

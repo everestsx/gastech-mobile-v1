@@ -89,6 +89,31 @@ export async function getPaymentSplitBySaleOrderId(saleOrderId) {
   return split;
 }
 
+/** Get payment split for multiple sale order ids. Returns { [saleOrderId]: { cash, cheque, credit } }. */
+export async function getPaymentSplitsBySaleOrderIds(saleOrderIds) {
+  if (!Array.isArray(saleOrderIds) || saleOrderIds.length === 0) return {};
+  const db = await getDb();
+  const ids = saleOrderIds.map((id) => num(id)).filter((n) => n > 0);
+  if (ids.length === 0) return {};
+  const placeholders = ids.map(() => '?').join(',');
+  const rows = await db.getAllAsync(
+    `SELECT sale_order_id, payment_type, amount FROM local_payments WHERE sale_order_id IN (${placeholders})`,
+    ids
+  );
+  const out = {};
+  for (const id of ids) out[id] = { cash: 0, cheque: 0, credit: 0 };
+  for (const r of rows || []) {
+    const soId = num(r.sale_order_id);
+    if (out[soId] == null) continue;
+    const t = (r.payment_type || '').toLowerCase();
+    const amt = num(r.amount);
+    if (t === 'cash') out[soId].cash += amt;
+    else if (t === 'cheque' || t === 'check') out[soId].cheque += amt;
+    else if (t === 'credit') out[soId].credit += amt;
+  }
+  return out;
+}
+
 export async function updateLocalPaymentSynced(paymentId, odooPaymentId = null) {
   const db = await getDb();
   const now = iso();

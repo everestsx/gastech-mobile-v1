@@ -21,6 +21,7 @@ import {
   getPickingsBySaleIdsFromDB,
   getUserSession,
 } from '../services/sync.service';
+import * as localPaymentsDb from '../database/localPayments.js';
 import OrderCard from '../components/OrderCard';
 
 const TAB_CASH = 'cash';
@@ -53,18 +54,18 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
   );
 
   const filteredOrders = useMemo(() => {
-    if (activeTab === TAB_CASH) return deliveredOrders.filter((o) => (o.payment_type || '').toLowerCase() === 'cash');
-    if (activeTab === TAB_CHEQUE) return deliveredOrders.filter((o) => (o.payment_type || '').toLowerCase() === 'cheque');
-    if (activeTab === TAB_CREDIT) return deliveredOrders.filter((o) => (o.payment_type || '').toLowerCase() === 'credit');
+    if (activeTab === TAB_CASH) return deliveredOrders.filter((o) => (o.payment_type || '').toLowerCase() === 'cash' || ((o.paymentSplit?.cash ?? 0) > 0));
+    if (activeTab === TAB_CHEQUE) return deliveredOrders.filter((o) => (o.payment_type || '').toLowerCase() === 'cheque' || ((o.paymentSplit?.cheque ?? 0) > 0));
+    if (activeTab === TAB_CREDIT) return deliveredOrders.filter((o) => (o.payment_type || '').toLowerCase() === 'credit' || ((o.paymentSplit?.credit ?? 0) > 0));
     if (activeTab === TAB_ALL) return deliveredOrders;
     return deliveredOrders;
   }, [deliveredOrders, activeTab]);
 
   const tabCounts = useMemo(
     () => ({
-      [TAB_CASH]: deliveredOrders.filter((o) => (o.payment_type || '').toLowerCase() === 'cash').length,
-      [TAB_CHEQUE]: deliveredOrders.filter((o) => (o.payment_type || '').toLowerCase() === 'cheque').length,
-      [TAB_CREDIT]: deliveredOrders.filter((o) => (o.payment_type || '').toLowerCase() === 'credit').length,
+      [TAB_CASH]: deliveredOrders.filter((o) => (o.payment_type || '').toLowerCase() === 'cash' || ((o.paymentSplit?.cash ?? 0) > 0)).length,
+      [TAB_CHEQUE]: deliveredOrders.filter((o) => (o.payment_type || '').toLowerCase() === 'cheque' || ((o.paymentSplit?.cheque ?? 0) > 0)).length,
+      [TAB_CREDIT]: deliveredOrders.filter((o) => (o.payment_type || '').toLowerCase() === 'credit' || ((o.paymentSplit?.credit ?? 0) > 0)).length,
       [TAB_ALL]: deliveredOrders.length,
     }),
     [deliveredOrders]
@@ -184,10 +185,11 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
       const dateStr = formatDate(selectedDate);
       const list = all.filter((o) => (o.date_order || '').startsWith(dateStr));
       const orderIds = list.map((o) => o.id);
-      const [totals, pickings, allLines] = await Promise.all([
+      const [totals, pickings, allLines, paymentSplits] = await Promise.all([
         getOrderLineTotalsFromDB(list),
         getPickingsBySaleIdsFromDB(orderIds),
         getOrderLinesByOrderIdsFromDB(orderIds),
+        localPaymentsDb.getPaymentSplitsBySaleOrderIds(orderIds),
       ]);
       const saleIdToPickingState = {};
       (pickings || []).forEach((p) => {
@@ -211,6 +213,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
           totalQty: totals[o.id] != null ? totals[o.id] : null,
           isDelivered: saleIdToPickingState[o.id] === 'done',
           orderLines: linesByOrderId[o.id] || [],
+          paymentSplit: paymentSplits[o.id] || null,
         }))
       );
     } catch (err) {
@@ -411,7 +414,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
           </View>
         }
         renderItem={({ item }) => (
-          <OrderCard order={item} onPress={onOrderPress} isDelivered={true} />
+          <OrderCard order={item} onPress={onOrderPress} isDelivered={true} paymentSplit={item.paymentSplit} />
         )}
       />
     </View>

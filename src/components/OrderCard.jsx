@@ -38,8 +38,9 @@ export function getOrderTotalQty(order) {
  * Order card: Customer name (bold), Order ID (normal), date below name.
  * Top right: Order Type badge + Order Status badge (To Deliver / Invoiced / Delivered).
  * Total amount; item-wise quantity badges (qty + shortcode) with color coding.
+ * When isDelivered and paymentSplit is provided, shows payment breakdown: Cash Paid, Cheque Paid, Credit Balance, Remaining balance.
  */
-export default function OrderCard({ order, onPress, isDelivered, orderLines = [] }) {
+export default function OrderCard({ order, onPress, isDelivered, orderLines = [], paymentSplit = null }) {
   const { colors } = useTheme();
 
   // Consistent colors per gas size so users quickly identify Small/Medium/Large/Big across all cards
@@ -89,6 +90,19 @@ export default function OrderCard({ order, onPress, isDelivered, orderLines = []
         dateAmountRow: { marginTop: 4 },
         orderDate: { fontSize: 12, color: colors.textSecondary },
         amount: { fontSize: 16, fontWeight: '800', color: colors.primary },
+        paymentBreakdown: {
+          marginTop: 10,
+          paddingTop: 10,
+          borderTopWidth: 1,
+          borderTopColor: colors.border,
+        },
+        paymentBreakdownTitle: { fontSize: 12, fontWeight: '700', color: colors.textSecondary, marginBottom: 6 },
+        paymentRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
+        paymentLabel: { fontSize: 12, color: colors.textSecondary },
+        paymentValue: { fontSize: 12, fontWeight: '600', color: colors.text },
+        remainingRow: { marginTop: 4, paddingTop: 6, borderTopWidth: 1, borderTopColor: colors.border },
+        remainingLabel: { fontSize: 13, fontWeight: '700', color: colors.text },
+        remainingValue: { fontSize: 13, fontWeight: '800', color: colors.primary },
         qtyBadgesRow: {
           flexDirection: 'row',
           flexWrap: 'wrap',
@@ -189,6 +203,43 @@ export default function OrderCard({ order, onPress, isDelivered, orderLines = []
         <Text style={styles.orderDate}>{formatOrderDate(order.date_order)}</Text>
         <Text style={styles.amount}>{formatCurrency(order.amount_total)}</Text>
       </View>
+
+      {/* Payment breakdown (Delivery tab): Cash Paid, Cheque Paid, Credit Balance, Remaining balance */}
+      {isDelivered && paymentSplit && (paymentSplit.cash > 0 || paymentSplit.cheque > 0 || paymentSplit.credit > 0) ? (
+        <View style={styles.paymentBreakdown}>
+          <Text style={styles.paymentBreakdownTitle}>Payment breakdown</Text>
+          {paymentSplit.cash > 0 && (
+            <View style={styles.paymentRow}>
+              <Text style={styles.paymentLabel}>Cash Paid</Text>
+              <Text style={styles.paymentValue}>{formatCurrency(paymentSplit.cash, 'Rs.')}</Text>
+            </View>
+          )}
+          {paymentSplit.cheque > 0 && (
+            <View style={styles.paymentRow}>
+              <Text style={styles.paymentLabel}>Cheque Paid</Text>
+              <Text style={styles.paymentValue}>{formatCurrency(paymentSplit.cheque, 'Rs.')}</Text>
+            </View>
+          )}
+          {paymentSplit.credit > 0 && (
+            <View style={styles.paymentRow}>
+              <Text style={styles.paymentLabel}>Credit Balance</Text>
+              <Text style={styles.paymentValue}>{formatCurrency(paymentSplit.credit, 'Rs.')}</Text>
+            </View>
+          )}
+          {(() => {
+            const total = Number(order.amount_total) || 0;
+            const paid = (paymentSplit.cash || 0) + (paymentSplit.cheque || 0) + (paymentSplit.credit || 0);
+            const remaining = Math.max(0, total - paid);
+            if (remaining <= 0) return null;
+            return (
+              <View style={[styles.paymentRow, styles.remainingRow]}>
+                <Text style={styles.remainingLabel}>Remaining balance</Text>
+                <Text style={styles.remainingValue}>{formatCurrency(remaining, 'Rs.')}</Text>
+              </View>
+            );
+          })()}
+        </View>
+      ) : null}
 
       {/* Item-wise quantity badges: just below top items, less margin */}
       {lines.length > 0 ? (
