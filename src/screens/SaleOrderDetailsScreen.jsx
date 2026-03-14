@@ -377,7 +377,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
       );
       setQtyChanged(false);
       const { picking } = await getDeliveryDataFromDB(saleOrderId);
-      setIsDelivered(picking?.state === 'done');
+      setIsDelivered(data.order?.invoice_status === 'invoiced');
 
 
         const vehicleId = data.order?.vehicle_id != null

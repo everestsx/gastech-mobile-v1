@@ -315,6 +315,20 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       console.log('===============================================');
       // TODO: Credit Journal ID is not being set
       await localPaymentsDb.replacePaymentsForInvoice(invoiceId, paymentRows);
+      navigation.replace('InvoiceScreen', {
+        saleOrderId,
+        total,
+        invoiceNumber,
+        paymentType: 'split',
+        paymentSplit,
+        selectedBankId: needsCheck ? checkJournalId : null,
+        selectedBankName: needsCheck ? selectedLocalBank?.name : undefined,
+        chequeBankName: needsCheck ? (selectedLocalBank?.name ?? undefined) : undefined,
+        deliveryPhotoUris: deliveryPhotos,
+        cashAmount: paymentSplit.cash,
+        checkNumber: needsCheck ? (checkNumber || undefined) : undefined,
+        customerSignatureDataUrl: customerSignatureDataUrl ?? undefined,
+      });
     } catch (err) {
       console.error(err);
       const msg = err?.message || String(err);
@@ -330,7 +344,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         total,
         invoiceNumber: '',
         paymentType: 'split',
-        paymentSplit: fallbackSplit,
+        paymentSplit: paymentSplit,
         selectedBankId: chequeJournalInternal?.id ?? selectedJournalId ?? null,
         selectedBankName: selectedLocalBank?.name,
         chequeBankName: selectedLocalBank?.name,
@@ -892,7 +906,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           <Text style={styles.sectionLabel}>Credit</Text>
           <View style={styles.creditAmountWrap}>
             <Ionicons name="wallet-outline" size={24} color={colors.textSecondary} />
-            <Text style={styles.creditAmountHint}>Remaining after Cash & Cheque</Text>
+            <Text style={styles.creditAmountHint}> After Cash & Cheque </Text>
             <Text style={styles.creditAmountText}> Rs. {formatAmount(creditAmountNum)}</Text>
           </View>
         </>
