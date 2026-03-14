@@ -967,7 +967,7 @@ const handleProceedToPayment = useCallback(async () => {
           </View>
           <View style={[styles.grossRow, styles.grossTotalRow]}>
             <Text style={styles.grossTotalLabel}>
-              Total (including VAT)
+              Total (with VAT)
             </Text>
             <Text style={styles.grossTotalValue}>
               {formatCurrency(computedTotal)}
