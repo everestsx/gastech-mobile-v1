@@ -473,7 +473,7 @@ export default function InvoiceScreen({ route, navigation }) {
     paymentType === 'split' && paymentSplit
       ? [
           paymentSplit.cash > 0 && `Cash ${formatInvoiceCurrency(paymentSplit.cash)}`,
-          paymentSplit.check > 0 && `Check ${formatInvoiceCurrency(paymentSplit.check)}`,
+          paymentSplit.check > 0 && `Cheque ${formatInvoiceCurrency(paymentSplit.check)}`,
           paymentSplit.credit > 0 && `Credit ${formatInvoiceCurrency(paymentSplit.credit)}`,
         ].filter(Boolean).join(' • ') || 'Payment'
       : (paymentType === 'bank' || paymentType === 'check') && selectedBankName
