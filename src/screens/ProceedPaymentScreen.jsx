@@ -25,7 +25,7 @@ import * as offlineAttachmentsDb from '../database/offlineAttachments.js';
 import * as stockPickingsDb from '../database/stockPickings.js';
 import * as localInvoicesDb from '../database/localInvoices.js';
 import * as localPaymentsDb from '../database/localPayments.js';
-import * as FileSystem from 'expo-file-system/legacy';
+import * as FileSystem from 'expo-file-system';
 
 import { JOURNAL_CODE_CASH, JOURNAL_CODE_CHEQUE } from '../constants/journals';
 import { SRI_LANKA_BANKS } from '../constants/sriLankaBanks';
@@ -245,14 +245,19 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         try {
           const ext = (uri.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg';
           const fileName = `proof_${soId}_${timestamp}_${i}.${ext}`;
-          const destPath = `${FileSystem.documentDirectory}${fileName}`;
+          const source = new FileSystem.File(uri);
+          if (!source.exists) {
+            console.warn(`[Payment] source file missing: ${uri}`);
+            continue;
+          }
 
-          // FIX: copy directly to persistent storage
-          await FileSystem.copyAsync({ from: uri, to: destPath });
+          const dest = new FileSystem.File(FileSystem.Paths.document, fileName);
+          source.copy(dest);
 
-          const info = await FileSystem.getInfoAsync(destPath);
-          if (!info.exists || info.size < 100) {
-            console.warn(`[Payment] copied file missing/small: ${destPath}`);
+          const info = dest.info();
+          const destPath = dest.uri;
+          if (!info?.exists || (info.size ?? 0) < 100) {
+            console.warn(`[Payment] copied file missing/small: ${dest.uri}`);
             continue;
           }
 
@@ -264,7 +269,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           });
           console.log(`[Payment] Proof ${i + 1}: saved to ${destPath}, row in offline_attachments.`);
         } catch (e) {
-          console.warn('[Payment] save proof photo', i, e?.message ?? e);
+          console.warn('[Payment] save proof photo failed', { index: i, uri, message: e?.message, error: e });
         }
       }
 

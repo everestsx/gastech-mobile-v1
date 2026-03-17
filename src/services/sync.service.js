@@ -727,7 +727,7 @@ async function processSyncQueue() {
 
       const offlineAttachmentsDb = await import('../database/offlineAttachments.js');
       const pendingAttachments = await offlineAttachmentsDb.getPendingBySaleOrderId(soId);
-      const FileSystem = await import('expo-file-system/legacy');
+      const FileSystem = await import('expo-file-system');
 
       const attachmentIds = [];
       const syncedAttachmentIds = [];
@@ -739,8 +739,8 @@ async function processSyncQueue() {
       for (const att of pendingAttachments || []) {
         if (!att.local_file_path || !att.file_name) continue;
         try {
-          const info = await FileSystem.getInfoAsync(att.local_file_path, { size: false });
-          if (!info?.exists) {
+          const file = new FileSystem.File(att.local_file_path);
+          if (!file.exists) {
             await offlineAttachmentsDb.markFailed(Number(att.id), `File missing: ${att.local_file_path}`);
             logWarn('queue payment proof', new Error('File missing'));
             continue;
@@ -777,7 +777,10 @@ async function processSyncQueue() {
           const att = pendingById.get(idNum);
           if (att?.local_file_path) {
             try {
-              await FileSystem.deleteAsync(att.local_file_path, { idempotent: true });
+              const fileToDelete = new FileSystem.File(att.local_file_path);
+              if (fileToDelete.exists) {
+                fileToDelete.delete();
+              }
             } catch (_) { }
           }
         }

@@ -54,9 +54,9 @@ export function normalizeBase64ForUpload(base64) {
 export async function imageFileToBase64String(fileSystem, filePathOrUri) {
   if (!fileSystem || !filePathOrUri || typeof filePathOrUri !== 'string') return null;
   try {
-    const raw = await fileSystem.readAsStringAsync(filePathOrUri, {
-      encoding: fileSystem.EncodingType?.Base64 ?? 'base64',
-    });
+    const file = new fileSystem.File(filePathOrUri);
+    if (!file.exists) return null;
+    const raw = await file.base64();
     return normalizeBase64ForUpload(raw);
   } catch (_) {
     return null;
