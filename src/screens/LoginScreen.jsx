@@ -19,7 +19,7 @@ import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
 import { getCachedVehicles, getLastVehicleId, runSync, saveUserSession, saveLastVehicleId, syncVehiclesOnly } from '../services/sync.service';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import {authenticateVehicleOnline} from "@/src/services/vehicle.service";
+import { authenticateVehicleOnline, fetchAndStoreVehicleJournals } from '../services/vehicle.service';
 
 
 
@@ -106,6 +106,11 @@ export default function LoginScreen({ navigation }) {
       });
 
       saveLastVehicleId(selected.id);
+      // Store vehicle cash_journal_id and check_journal_id locally so Cash/Cheque payments work offline
+      const licensePlate = (selected.license_plate || selected.name || '').trim();
+      if (licensePlate) {
+        await fetchAndStoreVehicleJournals(licensePlate);
+      }
       runSync().catch(() => {}); // run sync automatically in background; do not block navigation
       navigation.replace('Main');
     } catch (err) {

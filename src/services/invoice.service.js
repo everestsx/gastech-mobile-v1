@@ -217,13 +217,17 @@ export const postPaymentAndReconcile = async (paymentId, invoiceId) => {
 
 /* ---------------- Invoices and payments by sale order (for sync + dashboard) ---------------- */
 
-/** Get invoices by sale order origin (invoice_origin in orderNames). */
+/** Get invoices by sale order origin (invoice_origin in orderNames). Matches API: account.move search_read. */
 export const getInvoicesByOrigins = (orderNames) => {
   if (!Array.isArray(orderNames) || orderNames.length === 0) return Promise.resolve([]);
+  const domain = [
+    ["invoice_origin", "in", orderNames],
+    ["move_type", "=", "out_invoice"],
+  ];
   return callOdoo(
     "account.move",
     "search_read",
-    [[["invoice_origin", "in", orderNames]]],
+    [domain],
     { fields: ["id", "name", "invoice_origin", "payment_state", "amount_total"], limit: 500 }
   );
 };
@@ -237,4 +241,13 @@ export const getPaymentsByInvoiceIds = (invoiceIds) => {
     [[["reconciled_invoice_ids", "in", invoiceIds]]],
     { fields: ["id", "amount", "journal_id", "reconciled_invoice_ids"], limit: 500 }
   );
+};
+
+/** Update invoice's incoterm_location with locally generated invoice number (mobile invoice no). */
+export const updateInvoiceIncotermLocation = (invoiceId, localInvoiceNumber) => {
+  if (invoiceId == null || localInvoiceNumber == null) return Promise.resolve(false);
+  const idNum = Number(invoiceId);
+  const text = String(localInvoiceNumber).trim();
+  if (!idNum || !text) return Promise.resolve(false);
+  return callOdooArgs("account.move", "write", [[idNum], { incoterm_location: text }]);
 };

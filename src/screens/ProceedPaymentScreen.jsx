@@ -18,7 +18,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { useSync } from '../context/SyncContext';
 import { spacing, borderRadius } from '../constants/theme';
-import { getCachedJournals, getSaleOrderDetailsFromDB, getDeliveryDataFromDB } from '../services/sync.service';
+import { getCachedJournals, getSaleOrderDetailsFromDB, getDeliveryDataFromDB, getUserSession, getLastSyncTime } from '../services/sync.service';
+import { getVehicleJournalsByLicensePlate } from '../services/vehicle.service';
 import * as saleOrdersDb from '../database/saleOrders.js';
 import * as syncQueueDb from '../database/syncQueue.js';
 import * as offlineAttachmentsDb from '../database/offlineAttachments.js';
@@ -29,7 +30,6 @@ import * as FileSystem from 'expo-file-system';
 
 /** Base64 encoding for readAsStringAsync/writeAsStringAsync (EncodingType may be undefined in some envs). */
 const BASE64 = (FileSystem.EncodingType && FileSystem.EncodingType.Base64) || 'base64';
-import { JOURNAL_CODE_CASH, JOURNAL_CODE_CHEQUE } from '../constants/journals';
 import { SRI_LANKA_BANKS } from '../constants/sriLankaBanks';
 import { formatAmount } from '../utils/format';
 import { getOrAssignInvoiceNumber } from '../utils/invoiceNumber';
@@ -49,6 +49,8 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   const [loading, setLoading] = useState(false);
   const [journalsLoading, setJournalsLoading] = useState(true);
   const [journals, setJournals] = useState([]);
+  const [vehicleJournalIds, setVehicleJournalIds] = useState({ cashJournalId: null, chequeJournalId: null });
+  const [hasSyncedOnce, setHasSyncedOnce] = useState(false);
   const [selectedPaymentMethods, setSelectedPaymentMethods] = useState([]);
   const [cashAmount, setCashAmount] = useState('');
   const [checkAmount, setCheckAmount] = useState('');
@@ -64,23 +66,29 @@ export default function ProceedPaymentScreen({ route, navigation }) {
 
   const MAX_PHOTOS = 3;
 
-  const cashJournals = useMemo(
-    () => (journals || []).filter((j) => j.type === 'cash'),
-    [journals]
-  );
-  const cashJournalPreferred = useMemo(
-    () => cashJournals.find((j) => (j.code || '').toUpperCase() === JOURNAL_CODE_CASH) || cashJournals[0],
-    [cashJournals]
-  );
-  const chequeJournals = useMemo(
-    () =>
-      (journals || []).filter(
-        (j) =>
-          (j.code || '').toUpperCase() === JOURNAL_CODE_CHEQUE ||
-          (j.name || '').toLowerCase().includes('cheque')
-      ),
-    [journals]
-  );
+  // Use only vehicle-specific journals for Cash and Cheque (cash_journal_id / check_journal_id from fleet.vehicle).
+  const cashJournals = useMemo(() => {
+    if (vehicleJournalIds.cashJournalId == null) return [];
+    const match = (journals || []).filter((j) => j.id === vehicleJournalIds.cashJournalId);
+    return match;
+  }, [journals, vehicleJournalIds.cashJournalId]);
+  const cashJournalPreferred = useMemo(() => {
+    if (vehicleJournalIds.cashJournalId != null && cashJournals.length > 0) {
+      return cashJournals.find((j) => j.id === vehicleJournalIds.cashJournalId) || cashJournals[0];
+    }
+    return null;
+  }, [cashJournals, vehicleJournalIds.cashJournalId]);
+
+  const chequeJournals = useMemo(() => {
+    if (vehicleJournalIds.chequeJournalId == null) return [];
+    return (journals || []).filter((j) => j.id === vehicleJournalIds.chequeJournalId);
+  }, [journals, vehicleJournalIds.chequeJournalId]);
+  const chequeJournalInternal = useMemo(() => {
+    if (vehicleJournalIds.chequeJournalId != null && chequeJournals.length > 0) {
+      return chequeJournals.find((j) => j.id === vehicleJournalIds.chequeJournalId) || chequeJournals[0];
+    }
+    return null;
+  }, [chequeJournals, vehicleJournalIds.chequeJournalId]);
   const bankJournals = useMemo(
     () => (journals || []).filter((j) => j.type === 'bank'),
     [journals]
@@ -116,12 +124,12 @@ export default function ProceedPaymentScreen({ route, navigation }) {
     if (!q) return SRI_LANKA_BANKS;
     return SRI_LANKA_BANKS.filter((b) => (b.name || '').toLowerCase().includes(q));
   }, [selectedLocalBankId, selectedLocalBank, bankSearchQuery]);
-  const chequeJournalInternal = chequeJournals[0];
+  // Cash/Cheque require vehicle-specific journal IDs (cash_journal_id / check_journal_id)
   const paymentComplete =
     hasAnyPayment &&
     totalEntered >= orderTotal &&
-    (cashAmountNum <= 0 || (cashJournalPreferred != null)) &&
-    (checkAmountNum <= 0 || (chequeJournalInternal != null && checkNumberTrimmed !== '' && selectedLocalBankId != null)) &&
+    (cashAmountNum <= 0 || vehicleJournalIds.cashJournalId != null) &&
+    (checkAmountNum <= 0 || (vehicleJournalIds.chequeJournalId != null && checkNumberTrimmed !== '' && selectedLocalBankId != null)) &&
     (creditAmountNum <= 0 || true);
 
   const evidenceRequired = checkAmountNum > 0 || creditAmountNum > 0;
@@ -132,10 +140,27 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   const loadJournals = useCallback(async () => {
     setJournalsLoading(true);
     try {
-      const list = await getCachedJournals();
+      const [list, user, lastSync] = await Promise.all([
+        getCachedJournals(),
+        getUserSession(),
+        getLastSyncTime(),
+      ]);
       setJournals(Array.isArray(list) ? list : []);
+      setHasSyncedOnce(lastSync != null && String(lastSync).trim() !== '');
+      const licensePlate = user?.licensePlate || user?.license_plate || '';
+      const vehicleId = user?.vehicleId ?? null;
+      if (licensePlate) {
+        const vehicleJournals = await getVehicleJournalsByLicensePlate(licensePlate, vehicleId);
+        setVehicleJournalIds({
+          cashJournalId: vehicleJournals.cashJournalId ?? null,
+          chequeJournalId: vehicleJournals.chequeJournalId ?? null,
+        });
+      } else {
+        setVehicleJournalIds({ cashJournalId: null, chequeJournalId: null });
+      }
     } catch (_) {
       setJournals([]);
+      setVehicleJournalIds({ cashJournalId: null, chequeJournalId: null });
     } finally {
       setJournalsLoading(false);
     }
@@ -146,10 +171,15 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   }, [loadJournals]);
 
   useEffect(() => {
-    if (selectedPaymentMethods.includes(PAYMENT_CHECK) && chequeJournals.length > 0) {
-      setSelectedJournalId(chequeJournals[0].id);
+    const unsub = navigation.addListener?.('focus', loadJournals);
+    return () => unsub?.();
+  }, [loadJournals, navigation]);
+
+  useEffect(() => {
+    if (selectedPaymentMethods.includes(PAYMENT_CHECK) && (chequeJournalInternal ?? chequeJournals[0])) {
+      setSelectedJournalId(chequeJournalInternal?.id ?? chequeJournals[0]?.id ?? null);
     }
-  }, [selectedPaymentMethods, chequeJournals]);
+  }, [selectedPaymentMethods, chequeJournals, chequeJournalInternal]);
 
   useEffect(() => {
     setHideSyncIndicator(true);
@@ -195,8 +225,9 @@ export default function ProceedPaymentScreen({ route, navigation }) {
 
   const handleProceed = async (customerSignatureDataUrl = null) => {
     if (!canProceed) return;
-    const cashJournalId = cashJournalPreferred?.id ?? null;
-    const checkJournalId = (chequeJournalInternal?.id ?? selectedJournalId) ?? null;
+    // Use vehicle fleet journals when available: Cash → cash_journal_id, Cheque → check_journal_id
+    const cashJournalId = vehicleJournalIds.cashJournalId ?? cashJournalPreferred?.id ?? null;
+    const checkJournalId = vehicleJournalIds.chequeJournalId ?? (chequeJournalInternal?.id ?? selectedJournalId) ?? null;
     const needsCash = cashAmountNum > 0 && cashJournalId != null;
     const needsCheck = checkAmountNum > 0 && checkJournalId != null;
     const needsCredit = creditAmountNum > 0 && selectedPaymentMethods.includes(PAYMENT_CREDIT);
@@ -263,6 +294,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         }
       }
 
+      const paymentDateStr = new Date().toISOString().slice(0, 10);
       const queuePayload = {
         saleOrderId: soId,
         partnerId,
@@ -270,6 +302,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         invoiceNumber,
         total: orderTotal,
         payments,
+        paymentDate: paymentDateStr,
         chequeBankName: needsCheck ? selectedLocalBank?.name : undefined,
         checkNumber: needsCheck ? (checkNumberTrimmed || undefined) : undefined,
       };
@@ -810,6 +843,21 @@ export default function ProceedPaymentScreen({ route, navigation }) {
             ) : null}
           </View>
         </View>
+      )}
+
+      {!journalsLoading && selectedPaymentMethods.includes(PAYMENT_CASH) && cashAmountNum > 0 && vehicleJournalIds.cashJournalId == null && (
+        <Text style={[styles.cashHint, { color: hasSyncedOnce ? colors.error : colors.textSecondary, marginBottom: spacing.sm }]}>
+          {hasSyncedOnce
+            ? 'Vehicle Cash journal is not configured. Please contact admin.'
+            : 'Sync when online to load Cash payment option.'}
+        </Text>
+      )}
+      {!journalsLoading && selectedPaymentMethods.includes(PAYMENT_CHECK) && checkAmountNum > 0 && vehicleJournalIds.chequeJournalId == null && (
+        <Text style={[styles.cashHint, { color: hasSyncedOnce ? colors.error : colors.textSecondary, marginBottom: spacing.sm }]}>
+          {hasSyncedOnce
+            ? 'Vehicle Cheque journal is not configured. Please contact admin.'
+            : 'Sync when online to load Cheque payment option.'}
+        </Text>
       )}
 
       {selectedPaymentMethods.includes(PAYMENT_CHECK) && (

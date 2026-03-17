@@ -67,3 +67,29 @@ export async function getJournalCodesByIds(journalIds) {
   }
   return map;
 }
+
+/**
+ * Get journal id -> { name, code } for given ids. Used to classify vehicle journals (Cash_*, CHQ_*) from Odoo after sync.
+ * Returns { [journalId]: { name: string, code: string } }.
+ */
+export async function getJournalDetailsByIds(journalIds) {
+  if (!Array.isArray(journalIds) || journalIds.length === 0) return {};
+  const ids = [...new Set(journalIds)].filter((id) => id != null);
+  if (ids.length === 0) return {};
+  const rows = await callOdoo(
+    "account.journal",
+    "search_read",
+    [[["id", "in", ids]]],
+    { fields: ["id", "name", "code"] }
+  );
+  const map = {};
+  for (const r of rows || []) {
+    if (r.id != null) {
+      map[r.id] = {
+        name: (r.name || "").trim(),
+        code: (r.code || "").trim().toUpperCase(),
+      };
+    }
+  }
+  return map;
+}
