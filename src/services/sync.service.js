@@ -25,7 +25,7 @@ import * as vehicleInventoriesDb from '../database/vehicleInventories.js';
 import * as productsDb from '../database/products.js';
 import * as syncLogDb from '../database/syncLog.js';
 import * as syncQueueDb from '../database/syncQueue.js';
-import {getDb} from "@/src/database/db";
+import { getDb } from "@/src/database/db";
 export let isLoggingOut = false;
 export const setIsLoggingOut = (value) => {
   isLoggingOut = value;
@@ -86,7 +86,7 @@ export async function saveLastVehicleId(vehicleId) {
   try {
     const storage = await getAsyncStorage();
     await storage.setItem(KEYS.LAST_VEHICLE_ID, String(vehicleId));
-  } catch (_) {}
+  } catch (_) { }
 }
 
 export async function getLastVehicleId() {
@@ -512,7 +512,7 @@ async function processSyncQueue() {
           log('queue', `delivery already done picking ${pickingId}, synced id=${item.id}`);
           continue;
         }
-      } catch (_) {}
+      } catch (_) { }
 
       try {
         for (const u of orderLineUpdates) {
@@ -727,7 +727,7 @@ async function processSyncQueue() {
 
       const offlineAttachmentsDb = await import('../database/offlineAttachments.js');
       const pendingAttachments = await offlineAttachmentsDb.getPendingBySaleOrderId(soId);
-      const FileSystem = (await import('expo-file-system')).default;
+      const FileSystem = await import('expo-file-system/legacy');
 
       const attachmentIds = [];
       const syncedAttachmentIds = [];
@@ -763,6 +763,7 @@ async function processSyncQueue() {
 
       if (pendingCount > 0 && attachmentIds.length === 0) {
         logWarn('queue payment proof', new Error('Had pending proof photos but no attachment ids — check file path and createProofAttachment'));
+        continue;
       }
 
       // API 2: Post message with attachment_ids (required so captured photos appear in sale order chatter)
@@ -777,7 +778,7 @@ async function processSyncQueue() {
           if (att?.local_file_path) {
             try {
               await FileSystem.deleteAsync(att.local_file_path, { idempotent: true });
-            } catch (_) {}
+            } catch (_) { }
           }
         }
         chatterPostedInThisRun.add(soId);
@@ -1104,7 +1105,7 @@ export async function runSync() {
     await syncLogDb.appendLog({
       sync_at: syncAt,
       status: 'success',
-      message: result.error ? result.error : 'Sync successful',      
+      message: result.error ? result.error : 'Sync successful',
       counts: JSON.stringify(result),
     });
     const storage = await getAsyncStorage();

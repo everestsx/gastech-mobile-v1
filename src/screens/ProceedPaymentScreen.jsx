@@ -25,10 +25,8 @@ import * as offlineAttachmentsDb from '../database/offlineAttachments.js';
 import * as stockPickingsDb from '../database/stockPickings.js';
 import * as localInvoicesDb from '../database/localInvoices.js';
 import * as localPaymentsDb from '../database/localPayments.js';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 
-/** Base64 encoding for readAsStringAsync/writeAsStringAsync (EncodingType may be undefined in some envs). */
-const BASE64 = (FileSystem.EncodingType && FileSystem.EncodingType.Base64) || 'base64';
 import { JOURNAL_CODE_CASH, JOURNAL_CODE_CHEQUE } from '../constants/journals';
 import { SRI_LANKA_BANKS } from '../constants/sriLankaBanks';
 import { formatAmount } from '../utils/format';
@@ -245,12 +243,19 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         const uri = deliveryPhotos[i];
         if (!uri || typeof uri !== 'string') continue;
         try {
-          const rawBase64 = await FileSystem.readAsStringAsync(uri, { encoding: BASE64 });
-          if (!rawBase64 || rawBase64.length < 100) continue;
           const ext = (uri.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg';
           const fileName = `proof_${soId}_${timestamp}_${i}.${ext}`;
           const destPath = `${FileSystem.documentDirectory}${fileName}`;
-          await FileSystem.writeAsStringAsync(destPath, rawBase64, { encoding: BASE64 });
+
+          // FIX: copy directly to persistent storage
+          await FileSystem.copyAsync({ from: uri, to: destPath });
+
+          const info = await FileSystem.getInfoAsync(destPath);
+          if (!info.exists || info.size < 100) {
+            console.warn(`[Payment] copied file missing/small: ${destPath}`);
+            continue;
+          }
+
           await offlineAttachmentsDb.insert({
             sale_order_id: soId,
             local_file_path: destPath,
@@ -331,28 +336,12 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       });
     } catch (err) {
       console.error(err);
-      const msg = err?.message || String(err);
-      
       Alert.alert(
         'Error',
         err?.message || 'Failed to save payment (will sync when online)'
       );
     } finally {
       setLoading(false);
-      navigation.replace('InvoiceScreen', {
-        saleOrderId,
-        total,
-        invoiceNumber: '',
-        paymentType: 'split',
-        paymentSplit: paymentSplit,
-        selectedBankId: chequeJournalInternal?.id ?? selectedJournalId ?? null,
-        selectedBankName: selectedLocalBank?.name,
-        chequeBankName: selectedLocalBank?.name,
-        deliveryPhotoUris: deliveryPhotos,
-        cashAmount: cashAmountNum,
-        checkNumber: checkNumberTrimmed || undefined,
-        customerSignatureDataUrl: customerSignatureDataUrl ?? undefined,
-      });
     }
   };
 
@@ -395,8 +384,8 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         },
         photoBtnText: { fontSize: 14, fontWeight: '600', color: colors.primary },
         photoPreviewWrap: {
-          width: '75',
-          height: '75',
+          width: 75,
+          height: 75,
           borderRadius: borderRadius.md,
           overflow: 'hidden',
           backgroundColor: colors.surface,
