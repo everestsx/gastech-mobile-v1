@@ -320,12 +320,11 @@ export default function SaleOrderListScreen({ route, navigation }) {
   };
 
   const onOrderPress = (order) => {
-    const deliveredNotInvoiced = order.isDelivered && String(order.invoice_status) !== 'invoiced';
-    if (deliveredNotInvoiced) {
-      navigation.navigate('ProceedPayment', {
+    const delivereAndInvoiced = order.isDelivered && String(order.invoice_status) === 'invoiced';
+    if (delivereAndInvoiced) {
+      navigation.navigate('InvoiceScreen', {
         saleOrderId: order.id,
         total: order.amount_total,
-        deliveryDone: true,
       });
     } else {
       navigation.navigate('SaleOrderDetails', { saleOrderId: order.id });

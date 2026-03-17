@@ -377,7 +377,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
       );
       setQtyChanged(false);
       const { picking } = await getDeliveryDataFromDB(saleOrderId);
-      setIsDelivered(picking?.state === 'done');
+      setIsDelivered(data.order?.invoice_status === 'invoiced');
 
 
         const vehicleId = data.order?.vehicle_id != null
@@ -967,7 +967,7 @@ const handleProceedToPayment = useCallback(async () => {
           </View>
           <View style={[styles.grossRow, styles.grossTotalRow]}>
             <Text style={styles.grossTotalLabel}>
-              Total (including VAT)
+              Total (with VAT)
             </Text>
             <Text style={styles.grossTotalValue}>
               {formatCurrency(computedTotal)}

@@ -32,7 +32,7 @@ const SALE_ORDERS_COLUMNS = [
   { name: 'amount_total', def: 'REAL' },
   { name: 'amount_untaxed', def: 'REAL' },
   { name: 'amount_tax', def: 'REAL' },
-  { name: 'invoice_status', def: 'TEXT' },
+  { name: 'invoice_status', def: 'TEXT' }, // consider this to be order_status
   { name: 'order_line', def: 'TEXT' },
   { name: 'route_id', def: 'INTEGER' },
   { name: 'route_name', def: 'TEXT' },

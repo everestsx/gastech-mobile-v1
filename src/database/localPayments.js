@@ -47,7 +47,7 @@ export async function replacePaymentsForInvoice(invoiceId, paymentRows) {
           num(row.sale_order_id),
           empty(row.payment_type),
           num(row.amount),
-          numOrNull(row.journal_id) ?? null,
+          numOrNull(row.journal_id) ?? '',
           empty(row.check_number),
           empty(row.bank_name),
           now,

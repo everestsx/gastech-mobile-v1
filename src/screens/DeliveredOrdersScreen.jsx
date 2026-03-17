@@ -75,7 +75,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
 
   /** All delivered orders (with or without payment). Cash/Cheque/Credit tabs filter by payment_type. */
   const deliveredOrders = useMemo(
-    () => orders.filter((o) => o.isDelivered),
+    () => orders.filter((o) => o.invoice_status === 'invoiced'),
     [orders]
   );
 
@@ -260,7 +260,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
         list.map((o) => ({
           ...o,
           totalQty: totals[o.id] != null ? totals[o.id] : null,
-          isDelivered: saleIdToPickingState[o.id] === 'done',
+          isDelivered: o.invoice_status === 'invoiced',
           orderLines: linesByOrderId[o.id] || [],
           paymentSplit: syntheticSplit(o) || null,
         }))
