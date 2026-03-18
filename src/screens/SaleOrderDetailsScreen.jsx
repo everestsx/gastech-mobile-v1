@@ -189,16 +189,16 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
           flexWrap: 'wrap',
           marginBottom: 4,
         },
-        lineUnitPriceRow: { marginTop: 2 },
+        lineUnitPriceRow: { marginTop: 2 ,flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderTopColor: colors.border},
         lineUnitPriceLabel: { fontSize: 12, color: colors.textSecondary },
         lineUnitPriceValue: { fontSize: 14, fontWeight: '600', color: colors.text },
         lineTotalRow: {
-          flexDirection: 'row',
-          justifyContent: 'flex-end',
-          alignItems: 'center',
-          marginTop: 6,
-          paddingTop: 6,
-          borderTopWidth: 1,
+          // flexDirection: 'row',
+          // justifyContent: 'flex-end',
+          // alignItems: 'center',
+          // marginTop: 6,
+          // paddingTop: 6,
+          // borderTopWidth: 1,
           borderTopColor: colors.border,
         },
         lineTotalLabel: { fontSize: 12, color: colors.textSecondary, marginRight: 6 },
@@ -816,13 +816,16 @@ const handleProceedToPayment = useCallback(async () => {
             )}
 
             <View style={styles.lineUnitPriceRow}>
-              <Text style={styles.lineUnitPriceLabel}>Unit price</Text>
-              <Text style={styles.lineUnitPriceValue}>{formatCurrency(unitPrice)}</Text>
+              <View>
+                  <Text style={styles.lineUnitPriceLabel}>Unit price</Text>
+                  <Text style={styles.lineUnitPriceValue}>{formatCurrency(unitPrice)}</Text>
+              </View>
+              <View>
+                  <Text style={styles.lineTotalLabel}>Line total</Text>
+                  <Text style={styles.lineTotalValue}>{formatCurrency(displayLineTotal)}</Text>
+              </View>
             </View>
-            <View style={styles.lineTotalRow}>
-              <Text style={styles.lineTotalLabel}>Line total</Text>
-              <Text style={styles.lineTotalValue}>{formatCurrency(displayLineTotal)}</Text>
-            </View>
+            <View style={styles.lineTotalRow}/>
           </View>
         </View>
       </View>
