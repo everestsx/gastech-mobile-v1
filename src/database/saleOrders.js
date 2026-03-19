@@ -141,6 +141,8 @@ export async function getAllSaleOrders(vehicleId = null) {
     vehicle_id: row.vehicle_id != null ? [row.vehicle_id, row.vehicle_name ?? ''] : null,
     payment_type: row.payment_type ?? null,
     amount_credit: row.amount_credit != null ? row.amount_credit : null,
+    amount_cash: row.amount_cash != null ? row.amount_cash : null,
+    amount_cheque: row.amount_cheque != null ? row.amount_cheque : null,
   }));
     logQuery(op, `done count=${result.length}`);
     return result;
@@ -276,15 +278,83 @@ export async function updateSaleOrderPaymentTypeLocal(orderId, paymentType, amou
 }
 
 /**
- * Update payment_type by order name (used when syncing from Odoo so all devices show correct Cash/Cheque/Credit).
+ * Update payment_type by order ID (preferred when syncing from Odoo – avoids name mismatch).
  */
-export async function updatePaymentTypeByOrderName(orderName, paymentType) {
-  if (orderName == null || orderName === '') return;
-  const op = 'updatePaymentTypeByOrderName';
-  logQuery(op, `name=${orderName} paymentType=${paymentType}`);
+export async function updatePaymentTypeByOrderId(orderId, paymentType) {
+  if (orderId == null || orderId === '') return;
+  const op = 'updatePaymentTypeByOrderId';
+  const idNum = num(orderId);
+  logQuery(op, `id=${idNum} paymentType=${paymentType}`);
   const db = await getDb();
   const type = paymentType === 'cash' || paymentType === 'cheque' || paymentType === 'credit' ? paymentType : null;
-  const params = [type, iso(), String(orderName)];
+  try {
+    await db.runAsync(
+      `UPDATE sale_orders SET payment_type = ?, updated_at = ? WHERE id = ?`,
+      [type, iso(), idNum]
+    );
+    logQuery(op, `done id=${idNum}`);
+  } catch (err) {
+    logError(op, `id=${idNum} paymentType=${paymentType}`, err);
+    throw err;
+  }
+}
+
+/**
+ * Update payment split (cash/cheque/credit) and primary payment_type from Odoo sync.
+ * Use when order has multiple payments (e.g. part cash + part cheque); balance = credit.
+ */
+export async function updatePaymentSplitByOrderId(orderId, split, paymentType) {
+  if (orderId == null || orderId === '') return;
+  const idNum = num(orderId);
+  const cash = split && typeof split.cash === 'number' ? split.cash : 0;
+  const cheque = split && typeof split.cheque === 'number' ? split.cheque : 0;
+  const credit = split && typeof split.credit === 'number' ? split.credit : 0;
+  const type = paymentType === 'cash' || paymentType === 'cheque' || paymentType === 'credit' ? paymentType : null;
+  const db = await getDb();
+  try {
+    await db.runAsync(
+      `UPDATE sale_orders SET payment_type = ?, amount_cash = ?, amount_cheque = ?, amount_credit = ?, updated_at = ? WHERE id = ?`,
+      [type, cash, cheque, credit, iso(), idNum]
+    );
+  } catch (err) {
+    logError('updatePaymentSplitByOrderId', `id=${idNum}`, err);
+    throw err;
+  }
+}
+
+/**
+ * Update payment split by order name (fallback when ID not available).
+ */
+export async function updatePaymentSplitByOrderName(orderName, split, paymentType) {
+  const trimmed = orderName != null ? String(orderName).trim() : '';
+  if (trimmed === '') return;
+  const cash = split && typeof split.cash === 'number' ? split.cash : 0;
+  const cheque = split && typeof split.cheque === 'number' ? split.cheque : 0;
+  const credit = split && typeof split.credit === 'number' ? split.credit : 0;
+  const type = paymentType === 'cash' || paymentType === 'cheque' || paymentType === 'credit' ? paymentType : null;
+  const db = await getDb();
+  try {
+    await db.runAsync(
+      `UPDATE sale_orders SET payment_type = ?, amount_cash = ?, amount_cheque = ?, amount_credit = ?, updated_at = ? WHERE name = ?`,
+      [type, cash, cheque, credit, iso(), trimmed]
+    );
+  } catch (err) {
+    logError('updatePaymentSplitByOrderName', `name=${trimmed}`, err);
+    throw err;
+  }
+}
+
+/**
+ * Update payment_type by order name (fallback when order ID not available).
+ */
+export async function updatePaymentTypeByOrderName(orderName, paymentType) {
+  const trimmed = orderName != null ? String(orderName).trim() : '';
+  if (trimmed === '') return;
+  const op = 'updatePaymentTypeByOrderName';
+  logQuery(op, `name=${trimmed} paymentType=${paymentType}`);
+  const db = await getDb();
+  const type = paymentType === 'cash' || paymentType === 'cheque' || paymentType === 'credit' ? paymentType : null;
+  const params = [type, iso(), trimmed];
   try {
     await db.runAsync(
       `UPDATE sale_orders SET payment_type = ?, updated_at = ? WHERE name = ?`,

@@ -16,6 +16,7 @@ import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
 import {
   getCachedOrders,
+  getCachedJournals,
   getOrderLineTotalsFromDB,
   getOrderLinesByOrderIdsFromDB,
   getPickingsBySaleIdsFromDB,
@@ -38,10 +39,35 @@ function isToday(d) {
   return formatDate(d) === today;
 }
 
+/**
+ * Categorize by payment amounts: Cash tab / Cheque tab / Credit tab.
+ * Primary = tab with highest amount. Tie-break: cheque > cash > credit.
+ * Uses stored amounts and payment_type only (no journal name check) so vehicle-specific
+ * journals display correctly.
+ * @param {Object} paymentSplit - { cash, cheque, credit, cashJournalId?, chequeJournalId? }
+ * @param {string} fallbackPaymentType - used when all amounts are zero
+ */
+function getPrimaryPaymentType(paymentSplit, fallbackPaymentType) {
+  const cash = Number(paymentSplit?.cash) || 0;
+  const cheque = Number(paymentSplit?.cheque) || 0;
+  const credit = Number(paymentSplit?.credit) || 0;
+  if (!paymentSplit || (cash === 0 && cheque === 0 && credit === 0)) {
+    const t = (fallbackPaymentType || '').toLowerCase().trim();
+    if (t === 'cash' || t === 'cheque' || t === 'credit') return t;
+    return TAB_CREDIT;
+  }
+  const max = Math.max(cash, cheque, credit);
+  if (max === 0) return (fallbackPaymentType || '').toLowerCase().trim() || TAB_CREDIT;
+  if (cheque === max) return TAB_CHEQUE;
+  if (cash === max) return TAB_CASH;
+  return TAB_CREDIT;
+}
+
 export default function DeliveredOrdersScreen({ route, navigation }) {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const [orders, setOrders] = useState([]);
+  const [journals, setJournals] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedDate, setSelectedDate] = useState(() => new Date());
   const [showPicker, setShowPicker] = useState(false);
@@ -53,19 +79,17 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
     [orders]
   );
 
+  /** Each order appears in exactly one tab: by payment amounts (cash / cheque / credit), highest amount wins. */
   const filteredOrders = useMemo(() => {
-    if (activeTab === TAB_CASH) return deliveredOrders.filter((o) => (o.payment_type || '').toLowerCase() === 'cash' || ((o.paymentSplit?.cash ?? 0) > 0));
-    if (activeTab === TAB_CHEQUE) return deliveredOrders.filter((o) => (o.payment_type || '').toLowerCase() === 'cheque' || ((o.paymentSplit?.cheque ?? 0) > 0));
-    if (activeTab === TAB_CREDIT) return deliveredOrders.filter((o) => (o.payment_type || '').toLowerCase() === 'credit' || ((o.paymentSplit?.credit ?? 0) > 0));
     if (activeTab === TAB_ALL) return deliveredOrders;
-    return deliveredOrders;
+    return deliveredOrders.filter((o) => getPrimaryPaymentType(o.paymentSplit, o.payment_type) === activeTab);
   }, [deliveredOrders, activeTab]);
 
   const tabCounts = useMemo(
     () => ({
-      [TAB_CASH]: deliveredOrders.filter((o) => (o.payment_type || '').toLowerCase() === 'cash' || ((o.paymentSplit?.cash ?? 0) > 0)).length,
-      [TAB_CHEQUE]: deliveredOrders.filter((o) => (o.payment_type || '').toLowerCase() === 'cheque' || ((o.paymentSplit?.cheque ?? 0) > 0)).length,
-      [TAB_CREDIT]: deliveredOrders.filter((o) => (o.payment_type || '').toLowerCase() === 'credit' || ((o.paymentSplit?.credit ?? 0) > 0)).length,
+      [TAB_CASH]: deliveredOrders.filter((o) => getPrimaryPaymentType(o.paymentSplit, o.payment_type) === TAB_CASH).length,
+      [TAB_CHEQUE]: deliveredOrders.filter((o) => getPrimaryPaymentType(o.paymentSplit, o.payment_type) === TAB_CHEQUE).length,
+      [TAB_CREDIT]: deliveredOrders.filter((o) => getPrimaryPaymentType(o.paymentSplit, o.payment_type) === TAB_CREDIT).length,
       [TAB_ALL]: deliveredOrders.length,
     }),
     [deliveredOrders]
@@ -185,12 +209,14 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
       const dateStr = formatDate(selectedDate);
       const list = all.filter((o) => (o.date_order || '').startsWith(dateStr));
       const orderIds = list.map((o) => o.id);
-      const [totals, pickings, allLines, paymentSplits] = await Promise.all([
+      const [totals, pickings, allLines, paymentSplits, journalsList] = await Promise.all([
         getOrderLineTotalsFromDB(list),
         getPickingsBySaleIdsFromDB(orderIds),
         getOrderLinesByOrderIdsFromDB(orderIds),
-        localPaymentsDb.getPaymentSplitsBySaleOrderIds(orderIds),
+        localPaymentsDb.getPaymentSplitsWithJournalsBySaleOrderIds(orderIds),
+        getCachedJournals(),
       ]);
+      setJournals(Array.isArray(journalsList) ? journalsList : []);
       const saleIdToPickingState = {};
       (pickings || []).forEach((p) => {
         const saleId = Array.isArray(p.sale_id) ? p.sale_id[0] : p.sale_id;
@@ -207,13 +233,36 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
           linesByOrderId[oid].push(line);
         }
       });
+      const getSplit = (order) => {
+        const id = order?.id;
+        if (id == null) return null;
+        return paymentSplits[Number(id)] ?? paymentSplits[id] ?? paymentSplits[String(id)] ?? null;
+      };
+      // Backend sync can store amount_cash, amount_cheque, amount_credit (split); else use local split or payment_type + amount_total
+      const syntheticSplit = (o) => {
+        const split = getSplit(o);
+        if (split && (Number(split.cash) || Number(split.cheque) || Number(split.credit))) return split;
+        const sc = Number(o.amount_cash) || 0;
+        const sq = Number(o.amount_cheque) || 0;
+        const sr = Number(o.amount_credit) || 0;
+        if (sc > 0 || sq > 0 || sr > 0)
+          return { cash: sc, cheque: sq, credit: sr };
+        const pt = (o.payment_type || '').toLowerCase();
+        const amt = Number(o.amount_total) || 0;
+        if (amt <= 0 || (pt !== 'cash' && pt !== 'cheque' && pt !== 'credit')) return split || null;
+        return {
+          cash: pt === 'cash' ? amt : 0,
+          cheque: pt === 'cheque' ? amt : 0,
+          credit: pt === 'credit' ? amt : 0,
+        };
+      };
       setOrders(
         list.map((o) => ({
           ...o,
           totalQty: totals[o.id] != null ? totals[o.id] : null,
           isDelivered: o.invoice_status === 'invoiced',
           orderLines: linesByOrderId[o.id] || [],
-          paymentSplit: paymentSplits[o.id] || null,
+          paymentSplit: syntheticSplit(o) || null,
         }))
       );
     } catch (err) {
