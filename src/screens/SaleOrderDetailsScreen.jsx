@@ -181,7 +181,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
           justifyContent: 'center',
           alignItems: 'center',
         },
-        lineProductName: { fontSize: 16, fontWeight: '700', color: colors.primary, marginBottom: 6 },
+        lineProductName: { fontSize: 14, fontWeight: '700', color: colors.primary, marginBottom: 6 },
         lineNameQtyRow: {
           flexDirection: 'row',
           alignItems: 'center',
