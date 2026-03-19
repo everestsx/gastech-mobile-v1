@@ -635,50 +635,65 @@ async function processSyncQueue() {
 
           const hasCashOrCheque = payments.some((pm) => pm.type === 'cash' || pm.type === 'check');
           if (hasCashOrCheque && resId != null) {
-            let resolvedCashId = null;
-            let resolvedChequeId = null;
-            try {
-              const { getCashTypeJournalIds } = await import('./journal.service.js');
-              const ids = await getCashTypeJournalIds();
-              resolvedCashId = ids.cashJournalId ?? null;
-              resolvedChequeId = ids.chequeJournalId ?? null;
-              log('queue', `payment SO ${saleOrderId}: journals from Odoo cash(CSH1)=${resolvedCashId ?? '—'} cheque(CSH2)=${resolvedChequeId ?? '—'}`);
-            } catch (resolveErr) {
-              logWarn('queue payment resolve journals', resolveErr);
-            }
-            const dateStr = p.paymentDate || new Date().toISOString().slice(0, 10);
-            for (const pm of payments) {
-              if (pm.type === 'credit') continue;
-              const amount = Number(pm.amount);
-              const journalId = pm.type === 'cash' ? resolvedCashId : pm.type === 'check' ? resolvedChequeId : null;
-              if (!amount || journalId == null) {
-                logWarn('queue payment', new Error(`${pm.type === 'cash' ? 'Cash' : 'Cheque'} journal id not found. Skipping amount ${amount}`));
-                continue;
-              }
+            const invStateForPayment = await getInvoiceState(resId).catch(() => ({}));
+            const alreadyPaid = (invStateForPayment?.payment_state || '').toLowerCase() === 'paid';
+            if (alreadyPaid) {
+              log('queue', `payment SO ${saleOrderId}: invoice ${resId} already paid — skip payment register`);
+              alreadySyncedSaleOrderIds.add(soId);
+              log('queue', `payment item ${item.id} invoice/payments completed (pending chatter + proof upload)`);
+            } else {
+              let resolvedCashId = null;
+              let resolvedChequeId = null;
               try {
-                log('queue', `payment SO ${saleOrderId}: Step 5 — payment register create amount=${amount} journal_id=${journalId} active_ids=[${resId}]`);
-                const registerWizardId = await createPaymentRegisterWizard(resId, {
-                  amount,
-                  journalId,
-                  paymentDate: dateStr,
-                });
-                if (registerWizardId != null) {
-                  log('queue', `payment SO ${saleOrderId}: Step 6 — action_create_payments [[${registerWizardId}]]`);
-                  await executePaymentRegister(registerWizardId);
-                  const methodLabel = pm.type === 'check' ? 'cheque' : 'cash';
-                  log('queue', `payment SO ${saleOrderId}: ${methodLabel} payment executed wizard=${registerWizardId} invoice res_id=${resId}`);
+                const { getCashTypeJournalIds } = await import('./journal.service.js');
+                const ids = await getCashTypeJournalIds();
+                resolvedCashId = ids.cashJournalId ?? null;
+                resolvedChequeId = ids.chequeJournalId ?? null;
+                log('queue', `payment SO ${saleOrderId}: journals from Odoo cash(CSH1)=${resolvedCashId ?? '—'} cheque(CSH2)=${resolvedChequeId ?? '—'}`);
+              } catch (resolveErr) {
+                logWarn('queue payment resolve journals', resolveErr);
+              }
+              const dateStr = p.paymentDate || new Date().toISOString().slice(0, 10);
+              for (const pm of payments) {
+                if (pm.type === 'credit') continue;
+                const amount = Number(pm.amount);
+                const journalId = pm.type === 'cash' ? resolvedCashId : pm.type === 'check' ? resolvedChequeId : null;
+                if (!amount || journalId == null) {
+                  logWarn('queue payment', new Error(`${pm.type === 'cash' ? 'Cash' : 'Cheque'} journal id not found. Skipping amount ${amount}`));
+                  continue;
                 }
-              } catch (registerErr) {
-                const msg = (registerErr?.message || String(registerErr)).toLowerCase();
-                if (msg.includes('already') || msg.includes('reconciled')) {
-                  log('queue', `payment register skipped (already paid/reconciled) invoice ${resId}`);
-                } else {
-                  throw registerErr;
+                try {
+                  log('queue', `payment SO ${saleOrderId}: Step 5 — payment register create amount=${amount} journal_id=${journalId} active_ids=[${resId}]`);
+                  const registerWizardId = await createPaymentRegisterWizard(resId, {
+                    amount,
+                    journalId,
+                    paymentDate: dateStr,
+                  });
+                  if (registerWizardId != null) {
+                    log('queue', `payment SO ${saleOrderId}: Step 6 — action_create_payments [[${registerWizardId}]]`);
+                    await executePaymentRegister(registerWizardId);
+                    const methodLabel = pm.type === 'check' ? 'cheque' : 'cash';
+                    log('queue', `payment SO ${saleOrderId}: ${methodLabel} payment executed wizard=${registerWizardId} invoice res_id=${resId}`);
+                  }
+                } catch (registerErr) {
+                  const msg = (registerErr?.message || String(registerErr)).toLowerCase();
+                  const skipAsAlreadyPaid =
+                    msg.includes('already') ||
+                    msg.includes('reconciled') ||
+                    msg.includes('nothing left to pay') ||
+                    msg.includes('no payment registration') ||
+                    msg.includes('nothing to pay') ||
+                    msg.includes('finances under control');
+                  if (skipAsAlreadyPaid) {
+                    log('queue', `payment register skipped (invoice already paid or nothing to pay) invoice ${resId}`);
+                  } else {
+                    throw registerErr;
+                  }
                 }
               }
+              alreadySyncedSaleOrderIds.add(soId);
+              log('queue', `payment item ${item.id} invoice/payments completed (pending chatter + proof upload)`);
             }
-            alreadySyncedSaleOrderIds.add(soId);
-            log('queue', `payment item ${item.id} invoice/payments completed (pending chatter + proof upload)`);
           } else if (hasCashOrCheque && resId == null) {
             logWarn('queue payment', new Error('No invoice res_id for cash/cheque — create invoice first'));
           }

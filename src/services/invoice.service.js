@@ -66,10 +66,10 @@ export const getSaleOrderForPayment = (saleOrderId) =>
     fields: ["id", "name", "partner_id", "amount_total", "invoice_status", "invoice_ids"],
   }).then((rows) => (Array.isArray(rows) ? rows[0] : rows));
 
-/** Read invoice state (draft/posted). */
+/** Read invoice state (draft/posted) and payment_state (for sync: skip payment register when already paid). */
 export const getInvoiceState = (invoiceId) =>
   callOdoo("account.move", "read", [[invoiceId]], {
-    fields: ["id", "name", "state"],
+    fields: ["id", "name", "state", "payment_state"],
   }).then((rows) => (Array.isArray(rows) ? rows[0] : rows));
 
 /** Create account.payment (inbound customer payment). Returns the created payment id. Payment is created in Draft. */
