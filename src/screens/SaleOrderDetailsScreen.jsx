@@ -536,7 +536,7 @@ const validateQuantities = useCallback(() => {
   }
   return null;
 }, [lines, productIdToAvailable]);
-  /** Apply qty updates locally (offline DB) and enqueue for sync. No Odoo calls. */
+  /** Apply qty updates locally (offline DB). When markDeliveryDone is true, also enqueue delivery and set picking done. When false, only update lines/moves (for "Proceed to Payment") — delivery is enqueued only after payment success. Returns delivery payload for passing to ProceedPayment. */
   const applyQtyDoneAndValidate = useCallback(
     async (effectiveQtys, markDeliveryDone = false) => {
       const { picking, moves, moveLines } = await getDeliveryDataFromDB(order.id);
@@ -580,18 +580,21 @@ const validateQuantities = useCallback(() => {
 
       await saleOrdersDb.updateSaleOrderAmountsFromLines(order.id);
 
-      if (markDeliveryDone && picking?.id) {
-        await stockPickingsDb.updatePickingStateLocal(picking.id, 'done');
-      }
-
-      await syncQueueDb.enqueue(syncQueueDb.ACTION_DELIVERY, {
+      const payload = {
         saleOrderId: order.id,
         pickingId: picking?.id,
         orderLineUpdates,
         moveUpdates,
         moveLineUpdates,
         deliveryLines,
-      });
+      };
+
+      if (markDeliveryDone && picking?.id) {
+        await stockPickingsDb.updatePickingStateLocal(picking.id, 'done');
+        await syncQueueDb.enqueue(syncQueueDb.ACTION_DELIVERY, payload);
+      }
+
+      return payload;
     },
     [order?.id, lines]
   );
@@ -647,8 +650,9 @@ const handleProceedToPayment = useCallback(async () => {
       ? lines.map((l) => Number(l.product_uom_qty) ?? 0)
       : lines.map((l) => l.newQty);
 
-
-    await applyQtyDoneAndValidate(effectiveQtys, true);
+    // Update line/move quantities locally only; do NOT enqueue delivery or mark picking done yet.
+    // Delivery is enqueued and marked done only after payment is completed on ProceedPaymentScreen.
+    const deliveryPayload = await applyQtyDoneAndValidate(effectiveQtys, false);
 
     // Update vehicle inventory - deduct stock
     await updateVehicleInventory(effectiveQtys);
@@ -673,6 +677,7 @@ const handleProceedToPayment = useCallback(async () => {
       subtotal,
       tax,
       deliveryDone: true,
+      deliveryPayload,
     });
   } catch (err) {
     setUpdateError(err?.message ?? 'Delivery update failed. Please try again.');

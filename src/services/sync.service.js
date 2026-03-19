@@ -702,8 +702,20 @@ async function processSyncQueue() {
 
           if (!invoiceAlreadyPosted) {
             if (resId != null) {
-              log('queue', `payment SO ${saleOrderId}: post existing invoice res_id=${resId}`);
-              await postInvoice(resId);
+              const invStateAgain = await getInvoiceState(resId).catch(() => ({}));
+              if ((invStateAgain?.state || '').toLowerCase() === 'posted') {
+                log('queue', `payment SO ${saleOrderId}: invoice ${resId} already posted — skip post`);
+                invoiceAlreadyPosted = true;
+              } else if ((invStateAgain?.state || '').toLowerCase() === 'draft') {
+                log('queue', `payment SO ${saleOrderId}: post existing draft invoice res_id=${resId}`);
+                await postInvoice(resId);
+                invoiceAlreadyPosted = true;
+              }
+              if (!invoiceAlreadyPosted) {
+                log('queue', `payment SO ${saleOrderId}: post existing invoice res_id=${resId}`);
+                await postInvoice(resId);
+                invoiceAlreadyPosted = true;
+              }
             } else {
               log('queue', `payment SO ${saleOrderId}: Step 1 — create advance payment wizard (context active_ids [${saleOrderId}])`);
               const wizardId = await createAdvancePaymentWizard(saleOrderId);
@@ -747,11 +759,22 @@ async function processSyncQueue() {
               let resolvedCashId = null;
               let resolvedChequeId = null;
               try {
-                const { getCashTypeJournalIds } = await import('./journal.service.js');
-                const ids = await getCashTypeJournalIds();
-                resolvedCashId = ids.cashJournalId ?? null;
-                resolvedChequeId = ids.chequeJournalId ?? null;
-                log('queue', `payment SO ${saleOrderId}: journals from Odoo cash(CSH1)=${resolvedCashId ?? '—'} cheque(CSH2)=${resolvedChequeId ?? '—'}`);
+                const user = await getUserSession();
+                const licensePlate = user?.licensePlate || user?.license_plate || '';
+                const vehicleId = user?.vehicleId != null ? user.vehicleId : null;
+                const { getVehicleJournalsByLicensePlate } = await import('./vehicle.service.js');
+                const vehicleJournals = await getVehicleJournalsByLicensePlate(licensePlate, vehicleId);
+                resolvedCashId = vehicleJournals.cashJournalId ?? null;
+                resolvedChequeId = vehicleJournals.chequeJournalId ?? null;
+                if (resolvedCashId == null && resolvedChequeId == null) {
+                  const { getCashTypeJournalIds } = await import('./journal.service.js');
+                  const ids = await getCashTypeJournalIds();
+                  resolvedCashId = ids.cashJournalId ?? null;
+                  resolvedChequeId = ids.chequeJournalId ?? null;
+                  log('queue', `payment SO ${saleOrderId}: journals fallback (no vehicle) cash=${resolvedCashId ?? '—'} cheque=${resolvedChequeId ?? '—'}`);
+                } else {
+                  log('queue', `payment SO ${saleOrderId}: journals from logged-in vehicle (${licensePlate || vehicleId || '—'}) cash=${resolvedCashId ?? '—'} cheque=${resolvedChequeId ?? '—'}`);
+                }
               } catch (resolveErr) {
                 logWarn('queue payment resolve journals', resolveErr);
               }
@@ -759,7 +782,9 @@ async function processSyncQueue() {
               for (const pm of payments) {
                 if (pm.type === 'credit') continue;
                 const amount = Number(pm.amount);
-                const journalId = pm.type === 'cash' ? resolvedCashId : pm.type === 'check' ? resolvedChequeId : null;
+                const journalId = (pm.journalId != null && Number.isFinite(Number(pm.journalId)))
+                  ? Number(pm.journalId)
+                  : (pm.type === 'cash' ? resolvedCashId : pm.type === 'check' ? resolvedChequeId : null);
                 if (!amount || journalId == null) {
                   logWarn('queue payment', new Error(`${pm.type === 'cash' ? 'Cash' : 'Cheque'} journal id not found. Skipping amount ${amount}`));
                   continue;
@@ -804,6 +829,8 @@ async function processSyncQueue() {
           if (msg.includes('no items are available to invoice') || msg.includes('nothing to invoice')) {
             invoiceBlockFailedNoItemsToInvoice = true;
             logWarn('queue payment (invoice/payments)', new Error('Invoice creation failed: delivery not done or no quantities. Complete delivery in Odoo first, then sync again for cheque/credit.'));
+          } else if (msg.includes('must be in draft')) {
+            log('queue', `payment SO ${saleOrderId}: invoice already posted (must be in draft) — continue chatter/proof`);
           } else {
             logWarn('queue payment (invoice/payments)', invoiceErr);
           }
@@ -813,6 +840,7 @@ async function processSyncQueue() {
 
       const {
         buildPaymentProofMessageBody,
+        buildSinglePaymentMessageBody,
         createProofAttachment,
         postPaymentProofToChatterWithAttachmentIds,
         imageFileToBase64String,
@@ -823,11 +851,21 @@ async function processSyncQueue() {
       const paymentMethod = hasCheck ? 'cheque' : hasCash ? 'cash' : hasCredit ? 'credit' : undefined;
       const chequeBankName = p.chequeBankName || (hasCheck && (p.selectedBankName || '—'));
       const chequeNumber = p.checkNumber || (payments.find((pm) => pm.type === 'check')?.checkNumber);
-      const chatterBody = buildPaymentProofMessageBody({
-        paymentMethod,
-        chequeBankName: paymentMethod === 'cheque' ? chequeBankName : undefined,
-        checkNumber: paymentMethod === 'cheque' ? (chequeNumber || undefined) : undefined,
-      });
+      const paymentsForMessage = payments.map((pm) => ({
+        type: pm.type,
+        amount: Number(pm.amount) || 0,
+        checkNumber: pm.type === 'check' ? (pm.checkNumber || chequeNumber) : undefined,
+        bankName: pm.type === 'check' ? chequeBankName : undefined,
+      }));
+      const isPartialPayment = paymentsForMessage.length > 1;
+      const chatterBody = isPartialPayment
+        ? null
+        : buildPaymentProofMessageBody({
+            paymentMethod,
+            chequeBankName: paymentMethod === 'cheque' ? chequeBankName : undefined,
+            checkNumber: paymentMethod === 'cheque' ? (chequeNumber || undefined) : undefined,
+            payments: paymentsForMessage,
+          });
 
       if (invoiceBlockFailedNoItemsToInvoice) {
         log('queue', `payment item ${item.id} NOT marked synced (invoice not created — deliver first, then sync again for cheque/credit)`);
@@ -881,34 +919,60 @@ async function processSyncQueue() {
         continue;
       }
 
-      if (attachmentIds.length === 0) {
-        // Avoid duplicate chatter messages when there are no new proof images to attach.
+      if (!isPartialPayment && attachmentIds.length === 0) {
+        // Single payment method and no new proof images — skip message_post to avoid duplicate chatter.
         log('queue', `payment SO ${soId}: skip message_post (no new proof attachments)`);
         await syncQueueDb.markSynced(Number(item.id));
         alreadySyncedSaleOrderIds.add(soId);
         continue;
       }
 
-      // API 2: Post message with attachment_ids (required so captured photos appear in sale order chatter)
+      // API 2: Post message(s) to sale order chatter. Partial payment = one message per payment type.
       try {
-        log('queue', `message_post API (sale.order) SO ${soId} attachment_ids=[${attachmentIds.join(', ')}]`);
-        await postPaymentProofToChatterWithAttachmentIds(soId, { body: chatterBody, attachmentIds });
-        const pendingById = new Map((pendingAttachments || []).map((a) => [Number(a.id), a]));
-        for (const id of syncedAttachmentIds) {
-          const idNum = Number(id);
-          await offlineAttachmentsDb.markSynced(idNum);
-          const att = pendingById.get(idNum);
-          if (att?.local_file_path) {
-            try {
-              const fileToDelete = new FileSystem.File(att.local_file_path);
-              if (fileToDelete.exists) {
-                fileToDelete.delete();
+        if (isPartialPayment && paymentsForMessage.length > 0) {
+          log('queue', `message_post API (sale.order) SO ${soId} — ${paymentsForMessage.length} separate messages (Cash/Cheque/Credit)`);
+          for (let i = 0; i < paymentsForMessage.length; i++) {
+            const pm = paymentsForMessage[i];
+            const body = buildSinglePaymentMessageBody(pm);
+            const attachToThisMessage = i === 0 ? attachmentIds : [];
+            await postPaymentProofToChatterWithAttachmentIds(soId, { body, attachmentIds: attachToThisMessage });
+            if (attachToThisMessage.length > 0) {
+              const pendingById = new Map((pendingAttachments || []).map((a) => [Number(a.id), a]));
+              for (const id of syncedAttachmentIds) {
+                const idNum = Number(id);
+                await offlineAttachmentsDb.markSynced(idNum);
+                const att = pendingById.get(idNum);
+                if (att?.local_file_path) {
+                  try {
+                    const fileToDelete = new FileSystem.File(att.local_file_path);
+                    if (fileToDelete.exists) fileToDelete.delete();
+                  } catch (_) { }
+                }
               }
-            } catch (_) { }
+            }
+          }
+        } else {
+          if (attachmentIds.length === 0) {
+            log('queue', `payment SO ${soId}: skip message_post (no proof attachments)`);
+          } else {
+            log('queue', `message_post API (sale.order) SO ${soId} attachment_ids=[${attachmentIds.join(', ')}]`);
+            await postPaymentProofToChatterWithAttachmentIds(soId, { body: chatterBody, attachmentIds });
+            const pendingById = new Map((pendingAttachments || []).map((a) => [Number(a.id), a]));
+            for (const id of syncedAttachmentIds) {
+              const idNum = Number(id);
+              await offlineAttachmentsDb.markSynced(idNum);
+              const att = pendingById.get(idNum);
+              if (att?.local_file_path) {
+                try {
+                  const fileToDelete = new FileSystem.File(att.local_file_path);
+                  if (fileToDelete.exists) fileToDelete.delete();
+                } catch (_) { }
+              }
+            }
           }
         }
         chatterPostedInThisRun.add(soId);
-        log('queue', `chatter posted to SO ${soId} (${attachmentIds.length} images)`);
+        log('queue', `chatter posted to SO ${soId}${isPartialPayment ? ` (${paymentsForMessage.length} messages)` : ` (${attachmentIds.length} images)`}`);
       } catch (chatterErr) {
         for (const id of syncedAttachmentIds) {
           await offlineAttachmentsDb.incrementRetry(Number(id), chatterErr?.message || 'API error');

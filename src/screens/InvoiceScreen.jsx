@@ -25,22 +25,6 @@ function formatInvoiceCurrency(amount) {
   return `Rs ${formatAmount(amount)}`;
 }
 
-/** Simple amount in words for LKR (whole part only). */
-function amountInWords(num) {
-  const n = Math.floor(Number(num));
-  if (n === 0) return 'Zero';
-  const ones = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine'];
-  const tens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
-  const teens = ['Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
-  if (n < 10) return ones[n];
-  if (n < 20) return teens[n - 10];
-  if (n < 100) return (tens[Math.floor(n / 10)] + ' ' + ones[n % 10]).trim();
-  if (n < 1000) return (ones[Math.floor(n / 100)] + ' Hundred ' + amountInWords(n % 100)).trim();
-  if (n < 100000) return (amountInWords(Math.floor(n / 1000)) + ' Thousand ' + amountInWords(n % 1000)).trim();
-  if (n < 10000000) return (amountInWords(Math.floor(n / 100000)) + ' Lakh ' + amountInWords(n % 100000)).trim();
-  return (amountInWords(Math.floor(n / 10000000)) + ' Crore ' + amountInWords(n % 10000000)).trim();
-}
-
 /** Avoid rendering boolean false or empty as "false"; return safe string or — for print. */
 function safeDisplay(val) {
   if (val === undefined || val === null || val === false) return '—';
@@ -92,24 +76,21 @@ function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSp
           const productName = getProductDisplayName(l.product_id?.[1] ?? '—').replace(/</g, '&lt;').substring(0, 42);
           const lineSub = Number(l.price_subtotal) || 0;
           const lineTotal = Number(l.price_total) || 0;
-          const lineTax = lineTotal - lineSub;
           return `<tr>
             <td style="padding:2px;border-bottom:1px solid #ccc;font-size:8px;font-weight:700">${i + 1}</td>
             <td style="padding:2px;border-bottom:1px solid #ccc;font-size:8px;font-weight:700">${productName}</td>
             <td style="padding:2px 4px 2px 2px;border-bottom:1px solid #ccc;text-align:right;font-size:8px;font-weight:700">${Number(l.product_uom_qty ?? 0)}</td>
             <td style="padding:2px 2px 2px 4px;border-bottom:1px solid #ccc;text-align:right;font-size:8px;font-weight:700">${formatAmount(l.price_unit ?? 0)}</td>
             <td style="padding:2px;border-bottom:1px solid #ccc;text-align:right;font-size:8px;font-weight:700">${formatAmount(lineSub)}</td>
-            <td style="padding:2px;border-bottom:1px solid #ccc;text-align:right;font-size:8px;font-weight:700">${formatAmount(lineTax)}</td>
             <td style="padding:2px;border-bottom:1px solid #ccc;text-align:right;font-size:8px;font-weight:700">${formatAmount(lineTotal)}</td>
           </tr>`;
         }
       )
-      .join('') || '<tr><td colspan="7" style="padding:4px;text-align:center;font-size:8px;font-weight:700">No line items</td></tr>';
+      .join('') || '<tr><td colspan="6" style="padding:4px;text-align:center;font-size:8px;font-weight:700">No line items</td></tr>';
 
   const amountUntaxed = (order?.amount_untaxed != null && order.amount_untaxed !== 0) ? order.amount_untaxed : computedUntaxed;
   const amountTax = (order?.amount_tax != null && order.amount_tax !== 0) ? order.amount_tax : computedTax;
   const amountTotal = order?.amount_total ?? (amountUntaxed + amountTax);
-  const words = amountInWords(amountTotal) + ' Rupees only';
 
   const logoImg = logoUri
     ? `<img src="${logoUri}" alt="GasTech" style="max-width:50mm;height:auto;display:block;margin:0 0 4px 0;" />`
@@ -228,7 +209,6 @@ function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSp
         <th>Qty</th>
         <th>Unit Price</th>
         <th>Amount (Rs)</th>
-        <th>VAT (Rs)</th>
         <th>Total (Rs)</th>
       </tr>
     </thead>
@@ -238,8 +218,6 @@ function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSp
     <div class="row"><span>Gross Amount:</span><span>${formatInvoiceCurrency(amountUntaxed)}</span></div>
     <div class="row"><span>VAT (18%):</span><span>${formatInvoiceCurrency(amountTax)}</span></div>
     <div class="row total-row"><span>Net Amount:</span><span>${formatInvoiceCurrency(amountTotal)}</span></div>
-    <div class="row" style="margin-top:2px"><span>Total Amount in words:</span></div>
-    <div class="row" style="font-size:7px;margin-left:0">${words}</div>
     <div class="row" style="margin-top:2px"><span>Mode of Payment:</span><span>${paymentLabel.replace(/</g, '&lt;')}</span></div>
     ${(chequeBankName || checkNumber) ? `
     <div class="row" style="margin-top:1px"><span>Bank (Cheque):</span><span>${(chequeBankName || '—').replace(/</g, '&lt;')}</span></div>

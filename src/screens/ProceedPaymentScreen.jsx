@@ -11,6 +11,7 @@ import {
   Image,
   Modal,
 } from 'react-native';
+import { CommonActions } from '@react-navigation/native';
 import SignatureCanvas from 'react-native-signature-canvas';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
@@ -41,7 +42,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const { setHideSyncIndicator } = useSync();
-  const { saleOrderId, total, subtotal, tax, deliveryDone } = route.params || {};
+  const { saleOrderId, total, subtotal, tax, deliveryDone, deliveryPayload } = route.params || {};
   const orderTotal = Number(total) || 0;
   const orderSubtotal = subtotal != null ? Number(subtotal) : null;
   const orderTax = tax != null ? Number(tax) : null;
@@ -224,9 +225,9 @@ export default function ProceedPaymentScreen({ route, navigation }) {
 
   const handleProceed = async (customerSignatureDataUrl = null) => {
     if (!canProceed) return;
-    // Use vehicle fleet journals when available: Cash → cash_journal_id, Cheque → check_journal_id
-    const cashJournalId = vehicleJournalIds.cashJournalId ?? cashJournalPreferred?.id ?? null;
-    const checkJournalId = vehicleJournalIds.chequeJournalId ?? (chequeJournalInternal?.id ?? selectedJournalId) ?? null;
+    // Use only logged-in vehicle's cash_journal_id and check_journal_id (no default/fallback journals).
+    const cashJournalId = vehicleJournalIds.cashJournalId ?? null;
+    const checkJournalId = vehicleJournalIds.chequeJournalId ?? null;
     const needsCash = cashAmountNum > 0 && cashJournalId != null;
     const needsCheck = checkAmountNum > 0 && checkJournalId != null;
     const needsCredit = creditAmountNum > 0 && selectedPaymentMethods.includes(PAYMENT_CREDIT);
@@ -242,6 +243,30 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         : orderInfo.partner_id;
       const orderName = orderInfo.name ?? `Order ${saleOrderId}`;
       const invoiceNumber = await getOrAssignInvoiceNumber(saleOrderId);
+
+      const soId = Number(saleOrderId);
+
+      // Enqueue delivery and mark picking done only after payment is completed (not when user only tapped "Proceed to Payment").
+      if (deliveryPayload && deliveryPayload.saleOrderId != null) {
+        await syncQueueDb.enqueue(syncQueueDb.ACTION_DELIVERY, deliveryPayload);
+        if (deliveryPayload.pickingId != null) {
+          await stockPickingsDb.updatePickingStateLocal(Number(deliveryPayload.pickingId), 'done');
+        }
+      } else if (deliveryDone) {
+        // Fallback: no deliveryPayload (e.g. older flow); ensure delivery is queued and picking marked done.
+        const { picking } = await getDeliveryDataFromDB(saleOrderId);
+        if (picking?.id != null) {
+          await stockPickingsDb.updatePickingStateLocal(Number(picking.id), 'done');
+          await syncQueueDb.enqueue(syncQueueDb.ACTION_DELIVERY, {
+            saleOrderId: soId,
+            pickingId: picking.id,
+            orderLineUpdates: [],
+            moveUpdates: [],
+            moveLineUpdates: [],
+            deliveryLines: [],
+          });
+        }
+      }
 
       await saleOrdersDb.updateSaleOrderInvoiceStatusLocal(saleOrderId, 'invoiced');
 
@@ -266,7 +291,6 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       }
       if (payments.length === 0) return;
 
-      const soId = Number(saleOrderId);
       const timestamp = Date.now();
       const photoCount = deliveryPhotos.length;
       // Doc: store URI only in SQLite (no base64 in payload). Copy image to persistent path; sync will read path→base64→ir.attachment.create→message_post.
@@ -330,11 +354,6 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       const creditAmountForDb = primaryPaymentType === 'credit' ? (paymentSplit.credit ?? orderTotal) : null;
       await saleOrdersDb.updateSaleOrderPaymentTypeLocal(saleOrderId, primaryPaymentType, creditAmountForDb);
 
-      const { picking } = await getDeliveryDataFromDB(saleOrderId);
-      if (picking?.id != null) {
-        await stockPickingsDb.updatePickingStateLocal(Number(picking.id) || 0, 'done');
-      }
-
       const amountUntaxed = orderInfo.amount_untaxed != null ? Number(orderInfo.amount_untaxed) : orderTotal;
       const amountTax = orderInfo.amount_tax != null ? Number(orderInfo.amount_tax) : 0;
       const invoiceId = await localInvoicesDb.upsertLocalInvoice({
@@ -359,7 +378,8 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       console.log('===============================================');
       // TODO: Credit Journal ID is not being set
       await localPaymentsDb.replacePaymentsForInvoice(invoiceId, paymentRows);
-      navigation.replace('InvoiceScreen', {
+
+      const invoiceParams = {
         saleOrderId,
         total,
         invoiceNumber,
@@ -372,7 +392,18 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         cashAmount: paymentSplit.cash,
         checkNumber: needsCheck ? (checkNumber || undefined) : undefined,
         customerSignatureDataUrl: customerSignatureDataUrl ?? undefined,
-      });
+      };
+
+      // Reset stack so InvoiceScreen is always on top (visible even if user had navigated away).
+      navigation.dispatch(
+        CommonActions.reset({
+          index: 1,
+          routes: [
+            { name: 'MainTabs' },
+            { name: 'InvoiceScreen', params: invoiceParams },
+          ],
+        })
+      );
     } catch (err) {
       console.error(err);
       Alert.alert(
