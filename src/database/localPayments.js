@@ -114,6 +114,49 @@ export async function getPaymentSplitsBySaleOrderIds(saleOrderIds) {
   return out;
 }
 
+/**
+ * Get payment split with journal ids for tab categorization (Delivery tab).
+ * Journal name: CHQ* → Cheque section, Cash_* → Cash section.
+ * Returns { [saleOrderId]: { cash, cheque, credit, cashJournalId, chequeJournalId } }.
+ * cashJournalId/chequeJournalId are from the row with max amount for that type.
+ */
+export async function getPaymentSplitsWithJournalsBySaleOrderIds(saleOrderIds) {
+  if (!Array.isArray(saleOrderIds) || saleOrderIds.length === 0) return {};
+  const db = await getDb();
+  const ids = saleOrderIds.map((id) => num(id)).filter((n) => n > 0);
+  if (ids.length === 0) return {};
+  const placeholders = ids.map(() => '?').join(',');
+  const rows = await db.getAllAsync(
+    `SELECT sale_order_id, payment_type, amount, journal_id FROM local_payments WHERE sale_order_id IN (${placeholders})`,
+    ids
+  );
+  const out = {};
+  for (const id of ids) out[id] = { cash: 0, cheque: 0, credit: 0, cashJournalId: null, chequeJournalId: null };
+  const cashRowsBySo = {};
+  const chequeRowsBySo = {};
+  for (const r of rows || []) {
+    const soId = num(r.sale_order_id);
+    if (out[soId] == null) continue;
+    const t = (r.payment_type || '').toLowerCase();
+    const amt = num(r.amount);
+    const jid = numOrNull(r.journal_id);
+    if (t === 'cash') {
+      out[soId].cash += amt;
+      if (!cashRowsBySo[soId] || num(cashRowsBySo[soId].amount) < amt) cashRowsBySo[soId] = { amount: amt, journal_id: jid };
+    } else if (t === 'cheque' || t === 'check') {
+      out[soId].cheque += amt;
+      if (!chequeRowsBySo[soId] || num(chequeRowsBySo[soId].amount) < amt) chequeRowsBySo[soId] = { amount: amt, journal_id: jid };
+    } else if (t === 'credit') {
+      out[soId].credit += amt;
+    }
+  }
+  for (const soId of ids) {
+    if (cashRowsBySo[soId]?.journal_id != null) out[soId].cashJournalId = numOrNull(cashRowsBySo[soId].journal_id);
+    if (chequeRowsBySo[soId]?.journal_id != null) out[soId].chequeJournalId = numOrNull(chequeRowsBySo[soId].journal_id);
+  }
+  return out;
+}
+
 export async function updateLocalPaymentSynced(paymentId, odooPaymentId = null) {
   const db = await getDb();
   const now = iso();

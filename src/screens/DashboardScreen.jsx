@@ -31,6 +31,7 @@ import {
   getPickingsBySaleIdsFromDB,
   getOrderLinesByOrderIdsFromDB,
 } from '../services/sync.service';
+import * as localPaymentsDb from '../database/localPayments.js';
 import {
   getActiveCommissionPlan,
   calculateCommissionProgressByProducts,
@@ -83,6 +84,7 @@ export default function DashboardScreen({ navigation }) {
   const [showChartDatePicker, setShowChartDatePicker] = useState(false);
   const [chartLineTotalsByOrder, setChartLineTotalsByOrder] = useState({});
   const [chartPickingsBySaleId, setChartPickingsBySaleId] = useState([]);
+  const [paymentSplitsByOrderId, setPaymentSplitsByOrderId] = useState({});
   // Commission state
   const [commissionPlan, setCommissionPlan] = useState(null);
   const [commissionLoading, setCommissionLoading] = useState(false);
@@ -112,19 +114,22 @@ export default function DashboardScreen({ navigation }) {
       const todayOrders = (Array.isArray(data) ? data : []).filter((o) => (o.date_order || '').startsWith(today));
       console.log('todayOrders', todayOrders);
       const orderIds = todayOrders.map((o) => o.id);
-      const [totals, pickings, orderLines] = await Promise.all([
+      const [totals, pickings, orderLines, splits] = await Promise.all([
         getOrderLineTotalsFromDB(todayOrders),
         orderIds.length ? getPickingsBySaleIdsFromDB(orderIds) : Promise.resolve([]),
         orderIds.length ? getOrderLinesByOrderIdsFromDB(orderIds) : Promise.resolve([]),
+        orderIds.length ? localPaymentsDb.getPaymentSplitsBySaleOrderIds(orderIds) : Promise.resolve({}),
       ]);
       setLineTotalsByOrder(totals || {});
       setPickingsBySaleId(pickings || []);
       setTodayOrderLines(orderLines || []);
+      setPaymentSplitsByOrderId(splits || {});
     } catch (_) {
       setOrders([]);
       setLineTotalsByOrder({});
       setPickingsBySaleId([]);
       setTodayOrderLines([]);
+      setPaymentSplitsByOrderId({});
     } finally {
       setLoading(false);
     }
@@ -280,16 +285,43 @@ export default function DashboardScreen({ navigation }) {
 
   // const deliveredTodayOrders = todayOrders;
 
-  // Collection totals from local DB only (delivered today orders + payment_type). Ensures cash/cheque/credit show correctly as soon as user records payment, before upload to Odoo.
-  const cashTotal = deliveredTodayOrders
-      .filter((o) => (o.payment_type || '').toLowerCase() === 'cash')
-      .reduce((s, o) => s + (Number(o.amount_total) || 0), 0);
-  const chequeTotal = deliveredTodayOrders
-      .filter((o) => (o.payment_type || '').toLowerCase() === 'cheque')
-      .reduce((s, o) => s + (Number(o.amount_total) || 0), 0);
-  const creditTotal = deliveredTodayOrders
-    .filter((o) => (o.payment_type || '').toLowerCase() === 'credit')
-    .reduce((s, o) => s + (Number(o.amount_total) ?? Number(o.amount_total) ?? 0), 0);
+  // Helper: lookup split by order id (keys may be number or string from DB)
+  const getSplitForOrder = (order) => {
+    const id = order?.id;
+    if (id == null) return undefined;
+    return paymentSplitsByOrderId[Number(id)] ?? paymentSplitsByOrderId[id] ?? paymentSplitsByOrderId[String(id)];
+  };
+  // Collection totals: local split first; else synced amounts (amount_cash/amount_cheque/amount_credit); else payment_type + amount_total
+  const cashTotal = deliveredTodayOrders.reduce((s, o) => {
+    const split = getSplitForOrder(o);
+    if (split && (split.cash > 0 || split.cheque > 0 || split.credit > 0)) return s + (Number(split.cash) || 0);
+    const sc = Number(o.amount_cash) || 0;
+    const sq = Number(o.amount_cheque) || 0;
+    const sr = Number(o.amount_credit) || 0;
+    if (sc > 0 || sq > 0 || sr > 0) return s + sc;
+    const pt = (o.payment_type || '').toLowerCase().trim();
+    return s + (pt === 'cash' ? (Number(o.amount_total) || 0) : 0);
+  }, 0);
+  const chequeTotal = deliveredTodayOrders.reduce((s, o) => {
+    const split = getSplitForOrder(o);
+    if (split && (split.cash > 0 || split.cheque > 0 || split.credit > 0)) return s + (Number(split.cheque) || 0);
+    const sc = Number(o.amount_cash) || 0;
+    const sq = Number(o.amount_cheque) || 0;
+    const sr = Number(o.amount_credit) || 0;
+    if (sc > 0 || sq > 0 || sr > 0) return s + sq;
+    const pt = (o.payment_type || '').toLowerCase().trim();
+    return s + (pt === 'cheque' ? (Number(o.amount_total) || 0) : 0);
+  }, 0);
+  const creditTotal = deliveredTodayOrders.reduce((s, o) => {
+    const split = getSplitForOrder(o);
+    if (split && (split.cash > 0 || split.cheque > 0 || split.credit > 0)) return s + (Number(split.credit) || 0);
+    const sc = Number(o.amount_cash) || 0;
+    const sq = Number(o.amount_cheque) || 0;
+    const sr = Number(o.amount_credit) || 0;
+    if (sc > 0 || sq > 0 || sr > 0) return s + sr;
+    const pt = (o.payment_type || '').toLowerCase().trim();
+    return s + (pt === 'credit' || !pt ? (Number(o.amount_total) ?? 0) : 0);
+  }, 0);
   const collectionTotal = cashTotal + chequeTotal + creditTotal || 1;
   const cashTotalDisplay = cashTotal;
   const chequeTotalDisplay = chequeTotal;

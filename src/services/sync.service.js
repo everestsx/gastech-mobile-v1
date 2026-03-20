@@ -292,60 +292,117 @@ export async function getCachedJournals() {
   }
 }
 
-/** Classify payment type by journal code (CSH1 = cash, CSH2 = cheque) or fallback by journal name. */
-function paymentTypeFromJournal(journalId, codeMap = {}) {
-  const id = Array.isArray(journalId) ? journalId[0] : journalId;
-  const code = id != null ? (codeMap[id] || '').toUpperCase().trim() : '';
-  const jName = Array.isArray(journalId) ? (journalId[1] || '') : String(journalId || '');
-  const j = jName.toLowerCase();
-  // Prefer Odoo journal code so Cheque (CSH2) is never misclassified as cash
-  if (code === 'CSH2') return 'cheque';
-  if (code === 'CSH1') return 'cash';
-  if (j.includes('cheque') || j.includes('check')) return 'cheque';
-  if (j.includes('cash')) return 'cash';
-  return 'cheque';
+/**
+ * Get journal details by id from map (handles number/string keys).
+ */
+function getJournalDetails(detailsMap, id) {
+  if (id == null || !detailsMap || typeof detailsMap !== 'object') return null;
+  return detailsMap[id] ?? detailsMap[Number(id)] ?? detailsMap[String(id)] ?? null;
 }
 
 /**
- * Refresh payment_type from Odoo so Delivered tabs and Dashboard show correct Cash/Cheque/Credit on all devices.
- * Flow: (1) Only invoiced orders. (2) If invoice payment_state is not 'paid' (e.g. in_payment, not_paid) → credit.
- * (3) If paid → get account.payment by reconciled_invoice_ids; by journal_id (Cash vs Cheque) set cash or cheque.
+ * Classify payment type by journal name (Delivery tab + Dashboard).
+ * Step 3 of flow: Get payment → journal_id → classify by journal name.
+ * - Cash: journal name is exactly "Cash" OR starts with "Cash_" (e.g. Cash_LN-0309, Cash_LN-0417).
+ * - Cheque: journal name is exactly "Cheque" OR starts with "CHQ_" (e.g. CHQ_LN-0423, CHQ_LN-0417).
+ * - Otherwise (unknown journal or no journal): return null → order treated as Credit.
+ * When Odoo returns only id, uses detailsMap (from getJournalDetailsByIds) to resolve name.
+ * @param {number| [number, string]} journalId - from Odoo (id or [id, name])
+ * @param {{ [id: number]: string }} [codeMap] - id -> code (fallback)
+ * @param {{ [id: number]: { name: string, code: string } }} [detailsMap] - id -> { name, code } from getJournalDetailsByIds
+ * @returns {'cash'|'cheque'|null} - null means treat as Credit
+ */
+function paymentTypeFromJournal(journalId, codeMap = {}, detailsMap = {}) {
+  const id = Array.isArray(journalId) ? journalId[0] : journalId;
+  let jName = Array.isArray(journalId) ? (journalId[1] || '') : '';
+  if (!jName && id != null) {
+    const details = getJournalDetails(detailsMap, id);
+    jName = (details && details.name) ? details.name : '';
+  }
+  if (!jName) jName = String(journalId ?? '');
+  const nameTrimmed = (jName || '').toString().trim();
+  const nameLower = nameTrimmed.toLowerCase();
+  // Cash: exactly "Cash" or starts with "Cash_" (e.g. Cash_LN-0309)
+  if (nameLower === 'cash' || nameLower.startsWith('cash_')) return 'cash';
+  // Cheque: exactly "Cheque" or starts with "CHQ_" (e.g. CHQ_LN-0423)
+  if (nameLower === 'cheque' || nameLower.startsWith('chq_')) return 'cheque';
+  // Fallback: code (default journals CSH1/CSH2; vehicle codes CSHL*, CHQL*)
+  const details = id != null ? getJournalDetails(detailsMap, id) : null;
+  const code = (details && details.code ? details.code : (codeMap && id != null ? (codeMap[id] ?? codeMap[Number(id)] ?? codeMap[String(id)]) : '')).toString().toUpperCase().trim();
+  if (code === 'CSH2' || code.startsWith('CHQL')) return 'cheque';
+  if (code === 'CSH1' || code.startsWith('CSHL')) return 'cash';
+  // Unknown journal → treat as Credit (no payment journal identified)
+  return null;
+}
+
+/**
+ * Refresh payment_type from Odoo so Delivery tab and Dashboard show correct Cash/Cheque/Credit.
+ * Flow (aligns with backend payment journal):
+ *   Step 1: Get invoice for sale order via account.move search_read [["invoice_origin", "in", orderNames]].
+ *   Step 2: Get payments for invoice via account.payment search_read [["reconciled_invoice_ids", "in", [invoiceId]]]; fields include amount, journal_id.
+ *   Step 3: Classify by journal name: Cash/Cash_* → cash, Cheque/CHQ_* → cheque; no payment or unknown journal → credit.
  * @param {Array<{ id?: number, name?: string, invoice_status?: string }>} syncedOrders - orders just synced from Odoo
  * @param {{ skipOrderIds?: Set<number> }} [options] - When set, do not overwrite payment_type for these order ids (e.g. orders with pending upload).
  */
 export async function refreshPaymentTypesFromOdoo(syncedOrders, options = {}) {
   const skipOrderIds = options.skipOrderIds;
+  // Case-insensitive: Odoo may return "Invoiced" or "invoiced"
   const orderNames = (syncedOrders || [])
-    .filter((o) => String(o.invoice_status || '') === 'invoiced' && o.name)
-    .map((o) => o.name);
+    .filter((o) => String(o.invoice_status || '').toLowerCase() === 'invoiced' && o.name)
+    .map((o) => String(o.name).trim());
   if (orderNames.length === 0) return;
   const orderNameToId = {};
-  (syncedOrders || []).forEach((o) => { if (o.name && o.id != null) orderNameToId[o.name] = o.id; });
+  (syncedOrders || []).forEach((o) => {
+    if (o.name && o.id != null) orderNameToId[String(o.name).trim()] = o.id;
+  });
   try {
-    const { getInvoicesByOrigins, getPaymentsByInvoiceIds } = await import('./invoice.service');
+    const { getInvoicesByOrigins, getPaymentsByInvoiceIds, updateInvoiceIncotermLocation } = await import('./invoice.service');
+    const localInvoicesDb = await import('../database/localInvoices.js');
+    // Step 1: Get invoices by sale order (invoice_origin = order name)
     const invoices = await getInvoicesByOrigins(orderNames);
-    if (!invoices?.length) return;
+    if (!invoices?.length) {
+      log('refresh', 'no invoices returned from Odoo for invoiced orders');
+      return;
+    }
 
-    const paidInvoiceIds = [];
-    const orderNameToType = {};
-
+    // Send locally generated invoice number to backend (incoterm_location) for every invoice that has a local record.
     for (const inv of invoices) {
-      const origin = inv.invoice_origin;
-      const state = (inv.payment_state || '').toLowerCase();
-      if (state === 'paid') {
-        paidInvoiceIds.push(inv.id);
-      } else {
-        if (origin) orderNameToType[origin] = 'credit';
+      const origin = inv.invoice_origin != null ? String(inv.invoice_origin).trim() : '';
+      if (!origin) continue;
+      const localOrderId = orderNameToId[origin];
+      if (localOrderId == null) continue;
+      try {
+        const localInv = await localInvoicesDb.getLocalInvoiceBySaleOrderId(localOrderId);
+        if (localInv && localInv.invoice_number) {
+          await updateInvoiceIncotermLocation(inv.id, localInv.invoice_number);
+          await localInvoicesDb.updateLocalInvoiceSynced(localInv.id, inv.id);
+          log('refresh', `incoterm_location set for invoice ${inv.id} (origin=${origin}) -> ${localInv.invoice_number}`);
+        }
+      } catch (e) {
+        logWarn('update incoterm_location from local invoice', e);
       }
     }
 
-    if (paidInvoiceIds.length > 0) {
-      const payments = await getPaymentsByInvoiceIds(paidInvoiceIds);
+    // Use ALL invoice ids to fetch payments (do not rely on payment_state – API may only return id, name, state)
+    const allInvoiceIds = invoices.map((inv) => inv.id).filter((id) => id != null);
+    log('refresh', `invoices=${invoices.length} ids=${allInvoiceIds.length}`);
+    const orderNameToSplit = {};
+
+    // Step 2: Get payments by invoice IDs: [["reconciled_invoice_ids", "in", [170, ...]]]; can return multiple per invoice (cash + cheque).
+    if (allInvoiceIds.length === 0) {
+      invoices.forEach((inv) => {
+        const origin = inv.invoice_origin != null ? String(inv.invoice_origin).trim() : '';
+        const total = Number(inv.amount_total) || 0;
+        if (origin) orderNameToSplit[origin] = { cash: 0, cheque: 0, credit: total };
+      });
+    } else {
+      const payments = await getPaymentsByInvoiceIds(allInvoiceIds);
+      log('refresh', `payments from Odoo=${(payments || []).length}`);
       const journalIds = (payments || [])
         .map((pm) => (Array.isArray(pm.journal_id) ? pm.journal_id[0] : pm.journal_id))
-        .filter((id) => id != null);
-      const { getJournalCodesByIds } = await import('./journal.service.js');
-      const journalCodeMap = journalIds.length > 0 ? await getJournalCodesByIds(journalIds) : {};
+        .filter((jid) => jid != null);
+      const { getJournalDetailsByIds } = await import('./journal.service.js');
+      const journalDetailsMap = journalIds.length > 0 ? await getJournalDetailsByIds(journalIds) : {};
       const invoiceIdToPayments = {};
       for (const pm of payments || []) {
         const invIds = Array.isArray(pm.reconciled_invoice_ids) ? pm.reconciled_invoice_ids : [];
@@ -356,36 +413,65 @@ export async function refreshPaymentTypesFromOdoo(syncedOrders, options = {}) {
           invoiceIdToPayments[invId].push(pm);
         });
       }
+      // Step 3: Per invoice, sum cash/cheque by journal; remainder (total - paid) = credit
       for (const inv of invoices) {
-        if ((inv.payment_state || '').toLowerCase() !== 'paid' || !inv.invoice_origin) continue;
+        const origin = inv.invoice_origin != null ? String(inv.invoice_origin).trim() : '';
+        if (!origin) continue;
+        const invTotal = Number(inv.amount_total) || 0;
         const pms = invoiceIdToPayments[inv.id] || [];
         let cashSum = 0;
         let chequeSum = 0;
         for (const pm of pms) {
           const amt = Number(pm.amount) || 0;
-          const type = paymentTypeFromJournal(pm.journal_id, journalCodeMap);
+          const type = paymentTypeFromJournal(pm.journal_id, {}, journalDetailsMap);
           if (type === 'cash') cashSum += amt;
-          else chequeSum += amt;
+          else if (type === 'cheque') chequeSum += amt;
         }
-        const orderType =
-          chequeSum > 0 && cashSum === 0
-            ? 'cheque'
-            : cashSum > 0
-              ? 'cash'
-              : chequeSum > 0
-                ? 'cheque'
-                : 'credit';
-        orderNameToType[inv.invoice_origin] = orderType;
+        const paid = cashSum + chequeSum;
+        const creditAmount = Math.max(0, invTotal - paid);
+        orderNameToSplit[origin] = { cash: cashSum, cheque: chequeSum, credit: creditAmount };
       }
     }
 
+    // Invoiced orders that had no invoice in response: full amount as credit
+    for (const n of orderNames) {
+      const key = String(n).trim();
+      if (key && !orderNameToSplit[key]) orderNameToSplit[key] = { cash: 0, cheque: 0, credit: 0 };
+    }
+
+    // Primary type for tab: whichever has max amount (tie: cheque > cash > credit)
+    function primaryTypeFromSplit(split) {
+      const c = Number(split?.cash) || 0;
+      const q = Number(split?.cheque) || 0;
+      const r = Number(split?.credit) || 0;
+      const max = Math.max(c, q, r);
+      if (max === 0) return 'credit';
+      if (q === max) return 'cheque';
+      if (c === max) return 'cash';
+      return 'credit';
+    }
+
     let updated = 0;
-    for (const name of Object.keys(orderNameToType)) {
-      if (skipOrderIds?.size && skipOrderIds.has(Number(orderNameToId[name]))) continue;
-      await saleOrdersDb.updatePaymentTypeByOrderName(name, orderNameToType[name]);
+    let byCash = 0;
+    let byCheque = 0;
+    let byCredit = 0;
+    for (const name of Object.keys(orderNameToSplit)) {
+      const trimmedName = String(name).trim();
+      const orderId = orderNameToId[trimmedName] ?? orderNameToId[name];
+      const split = orderNameToSplit[name];
+      const paymentType = primaryTypeFromSplit(split);
+      if (paymentType === 'cash') byCash++;
+      else if (paymentType === 'cheque') byCheque++;
+      else byCredit++;
+      if (skipOrderIds?.size && orderId != null && skipOrderIds.has(Number(orderId))) continue;
+      if (orderId != null) {
+        await saleOrdersDb.updatePaymentSplitByOrderId(orderId, split, paymentType);
+      } else {
+        await saleOrdersDb.updatePaymentSplitByOrderName(trimmedName, split, paymentType);
+      }
       updated++;
     }
-    log('refresh', `payment_type updated for ${updated} orders from Odoo (skipped ${Object.keys(orderNameToType).length - updated} with pending upload)`);
+    log('refresh', `payment_type: ${updated} updated (cash=${byCash} cheque=${byCheque} credit=${byCredit}) from Odoo invoice+payment APIs`);
   } catch (e) {
     logWarn('refresh payment_type from Odoo', e);
   }
@@ -423,14 +509,15 @@ export async function getCollectionTotalsFromOdoo(orderNames) {
       const payments = await getPaymentsByInvoiceIds(paidInvoiceIds);
       const journalIds = (payments || [])
         .map((pm) => (Array.isArray(pm.journal_id) ? pm.journal_id[0] : pm.journal_id))
-        .filter((id) => id != null);
-      const { getJournalCodesByIds } = await import('./journal.service.js');
-      const journalCodeMap = journalIds.length > 0 ? await getJournalCodesByIds(journalIds) : {};
+        .filter((jid) => jid != null);
+      const { getJournalDetailsByIds } = await import('./journal.service.js');
+      const journalDetailsMap = journalIds.length > 0 ? await getJournalDetailsByIds(journalIds) : {};
       for (const pm of payments || []) {
         const amount = Number(pm.amount) || 0;
-        const type = paymentTypeFromJournal(pm.journal_id, journalCodeMap);
+        const type = paymentTypeFromJournal(pm.journal_id, {}, journalDetailsMap);
         if (type === 'cash') cashTotal += amount;
-        else chequeTotal += amount;
+        else if (type === 'cheque') chequeTotal += amount;
+        else creditTotal += amount; // unknown journal → Credit
       }
     }
 
@@ -473,6 +560,7 @@ async function processSyncQueue() {
     createAdvancePaymentWizard,
     createInvoicesFromWizard,
     postInvoice,
+    getPaymentsByInvoiceIds,
     createPaymentRegisterWizard,
     executePaymentRegister,
   } = await import('./invoice.service');
@@ -521,7 +609,10 @@ async function processSyncQueue() {
         for (const u of moveUpdates) {
           await updateStockMoveQty(u.moveId, u.product_uom_qty);
         }
-        if (deliveryLines.length > 0) {
+        // Avoid creating new stock.move.line records when we already have moveLine updates.
+        // Creating new move lines can duplicate delivered qty (especially on retries / partial payments).
+        const hasMoveLineUpdates = Array.isArray(moveLineUpdates) && moveLineUpdates.length > 0;
+        if (!hasMoveLineUpdates && deliveryLines.length > 0) {
           // Step 2 & 3 — Create stock.move.line (qty_done) for each product (offline 4-step flow)
           for (const line of deliveryLines) {
             const moveId = line.moveId ?? line.move_id;
@@ -568,6 +659,15 @@ async function processSyncQueue() {
   const alreadySyncedSaleOrderIds = await syncQueueDb.getSyncedPaymentSaleOrderIds();
   const chatterPostedInThisRun = new Set();
 
+  // Backend API sequence for each payment queue item (offline → sync):
+  // 1. sale.advance.payment.inv create { advance_payment_method: "delivered" } context active_model=sale.order, active_ids=[sale_order_id]
+  // 2. sale.advance.payment.inv create_invoices [[wizardId]] → result.res_id = invoice id (account.move)
+  // 3. account.move action_post [[res_id]]
+  // 4. Credit only: stop here (invoice posted, no payment register).
+  // 5. Cash/Cheque: account.payment.register create [{ amount, journal_id, payment_date }] context active_model=account.move, active_ids=[res_id] → wizard id
+  //    journal_id = vehicle cash_journal_id for cash, vehicle check_journal_id for cheque (from payload or fleet.vehicle by license_plate)
+  // 6. account.payment.register action_create_payments [[wizardId]]
+
   for (const item of payment) {
     let invoiceBlockFailedNoItemsToInvoice = false;
     try {
@@ -606,8 +706,20 @@ async function processSyncQueue() {
 
           if (!invoiceAlreadyPosted) {
             if (resId != null) {
-              log('queue', `payment SO ${saleOrderId}: post existing invoice res_id=${resId}`);
-              await postInvoice(resId);
+              const invStateAgain = await getInvoiceState(resId).catch(() => ({}));
+              if ((invStateAgain?.state || '').toLowerCase() === 'posted') {
+                log('queue', `payment SO ${saleOrderId}: invoice ${resId} already posted — skip post`);
+                invoiceAlreadyPosted = true;
+              } else if ((invStateAgain?.state || '').toLowerCase() === 'draft') {
+                log('queue', `payment SO ${saleOrderId}: post existing draft invoice res_id=${resId}`);
+                await postInvoice(resId);
+                invoiceAlreadyPosted = true;
+              }
+              if (!invoiceAlreadyPosted) {
+                log('queue', `payment SO ${saleOrderId}: post existing invoice res_id=${resId}`);
+                await postInvoice(resId);
+                invoiceAlreadyPosted = true;
+              }
             } else {
               log('queue', `payment SO ${saleOrderId}: Step 1 — create advance payment wizard (context active_ids [${saleOrderId}])`);
               const wizardId = await createAdvancePaymentWizard(saleOrderId);
@@ -632,53 +744,107 @@ async function processSyncQueue() {
               alreadySyncedSaleOrderIds.add(soId);
             }
           }
+          const onlyCredit = payments.length > 0 && payments.every((pm) => pm.type === 'credit');
+          if (onlyCredit && resId != null && !alreadySyncedSaleOrderIds.has(soId)) {
+            log('queue', `payment SO ${saleOrderId}: credit only (invoice already posted) — no payment register`);
+            await syncQueueDb.markSynced(Number(item.id));
+            alreadySyncedSaleOrderIds.add(soId);
+          }
 
           const hasCashOrCheque = payments.some((pm) => pm.type === 'cash' || pm.type === 'check');
           if (hasCashOrCheque && resId != null) {
-            let resolvedCashId = null;
-            let resolvedChequeId = null;
-            try {
-              const { getCashTypeJournalIds } = await import('./journal.service.js');
-              const ids = await getCashTypeJournalIds();
-              resolvedCashId = ids.cashJournalId ?? null;
-              resolvedChequeId = ids.chequeJournalId ?? null;
-              log('queue', `payment SO ${saleOrderId}: journals from Odoo cash(CSH1)=${resolvedCashId ?? '—'} cheque(CSH2)=${resolvedChequeId ?? '—'}`);
-            } catch (resolveErr) {
-              logWarn('queue payment resolve journals', resolveErr);
-            }
-            const dateStr = p.paymentDate || new Date().toISOString().slice(0, 10);
-            for (const pm of payments) {
-              if (pm.type === 'credit') continue;
-              const amount = Number(pm.amount);
-              const journalId = pm.type === 'cash' ? resolvedCashId : pm.type === 'check' ? resolvedChequeId : null;
-              if (!amount || journalId == null) {
-                logWarn('queue payment', new Error(`${pm.type === 'cash' ? 'Cash' : 'Cheque'} journal id not found. Skipping amount ${amount}`));
-                continue;
-              }
+            const invStateForPayment = await getInvoiceState(resId).catch(() => ({}));
+            const alreadyPaid = (invStateForPayment?.payment_state || '').toLowerCase() === 'paid';
+            if (alreadyPaid) {
+              log('queue', `payment SO ${saleOrderId}: invoice ${resId} already paid — skip payment register`);
+              alreadySyncedSaleOrderIds.add(soId);
+              log('queue', `payment item ${item.id} invoice/payments completed (pending chatter + proof upload)`);
+            } else {
+              let resolvedCashId = null;
+              let resolvedChequeId = null;
               try {
-                log('queue', `payment SO ${saleOrderId}: Step 5 — payment register create amount=${amount} journal_id=${journalId} active_ids=[${resId}]`);
-                const registerWizardId = await createPaymentRegisterWizard(resId, {
-                  amount,
-                  journalId,
-                  paymentDate: dateStr,
-                });
-                if (registerWizardId != null) {
-                  log('queue', `payment SO ${saleOrderId}: Step 6 — action_create_payments [[${registerWizardId}]]`);
-                  await executePaymentRegister(registerWizardId);
-                  const methodLabel = pm.type === 'check' ? 'cheque' : 'cash';
-                  log('queue', `payment SO ${saleOrderId}: ${methodLabel} payment executed wizard=${registerWizardId} invoice res_id=${resId}`);
-                }
-              } catch (registerErr) {
-                const msg = (registerErr?.message || String(registerErr)).toLowerCase();
-                if (msg.includes('already') || msg.includes('reconciled')) {
-                  log('queue', `payment register skipped (already paid/reconciled) invoice ${resId}`);
+                const user = await getUserSession();
+                const licensePlate = user?.licensePlate || user?.license_plate || '';
+                const vehicleId = user?.vehicleId != null ? user.vehicleId : null;
+                const { getVehicleJournalsByLicensePlate } = await import('./vehicle.service.js');
+                const vehicleJournals = await getVehicleJournalsByLicensePlate(licensePlate, vehicleId);
+                resolvedCashId = vehicleJournals.cashJournalId ?? null;
+                resolvedChequeId = vehicleJournals.chequeJournalId ?? null;
+                if (resolvedCashId == null && resolvedChequeId == null) {
+                  const { getCashTypeJournalIds } = await import('./journal.service.js');
+                  const ids = await getCashTypeJournalIds();
+                  resolvedCashId = ids.cashJournalId ?? null;
+                  resolvedChequeId = ids.chequeJournalId ?? null;
+                  log('queue', `payment SO ${saleOrderId}: journals fallback (no vehicle) cash=${resolvedCashId ?? '—'} cheque=${resolvedChequeId ?? '—'}`);
                 } else {
-                  throw registerErr;
+                  log('queue', `payment SO ${saleOrderId}: journals from logged-in vehicle (${licensePlate || vehicleId || '—'}) cash=${resolvedCashId ?? '—'} cheque=${resolvedChequeId ?? '—'}`);
+                }
+              } catch (resolveErr) {
+                logWarn('queue payment resolve journals', resolveErr);
+              }
+              // Idempotency for partial payments:
+              // When chatter upload fails, sync may retry and (for partial invoices) invoice.payment_state stays 'partial'.
+              // We must avoid registering the same cash/cheque payments again.
+              const round2 = (n) => Math.round(Number(n) * 100) / 100;
+              const existingPayments = await getPaymentsByInvoiceIds([resId]).catch(() => []);
+              const existingPaymentKeys = (existingPayments || []).map((ep) => ({
+                journalId: Array.isArray(ep.journal_id) ? ep.journal_id[0] : ep.journal_id,
+                amount: round2(ep.amount),
+              }));
+
+              const dateStr = p.paymentDate || new Date().toISOString().slice(0, 10);
+              for (const pm of payments) {
+                if (pm.type === 'credit') continue;
+                const amount = Number(pm.amount);
+                const journalId = (pm.journalId != null && Number.isFinite(Number(pm.journalId)))
+                  ? Number(pm.journalId)
+                  : (pm.type === 'cash' ? resolvedCashId : pm.type === 'check' ? resolvedChequeId : null);
+                const desiredAmount = round2(amount);
+                if (!desiredAmount || journalId == null) {
+                  logWarn('queue payment', new Error(`${pm.type === 'cash' ? 'Cash' : 'Cheque'} journal id not found. Skipping amount ${amount}`));
+                  continue;
+                }
+
+                const alreadyHasPayment = existingPaymentKeys.some(
+                  (ep) => ep.journalId != null && ep.journalId === journalId && Math.abs(ep.amount - desiredAmount) <= 0.01
+                );
+
+                if (alreadyHasPayment) {
+                  log('queue', `payment SO ${saleOrderId}: ${pm.type === 'check' ? 'cheque' : 'cash'} already reconciled — skip register amount=${desiredAmount} journal_id=${journalId}`);
+                  continue;
+                }
+                try {
+                  log('queue', `payment SO ${saleOrderId}: Step 5 — payment register create amount=${desiredAmount} journal_id=${journalId} active_ids=[${resId}]`);
+                  const registerWizardId = await createPaymentRegisterWizard(resId, {
+                    amount: desiredAmount,
+                    journalId,
+                    paymentDate: dateStr,
+                  });
+                  if (registerWizardId != null) {
+                    log('queue', `payment SO ${saleOrderId}: Step 6 — action_create_payments [[${registerWizardId}]]`);
+                    await executePaymentRegister(registerWizardId);
+                    const methodLabel = pm.type === 'check' ? 'cheque' : 'cash';
+                    log('queue', `payment SO ${saleOrderId}: ${methodLabel} payment executed wizard=${registerWizardId} invoice res_id=${resId}`);
+                  }
+                } catch (registerErr) {
+                  const msg = (registerErr?.message || String(registerErr)).toLowerCase();
+                  const skipAsAlreadyPaid =
+                    msg.includes('already') ||
+                    msg.includes('reconciled') ||
+                    msg.includes('nothing left to pay') ||
+                    msg.includes('no payment registration') ||
+                    msg.includes('nothing to pay') ||
+                    msg.includes('finances under control');
+                  if (skipAsAlreadyPaid) {
+                    log('queue', `payment register skipped (invoice already paid or nothing to pay) invoice ${resId}`);
+                  } else {
+                    throw registerErr;
+                  }
                 }
               }
+              alreadySyncedSaleOrderIds.add(soId);
+              log('queue', `payment item ${item.id} invoice/payments completed (pending chatter + proof upload)`);
             }
-            alreadySyncedSaleOrderIds.add(soId);
-            log('queue', `payment item ${item.id} invoice/payments completed (pending chatter + proof upload)`);
           } else if (hasCashOrCheque && resId == null) {
             logWarn('queue payment', new Error('No invoice res_id for cash/cheque — create invoice first'));
           }
@@ -687,6 +853,8 @@ async function processSyncQueue() {
           if (msg.includes('no items are available to invoice') || msg.includes('nothing to invoice')) {
             invoiceBlockFailedNoItemsToInvoice = true;
             logWarn('queue payment (invoice/payments)', new Error('Invoice creation failed: delivery not done or no quantities. Complete delivery in Odoo first, then sync again for cheque/credit.'));
+          } else if (msg.includes('must be in draft')) {
+            log('queue', `payment SO ${saleOrderId}: invoice already posted (must be in draft) — continue chatter/proof`);
           } else {
             logWarn('queue payment (invoice/payments)', invoiceErr);
           }
@@ -696,6 +864,7 @@ async function processSyncQueue() {
 
       const {
         buildPaymentProofMessageBody,
+        buildSinglePaymentMessageBody,
         createProofAttachment,
         postPaymentProofToChatterWithAttachmentIds,
         imageFileToBase64String,
@@ -706,11 +875,14 @@ async function processSyncQueue() {
       const paymentMethod = hasCheck ? 'cheque' : hasCash ? 'cash' : hasCredit ? 'credit' : undefined;
       const chequeBankName = p.chequeBankName || (hasCheck && (p.selectedBankName || '—'));
       const chequeNumber = p.checkNumber || (payments.find((pm) => pm.type === 'check')?.checkNumber);
-      const chatterBody = buildPaymentProofMessageBody({
-        paymentMethod,
-        chequeBankName: paymentMethod === 'cheque' ? chequeBankName : undefined,
-        checkNumber: paymentMethod === 'cheque' ? (chequeNumber || undefined) : undefined,
-      });
+      const paymentsForMessage = payments.map((pm) => ({
+        type: pm.type,
+        amount: Number(pm.amount) || 0,
+        checkNumber: pm.type === 'check' ? (pm.checkNumber || chequeNumber) : undefined,
+        bankName: pm.type === 'check' ? chequeBankName : undefined,
+      }));
+      const isPartialPayment = paymentsForMessage.length > 1;
+      const chatterBody = null; // built later with hasProof (after attachmentIds are computed)
 
       if (invoiceBlockFailedNoItemsToInvoice) {
         log('queue', `payment item ${item.id} NOT marked synced (invoice not created — deliver first, then sync again for cheque/credit)`);
@@ -764,34 +936,59 @@ async function processSyncQueue() {
         continue;
       }
 
-      if (attachmentIds.length === 0) {
-        // Avoid duplicate chatter messages when there are no new proof images to attach.
-        log('queue', `payment SO ${soId}: skip message_post (no new proof attachments)`);
-        await syncQueueDb.markSynced(Number(item.id));
-        alreadySyncedSaleOrderIds.add(soId);
-        continue;
-      }
+      const hasProof = attachmentIds.length > 0;
 
-      // API 2: Post message with attachment_ids (required so captured photos appear in sale order chatter)
+      // API 2: Post message(s) to sale order chatter. Partial payment = one message per payment type.
       try {
-        log('queue', `message_post API (sale.order) SO ${soId} attachment_ids=[${attachmentIds.join(', ')}]`);
-        await postPaymentProofToChatterWithAttachmentIds(soId, { body: chatterBody, attachmentIds });
-        const pendingById = new Map((pendingAttachments || []).map((a) => [Number(a.id), a]));
-        for (const id of syncedAttachmentIds) {
-          const idNum = Number(id);
-          await offlineAttachmentsDb.markSynced(idNum);
-          const att = pendingById.get(idNum);
-          if (att?.local_file_path) {
-            try {
-              const fileToDelete = new FileSystem.File(att.local_file_path);
-              if (fileToDelete.exists) {
-                fileToDelete.delete();
+        if (isPartialPayment && paymentsForMessage.length > 0) {
+          log('queue', `message_post API (sale.order) SO ${soId} — ${paymentsForMessage.length} separate messages (Cash/Cheque/Credit)`);
+          for (let i = 0; i < paymentsForMessage.length; i++) {
+            const pm = paymentsForMessage[i];
+            const attachToThisMessage = i === 0 ? attachmentIds : [];
+            const body = buildSinglePaymentMessageBody(pm, { hasProof: attachToThisMessage.length > 0 });
+            await postPaymentProofToChatterWithAttachmentIds(soId, { body, attachmentIds: attachToThisMessage });
+            if (attachToThisMessage.length > 0) {
+              const pendingById = new Map((pendingAttachments || []).map((a) => [Number(a.id), a]));
+              for (const id of syncedAttachmentIds) {
+                const idNum = Number(id);
+                await offlineAttachmentsDb.markSynced(idNum);
+                const att = pendingById.get(idNum);
+                if (att?.local_file_path) {
+                  try {
+                    const fileToDelete = new FileSystem.File(att.local_file_path);
+                    if (fileToDelete.exists) fileToDelete.delete();
+                  } catch (_) { }
+                }
               }
-            } catch (_) { }
+            }
+          }
+        } else {
+          log('queue', `message_post API (sale.order) SO ${soId} attachment_ids=[${attachmentIds.join(', ')}]`);
+          const body = buildPaymentProofMessageBody({
+            paymentMethod,
+            chequeBankName: paymentMethod === 'cheque' ? chequeBankName : undefined,
+            checkNumber: paymentMethod === 'cheque' ? (chequeNumber || undefined) : undefined,
+            payments: paymentsForMessage,
+            hasProof,
+          });
+          await postPaymentProofToChatterWithAttachmentIds(soId, { body, attachmentIds });
+          if (attachmentIds.length > 0) {
+            const pendingById = new Map((pendingAttachments || []).map((a) => [Number(a.id), a]));
+            for (const id of syncedAttachmentIds) {
+              const idNum = Number(id);
+              await offlineAttachmentsDb.markSynced(idNum);
+              const att = pendingById.get(idNum);
+              if (att?.local_file_path) {
+                try {
+                  const fileToDelete = new FileSystem.File(att.local_file_path);
+                  if (fileToDelete.exists) fileToDelete.delete();
+                } catch (_) { }
+              }
+            }
           }
         }
         chatterPostedInThisRun.add(soId);
-        log('queue', `chatter posted to SO ${soId} (${attachmentIds.length} images)`);
+        log('queue', `chatter posted to SO ${soId}${isPartialPayment ? ` (${paymentsForMessage.length} messages)` : ` (${attachmentIds.length} images)`}`);
       } catch (chatterErr) {
         for (const id of syncedAttachmentIds) {
           await offlineAttachmentsDb.incrementRetry(Number(id), chatterErr?.message || 'API error');

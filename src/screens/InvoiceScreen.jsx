@@ -25,23 +25,14 @@ function formatInvoiceCurrency(amount) {
   return `Rs ${formatAmount(amount)}`;
 }
 
-/** Simple amount in words for LKR (whole part only). */
-function amountInWords(num) {
-  const n = Math.floor(Number(num));
-  if (n === 0) return 'Zero';
-  const ones = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine'];
-  const tens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
-  const teens = ['Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
-  if (n < 10) return ones[n];
-  if (n < 20) return teens[n - 10];
-  if (n < 100) return (tens[Math.floor(n / 10)] + ' ' + ones[n % 10]).trim();
-  if (n < 1000) return (ones[Math.floor(n / 100)] + ' Hundred ' + amountInWords(n % 100)).trim();
-  if (n < 100000) return (amountInWords(Math.floor(n / 1000)) + ' Thousand ' + amountInWords(n % 1000)).trim();
-  if (n < 10000000) return (amountInWords(Math.floor(n / 100000)) + ' Lakh ' + amountInWords(n % 100000)).trim();
-  return (amountInWords(Math.floor(n / 10000000)) + ' Crore ' + amountInWords(n % 10000000)).trim();
+/** Avoid rendering boolean false or empty as "false"; return safe string or — for print. */
+function safeDisplay(val) {
+  if (val === undefined || val === null || val === false) return '—';
+  const s = String(val).trim();
+  return s === '' || s.toLowerCase() === 'false' ? '—' : s;
 }
 
-function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSplit, logoUri, customerSignatureDataUrl, chequeBankName, checkNumber, invoiceNumber) {
+function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSplit, logoUri, customerSignatureDataUrl, chequeBankName, checkNumber, invoiceNumber, supplierTin = '—', purchaserTin = '—') {
   const date = order?.date_order
     ? new Date(order.date_order).toLocaleDateString('en-LK', {
         year: 'numeric',
@@ -49,9 +40,13 @@ function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSp
         day: 'numeric',
       })
     : new Date().toLocaleDateString('en-LK');
-  const customerName = (order?.partner_id?.[1] ?? '—').replace(/</g, '&lt;');
-  const customerAddress = [order?.city, order?.partner_phone].filter(Boolean).join(', ').replace(/</g, '&lt;') || '—';
-  const customerPhone = (order?.partner_phone ?? '—').replace(/</g, '&lt;');
+  const customerName = safeDisplay(order?.partner_id?.[1]).replace(/</g, '&lt;');
+  const cityPart = safeDisplay(order?.city);
+  const phonePart = safeDisplay(order?.partner_phone);
+  const customerAddress = [cityPart, phonePart].filter((s) => s !== '—').join(', ').replace(/</g, '&lt;') || '—';
+  const customerPhone = (phonePart !== '—' ? phonePart : '—').replace(/</g, '&lt;');
+  const supplierTinSafe = (supplierTin != null && String(supplierTin).trim()) ? String(supplierTin).trim().replace(/</g, '&lt;') : '—';
+  const purchaserTinSafe = (purchaserTin != null && String(purchaserTin).trim()) ? String(purchaserTin).trim().replace(/</g, '&lt;') : '—';
   const invNo = invoiceNumber ?? order?.name ?? '—';
   const paymentLabel =
     paymentType === 'split' && paymentSplit
@@ -81,66 +76,117 @@ function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSp
           const productName = getProductDisplayName(l.product_id?.[1] ?? '—').replace(/</g, '&lt;').substring(0, 42);
           const lineSub = Number(l.price_subtotal) || 0;
           const lineTotal = Number(l.price_total) || 0;
-          const lineTax = lineTotal - lineSub;
           return `<tr>
-            <td style="padding:2px 4px;border-bottom:1px solid #eee;font-size:9px">${i + 1}</td>
-            <td style="padding:2px 4px;border-bottom:1px solid #eee;font-size:9px">${productName}</td>
-            <td style="padding:2px 4px;border-bottom:1px solid #eee;text-align:center;font-size:9px">${Number(l.product_uom_qty ?? 0)}</td>
-            <td style="padding:2px 4px;border-bottom:1px solid #eee;text-align:right;font-size:9px">${formatAmount(l.price_unit ?? 0)}</td>
-            <td style="padding:2px 4px;border-bottom:1px solid #eee;text-align:right;font-size:9px">${formatAmount(lineSub)}</td>
-            <td style="padding:2px 4px;border-bottom:1px solid #eee;text-align:right;font-size:9px">${formatAmount(lineTax)}</td>
-            <td style="padding:2px 4px;border-bottom:1px solid #eee;text-align:right;font-size:9px">${formatAmount(lineTotal)}</td>
+            <td style="padding:2px;border-bottom:1px solid #ccc;font-size:8px;font-weight:700">${i + 1}</td>
+            <td style="padding:2px;border-bottom:1px solid #ccc;font-size:8px;font-weight:700">${productName}</td>
+            <td style="padding:2px 4px 2px 2px;border-bottom:1px solid #ccc;text-align:right;font-size:8px;font-weight:700">${Number(l.product_uom_qty ?? 0)}</td>
+            <td style="padding:2px 2px 2px 4px;border-bottom:1px solid #ccc;text-align:right;font-size:8px;font-weight:700">${formatAmount(l.price_unit ?? 0)}</td>
+            <td style="padding:2px;border-bottom:1px solid #ccc;text-align:right;font-size:8px;font-weight:700">${formatAmount(lineSub)}</td>
+            <td style="padding:2px;border-bottom:1px solid #ccc;text-align:right;font-size:8px;font-weight:700">${formatAmount(lineTotal)}</td>
           </tr>`;
         }
       )
-      .join('') || '<tr><td colspan="7" style="padding:8px;text-align:center;font-size:9px">No line items</td></tr>';
+      .join('') || '<tr><td colspan="6" style="padding:4px;text-align:center;font-size:8px;font-weight:700">No line items</td></tr>';
 
   const amountUntaxed = (order?.amount_untaxed != null && order.amount_untaxed !== 0) ? order.amount_untaxed : computedUntaxed;
   const amountTax = (order?.amount_tax != null && order.amount_tax !== 0) ? order.amount_tax : computedTax;
   const amountTotal = order?.amount_total ?? (amountUntaxed + amountTax);
-  const words = amountInWords(amountTotal) + ' Rupees only';
 
   const logoImg = logoUri
-    ? `<img src="${logoUri}" alt="GasTech" style="max-width:56mm;height:auto;display:block;margin:0 0 6px 0;" />`
-    : '<h1 style="margin:0 0 6px 0;font-size:14px;color:#1e5aa8;text-align:left">GasTech</h1>';
+    ? `<img src="${logoUri}" alt="GasTech" style="max-width:50mm;height:auto;display:block;margin:0 0 4px 0;" />`
+    : '<h1 style="margin:0 0 4px 0;font-size:12px;font-weight:700;color:#1e5aa8;text-align:left">GasTech</h1>';
 
   return `
 <!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=80mm">
+  <meta name="viewport" content="width=80mm, initial-scale=1">
   <style>
-    body { font-family: system-ui, sans-serif; font-size: 9px; color: #111; padding: 6px 6px; max-width: 80mm; margin: 0; }
-    .title { font-size: 11px; font-weight: bold; text-align: center; margin: 4px 0 8px; border: 1px solid #333; padding: 4px; }
-    .two-col { display: flex; gap: 6px; margin-bottom: 6px; }
-    .col { flex: 1; }
-    .field { margin-bottom: 2px; }
-    .label { font-weight: 600; color: #444; }
-    table { width: 100%; border-collapse: collapse; margin: 6px 0; font-size: 8px; border: 1px solid #ddd; border-radius: 6px; overflow: hidden; table-layout: auto; }
-    th { text-align: left; padding: 8px 6px; border-bottom: 1px solid #ddd; background: #eef2ff; font-weight: 700; color: #374151; }
-    th:nth-child(1) { width: 22px; text-align: center; padding-right: 8px; }
-    th:nth-child(2) { min-width: 45%; padding-right: 10px; }
-    th:nth-child(3), th:nth-child(4), th:nth-child(5), th:nth-child(6), th:nth-child(7) { text-align: right; min-width: 36px; padding-left: 10px; }
-    td { padding: 8px 6px; border-bottom: 1px solid #eee; }
-    td:nth-child(1) { padding-right: 8px; }
-    td:nth-child(2) { min-width: 45%; padding-right: 10px; }
-    td:nth-child(3), td:nth-child(4), td:nth-child(5), td:nth-child(6), td:nth-child(7) { text-align: right; padding-left: 10px; }
+    * { box-sizing: border-box; }
+    @page { size: 80mm auto; margin: 3mm; }
+    @media print {
+      body, .page { width: 80mm !important; max-width: 80mm !important; }
+      body { padding: 0 3mm !important; }
+    }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      font-size: 9px;
+      font-weight: 700;
+      color: #000;
+      margin: 0;
+      padding: 4px 6px;
+      width: 80mm;
+      max-width: 80mm;
+      overflow-x: hidden;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+    .page { width: 74mm; max-width: 100%; margin: 0 auto; }
+    .title {
+      font-size: 11px;
+      font-weight: 700;
+      text-align: center;
+      margin: 4px 0 6px;
+      border: 1px solid #000;
+      padding: 4px 6px;
+    }
+    .two-col { display: flex; gap: 6px; margin-bottom: 6px; line-height: 1.3; }
+    .col { flex: 1; min-width: 0; overflow: hidden; }
+    .field { margin-bottom: 2px; font-size: 8px; font-weight: 700; word-break: break-word; }
+    .label { font-weight: 700; color: #000; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 4px 0;
+      font-size: 8px;
+      font-weight: 700;
+      border: 1px solid #000;
+      table-layout: fixed;
+    }
+    th {
+      text-align: left;
+      padding: 3px 2px;
+      border-bottom: 1px solid #000;
+      background: #e8e8e8;
+      font-weight: 700;
+      font-size: 7px;
+    }
+    th:nth-child(1) { width: 6%; text-align: center; }
+    th:nth-child(2) { width: 27%; }
+    th:nth-child(3) { width: 9%; text-align: right; padding-right: 4px; }
+    th:nth-child(4) { width: 13%; text-align: right; padding-left: 4px; }
+    th:nth-child(5) { width: 14%; text-align: right; }
+    th:nth-child(6) { width: 14%; text-align: right; }
+    th:nth-child(7) { width: 17%; text-align: right; }
+    td {
+      padding: 3px 2px;
+      border-bottom: 1px solid #ccc;
+      font-size: 8px;
+      font-weight: 700;
+      word-break: break-word;
+    }
+    td:nth-child(1) { text-align: center; }
+    td:nth-child(2) { overflow: hidden; text-overflow: ellipsis; }
+    td:nth-child(3) { padding-right: 4px; }
+    td:nth-child(4) { padding-left: 4px; }
+    td:nth-child(3), td:nth-child(4), td:nth-child(5), td:nth-child(6), td:nth-child(7) { text-align: right; }
     tr:last-child td { border-bottom: none; }
-    .totals { margin-top: 6px; border-top: 1px solid #333; padding-top: 4px; }
-    .row { display: flex; justify-content: space-between; margin: 2px 0; }
-    .total-row { font-weight: bold; font-size: 10px; margin-top: 4px; }
-    .payment { margin-top: 6px; padding: 4px; background: #f4f6f9; font-size: 9px; }
-    .footer { margin-top: 8px; font-size: 8px; color: #666; text-align: center; }
+    .totals { margin-top: 4px; border-top: 1px solid #000; padding-top: 4px; font-size: 8px; font-weight: 700; }
+    .row { display: flex; justify-content: space-between; margin: 2px 0; align-items: flex-start; gap: 4px; }
+    .total-row { font-weight: 700; font-size: 9px; margin-top: 2px; }
+    .payment { margin-top: 4px; padding: 4px; background: #e8e8e8; font-size: 8px; font-weight: 700; text-align: center; }
+    .footer { margin-top: 6px; font-size: 8px; font-weight: 700; color: #333; text-align: center; }
   </style>
 </head>
 <body>
+  <div class="page">
   ${logoImg}
   <div class="title">Tax Invoice</div>
   <div class="two-col">
     <div class="col">
       <div class="field"><span class="label">Date of Invoice:</span> ${date}</div>
-      <div class="field"><span class="label">Supplier's TIN:</span> —</div>
+      <div class="field"><span class="label">Supplier's TIN:</span> ${supplierTinSafe}</div>
       <div class="field"><span class="label">Supplier's Name:</span> GasTech</div>
       <div class="field"><span class="label">Address:</span> —</div>
       <div class="field"><span class="label">Telephone No:</span> —</div>
@@ -148,47 +194,45 @@ function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSp
     </div>
     <div class="col">
       <div class="field"><span class="label">Tax Invoice No.:</span> ${invNo}</div>
-      <div class="field"><span class="label">Purchaser's TIN:</span> —</div>
-      <div class="field"><span class="label">Purchaser's Name:</span> ${customerName}</div>
+      <div class="field"><span class="label">Customer's TIN:</span> ${purchaserTinSafe}</div>
+      <div class="field"><span class="label">Customer's Name:</span> ${customerName}</div>
       <div class="field"><span class="label">Address:</span> ${customerAddress}</div>
       <div class="field"><span class="label">Telephone No:</span> ${customerPhone}</div>
-      <div class="field"><span class="label">Place of Supply:</span> —</div>
+      <div class="field"><span class="label">Place of Supply:</span> ${cityPart !== '—' ? cityPart.replace(/</g, '&lt;') : '—'}</div>
     </div>
   </div>
   <table>
     <thead>
       <tr>
         <th>No</th>
-        <th>Description of Goods or Services</th>
+        <th>Description</th>
         <th>Qty</th>
         <th>Unit Price</th>
-        <th>Amount Excl. VAT (Rs.)</th>
-        <th>VAT (Rs.)</th>
-        <th>Total (Rs.)</th>
+        <th>Amount (Rs)</th>
+        <th>Total (Rs)</th>
       </tr>
     </thead>
     <tbody>${rows}</tbody>
   </table>
   <div class="totals">
-    <div class="row"><span>Total Value of Supply:</span><span>${formatInvoiceCurrency(amountUntaxed)}</span></div>
-    <div class="row"><span>VAT Amount (18%):</span><span>${formatInvoiceCurrency(amountTax)}</span></div>
-    <div class="row total-row"><span>Total Amount including VAT:</span><span>${formatInvoiceCurrency(amountTotal)}</span></div>
-    <div class="row" style="margin-top:4px"><span>Total Amount in words:</span></div>
-    <div class="row" style="font-size:8px;margin-left:0">${words}</div>
-    <div class="row" style="margin-top:4px"><span>Mode of Payment:</span><span>${paymentLabel.replace(/</g, '&lt;')}</span></div>
+    <div class="row"><span>Gross Amount:</span><span>${formatInvoiceCurrency(amountUntaxed)}</span></div>
+    <div class="row"><span>VAT (18%):</span><span>${formatInvoiceCurrency(amountTax)}</span></div>
+    <div class="row total-row"><span>Net Amount:</span><span>${formatInvoiceCurrency(amountTotal)}</span></div>
+    <div class="row" style="margin-top:2px"><span>Mode of Payment:</span><span>${paymentLabel.replace(/</g, '&lt;')}</span></div>
     ${(chequeBankName || checkNumber) ? `
-    <div class="row" style="margin-top:2px"><span>Bank (Cheque):</span><span>${(chequeBankName || '—').replace(/</g, '&lt;')}</span></div>
-    <div class="row" style="margin-top:2px"><span>Cheque No.:</span><span>${(checkNumber || '—').replace(/</g, '&lt;')}</span></div>
+    <div class="row" style="margin-top:1px"><span>Bank (Cheque):</span><span>${(chequeBankName || '—').replace(/</g, '&lt;')}</span></div>
+    <div class="row" style="margin-top:1px"><span>Cheque No.:</span><span>${(checkNumber || '—').replace(/</g, '&lt;')}</span></div>
     ` : ''}
   </div>
   <div class="payment">Thank you for your business</div>
   ${customerSignatureDataUrl ? `
-  <div class="signature-section" style="margin-top:8px;padding-top:6px;border-top:1px solid #ddd;">
-    <div class="label" style="font-size:9px;font-weight:600;color:#444;margin-bottom:4px;">Customer signature</div>
-    <img src="${customerSignatureDataUrl}" alt="Customer signature" style="max-width:50mm;height:auto;max-height:25mm;display:block;" />
+  <div class="signature-section" style="margin-top:4px;padding-top:4px;border-top:1px solid #000;">
+    <div class="label" style="font-size:8px;font-weight:700;color:#000;margin-bottom:2px;">Customer signature</div>
+    <img src="${customerSignatureDataUrl}" alt="Signature" style="max-width:45mm;height:auto;max-height:20mm;display:block;" />
   </div>
   ` : ''}
   <div class="footer">GasTech – Your Trusted Business Partner</div>
+  </div>
 </body>
 </html>`;
 }
@@ -210,6 +254,8 @@ export default function InvoiceScreen({ route, navigation }) {
     checkNumber,
     paymentSplit,
     customerSignatureDataUrl,
+    supplierTin,
+    purchaserTin,
   } = route.params ?? {};
 
   const { setHideSyncIndicator } = useSync();
@@ -428,7 +474,7 @@ export default function InvoiceScreen({ route, navigation }) {
     setPrintResult(null);
     setPrintError(null);
     try {
-      const html = buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSplit, logoUri, customerSignatureDataUrl, chequeBankName, checkNumber, invoiceNumber);
+      const html = buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSplit, logoUri, customerSignatureDataUrl, chequeBankName, checkNumber, invoiceNumber, supplierTin, purchaserTin);
       await Print.printAsync({ html });
       setPrintResult('success');
     } catch (err) {
@@ -440,7 +486,7 @@ export default function InvoiceScreen({ route, navigation }) {
       setHideSyncIndicator(false);
       runSync().catch((e) => console.warn('[InvoiceScreen] sync after print', e?.message ?? e));
     }
-  }, [order, lines, invoiceNumber, paymentType, selectedBankName, paymentSplit, logoUri, customerSignatureDataUrl, chequeBankName, checkNumber]);
+  }, [order, lines, invoiceNumber, paymentType, selectedBankName, paymentSplit, logoUri, customerSignatureDataUrl, chequeBankName, checkNumber, supplierTin, purchaserTin]);
 
   const goToHome = useCallback(() => {
     navigation.navigate('MainTabs', { screen: 'Dashboard' });
@@ -473,7 +519,7 @@ export default function InvoiceScreen({ route, navigation }) {
     paymentType === 'split' && paymentSplit
       ? [
           paymentSplit.cash > 0 && `Cash ${formatInvoiceCurrency(paymentSplit.cash)}`,
-          paymentSplit.check > 0 && `Check ${formatInvoiceCurrency(paymentSplit.check)}`,
+          paymentSplit.check > 0 && `Cheque ${formatInvoiceCurrency(paymentSplit.check)}`,
           paymentSplit.credit > 0 && `Credit ${formatInvoiceCurrency(paymentSplit.credit)}`,
         ].filter(Boolean).join(' • ') || 'Payment'
       : (paymentType === 'bank' || paymentType === 'check') && selectedBankName
@@ -524,11 +570,11 @@ export default function InvoiceScreen({ route, navigation }) {
             {order?.partner_id?.[1] ?? '—'}
           </Text>
         </View>
-        {(order?.city || order?.partner_phone) ? (
+        {(safeDisplay(order?.city) !== '—' || safeDisplay(order?.partner_phone) !== '—') ? (
           <View style={styles.metaRow}>
             <Text style={styles.metaLabel}>Address</Text>
             <Text style={styles.metaValue} numberOfLines={2}>
-              {[order?.city, order?.partner_phone].filter(Boolean).join(', ')}
+              {[safeDisplay(order?.city), safeDisplay(order?.partner_phone)].filter((s) => s !== '—').join(', ') || '—'}
             </Text>
           </View>
         ) : null}

@@ -356,6 +356,44 @@ async function runMigrations(db) {
     `);
     await db.runAsync('PRAGMA user_version = 12');
   }
+
+  // Migration 13: Vehicle-specific journals for offline Cash/Cheque payments
+  if (current < 13) {
+    try {
+      const info = await db.getAllAsync('PRAGMA table_info(vehicles)');
+      const names = new Set((info || []).map((c) => c.name));
+      if (!names.has('cash_journal_id')) {
+        await db.runAsync('ALTER TABLE vehicles ADD COLUMN cash_journal_id INTEGER');
+        console.log('[Migration] Added cash_journal_id to vehicles');
+      }
+      if (!names.has('check_journal_id')) {
+        await db.runAsync('ALTER TABLE vehicles ADD COLUMN check_journal_id INTEGER');
+        console.log('[Migration] Added check_journal_id to vehicles');
+      }
+    } catch (e) {
+      console.warn('[Migration] vehicles journal columns:', e);
+    }
+    await db.runAsync('PRAGMA user_version = 13');
+  }
+
+  // Migration 14: amount_cash, amount_cheque on sale_orders (backend sync split: cash + cheque + credit)
+  if (current < 14) {
+    try {
+      const info = await db.getAllAsync('PRAGMA table_info(sale_orders)');
+      const names = new Set((info || []).map((c) => c.name));
+      if (!names.has('amount_cash')) {
+        await db.runAsync('ALTER TABLE sale_orders ADD COLUMN amount_cash REAL');
+        console.log('[Migration] Added amount_cash column to sale_orders');
+      }
+      if (!names.has('amount_cheque')) {
+        await db.runAsync('ALTER TABLE sale_orders ADD COLUMN amount_cheque REAL');
+        console.log('[Migration] Added amount_cheque column to sale_orders');
+      }
+    } catch (e) {
+      console.warn('[Migration] amount_cash/amount_cheque:', e);
+    }
+    await db.runAsync('PRAGMA user_version = 14');
+  }
 }
 
 /**

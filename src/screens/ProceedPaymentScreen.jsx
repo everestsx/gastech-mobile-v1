@@ -11,6 +11,7 @@ import {
   Image,
   Modal,
 } from 'react-native';
+import { CommonActions } from '@react-navigation/native';
 import SignatureCanvas from 'react-native-signature-canvas';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
@@ -18,7 +19,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { useSync } from '../context/SyncContext';
 import { spacing, borderRadius } from '../constants/theme';
-import { getCachedJournals, getSaleOrderDetailsFromDB, getDeliveryDataFromDB } from '../services/sync.service';
+import { getCachedJournals, getSaleOrderDetailsFromDB, getDeliveryDataFromDB, getUserSession, getLastSyncTime } from '../services/sync.service';
+import { getVehicleJournalsByLicensePlate } from '../services/vehicle.service';
 import * as saleOrdersDb from '../database/saleOrders.js';
 import * as syncQueueDb from '../database/syncQueue.js';
 import * as offlineAttachmentsDb from '../database/offlineAttachments.js';
@@ -40,13 +42,18 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const { setHideSyncIndicator } = useSync();
-  const { saleOrderId, total, subtotal, tax, deliveryDone } = route.params || {};
+  const { saleOrderId, total, subtotal, tax, deliveryDone, deliveryPayload } = route.params || {};
   const orderTotal = Number(total) || 0;
+  // Keep payments consistent with 2-decimal currency precision to avoid tiny float remainders
+  // turning a fully-paid order into a "partial" one.
+  const orderTotalRounded = Math.round(orderTotal * 100) / 100;
   const orderSubtotal = subtotal != null ? Number(subtotal) : null;
   const orderTax = tax != null ? Number(tax) : null;
   const [loading, setLoading] = useState(false);
   const [journalsLoading, setJournalsLoading] = useState(true);
   const [journals, setJournals] = useState([]);
+  const [vehicleJournalIds, setVehicleJournalIds] = useState({ cashJournalId: null, chequeJournalId: null });
+  const [hasSyncedOnce, setHasSyncedOnce] = useState(false);
   const [selectedPaymentMethods, setSelectedPaymentMethods] = useState([]);
   const [cashAmount, setCashAmount] = useState('');
   const [checkAmount, setCheckAmount] = useState('');
@@ -62,23 +69,29 @@ export default function ProceedPaymentScreen({ route, navigation }) {
 
   const MAX_PHOTOS = 3;
 
-  const cashJournals = useMemo(
-    () => (journals || []).filter((j) => j.type === 'cash'),
-    [journals]
-  );
-  const cashJournalPreferred = useMemo(
-    () => cashJournals.find((j) => (j.code || '').toUpperCase() === JOURNAL_CODE_CASH) || cashJournals[0],
-    [cashJournals]
-  );
-  const chequeJournals = useMemo(
-    () =>
-      (journals || []).filter(
-        (j) =>
-          (j.code || '').toUpperCase() === JOURNAL_CODE_CHEQUE ||
-          (j.name || '').toLowerCase().includes('cheque')
-      ),
-    [journals]
-  );
+  // Use only vehicle-specific journals for Cash and Cheque (cash_journal_id / check_journal_id from fleet.vehicle).
+  const cashJournals = useMemo(() => {
+    if (vehicleJournalIds.cashJournalId == null) return [];
+    const match = (journals || []).filter((j) => j.id === vehicleJournalIds.cashJournalId);
+    return match;
+  }, [journals, vehicleJournalIds.cashJournalId]);
+  const cashJournalPreferred = useMemo(() => {
+    if (vehicleJournalIds.cashJournalId != null && cashJournals.length > 0) {
+      return cashJournals.find((j) => j.id === vehicleJournalIds.cashJournalId) || cashJournals[0];
+    }
+    return null;
+  }, [cashJournals, vehicleJournalIds.cashJournalId]);
+
+  const chequeJournals = useMemo(() => {
+    if (vehicleJournalIds.chequeJournalId == null) return [];
+    return (journals || []).filter((j) => j.id === vehicleJournalIds.chequeJournalId);
+  }, [journals, vehicleJournalIds.chequeJournalId]);
+  const chequeJournalInternal = useMemo(() => {
+    if (vehicleJournalIds.chequeJournalId != null && chequeJournals.length > 0) {
+      return chequeJournals.find((j) => j.id === vehicleJournalIds.chequeJournalId) || chequeJournals[0];
+    }
+    return null;
+  }, [chequeJournals, vehicleJournalIds.chequeJournalId]);
   const bankJournals = useMemo(
     () => (journals || []).filter((j) => j.type === 'bank'),
     [journals]
@@ -87,19 +100,24 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   const cashAmountNum = useMemo(() => {
     if (!selectedPaymentMethods.includes(PAYMENT_CASH)) return 0;
     const n = parseFloat(String(cashAmount).replace(/,/g, ''));
-    return Number.isFinite(n) && n >= 0 ? n : 0;
+    if (!Number.isFinite(n) || n < 0) return 0;
+    return Math.round(n * 100) / 100;
   }, [cashAmount, selectedPaymentMethods]);
 
   const checkAmountNum = useMemo(() => {
     if (!selectedPaymentMethods.includes(PAYMENT_CHECK)) return 0;
     const n = parseFloat(String(checkAmount).replace(/,/g, ''));
-    return Number.isFinite(n) && n >= 0 ? n : 0;
+    if (!Number.isFinite(n) || n < 0) return 0;
+    return Math.round(n * 100) / 100;
   }, [checkAmount, selectedPaymentMethods]);
 
-  const creditAmountNum = useMemo(
-    () => Math.max(0, orderTotal - cashAmountNum - checkAmountNum),
-    [orderTotal, cashAmountNum, checkAmountNum]
-  );
+  const creditAmountNum = useMemo(() => {
+    const remaining = orderTotalRounded - cashAmountNum - checkAmountNum;
+    const r = Math.round(remaining * 100) / 100;
+    // Treat tiny rounding remainder as 0 so full cash+cheque becomes fully paid.
+    if (r <= 0.01) return 0;
+    return Math.max(0, r);
+  }, [orderTotalRounded, cashAmountNum, checkAmountNum]);
   const totalEntered = cashAmountNum + checkAmountNum + creditAmountNum;
   const hasAnyPayment = totalEntered > 0;
 
@@ -114,12 +132,12 @@ export default function ProceedPaymentScreen({ route, navigation }) {
     if (!q) return SRI_LANKA_BANKS;
     return SRI_LANKA_BANKS.filter((b) => (b.name || '').toLowerCase().includes(q));
   }, [selectedLocalBankId, selectedLocalBank, bankSearchQuery]);
-  const chequeJournalInternal = chequeJournals[0];
+  // Cash/Cheque require vehicle-specific journal IDs (cash_journal_id / check_journal_id)
   const paymentComplete =
     hasAnyPayment &&
-    totalEntered >= orderTotal &&
-    (cashAmountNum <= 0 || (cashJournalPreferred != null)) &&
-    (checkAmountNum <= 0 || (chequeJournalInternal != null && checkNumberTrimmed !== '' && selectedLocalBankId != null)) &&
+    totalEntered >= orderTotalRounded &&
+    (cashAmountNum <= 0 || vehicleJournalIds.cashJournalId != null) &&
+    (checkAmountNum <= 0 || (vehicleJournalIds.chequeJournalId != null && checkNumberTrimmed !== '' && selectedLocalBankId != null)) &&
     (creditAmountNum <= 0 || true);
 
   const evidenceRequired = checkAmountNum > 0 || creditAmountNum > 0;
@@ -130,10 +148,27 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   const loadJournals = useCallback(async () => {
     setJournalsLoading(true);
     try {
-      const list = await getCachedJournals();
+      const [list, user, lastSync] = await Promise.all([
+        getCachedJournals(),
+        getUserSession(),
+        getLastSyncTime(),
+      ]);
       setJournals(Array.isArray(list) ? list : []);
+      setHasSyncedOnce(lastSync != null && String(lastSync).trim() !== '');
+      const licensePlate = user?.licensePlate || user?.license_plate || '';
+      const vehicleId = user?.vehicleId ?? null;
+      if (licensePlate) {
+        const vehicleJournals = await getVehicleJournalsByLicensePlate(licensePlate, vehicleId);
+        setVehicleJournalIds({
+          cashJournalId: vehicleJournals.cashJournalId ?? null,
+          chequeJournalId: vehicleJournals.chequeJournalId ?? null,
+        });
+      } else {
+        setVehicleJournalIds({ cashJournalId: null, chequeJournalId: null });
+      }
     } catch (_) {
       setJournals([]);
+      setVehicleJournalIds({ cashJournalId: null, chequeJournalId: null });
     } finally {
       setJournalsLoading(false);
     }
@@ -144,10 +179,15 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   }, [loadJournals]);
 
   useEffect(() => {
-    if (selectedPaymentMethods.includes(PAYMENT_CHECK) && chequeJournals.length > 0) {
-      setSelectedJournalId(chequeJournals[0].id);
+    const unsub = navigation.addListener?.('focus', loadJournals);
+    return () => unsub?.();
+  }, [loadJournals, navigation]);
+
+  useEffect(() => {
+    if (selectedPaymentMethods.includes(PAYMENT_CHECK) && (chequeJournalInternal ?? chequeJournals[0])) {
+      setSelectedJournalId(chequeJournalInternal?.id ?? chequeJournals[0]?.id ?? null);
     }
-  }, [selectedPaymentMethods, chequeJournals]);
+  }, [selectedPaymentMethods, chequeJournals, chequeJournalInternal]);
 
   useEffect(() => {
     setHideSyncIndicator(true);
@@ -157,10 +197,10 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   // Auto-select Credit when cash + check is less than total (remaining goes to credit)
   useEffect(() => {
     const cashPlusCheck = cashAmountNum + checkAmountNum;
-    if (cashPlusCheck < orderTotal && creditAmountNum > 0 && !selectedPaymentMethods.includes(PAYMENT_CREDIT)) {
+    if (cashPlusCheck < orderTotalRounded && creditAmountNum > 0 && !selectedPaymentMethods.includes(PAYMENT_CREDIT)) {
       setSelectedPaymentMethods((prev) => [...prev, PAYMENT_CREDIT]);
     }
-  }, [cashAmountNum, checkAmountNum, orderTotal, creditAmountNum, selectedPaymentMethods]);
+  }, [cashAmountNum, checkAmountNum, orderTotalRounded, creditAmountNum, selectedPaymentMethods]);
 
   // Auto-deselect Credit when cash + check covers full total (credit amount becomes 0)
   useEffect(() => {
@@ -184,17 +224,18 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       }
       const cashNum = parseFloat(String(cashAmount).replace(/,/g, '')) || 0;
       const checkNum = parseFloat(String(checkAmount).replace(/,/g, '')) || 0;
-      const remaining = Math.max(0, orderTotal - (method === PAYMENT_CASH ? checkNum : cashNum));
+      const remaining = Math.max(0, orderTotalRounded - (method === PAYMENT_CASH ? checkNum : cashNum));
       if (method === PAYMENT_CASH) setCashAmount(remaining > 0 ? formatAmount(remaining) : '');
       if (method === PAYMENT_CHECK) setCheckAmount(remaining > 0 ? formatAmount(remaining) : '');
       return [...prev, method];
     });
-  }, [orderTotal, cashAmount, checkAmount]);
+  }, [orderTotalRounded, cashAmount, checkAmount]);
 
   const handleProceed = async (customerSignatureDataUrl = null) => {
     if (!canProceed) return;
-    const cashJournalId = cashJournalPreferred?.id ?? null;
-    const checkJournalId = (chequeJournalInternal?.id ?? selectedJournalId) ?? null;
+    // Use only logged-in vehicle's cash_journal_id and check_journal_id (no default/fallback journals).
+    const cashJournalId = vehicleJournalIds.cashJournalId ?? null;
+    const checkJournalId = vehicleJournalIds.chequeJournalId ?? null;
     const needsCash = cashAmountNum > 0 && cashJournalId != null;
     const needsCheck = checkAmountNum > 0 && checkJournalId != null;
     const needsCredit = creditAmountNum > 0 && selectedPaymentMethods.includes(PAYMENT_CREDIT);
@@ -210,6 +251,36 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         : orderInfo.partner_id;
       const orderName = orderInfo.name ?? `Order ${saleOrderId}`;
       const invoiceNumber = await getOrAssignInvoiceNumber(saleOrderId);
+
+      const soId = Number(saleOrderId);
+
+      // Enqueue delivery and mark picking done only after payment is completed (not when user only tapped "Proceed to Payment").
+      if (deliveryPayload && deliveryPayload.saleOrderId != null) {
+        const existingDelivery = await syncQueueDb.getPendingDeliveryItemBySaleOrderId(soId);
+        if (existingDelivery) {
+          await syncQueueDb.updateQueueItemPayload(existingDelivery.id, deliveryPayload);
+        } else {
+          await syncQueueDb.enqueue(syncQueueDb.ACTION_DELIVERY, deliveryPayload);
+        }
+        if (deliveryPayload.pickingId != null) {
+          await stockPickingsDb.updatePickingStateLocal(Number(deliveryPayload.pickingId), 'done');
+        }
+      } else if (deliveryDone) {
+        // Fallback: no deliveryPayload (e.g. older flow); ensure delivery is queued and picking marked done.
+        const existingDelivery = await syncQueueDb.getPendingDeliveryItemBySaleOrderId(soId);
+        const { picking } = existingDelivery ? { picking: null } : await getDeliveryDataFromDB(saleOrderId);
+        if (picking?.id != null) {
+          await stockPickingsDb.updatePickingStateLocal(Number(picking.id), 'done');
+          await syncQueueDb.enqueue(syncQueueDb.ACTION_DELIVERY, {
+            saleOrderId: soId,
+            pickingId: picking.id,
+            orderLineUpdates: [],
+            moveUpdates: [],
+            moveLineUpdates: [],
+            deliveryLines: [],
+          });
+        }
+      }
 
       await saleOrdersDb.updateSaleOrderInvoiceStatusLocal(saleOrderId, 'invoiced');
 
@@ -234,7 +305,6 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       }
       if (payments.length === 0) return;
 
-      const soId = Number(saleOrderId);
       const timestamp = Date.now();
       const photoCount = deliveryPhotos.length;
       // Doc: store URI only in SQLite (no base64 in payload). Copy image to persistent path; sync will read path→base64→ir.attachment.create→message_post.
@@ -273,13 +343,15 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         }
       }
 
+      const paymentDateStr = new Date().toISOString().slice(0, 10);
       const queuePayload = {
         saleOrderId: soId,
         partnerId,
         orderName,
         invoiceNumber,
-        total: orderTotal,
+        total: orderTotalRounded,
         payments,
+        paymentDate: paymentDateStr,
         chequeBankName: needsCheck ? selectedLocalBank?.name : undefined,
         checkNumber: needsCheck ? (checkNumberTrimmed || undefined) : undefined,
       };
@@ -296,17 +368,12 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       const creditAmountForDb = primaryPaymentType === 'credit' ? (paymentSplit.credit ?? orderTotal) : null;
       await saleOrdersDb.updateSaleOrderPaymentTypeLocal(saleOrderId, primaryPaymentType, creditAmountForDb);
 
-      const { picking } = await getDeliveryDataFromDB(saleOrderId);
-      if (picking?.id != null) {
-        await stockPickingsDb.updatePickingStateLocal(Number(picking.id) || 0, 'done');
-      }
-
       const amountUntaxed = orderInfo.amount_untaxed != null ? Number(orderInfo.amount_untaxed) : orderTotal;
       const amountTax = orderInfo.amount_tax != null ? Number(orderInfo.amount_tax) : 0;
       const invoiceId = await localInvoicesDb.upsertLocalInvoice({
         sale_order_id: soId,
         invoice_number: invoiceNumber,
-        amount_total: orderTotal,
+        amount_total: orderTotalRounded,
         amount_untaxed: amountUntaxed,
         amount_tax: amountTax,
         state: 'posted',
@@ -325,7 +392,8 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       console.log('===============================================');
       // TODO: Credit Journal ID is not being set
       await localPaymentsDb.replacePaymentsForInvoice(invoiceId, paymentRows);
-      navigation.replace('InvoiceScreen', {
+
+      const invoiceParams = {
         saleOrderId,
         total,
         invoiceNumber,
@@ -338,7 +406,18 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         cashAmount: paymentSplit.cash,
         checkNumber: needsCheck ? (checkNumber || undefined) : undefined,
         customerSignatureDataUrl: customerSignatureDataUrl ?? undefined,
-      });
+      };
+
+      // Reset stack so InvoiceScreen is always on top (visible even if user had navigated away).
+      navigation.dispatch(
+        CommonActions.reset({
+          index: 1,
+          routes: [
+            { name: 'MainTabs' },
+            { name: 'InvoiceScreen', params: invoiceParams },
+          ],
+        })
+      );
     } catch (err) {
       console.error(err);
       Alert.alert(
@@ -798,6 +877,21 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         </View>
       )}
 
+      {!journalsLoading && selectedPaymentMethods.includes(PAYMENT_CASH) && cashAmountNum > 0 && vehicleJournalIds.cashJournalId == null && (
+        <Text style={[styles.cashHint, { color: hasSyncedOnce ? colors.error : colors.textSecondary, marginBottom: spacing.sm }]}>
+          {hasSyncedOnce
+            ? 'Vehicle Cash journal is not configured. Please contact admin.'
+            : 'Sync when online to load Cash payment option.'}
+        </Text>
+      )}
+      {!journalsLoading && selectedPaymentMethods.includes(PAYMENT_CHECK) && checkAmountNum > 0 && vehicleJournalIds.chequeJournalId == null && (
+        <Text style={[styles.cashHint, { color: hasSyncedOnce ? colors.error : colors.textSecondary, marginBottom: spacing.sm }]}>
+          {hasSyncedOnce
+            ? 'Vehicle Cheque journal is not configured. Please contact admin.'
+            : 'Sync when online to load Cheque payment option.'}
+        </Text>
+      )}
+
       {selectedPaymentMethods.includes(PAYMENT_CHECK) && (
         <>
           <Text style={styles.sectionLabel}>Choose Bank <Text style={styles.requiredStar}>*</Text></Text>
@@ -900,7 +994,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           <Text style={styles.sectionLabel}>Credit</Text>
           <View style={styles.creditAmountWrap}>
             <Ionicons name="wallet-outline" size={24} color={colors.textSecondary} />
-            <Text style={styles.creditAmountHint}> After Cash & Cheque </Text>
+            <Text style={styles.creditAmountHint}>Remaining after Cash & Cheque</Text>
             <Text style={styles.creditAmountText}> Rs. {formatAmount(creditAmountNum)}</Text>
           </View>
         </>
