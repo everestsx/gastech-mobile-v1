@@ -7,6 +7,7 @@ import {
   ScrollView,
   Switch,
   Alert,
+  Modal,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
@@ -14,8 +15,9 @@ import { getUserSession } from '../services/sync.service';
 import { spacing, borderRadius } from '../constants/theme';
 
 export default function SettingsScreen({ navigation }) {
-  const { colors, theme, setTheme, showCreateSalesOrder, showReturnOrder, setShowCreateSalesOrder, setShowReturnOrder } = useTheme();
+  const { colors, theme, setTheme, showCreateSalesOrder, showReturnOrder, setShowCreateSalesOrder, setShowReturnOrder, syncPeriod, setSyncPeriod } = useTheme();
   const [user, setUser] = useState(null);
+  const [showSyncPeriodModal, setShowSyncPeriodModal] = useState(false);
 
   useEffect(() => {
     getUserSession().then(setUser);
@@ -104,6 +106,69 @@ export default function SettingsScreen({ navigation }) {
           thumbColor={showReturnOrder ? colors.primary : colors.surface}
         />
       </View>
+
+      {/* Sync Settings */}
+      {sectionTitle('Sync')}
+      <TouchableOpacity
+        style={[styles.row, { backgroundColor: colors.surface, borderColor: colors.border }]}
+        onPress={() => setShowSyncPeriodModal(true)}
+        activeOpacity={0.8}
+      >
+        <View style={styles.rowLeft}>
+          <Ionicons name="cloud-download-outline" size={22} color={colors.primary} />
+          <Text style={[styles.rowLabel, { color: colors.text }]}>Sync Period</Text>
+        </View>
+        <View style={styles.rowRight}>
+          <Text style={[styles.syncPeriodValue, { color: colors.textSecondary }]}>
+            {syncPeriod === '7days' ? 'Last 7 days' : syncPeriod === '30days' ? 'Last 30 days' : syncPeriod === '90days' ? 'Last 90 days' : syncPeriod === '1year' ? 'Last year' : 'All time'}
+          </Text>
+          <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} style={{ marginLeft: 8 }} />
+        </View>
+      </TouchableOpacity>
+
+      <Modal
+        visible={showSyncPeriodModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowSyncPeriodModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { backgroundColor: colors.surface }]}>
+            <Text style={[styles.modalTitle, { color: colors.text }]}>Select Sync Period</Text>
+            {[
+              { label: 'Last 7 days', value: '7days' },
+              { label: 'Last 30 days', value: '30days' },
+              { label: 'Last 90 days', value: '90days' },
+              { label: 'Last 1 year', value: '1year' },
+              { label: 'All time', value: 'all' },
+            ].map((option) => (
+              <TouchableOpacity
+                key={option.value}
+                style={[styles.modalOption, { borderBottomColor: colors.border }]}
+                onPress={async () => {
+                  await setSyncPeriod(option.value);
+                  setShowSyncPeriodModal(false);
+                }}
+                activeOpacity={0.6}
+              >
+                <Text style={[styles.modalOptionText, { color: colors.text }]}>
+                  {option.label}
+                </Text>
+                {syncPeriod === option.value && (
+                  <Ionicons name="checkmark-circle" size={20} color={colors.primary} />
+                )}
+              </TouchableOpacity>
+            ))}
+            <TouchableOpacity
+              style={[styles.modalCloseBtn, { backgroundColor: colors.primaryLight }]}
+              onPress={() => setShowSyncPeriodModal(false)}
+              activeOpacity={0.7}
+            >
+              <Text style={[styles.modalCloseBtnText, { color: colors.primary }]}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
 
       {/* Common app features (placeholders) */}
       {sectionTitle('App')}
@@ -208,5 +273,56 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   menuRowText: { fontSize: 16, fontWeight: '500', flex: 1 },
+  rowRight: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  syncPeriodValue: { fontSize: 14, fontWeight: '500', marginRight: 8 },
   bottomSpacer: { height: 40 },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalContent: {
+    borderRadius: borderRadius.lg,
+    minWidth: 280,
+    maxWidth: '80%',
+    paddingVertical: spacing.lg,
+    elevation: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.md,
+    borderBottomWidth: 0,
+  },
+  modalOption: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    borderBottomWidth: 1,
+  },
+  modalOptionText: {
+    fontSize: 16,
+    fontWeight: '500',
+    flex: 1,
+  },
+  modalCloseBtn: {
+    marginHorizontal: spacing.lg,
+    marginTop: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: borderRadius.md,
+    alignItems: 'center',
+  },
+  modalCloseBtnText: {
+    fontSize: 16,
+    fontWeight: '600',
+  },
 });
+

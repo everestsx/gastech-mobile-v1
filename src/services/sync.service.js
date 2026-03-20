@@ -858,6 +858,40 @@ export function getSyncIntervalMinutes() {
   return SYNC_INTERVAL_MS / 60000;
 }
 
+// Helper function to compute cutoff date based on sync period setting
+async function getCutoffDateForSync() {
+  try {
+    const AsyncStorage = require('@react-native-async-storage/async-storage').default;
+    const syncPeriod = await AsyncStorage.getItem('@gastech_sync_period') || '7days';
+
+    const now = new Date();
+    let cutoffDate = new Date(now);
+
+    switch (syncPeriod) {
+      case '7days':
+        cutoffDate.setDate(now.getDate() - 7);
+        break;
+      case '30days':
+        cutoffDate.setDate(now.getDate() - 30);
+        break;
+      case '90days':
+        cutoffDate.setDate(now.getDate() - 90);
+        break;
+      case '1year':
+        cutoffDate.setFullYear(now.getFullYear() - 1);
+        break;
+      case 'all':
+      default:
+        return null; // No date filter for 'all'
+    }
+
+    // Return ISO date string (YYYY-MM-DD)
+    return cutoffDate.toISOString().split('T')[0];
+  } catch (_) {
+    return null; // Default to no filter on error
+  }
+}
+
 // ---------- Sync: pull from Odoo and store in SQLite ----------
 
 export async function runSync() {
@@ -881,12 +915,18 @@ export async function runSync() {
     // Vehicle-scoped sync: when user has vehicleId and is not admin, sync only that vehicle's data.
     const vehicleId = (user?.vehicleId != null && user?.isAdmin !== true) ? user.vehicleId : null;
 
+    // Get sync period cutoff date
+    const dateFromFilter = await getCutoffDateForSync();
+    if (dateFromFilter) {
+      log('sync', `using date filter: ${dateFromFilter}`);
+    }
+
     let orders = [];
     let customers = [];
 
     if (vehicleId != null) {
       log('fetch', `orders for vehicle ${vehicleId} only`);
-      orders = await getSaleOrdersByVehicle(vehicleId).catch((e) => {
+      orders = await getSaleOrdersByVehicle(vehicleId, dateFromFilter).catch((e) => {
         logWarn('fetch orders by vehicle', e);
         return [];
       });
@@ -903,7 +943,7 @@ export async function runSync() {
           logWarn('fetch customers', e);
           return [];
         }),
-        getAllSaleOrders().catch((e) => {
+        getAllSaleOrders(dateFromFilter).catch((e) => {
           logWarn('fetch orders', e);
           return [];
         }),

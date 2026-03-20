@@ -28,33 +28,43 @@ const SALE_ORDER_FIELDS = [
 
 /**
  * Get ALL sale orders (with invoice_status for list display)
+ * @param {string} dateFrom - Optional ISO date string (e.g., "2024-03-13") to filter orders from this date onward
  */
-export const getAllSaleOrders = () =>
-  callOdoo(
+export const getAllSaleOrders = (dateFrom) => {
+  const domain = dateFrom ? [['date_order', '>=', dateFrom]] : [];
+  return callOdoo(
     "sale.order",
     "search_read",
-    [[]],
+    [domain],
     {
       fields: SALE_ORDER_FIELDS,
       order: "date_order desc",
       limit: 500,
     }
   );
+};
 
 /**
  * Get sale orders for a specific vehicle only (for vehicle-scoped sync).
+ * @param {number} vehicleId - The vehicle ID to filter by
+ * @param {string} dateFrom - Optional ISO date string (e.g., "2024-03-13") to filter orders from this date onward
  */
-export const getSaleOrdersByVehicle = (vehicleId) =>
-  callOdoo(
+export const getSaleOrdersByVehicle = (vehicleId, dateFrom) => {
+  const domain = [['vehicle_id', '=', vehicleId]];
+  if (dateFrom) {
+    domain.push(['date_order', '>=', dateFrom]);
+  }
+  return callOdoo(
     "sale.order",
     "search_read",
-    [[["vehicle_id", "=", vehicleId]]],
+    [domain],
     {
       fields: SALE_ORDER_FIELDS,
       order: "date_order desc",
       limit: 500,
     }
   );
+};
 
 /**
  * Get total quantity (sum of product_uom_qty) per order for given order line ids.
