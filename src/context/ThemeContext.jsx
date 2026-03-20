@@ -6,6 +6,7 @@ const STORAGE_KEYS = {
   THEME: '@gastech_theme',
   SHOW_CREATE_SALES_ORDER: '@gastech_show_create_sales_order',
   SHOW_RETURN_ORDER: '@gastech_show_return_order',
+  SYNC_PERIOD: '@gastech_sync_period',
 };
 
 const ThemeContext = createContext(null);
@@ -22,6 +23,7 @@ export function ThemeProvider({ children }) {
   const [theme, setThemeState] = useState('light');
   const [showCreateSalesOrder, setShowCreateSalesOrderState] = useState(true);
   const [showReturnOrder, setShowReturnOrderState] = useState(true);
+  const [syncPeriod, setSyncPeriodState] = useState('7days');
   const [ready, setReady] = useState(false);
 
   const colors = getThemeColors(theme);
@@ -29,14 +31,16 @@ export function ThemeProvider({ children }) {
 
   const loadSettings = useCallback(async () => {
     try {
-      const [savedTheme, createOrder, returnOrder] = await Promise.all([
+      const [savedTheme, createOrder, returnOrder, savedSyncPeriod] = await Promise.all([
         AsyncStorage.getItem(STORAGE_KEYS.THEME),
         AsyncStorage.getItem(STORAGE_KEYS.SHOW_CREATE_SALES_ORDER),
         AsyncStorage.getItem(STORAGE_KEYS.SHOW_RETURN_ORDER),
+        AsyncStorage.getItem(STORAGE_KEYS.SYNC_PERIOD),
       ]);
       if (savedTheme === 'dark' || savedTheme === 'light') setThemeState(savedTheme);
       if (createOrder !== null) setShowCreateSalesOrderState(createOrder === 'true');
       if (returnOrder !== null) setShowReturnOrderState(returnOrder === 'true');
+      if (savedSyncPeriod && ['7days', '30days', '90days', '1year', 'all'].includes(savedSyncPeriod)) setSyncPeriodState(savedSyncPeriod);
     } catch (_) {}
     setReady(true);
   }, []);
@@ -67,6 +71,13 @@ export function ThemeProvider({ children }) {
     } catch (_) {}
   }, []);
 
+  const setSyncPeriod = useCallback(async (value) => {
+    setSyncPeriodState(value);
+    try {
+      await AsyncStorage.setItem(STORAGE_KEYS.SYNC_PERIOD, String(value));
+    } catch (_) {}
+  }, []);
+
   const value = {
     theme,
     setTheme,
@@ -76,6 +87,8 @@ export function ThemeProvider({ children }) {
     showReturnOrder,
     setShowCreateSalesOrder,
     setShowReturnOrder,
+    syncPeriod,
+    setSyncPeriod,
     ready,
   };
 

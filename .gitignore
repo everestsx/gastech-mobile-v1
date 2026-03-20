@@ -39,3 +39,12 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# local IDE/project files
+.idea/
+
+# local DB snapshots
+.localdb/
+gastech.db
+*.db-shm
+*.db-wal
