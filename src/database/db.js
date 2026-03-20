@@ -140,7 +140,8 @@ async function runMigrations(db) {
       action_type TEXT NOT NULL,
       payload TEXT NOT NULL,
       created_at TEXT NOT NULL,
-      synced_at TEXT
+      synced_at TEXT,
+      is_uploaded INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS sync_log (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -155,6 +156,7 @@ async function runMigrations(db) {
     CREATE INDEX IF NOT EXISTS idx_stock_moves_picking_id ON stock_moves(picking_id);
     CREATE INDEX IF NOT EXISTS idx_stock_move_lines_move_id ON stock_move_lines(move_id);
     CREATE INDEX IF NOT EXISTS idx_sync_queue_synced ON sync_queue(synced_at);
+    CREATE INDEX IF NOT EXISTS idx_sync_queue_uploaded ON sync_queue(is_uploaded);
   `);
     await db.runAsync('PRAGMA user_version = 1');
   }
@@ -394,6 +396,22 @@ async function runMigrations(db) {
     }
     await db.runAsync('PRAGMA user_version = 14');
   }
+
+  // Migration 15: Explicit uploaded flag on sync_queue for stronger idempotency
+  if (current < 15) {
+    try {
+      const info = await db.getAllAsync('PRAGMA table_info(sync_queue)');
+      const names = new Set((info || []).map((c) => c.name));
+      if (!names.has('is_uploaded')) {
+        await db.runAsync('ALTER TABLE sync_queue ADD COLUMN is_uploaded INTEGER NOT NULL DEFAULT 0');
+      }
+      await db.runAsync('UPDATE sync_queue SET is_uploaded = 1 WHERE synced_at IS NOT NULL');
+      await db.runAsync('CREATE INDEX IF NOT EXISTS idx_sync_queue_uploaded ON sync_queue(is_uploaded)');
+    } catch (e) {
+      console.warn('[Migration] sync_queue is_uploaded:', e);
+    }
+    await db.runAsync('PRAGMA user_version = 15');
+  }
 }
 
 /**
@@ -404,7 +422,7 @@ function enqueue(fn) {
     const db = await getRawDb();
     return fn(db);
   });
-  _queue = p.catch(() => {}); // keep queue moving so next op can run
+  _queue = p.catch(() => { }); // keep queue moving so next op can run
   return p;
 }
 
@@ -449,5 +467,5 @@ export async function resetDatabaseAndRecreate() {
   }
   try {
     if (typeof db.deleteAsync === 'function') await db.deleteAsync();
-  } catch (_) {}
+  } catch (_) { }
 }

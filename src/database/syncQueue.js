@@ -15,7 +15,7 @@ export const ACTION_INVENTORY_UPDATE = 'inventory_update';
 export async function enqueue(actionType, payload) {
   const db = await getDb();
   const result = await db.runAsync(
-    'INSERT INTO sync_queue (action_type, payload, created_at) VALUES (?, ?, ?)',
+    'INSERT INTO sync_queue (action_type, payload, created_at, is_uploaded) VALUES (?, ?, ?, 0)',
     [empty(actionType) || 'unknown', typeof payload === 'string' ? payload : JSON.stringify(payload ?? {}), iso()]
   );
   return result.lastInsertRowId;
@@ -24,7 +24,7 @@ export async function enqueue(actionType, payload) {
 export async function getPending() {
   const db = await getDb();
   const rows = await db.getAllAsync(
-    'SELECT id, action_type, payload, created_at FROM sync_queue WHERE synced_at IS NULL ORDER BY id ASC'
+    'SELECT id, action_type, payload, created_at FROM sync_queue WHERE COALESCE(is_uploaded, 0) = 0 AND synced_at IS NULL ORDER BY id ASC'
   );
   return (rows || []).map((row) => ({
     id: row.id,
@@ -36,13 +36,13 @@ export async function getPending() {
 
 export async function markSynced(id) {
   const db = await getDb();
-  await db.runAsync('UPDATE sync_queue SET synced_at = ? WHERE id = ?', [iso(), num(id)]);
+  await db.runAsync('UPDATE sync_queue SET synced_at = ?, is_uploaded = 1 WHERE id = ?', [iso(), num(id)]);
 }
 
 export async function getPendingCount() {
   const db = await getDb();
   const row = await db.getFirstAsync(
-    'SELECT COUNT(*) as c FROM sync_queue WHERE synced_at IS NULL'
+    'SELECT COUNT(*) as c FROM sync_queue WHERE COALESCE(is_uploaded, 0) = 0 AND synced_at IS NULL'
   );
   return row?.c ?? 0;
 }
@@ -51,7 +51,7 @@ export async function getPendingCount() {
 export async function getSyncedPaymentSaleOrderIds() {
   const db = await getDb();
   const rows = await db.getAllAsync(
-    `SELECT payload FROM sync_queue WHERE action_type = ? AND synced_at IS NOT NULL`,
+    `SELECT payload FROM sync_queue WHERE action_type = ? AND (COALESCE(is_uploaded, 0) = 1 OR synced_at IS NOT NULL)`,
     [ACTION_PAYMENT]
   );
   const ids = new Set();
@@ -67,7 +67,7 @@ export async function getSyncedPaymentSaleOrderIds() {
 export async function getPendingSaleOrderIds() {
   const db = await getDb();
   const rows = await db.getAllAsync(
-    `SELECT action_type, payload FROM sync_queue WHERE synced_at IS NULL`
+    `SELECT action_type, payload FROM sync_queue WHERE COALESCE(is_uploaded, 0) = 0 AND synced_at IS NULL`
   );
   const ids = new Set();
   for (const row of rows || []) {
@@ -83,7 +83,7 @@ export async function getPendingPaymentItemBySaleOrderId(saleOrderId) {
   if (saleOrderId == null) return null;
   const db = await getDb();
   const rows = await db.getAllAsync(
-    `SELECT id, payload FROM sync_queue WHERE action_type = ? AND synced_at IS NULL`,
+    `SELECT id, payload FROM sync_queue WHERE action_type = ? AND COALESCE(is_uploaded, 0) = 0 AND synced_at IS NULL`,
     [ACTION_PAYMENT]
   );
   const soId = Number(saleOrderId);
@@ -100,7 +100,7 @@ export async function getPendingDeliveryItemBySaleOrderId(saleOrderId) {
   if (saleOrderId == null) return null;
   const db = await getDb();
   const rows = await db.getAllAsync(
-    `SELECT id, payload FROM sync_queue WHERE action_type = ? AND synced_at IS NULL`,
+    `SELECT id, payload FROM sync_queue WHERE action_type = ? AND COALESCE(is_uploaded, 0) = 0 AND synced_at IS NULL`,
     [ACTION_DELIVERY]
   );
   const soId = Number(saleOrderId);
@@ -124,7 +124,7 @@ export async function getPaymentSyncedAtForSaleOrder(saleOrderId) {
   if (saleOrderId == null) return null;
   const db = await getDb();
   const rows = await db.getAllAsync(
-    `SELECT payload, synced_at FROM sync_queue WHERE action_type = ? AND synced_at IS NOT NULL`,
+    `SELECT payload, synced_at FROM sync_queue WHERE action_type = ? AND (COALESCE(is_uploaded, 0) = 1 OR synced_at IS NOT NULL)`,
     [ACTION_PAYMENT]
   );
   const soId = Number(saleOrderId);
