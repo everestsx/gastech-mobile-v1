@@ -21,6 +21,9 @@ const MIMETYPES = {
 const MIN_BASE64_LENGTH = 50;
 const DATA_URL_PREFIX_REGEX = /^data:image\/[a-z0-9+.-]+;base64,/i;
 
+/** Plain text only — Odoo chatter often escapes HTML and shows tags literally. */
+const SEP = '────────────────────────────────────────';
+
 function stripDataUrlPrefixOnly(s) {
   if (s == null || typeof s !== 'string') return '';
   const trimmed = s.trim();
@@ -73,42 +76,55 @@ export async function imageFileToBase64String(fileSystem, filePathOrUri) {
  * @param {Array<{ type: string, amount: number, checkNumber?: string, bankName?: string }>} [opts.payments] - Per-method entries for partial payments
  */
 export function buildPaymentProofMessageBody(opts = {}) {
-  const { paymentMethod, chequeBankName, checkNumber, payments } = opts;
-  const lines = [
-    '💳 Payment received via Mobile App',
-    '─────────────────────────────',
-  ];
+  const {
+    paymentMethod,
+    chequeBankName,
+    checkNumber,
+    payments,
+    hasProof = false,
+  } = opts;
+
+  const amountToStr = (v) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n.toFixed(2) : String(v ?? '');
+  };
+
+  const lines = [];
+  lines.push('Payment received via Mobile App');
+  lines.push(SEP);
 
   if (Array.isArray(payments) && payments.length > 0) {
     for (const pm of payments) {
-      const amount = Number(pm.amount);
-      const amountStr = Number.isFinite(amount) ? amount.toFixed(2) : String(pm.amount ?? '');
       if (pm.type === 'cash') {
-        lines.push(`Cash: ${amountStr}`);
+        lines.push(`Cash Amount: ${amountToStr(pm.amount)}`);
+        lines.push('');
       } else if (pm.type === 'check' || pm.type === 'cheque') {
-        lines.push(`Cheque: ${amountStr}`);
-        if (pm.bankName) lines.push(`  Bank: ${pm.bankName}`);
-        if (pm.checkNumber) lines.push(`  Cheque #: ${pm.checkNumber}`);
+        lines.push(`Cheque Amount: ${amountToStr(pm.amount)}`);
+        if (pm.bankName) lines.push(`Bank: ${pm.bankName}`);
+        if (pm.checkNumber) lines.push(`Cheque #: ${pm.checkNumber}`);
+        lines.push('');
       } else if (pm.type === 'credit') {
-        lines.push(`Credit: ${amountStr}`);
+        lines.push(`Credit: ${amountToStr(pm.amount)}`);
+        lines.push('');
       }
     }
+    if (lines[lines.length - 1] === '') lines.pop();
   } else {
     if (paymentMethod === 'cash') {
-      lines.push('Method: Cash');
-      lines.push('Payment received: Cash.');
+      lines.push('Cash payment recorded.');
     } else if (paymentMethod === 'credit') {
-      lines.push('Method: Credit');
-      lines.push('Payment received: Credit.');
+      lines.push('Credit payment recorded.');
     } else if (paymentMethod === 'cheque' || chequeBankName || checkNumber) {
-      lines.push('Method: Cheque');
+      // Legacy path (non-partial) should include payments; this fallback is best-effort.
+      lines.push('Cheque payment recorded.');
       if (chequeBankName) lines.push(`Bank: ${chequeBankName}`);
       if (checkNumber) lines.push(`Cheque #: ${checkNumber}`);
     }
   }
 
-  lines.push('─────────────────────────────');
-  lines.push('Payment proof photo(s) attached.');
+  lines.push(SEP);
+  lines.push(hasProof ? 'Payment proof photo(s) attached.' : 'Payment recorded (no photo proof attached).');
+
   return lines.join('\n');
 }
 
@@ -117,23 +133,27 @@ export function buildPaymentProofMessageBody(opts = {}) {
  * @param {{ type: string, amount: number, checkNumber?: string, bankName?: string }} pm
  * @returns {string}
  */
-export function buildSinglePaymentMessageBody(pm) {
+export function buildSinglePaymentMessageBody(pm, { hasProof = false } = {}) {
   const amount = Number(pm.amount);
   const amountStr = Number.isFinite(amount) ? amount.toFixed(2) : String(pm.amount ?? '');
-  const lines = ['💳 Payment received via Mobile App', '─────────────────────────────'];
+
+  const lines = [];
+  lines.push('Payment received via Mobile App');
+  lines.push(SEP);
+
   if (pm.type === 'cash') {
-    lines.push(`Method: Cash`);
-    lines.push(`Amount: ${amountStr}`);
+    lines.push(`Cash Amount: ${amountStr}`);
   } else if (pm.type === 'check' || pm.type === 'cheque') {
-    lines.push(`Method: Cheque`);
-    lines.push(`Amount: ${amountStr}`);
+    lines.push(`Cheque Amount: ${amountStr}`);
     if (pm.bankName) lines.push(`Bank: ${pm.bankName}`);
     if (pm.checkNumber) lines.push(`Cheque #: ${pm.checkNumber}`);
   } else if (pm.type === 'credit') {
-    lines.push(`Method: Credit`);
-    lines.push(`Amount: ${amountStr}`);
+    lines.push(`Credit: ${amountStr}`);
   }
-  lines.push('─────────────────────────────');
+
+  lines.push(SEP);
+  lines.push(hasProof ? 'Payment proof photo(s) attached.' : 'Payment recorded (no photo proof attached).');
+
   return lines.join('\n');
 }
 

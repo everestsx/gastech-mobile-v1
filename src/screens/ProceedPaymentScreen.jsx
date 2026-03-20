@@ -44,6 +44,9 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   const { setHideSyncIndicator } = useSync();
   const { saleOrderId, total, subtotal, tax, deliveryDone, deliveryPayload } = route.params || {};
   const orderTotal = Number(total) || 0;
+  // Keep payments consistent with 2-decimal currency precision to avoid tiny float remainders
+  // turning a fully-paid order into a "partial" one.
+  const orderTotalRounded = Math.round(orderTotal * 100) / 100;
   const orderSubtotal = subtotal != null ? Number(subtotal) : null;
   const orderTax = tax != null ? Number(tax) : null;
   const [loading, setLoading] = useState(false);
@@ -97,19 +100,24 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   const cashAmountNum = useMemo(() => {
     if (!selectedPaymentMethods.includes(PAYMENT_CASH)) return 0;
     const n = parseFloat(String(cashAmount).replace(/,/g, ''));
-    return Number.isFinite(n) && n >= 0 ? n : 0;
+    if (!Number.isFinite(n) || n < 0) return 0;
+    return Math.round(n * 100) / 100;
   }, [cashAmount, selectedPaymentMethods]);
 
   const checkAmountNum = useMemo(() => {
     if (!selectedPaymentMethods.includes(PAYMENT_CHECK)) return 0;
     const n = parseFloat(String(checkAmount).replace(/,/g, ''));
-    return Number.isFinite(n) && n >= 0 ? n : 0;
+    if (!Number.isFinite(n) || n < 0) return 0;
+    return Math.round(n * 100) / 100;
   }, [checkAmount, selectedPaymentMethods]);
 
-  const creditAmountNum = useMemo(
-    () => Math.max(0, orderTotal - cashAmountNum - checkAmountNum),
-    [orderTotal, cashAmountNum, checkAmountNum]
-  );
+  const creditAmountNum = useMemo(() => {
+    const remaining = orderTotalRounded - cashAmountNum - checkAmountNum;
+    const r = Math.round(remaining * 100) / 100;
+    // Treat tiny rounding remainder as 0 so full cash+cheque becomes fully paid.
+    if (r <= 0.01) return 0;
+    return Math.max(0, r);
+  }, [orderTotalRounded, cashAmountNum, checkAmountNum]);
   const totalEntered = cashAmountNum + checkAmountNum + creditAmountNum;
   const hasAnyPayment = totalEntered > 0;
 
@@ -127,7 +135,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   // Cash/Cheque require vehicle-specific journal IDs (cash_journal_id / check_journal_id)
   const paymentComplete =
     hasAnyPayment &&
-    totalEntered >= orderTotal &&
+    totalEntered >= orderTotalRounded &&
     (cashAmountNum <= 0 || vehicleJournalIds.cashJournalId != null) &&
     (checkAmountNum <= 0 || (vehicleJournalIds.chequeJournalId != null && checkNumberTrimmed !== '' && selectedLocalBankId != null)) &&
     (creditAmountNum <= 0 || true);
@@ -189,10 +197,10 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   // Auto-select Credit when cash + check is less than total (remaining goes to credit)
   useEffect(() => {
     const cashPlusCheck = cashAmountNum + checkAmountNum;
-    if (cashPlusCheck < orderTotal && creditAmountNum > 0 && !selectedPaymentMethods.includes(PAYMENT_CREDIT)) {
+    if (cashPlusCheck < orderTotalRounded && creditAmountNum > 0 && !selectedPaymentMethods.includes(PAYMENT_CREDIT)) {
       setSelectedPaymentMethods((prev) => [...prev, PAYMENT_CREDIT]);
     }
-  }, [cashAmountNum, checkAmountNum, orderTotal, creditAmountNum, selectedPaymentMethods]);
+  }, [cashAmountNum, checkAmountNum, orderTotalRounded, creditAmountNum, selectedPaymentMethods]);
 
   // Auto-deselect Credit when cash + check covers full total (credit amount becomes 0)
   useEffect(() => {
@@ -216,12 +224,12 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       }
       const cashNum = parseFloat(String(cashAmount).replace(/,/g, '')) || 0;
       const checkNum = parseFloat(String(checkAmount).replace(/,/g, '')) || 0;
-      const remaining = Math.max(0, orderTotal - (method === PAYMENT_CASH ? checkNum : cashNum));
+      const remaining = Math.max(0, orderTotalRounded - (method === PAYMENT_CASH ? checkNum : cashNum));
       if (method === PAYMENT_CASH) setCashAmount(remaining > 0 ? formatAmount(remaining) : '');
       if (method === PAYMENT_CHECK) setCheckAmount(remaining > 0 ? formatAmount(remaining) : '');
       return [...prev, method];
     });
-  }, [orderTotal, cashAmount, checkAmount]);
+  }, [orderTotalRounded, cashAmount, checkAmount]);
 
   const handleProceed = async (customerSignatureDataUrl = null) => {
     if (!canProceed) return;
@@ -248,13 +256,19 @@ export default function ProceedPaymentScreen({ route, navigation }) {
 
       // Enqueue delivery and mark picking done only after payment is completed (not when user only tapped "Proceed to Payment").
       if (deliveryPayload && deliveryPayload.saleOrderId != null) {
-        await syncQueueDb.enqueue(syncQueueDb.ACTION_DELIVERY, deliveryPayload);
+        const existingDelivery = await syncQueueDb.getPendingDeliveryItemBySaleOrderId(soId);
+        if (existingDelivery) {
+          await syncQueueDb.updateQueueItemPayload(existingDelivery.id, deliveryPayload);
+        } else {
+          await syncQueueDb.enqueue(syncQueueDb.ACTION_DELIVERY, deliveryPayload);
+        }
         if (deliveryPayload.pickingId != null) {
           await stockPickingsDb.updatePickingStateLocal(Number(deliveryPayload.pickingId), 'done');
         }
       } else if (deliveryDone) {
         // Fallback: no deliveryPayload (e.g. older flow); ensure delivery is queued and picking marked done.
-        const { picking } = await getDeliveryDataFromDB(saleOrderId);
+        const existingDelivery = await syncQueueDb.getPendingDeliveryItemBySaleOrderId(soId);
+        const { picking } = existingDelivery ? { picking: null } : await getDeliveryDataFromDB(saleOrderId);
         if (picking?.id != null) {
           await stockPickingsDb.updatePickingStateLocal(Number(picking.id), 'done');
           await syncQueueDb.enqueue(syncQueueDb.ACTION_DELIVERY, {
@@ -335,7 +349,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         partnerId,
         orderName,
         invoiceNumber,
-        total: orderTotal,
+        total: orderTotalRounded,
         payments,
         paymentDate: paymentDateStr,
         chequeBankName: needsCheck ? selectedLocalBank?.name : undefined,
@@ -359,7 +373,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       const invoiceId = await localInvoicesDb.upsertLocalInvoice({
         sale_order_id: soId,
         invoice_number: invoiceNumber,
-        amount_total: orderTotal,
+        amount_total: orderTotalRounded,
         amount_untaxed: amountUntaxed,
         amount_tax: amountTax,
         state: 'posted',

@@ -560,6 +560,7 @@ async function processSyncQueue() {
     createAdvancePaymentWizard,
     createInvoicesFromWizard,
     postInvoice,
+    getPaymentsByInvoiceIds,
     createPaymentRegisterWizard,
     executePaymentRegister,
   } = await import('./invoice.service');
@@ -608,7 +609,10 @@ async function processSyncQueue() {
         for (const u of moveUpdates) {
           await updateStockMoveQty(u.moveId, u.product_uom_qty);
         }
-        if (deliveryLines.length > 0) {
+        // Avoid creating new stock.move.line records when we already have moveLine updates.
+        // Creating new move lines can duplicate delivered qty (especially on retries / partial payments).
+        const hasMoveLineUpdates = Array.isArray(moveLineUpdates) && moveLineUpdates.length > 0;
+        if (!hasMoveLineUpdates && deliveryLines.length > 0) {
           // Step 2 & 3 — Create stock.move.line (qty_done) for each product (offline 4-step flow)
           for (const line of deliveryLines) {
             const moveId = line.moveId ?? line.move_id;
@@ -778,6 +782,16 @@ async function processSyncQueue() {
               } catch (resolveErr) {
                 logWarn('queue payment resolve journals', resolveErr);
               }
+              // Idempotency for partial payments:
+              // When chatter upload fails, sync may retry and (for partial invoices) invoice.payment_state stays 'partial'.
+              // We must avoid registering the same cash/cheque payments again.
+              const round2 = (n) => Math.round(Number(n) * 100) / 100;
+              const existingPayments = await getPaymentsByInvoiceIds([resId]).catch(() => []);
+              const existingPaymentKeys = (existingPayments || []).map((ep) => ({
+                journalId: Array.isArray(ep.journal_id) ? ep.journal_id[0] : ep.journal_id,
+                amount: round2(ep.amount),
+              }));
+
               const dateStr = p.paymentDate || new Date().toISOString().slice(0, 10);
               for (const pm of payments) {
                 if (pm.type === 'credit') continue;
@@ -785,14 +799,24 @@ async function processSyncQueue() {
                 const journalId = (pm.journalId != null && Number.isFinite(Number(pm.journalId)))
                   ? Number(pm.journalId)
                   : (pm.type === 'cash' ? resolvedCashId : pm.type === 'check' ? resolvedChequeId : null);
-                if (!amount || journalId == null) {
+                const desiredAmount = round2(amount);
+                if (!desiredAmount || journalId == null) {
                   logWarn('queue payment', new Error(`${pm.type === 'cash' ? 'Cash' : 'Cheque'} journal id not found. Skipping amount ${amount}`));
                   continue;
                 }
+
+                const alreadyHasPayment = existingPaymentKeys.some(
+                  (ep) => ep.journalId != null && ep.journalId === journalId && Math.abs(ep.amount - desiredAmount) <= 0.01
+                );
+
+                if (alreadyHasPayment) {
+                  log('queue', `payment SO ${saleOrderId}: ${pm.type === 'check' ? 'cheque' : 'cash'} already reconciled — skip register amount=${desiredAmount} journal_id=${journalId}`);
+                  continue;
+                }
                 try {
-                  log('queue', `payment SO ${saleOrderId}: Step 5 — payment register create amount=${amount} journal_id=${journalId} active_ids=[${resId}]`);
+                  log('queue', `payment SO ${saleOrderId}: Step 5 — payment register create amount=${desiredAmount} journal_id=${journalId} active_ids=[${resId}]`);
                   const registerWizardId = await createPaymentRegisterWizard(resId, {
-                    amount,
+                    amount: desiredAmount,
                     journalId,
                     paymentDate: dateStr,
                   });
@@ -858,14 +882,7 @@ async function processSyncQueue() {
         bankName: pm.type === 'check' ? chequeBankName : undefined,
       }));
       const isPartialPayment = paymentsForMessage.length > 1;
-      const chatterBody = isPartialPayment
-        ? null
-        : buildPaymentProofMessageBody({
-            paymentMethod,
-            chequeBankName: paymentMethod === 'cheque' ? chequeBankName : undefined,
-            checkNumber: paymentMethod === 'cheque' ? (chequeNumber || undefined) : undefined,
-            payments: paymentsForMessage,
-          });
+      const chatterBody = null; // built later with hasProof (after attachmentIds are computed)
 
       if (invoiceBlockFailedNoItemsToInvoice) {
         log('queue', `payment item ${item.id} NOT marked synced (invoice not created — deliver first, then sync again for cheque/credit)`);
@@ -919,13 +936,7 @@ async function processSyncQueue() {
         continue;
       }
 
-      if (!isPartialPayment && attachmentIds.length === 0) {
-        // Single payment method and no new proof images — skip message_post to avoid duplicate chatter.
-        log('queue', `payment SO ${soId}: skip message_post (no new proof attachments)`);
-        await syncQueueDb.markSynced(Number(item.id));
-        alreadySyncedSaleOrderIds.add(soId);
-        continue;
-      }
+      const hasProof = attachmentIds.length > 0;
 
       // API 2: Post message(s) to sale order chatter. Partial payment = one message per payment type.
       try {
@@ -933,8 +944,8 @@ async function processSyncQueue() {
           log('queue', `message_post API (sale.order) SO ${soId} — ${paymentsForMessage.length} separate messages (Cash/Cheque/Credit)`);
           for (let i = 0; i < paymentsForMessage.length; i++) {
             const pm = paymentsForMessage[i];
-            const body = buildSinglePaymentMessageBody(pm);
             const attachToThisMessage = i === 0 ? attachmentIds : [];
+            const body = buildSinglePaymentMessageBody(pm, { hasProof: attachToThisMessage.length > 0 });
             await postPaymentProofToChatterWithAttachmentIds(soId, { body, attachmentIds: attachToThisMessage });
             if (attachToThisMessage.length > 0) {
               const pendingById = new Map((pendingAttachments || []).map((a) => [Number(a.id), a]));
@@ -952,11 +963,16 @@ async function processSyncQueue() {
             }
           }
         } else {
-          if (attachmentIds.length === 0) {
-            log('queue', `payment SO ${soId}: skip message_post (no proof attachments)`);
-          } else {
-            log('queue', `message_post API (sale.order) SO ${soId} attachment_ids=[${attachmentIds.join(', ')}]`);
-            await postPaymentProofToChatterWithAttachmentIds(soId, { body: chatterBody, attachmentIds });
+          log('queue', `message_post API (sale.order) SO ${soId} attachment_ids=[${attachmentIds.join(', ')}]`);
+          const body = buildPaymentProofMessageBody({
+            paymentMethod,
+            chequeBankName: paymentMethod === 'cheque' ? chequeBankName : undefined,
+            checkNumber: paymentMethod === 'cheque' ? (chequeNumber || undefined) : undefined,
+            payments: paymentsForMessage,
+            hasProof,
+          });
+          await postPaymentProofToChatterWithAttachmentIds(soId, { body, attachmentIds });
+          if (attachmentIds.length > 0) {
             const pendingById = new Map((pendingAttachments || []).map((a) => [Number(a.id), a]));
             for (const id of syncedAttachmentIds) {
               const idNum = Number(id);
