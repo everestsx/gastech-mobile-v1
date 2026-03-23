@@ -8,6 +8,7 @@ const STORAGE_KEYS = {
   SHOW_RETURN_ORDER: '@gastech_show_return_order',
   SYNC_PERIOD: '@gastech_sync_period',
   SYNC_DATE_FIELD: '@gastech_sync_date_field',
+  SYNC_INTERVAL: '@gastech_sync_interval',
 };
 
 const ThemeContext = createContext(null);
@@ -25,7 +26,8 @@ export function ThemeProvider({ children }) {
   const [showCreateSalesOrder, setShowCreateSalesOrderState] = useState(true);
   const [showReturnOrder, setShowReturnOrderState] = useState(true);
   const [syncPeriod, setSyncPeriodState] = useState('7days');
-  const [syncDateField, setSyncDateFieldState] = useState('creation_date');
+  const [syncDateField, setSyncDateFieldState] = useState('delivery_date');
+  const [syncInterval, setSyncIntervalState] = useState('10min');
   const [ready, setReady] = useState(false);
 
   const colors = getThemeColors(theme);
@@ -33,12 +35,13 @@ export function ThemeProvider({ children }) {
 
   const loadSettings = useCallback(async () => {
     try {
-      const [savedTheme, createOrder, returnOrder, savedSyncPeriod, savedSyncDateField] = await Promise.all([
+      const [savedTheme, createOrder, returnOrder, savedSyncPeriod, savedSyncDateField, savedSyncInterval] = await Promise.all([
         AsyncStorage.getItem(STORAGE_KEYS.THEME),
         AsyncStorage.getItem(STORAGE_KEYS.SHOW_CREATE_SALES_ORDER),
         AsyncStorage.getItem(STORAGE_KEYS.SHOW_RETURN_ORDER),
         AsyncStorage.getItem(STORAGE_KEYS.SYNC_PERIOD),
         AsyncStorage.getItem(STORAGE_KEYS.SYNC_DATE_FIELD),
+        AsyncStorage.getItem(STORAGE_KEYS.SYNC_INTERVAL),
       ]);
       if (savedTheme === 'dark' || savedTheme === 'light') setThemeState(savedTheme);
       if (createOrder !== null) setShowCreateSalesOrderState(createOrder === 'true');
@@ -46,6 +49,9 @@ export function ThemeProvider({ children }) {
       if (savedSyncPeriod && ['7days', '30days', '90days', '1year', 'all'].includes(savedSyncPeriod)) setSyncPeriodState(savedSyncPeriod);
       if (savedSyncDateField && ['creation_date', 'delivery_date'].includes(savedSyncDateField)) {
         setSyncDateFieldState(savedSyncDateField);
+      }
+      if (savedSyncInterval && ['1min', '10min', '30min', '1hour', '2hour'].includes(savedSyncInterval)) {
+        setSyncIntervalState(savedSyncInterval);
       }
     } catch (_) {}
     setReady(true);
@@ -92,6 +98,14 @@ export function ThemeProvider({ children }) {
     } catch (_) {}
   }, []);
 
+  const setSyncInterval = useCallback(async (value) => {
+    const next = ['1min', '10min', '30min', '1hour', '2hour'].includes(value) ? value : '10min';
+    setSyncIntervalState(next);
+    try {
+      await AsyncStorage.setItem(STORAGE_KEYS.SYNC_INTERVAL, next);
+    } catch (_) {}
+  }, []);
+
   const value = {
     theme,
     setTheme,
@@ -105,6 +119,8 @@ export function ThemeProvider({ children }) {
     setSyncPeriod,
     syncDateField,
     setSyncDateField,
+    syncInterval,
+    setSyncInterval,
     ready,
   };
 

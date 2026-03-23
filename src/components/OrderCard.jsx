@@ -12,7 +12,10 @@ function formatOrderDate(dateOrder) {
   const str = String(dateOrder);
   const datePart = str.split('T')[0] || str;
   try {
-    const d = new Date(datePart);
+    // Parse date-only values at local noon to avoid UTC day-shift (e.g., 24 showing as 23).
+    const d = /^\d{4}-\d{2}-\d{2}$/.test(datePart)
+      ? new Date(`${datePart}T12:00:00`)
+      : new Date(str);
     if (Number.isNaN(d.getTime())) return datePart;
     return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
   } catch {

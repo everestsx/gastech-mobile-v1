@@ -32,6 +32,7 @@ import {
   getOrderLinesByOrderIdsFromDB,
 } from '../services/sync.service';
 import * as localPaymentsDb from '../database/localPayments.js';
+import * as syncQueueDb from '../database/syncQueue.js';
 import {
   getActiveCommissionPlan,
   calculateCommissionProgressByProducts,
@@ -89,6 +90,11 @@ export default function DashboardScreen({ navigation }) {
   const [commissionPlan, setCommissionPlan] = useState(null);
   const [commissionLoading, setCommissionLoading] = useState(false);
   const [todayOrderLines, setTodayOrderLines] = useState([]);
+  const [orderSyncStats, setOrderSyncStats] = useState({
+    pendingOrders: 0,
+    localCompleted: 0,
+    syncedCompleted: 0,
+  });
 
   // Collection cards: tap to expand one (shows full amount), tap again to collapse
   const [expandedCollectionCard, setExpandedCollectionCard] = useState(null);
@@ -124,12 +130,50 @@ export default function DashboardScreen({ navigation }) {
       setPickingsBySaleId(pickings || []);
       setTodayOrderLines(orderLines || []);
       setPaymentSplitsByOrderId(splits || {});
+
+      // Dashboard top indicators:
+      // 1) Pending orders (not yet invoiced/completed)
+      // 2) Completed locally while offline (payment queued, not uploaded yet)
+      // 3) Completed and synced to backend (payment uploaded)
+      const [pendingQueueItems, syncedPaymentOrderIds] = await Promise.all([
+        syncQueueDb.getPending(),
+        syncQueueDb.getSyncedPaymentSaleOrderIds(),
+      ]);
+
+      const pendingPaymentOrderIds = new Set(
+        (pendingQueueItems || [])
+          .filter((item) => item.action_type === syncQueueDb.ACTION_PAYMENT)
+          .map((item) => Number(item.payload?.saleOrderId ?? item.payload?.sale_order_id))
+          .filter((id) => Number.isFinite(id))
+      );
+
+      let pendingOrders = 0;
+      let localCompleted = 0;
+      let syncedCompleted = 0;
+
+      for (const order of todayOrders) {
+        const orderId = Number(order?.id);
+        const isCompleted = String(order?.invoice_status || '').toLowerCase() === 'invoiced';
+        const isPendingUpload = pendingPaymentOrderIds.has(orderId);
+        const isSyncedUpload = syncedPaymentOrderIds.has(orderId) && !isPendingUpload;
+
+        if (!isCompleted) pendingOrders += 1;
+        else if (isPendingUpload) localCompleted += 1;
+        else if (isSyncedUpload) syncedCompleted += 1;
+      }
+
+      setOrderSyncStats({
+        pendingOrders,
+        localCompleted,
+        syncedCompleted,
+      });
     } catch (_) {
       setOrders([]);
       setLineTotalsByOrder({});
       setPickingsBySaleId([]);
       setTodayOrderLines([]);
       setPaymentSplitsByOrderId({});
+      setOrderSyncStats({ pendingOrders: 0, localCompleted: 0, syncedCompleted: 0 });
     } finally {
       setLoading(false);
     }
@@ -481,6 +525,27 @@ export default function DashboardScreen({ navigation }) {
           color: 'rgba(255,255,255,0.95)',
           marginTop: 2,
         },
+        syncCountersRow: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'flex-end',
+          gap: 10,
+          marginTop: 8,
+        },
+        syncCounterPill: {
+          minWidth: 28,
+          height: 28,
+          borderRadius: 14,
+          alignItems: 'center',
+          justifyContent: 'center',
+          borderWidth: 1,
+          paddingHorizontal: 8,
+        },
+        syncCounterText: {
+          fontSize: 12,
+          fontWeight: '800',
+          color: '#fff',
+        },
         dailyVisitBtnTop: {
           backgroundColor: 'transparent',
           borderRadius: borderRadius.md,
@@ -740,6 +805,41 @@ export default function DashboardScreen({ navigation }) {
                       })
                     : '—'}
                 </Text>
+                <View style={styles.syncCountersRow}>
+                  <View
+                    style={[
+                      styles.syncCounterPill,
+                      {
+                        backgroundColor: 'rgba(71, 85, 105, 0.65)',
+                        borderColor: 'rgba(148, 163, 184, 0.85)',
+                      },
+                    ]}
+                  >
+                    <Text style={styles.syncCounterText}>{orderSyncStats.pendingOrders}</Text>
+                  </View>
+                  <View
+                    style={[
+                      styles.syncCounterPill,
+                      {
+                        backgroundColor: `${colors.warning ?? '#d97706'}CC`,
+                        borderColor: `${colors.warning ?? '#d97706'}F0`,
+                      },
+                    ]}
+                  >
+                    <Text style={styles.syncCounterText}>{orderSyncStats.localCompleted}</Text>
+                  </View>
+                  <View
+                    style={[
+                      styles.syncCounterPill,
+                      {
+                        backgroundColor: `${colors.success ?? '#22c55e'}CC`,
+                        borderColor: `${colors.success ?? '#22c55e'}F0`,
+                      },
+                    ]}
+                  >
+                    <Text style={styles.syncCounterText}>{orderSyncStats.syncedCompleted}</Text>
+                  </View>
+                </View>
               </View>
             </View>
             {/* //Daily Visit Keep Commented for now */}

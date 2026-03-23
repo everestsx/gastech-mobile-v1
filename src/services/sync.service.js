@@ -49,9 +49,16 @@ const KEYS = {
   LAST_VEHICLE_ID: '@gastech_last_vehicle_id',
   SYNC_PERIOD: '@gastech_sync_period',
   SYNC_DATE_FIELD: '@gastech_sync_date_field',
+  SYNC_INTERVAL: '@gastech_sync_interval',
 };
 
-const SYNC_INTERVAL_MS = 600 * 1000; // 1 minute auto-sync when online
+const SYNC_INTERVAL_MAP = {
+  '1min': 1 * 60 * 1000,
+  '10min': 10 * 60 * 1000,
+  '30min': 30 * 60 * 1000,
+  '1hour': 60 * 60 * 1000,
+  '2hour': 2 * 60 * 60 * 1000,
+};
 
 const LOG_TAG = '[Sync]';
 
@@ -1138,12 +1145,12 @@ export async function deleteLocalData() {
   log('deleteLocalData', 'all synced data cleared');
 }
 
-export function getSyncIntervalMs() {
-  return SYNC_INTERVAL_MS;
+export function getSyncIntervalMs(syncInterval = '10min') {
+  return SYNC_INTERVAL_MAP[syncInterval] ?? SYNC_INTERVAL_MAP['10min'];
 }
 
-export function getSyncIntervalMinutes() {
-  return SYNC_INTERVAL_MS / 60000;
+export function getSyncIntervalMinutes(syncInterval = '10min') {
+  return getSyncIntervalMs(syncInterval) / 60000;
 }
 
 // Helper function to compute cutoff date based on sync period setting
@@ -1186,7 +1193,7 @@ async function getSyncDateFieldSetting() {
     const raw = await storage.getItem(KEYS.SYNC_DATE_FIELD);
     return raw === 'delivery_date' ? 'delivery_date' : 'creation_date';
   } catch (_) {
-    return 'creation_date';
+    return 'delivery_date';
   }
 }
 

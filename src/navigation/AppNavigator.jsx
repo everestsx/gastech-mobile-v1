@@ -215,12 +215,13 @@ export default function AppNavigator() {
   const appStateRef = useRef(AppState.currentState);
   const insets = useSafeAreaInsets();
   const { isSyncing, syncResult, syncErrorMessage, hideSyncIndicator } = useSync();
+  const { syncInterval } = useTheme();
   const showSyncResultModal = syncResult === 'success' || syncResult === 'failed';
   const hideSyncRef = useRef(hideSyncIndicator);
   hideSyncRef.current = hideSyncIndicator;
 
   useEffect(() => {
-    const intervalMs = getSyncIntervalMs();
+    const intervalMs = getSyncIntervalMs(syncInterval);
     const run = () => {
       if (hideSyncRef.current) return;
       runSync().catch(() => {});
@@ -248,7 +249,7 @@ export default function AppNavigator() {
       sub?.remove?.();
       if (syncIntervalRef.current) clearInterval(syncIntervalRef.current);
     };
-  }, []);
+  }, [syncInterval]);
 
   return (
     <NavigationContainer>

@@ -54,8 +54,8 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   const [journals, setJournals] = useState([]);
   const [vehicleJournalIds, setVehicleJournalIds] = useState({ cashJournalId: null, chequeJournalId: null });
   const [hasSyncedOnce, setHasSyncedOnce] = useState(false);
-  const [selectedPaymentMethods, setSelectedPaymentMethods] = useState([]);
-  const [cashAmount, setCashAmount] = useState('');
+  const [selectedPaymentMethods, setSelectedPaymentMethods] = useState([PAYMENT_CASH]);
+  const [cashAmount, setCashAmount] = useState(() => (orderTotalRounded > 0 ? formatAmount(orderTotalRounded) : ''));
   const [checkAmount, setCheckAmount] = useState('');
   const [selectedJournalId, setSelectedJournalId] = useState(null);
   const [checkNumber, setCheckNumber] = useState('');
@@ -120,6 +120,15 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   }, [orderTotalRounded, cashAmountNum, checkAmountNum]);
   const totalEntered = cashAmountNum + checkAmountNum + creditAmountNum;
   const hasAnyPayment = totalEntered > 0;
+  const remainingCreditLabel = useMemo(() => {
+    if (creditAmountNum <= 0) return 'Credit Amount';
+    const hasCash = cashAmountNum > 0;
+    const hasCheque = checkAmountNum > 0;
+    if (hasCash && hasCheque) return 'Remaining after Cash & Cheque';
+    if (hasCash) return 'Remaining after Cash';
+    if (hasCheque) return 'Remaining after Cheque';
+    return 'Credit Amount';
+  }, [creditAmountNum, cashAmountNum, checkAmountNum]);
 
   const checkNumberTrimmed = useMemo(() => (checkNumber != null ? String(checkNumber).trim() : ''), [checkNumber]);
   const selectedLocalBank = useMemo(
@@ -213,6 +222,10 @@ export default function ProceedPaymentScreen({ route, navigation }) {
     setSelectedPaymentMethods((prev) => {
       const has = prev.includes(method);
       if (has) {
+        if (method === PAYMENT_CREDIT) {
+          // Keep at least one default payment tab selected.
+          return [PAYMENT_CASH];
+        }
         const next = prev.filter((m) => m !== method);
         if (method === PAYMENT_CASH) setCashAmount('');
         if (method === PAYMENT_CHECK) {
@@ -220,14 +233,24 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           setSelectedLocalBankId(null);
           setCheckNumber('');
         }
-        return next;
+        return next.length ? next : [PAYMENT_CASH];
+      }
+
+      if (method === PAYMENT_CREDIT) {
+        // Credit means full credit payment (no partial cash/cheque).
+        setCashAmount('');
+        setCheckAmount('');
+        setSelectedLocalBankId(null);
+        setCheckNumber('');
+        return [PAYMENT_CREDIT];
       }
       const cashNum = parseFloat(String(cashAmount).replace(/,/g, '')) || 0;
       const checkNum = parseFloat(String(checkAmount).replace(/,/g, '')) || 0;
       const remaining = Math.max(0, orderTotalRounded - (method === PAYMENT_CASH ? checkNum : cashNum));
       if (method === PAYMENT_CASH) setCashAmount(remaining > 0 ? formatAmount(remaining) : '');
       if (method === PAYMENT_CHECK) setCheckAmount(remaining > 0 ? formatAmount(remaining) : '');
-      return [...prev, method];
+      const withoutCredit = prev.filter((m) => m !== PAYMENT_CREDIT);
+      return [...withoutCredit, method];
     });
   }, [orderTotalRounded, cashAmount, checkAmount]);
 
@@ -561,9 +584,10 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           paddingHorizontal: spacing.md,
           marginBottom: spacing.lg,
           opacity: 0.9,
+          gap:spacing.sm
         },
         creditAmountText: { flex: 1, fontSize: 18, fontWeight: '700', color: colors.text },
-        creditAmountHint: { fontSize: 11, color: colors.textSecondary },
+        creditAmountHint: { fontSize: 11, color: colors.textSecondary,textAlign:'right' },
         radioRow: { flexDirection: 'row', gap: spacing.md, marginBottom: spacing.lg },
         radioOption: {
           flex: 1,
@@ -645,6 +669,13 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         changeBankBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 8 },
         changeBankText: { fontSize: 14, fontWeight: '600', color: colors.primary },
         bankList: { marginBottom: spacing.sm },
+        bankListScrollWrap: {
+          maxHeight: 240,
+          borderRadius: borderRadius.md,
+        },
+        bankListScroll: {
+          paddingBottom: 4,
+        },
         bankCard: {
           flexDirection: 'row',
           alignItems: 'center',
@@ -951,27 +982,31 @@ export default function ProceedPaymentScreen({ route, navigation }) {
                 ) : filteredBanks.length === 0 ? (
                   <Text style={styles.noBanksText}>No banks match "{bankSearchQuery}"</Text>
                 ) : (
-                  filteredBanks.map((bank) => (
-                    <TouchableOpacity
-                      key={bank.id}
-                      style={[
-                        styles.bankCard,
-                        selectedLocalBankId === bank.id && { borderColor: colors.primary, backgroundColor: colors.primary + '15' },
-                      ]}
-                      onPress={() => setSelectedLocalBankId(bank.id)}
-                      activeOpacity={0.8}
-                    >
-                      <View style={styles.bankIconWrap}>
-                        {bank.logo != null ? (
-                          <Image source={bank.logo} style={styles.bankLogo} resizeMode="contain" />
-                        ) : (
-                          <Ionicons name={bank.icon || 'business-outline'} size={24} color={colors.primary} />
-                        )}
-                      </View>
-                      <Text style={styles.bankName} numberOfLines={1}>{bank.name}</Text>
-                      {selectedLocalBankId === bank.id && <Ionicons name="checkmark-circle" size={20} color={colors.primary} />}
-                    </TouchableOpacity>
-                  ))
+                  <View style={styles.bankListScrollWrap}>
+                    <ScrollView nestedScrollEnabled showsVerticalScrollIndicator contentContainerStyle={styles.bankListScroll}>
+                      {filteredBanks.map((bank) => (
+                        <TouchableOpacity
+                          key={bank.id}
+                          style={[
+                            styles.bankCard,
+                            selectedLocalBankId === bank.id && { borderColor: colors.primary, backgroundColor: colors.primary + '15' },
+                          ]}
+                          onPress={() => setSelectedLocalBankId(bank.id)}
+                          activeOpacity={0.8}
+                        >
+                          <View style={styles.bankIconWrap}>
+                            {bank.logo != null ? (
+                              <Image source={bank.logo} style={styles.bankLogo} resizeMode="contain" />
+                            ) : (
+                              <Ionicons name={bank.icon || 'business-outline'} size={24} color={colors.primary} />
+                            )}
+                          </View>
+                          <Text style={styles.bankName} numberOfLines={1}>{bank.name}</Text>
+                          {selectedLocalBankId === bank.id && <Ionicons name="checkmark-circle" size={20} color={colors.primary} />}
+                        </TouchableOpacity>
+                      ))}
+                    </ScrollView>
+                  </View>
                 )}
               </View>
               <Text style={[styles.sectionLabel]}>Cheque number <Text style={styles.requiredStar}>*</Text></Text>
@@ -994,7 +1029,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           <Text style={styles.sectionLabel}>Credit</Text>
           <View style={styles.creditAmountWrap}>
             <Ionicons name="wallet-outline" size={24} color={colors.textSecondary} />
-            <Text style={styles.creditAmountHint}>Remaining after Cash & Cheque</Text>
+            <Text style={styles.creditAmountHint}>{remainingCreditLabel}</Text>
             <Text style={styles.creditAmountText}> Rs. {formatAmount(creditAmountNum)}</Text>
           </View>
         </>

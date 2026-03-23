@@ -9,6 +9,7 @@ export const SRI_LANKA_BANKS = [
   { id: 'commercial', name: 'Commercial Bank of Ceylon', icon: 'business-outline', logo: require('../../assets/images/banks/bank_commercial.png') },
   { id: 'hnb', name: 'Hatton National Bank', icon: 'business-outline', logo: require('../../assets/images/banks/bank_hnb.png') },
   { id: 'sampath', name: 'Sampath Bank', icon: 'card-outline', logo: require('../../assets/images/banks/bank_sampath.png') },
+  { id: 'ntb', name: 'Nation Trust Bank', icon: 'card-outline', logo: require('../../assets/images/banks/bank_ntb.png') },
   { id: 'ndb', name: 'National Development Bank', icon: 'trending-up-outline', logo: require('../../assets/images/banks/bank_ndb.png') },
   { id: 'seylan', name: 'Seylan Bank', icon: 'business-outline', logo: require('../../assets/images/banks/bank_seylan.png') },
   { id: 'dfcc', name: 'DFCC Bank', icon: 'business-outline', logo: require('../../assets/images/banks/bank_dfcc.png') },

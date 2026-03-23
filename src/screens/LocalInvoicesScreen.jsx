@@ -14,6 +14,7 @@ import { spacing, borderRadius } from '../constants/theme';
 import { formatAmount } from '../utils/format';
 import { getUserSession } from '../services/sync.service';
 import * as localInvoicesDb from '../database/localInvoices.js';
+import * as localPaymentsDb from '../database/localPayments.js';
 import * as saleOrdersDb from '../database/saleOrders.js';
 import * as syncQueueDb from '../database/syncQueue.js';
 
@@ -32,6 +33,7 @@ export default function LocalInvoicesScreen({ navigation }) {
       const enriched = await Promise.all(
         (list || []).map(async (inv) => {
           const order = await saleOrdersDb.getSaleOrderById(inv.sale_order_id);
+          const split = await localPaymentsDb.getPaymentSplitBySaleOrderId(inv.sale_order_id);
           const partnerName =
             order?.partner_id?.[1] ?? order?.partner_name ?? '—';
           const orderName = order?.name ?? `Order ${inv.sale_order_id}`;
@@ -39,6 +41,15 @@ export default function LocalInvoicesScreen({ navigation }) {
           const syncedAt = await syncQueueDb.getPaymentSyncedAtForSaleOrder(
             inv.sale_order_id
           );
+          const cash = Number(split?.cash) || 0;
+          const cheque = Number(split?.cheque) || 0;
+          const credit = Number(split?.credit) || 0;
+          const parts = [
+            cash > 0 ? `Cash (${formatAmount(cash)})` : null,
+            cheque > 0 ? `Cheque (${formatAmount(cheque)})` : null,
+            credit > 0 ? `Credit (${formatAmount(credit)})` : null,
+          ].filter(Boolean);
+          const paymentModeLabel = parts.length ? parts.join(' • ') : 'Invoiced';
           return {
             ...inv,
             partnerName,
@@ -46,6 +57,8 @@ export default function LocalInvoicesScreen({ navigation }) {
             dateOrder,
             uploadedToOdoo: syncedAt != null,
             syncedAt: syncedAt ?? null,
+            paymentModeLabel,
+            paymentSplit: split || { cash: 0, cheque: 0, credit: 0 },
           };
         })
       );
@@ -134,6 +147,8 @@ export default function LocalInvoicesScreen({ navigation }) {
                 saleOrderId: inv.sale_order_id,
                 total: inv.amount_total,
                 invoiceNumber: inv.invoice_number,
+                paymentType: 'split',
+                paymentSplit: inv.paymentSplit,
               })
             }
           >
@@ -169,7 +184,7 @@ export default function LocalInvoicesScreen({ navigation }) {
                     },
                   ]}
                 >
-                  {inv.uploadedToOdoo ? 'Uploaded to Odoo' : 'Not yet uploaded'}
+                  {inv.uploadedToOdoo ? 'Uploaded' : 'Not yet uploaded'}
                 </Text>
               </View>
             </View>
@@ -193,6 +208,9 @@ export default function LocalInvoicesScreen({ navigation }) {
                 Rs. {formatAmount(inv.amount_total)}
               </Text>
             </View>
+            <Text style={[styles.syncedAt, { color: colors.textSecondary }]}>
+              Payment mode: {inv.paymentModeLabel}
+            </Text>
             {inv.uploadedToOdoo && inv.syncedAt ? (
               <Text style={[styles.syncedAt, { color: colors.textSecondary }]}>
                 Synced {formatDate(inv.syncedAt)}

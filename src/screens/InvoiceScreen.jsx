@@ -19,6 +19,8 @@ import { getSaleOrderDetailsFromDB, runSync } from '../services/sync.service';
 import { getOrAssignInvoiceNumber } from '../utils/invoiceNumber';
 import { getProductDisplayName } from '../utils/productDisplay';
 import { formatAmount } from '../utils/format';
+import * as localPaymentsDb from '../database/localPayments.js';
+import { callOdoo } from '../services/index.service';
 
 /** Currency in invoice section: "Rs" (e.g. "Rs 944.00"). */
 function formatInvoiceCurrency(amount) {
@@ -32,7 +34,21 @@ function safeDisplay(val) {
   return s === '' || s.toLowerCase() === 'false' ? '—' : s;
 }
 
-function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSplit, logoUri, customerSignatureDataUrl, chequeBankName, checkNumber, invoiceNumber, supplierTin = '—', purchaserTin = '—') {
+function buildInvoiceHtml(
+  order,
+  lines,
+  paymentType,
+  selectedBankName,
+  paymentSplit,
+  logoUri,
+  customerSignatureDataUrl,
+  chequeBankName,
+  checkNumber,
+  invoiceNumber,
+  supplierTin = '—',
+  purchaserTin = '—',
+  partyInfo = {}
+) {
   const date = order?.date_order
     ? new Date(order.date_order).toLocaleDateString('en-LK', {
         year: 'numeric',
@@ -40,20 +56,32 @@ function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSp
         day: 'numeric',
       })
     : new Date().toLocaleDateString('en-LK');
-  const customerName = safeDisplay(order?.partner_id?.[1]).replace(/</g, '&lt;');
-  const cityPart = safeDisplay(order?.city);
-  const phonePart = safeDisplay(order?.partner_phone);
-  const customerAddress = [cityPart, phonePart].filter((s) => s !== '—').join(', ').replace(/</g, '&lt;') || '—';
+  const customerName = safeDisplay(partyInfo?.customerName || order?.partner_id?.[1]).replace(/</g, '&lt;');
+  const streetPart = safeDisplay(order?.street || order?.partner_street || order?.partner_address);
+  const cityPart = safeDisplay(partyInfo?.customerCity || order?.city);
+  const phonePart = safeDisplay(partyInfo?.customerPhone || order?.partner_phone);
+  const customerAddress = [safeDisplay(partyInfo?.customerStreet || streetPart), cityPart]
+    .filter((s) => s !== '—')
+    .join(', ')
+    .replace(/</g, '&lt;') || '—';
   const customerPhone = (phonePart !== '—' ? phonePart : '—').replace(/</g, '&lt;');
-  const supplierTinSafe = (supplierTin != null && String(supplierTin).trim()) ? String(supplierTin).trim().replace(/</g, '&lt;') : '—';
-  const purchaserTinSafe = (purchaserTin != null && String(purchaserTin).trim()) ? String(purchaserTin).trim().replace(/</g, '&lt;') : '—';
+  const supplierTinResolved = partyInfo?.supplierTin || supplierTin;
+  const purchaserTinResolved = partyInfo?.customerTin || purchaserTin;
+  const supplierTinSafe = (supplierTinResolved != null && String(supplierTinResolved).trim()) ? String(supplierTinResolved).trim().replace(/</g, '&lt;') : '';
+  const purchaserTinSafe = (purchaserTinResolved != null && String(purchaserTinResolved).trim()) ? String(purchaserTinResolved).trim().replace(/</g, '&lt;') : '';
+  const hasSupplierTin = supplierTinSafe !== '';
+  const hasPurchaserTin = purchaserTinSafe !== '';
+  const supplierName = safeDisplay(partyInfo?.supplierName || 'GasTech').replace(/</g, '&lt;');
+  const supplierPhone = safeDisplay(partyInfo?.supplierPhone || '—').replace(/</g, '&lt;');
+  const supplierAddress = safeDisplay(partyInfo?.supplierAddress || '—').replace(/</g, '&lt;');
+  const chequeAmount = Number(paymentSplit?.check ?? paymentSplit?.cheque ?? 0);
   const invNo = invoiceNumber ?? order?.name ?? '—';
   const paymentLabel =
     paymentType === 'split' && paymentSplit
       ? [
           paymentSplit.cash > 0 && `Cash ${formatInvoiceCurrency(paymentSplit.cash)}`,
-          paymentSplit.check > 0 && `Check ${formatInvoiceCurrency(paymentSplit.check)}`,
-          paymentSplit.credit > 0 && `Credit ${formatInvoiceCurrency(paymentSplit.credit)}`,
+          chequeAmount > 0 && `Check ${formatInvoiceCurrency(chequeAmount)}`,
+          paymentSplit.credit > 0 && `Amount Due ${formatInvoiceCurrency(paymentSplit.credit)}`,
         ].filter(Boolean).join(' • ') || 'Payment'
       : (paymentType === 'bank' || paymentType === 'check') && selectedBankName
         ? `Check: ${selectedBankName}`
@@ -93,8 +121,8 @@ function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSp
   const amountTotal = order?.amount_total ?? (amountUntaxed + amountTax);
 
   const logoImg = logoUri
-    ? `<img src="${logoUri}" alt="GasTech" style="max-width:50mm;height:auto;display:block;margin:0 0 4px 0;" />`
-    : '<h1 style="margin:0 0 4px 0;font-size:12px;font-weight:700;color:#1e5aa8;text-align:left">GasTech</h1>';
+    ? `<img src="${logoUri}" alt="GasTech" style="max-width:40mm;height:auto;display:block;margin:0 auto 2px auto;" />`
+    : '<h1 style="margin:0 0 2px 0;font-size:12px;font-weight:700;color:#1e5aa8;text-align:center">GasTech</h1>';
 
   return `
 <!DOCTYPE html>
@@ -127,11 +155,11 @@ function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSp
       font-size: 11px;
       font-weight: 700;
       text-align: center;
-      margin: 4px 0 6px;
+      margin: 2px 0 4px;
       border: 1px solid #000;
-      padding: 4px 6px;
+      padding: 3px 6px;
     }
-    .two-col { display: flex; gap: 6px; margin-bottom: 6px; line-height: 1.3; }
+    .two-col { display: flex; gap: 6px; margin-bottom: 4px; line-height: 1.2; }
     .col { flex: 1; min-width: 0; overflow: hidden; }
     .field { margin-bottom: 2px; font-size: 8px; font-weight: 700; word-break: break-word; }
     .label { font-weight: 700; color: #000; }
@@ -172,11 +200,12 @@ function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSp
     td:nth-child(4) { padding-left: 4px; }
     td:nth-child(3), td:nth-child(4), td:nth-child(5), td:nth-child(6), td:nth-child(7) { text-align: right; }
     tr:last-child td { border-bottom: none; }
-    .totals { margin-top: 4px; border-top: 1px solid #000; padding-top: 4px; font-size: 8px; font-weight: 700; }
-    .row { display: flex; justify-content: space-between; margin: 2px 0; align-items: flex-start; gap: 4px; }
-    .total-row { font-weight: 700; font-size: 9px; margin-top: 2px; }
+    .totals { margin-top: 3px; border-top: 1px solid #000; padding-top: 3px; font-size: 7px; font-weight: 700; }
+    .row { display: flex; justify-content: space-between; margin: 1px 0; align-items: flex-start; gap: 4px; }
+    .total-row { font-weight: 700; font-size: 8px; margin-top: 1px; }
     .payment { margin-top: 4px; padding: 4px; background: #e8e8e8; font-size: 8px; font-weight: 700; text-align: center; }
     .footer { margin-top: 6px; font-size: 8px; font-weight: 700; color: #333; text-align: center; }
+    .powered { margin-top: 2px; font-size: 8px; font-weight: 700; font-style: italic; color: #111; text-align: center; }
   </style>
 </head>
 <body>
@@ -185,16 +214,16 @@ function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSp
   <div class="title">Tax Invoice</div>
   <div class="two-col">
     <div class="col">
-      <div class="field"><span class="label">Date of Invoice:</span> ${date}</div>
-      <div class="field"><span class="label">Supplier's TIN:</span> ${supplierTinSafe}</div>
-      <div class="field"><span class="label">Supplier's Name:</span> GasTech</div>
-      <div class="field"><span class="label">Address:</span> —</div>
-      <div class="field"><span class="label">Telephone No:</span> —</div>
+      <div class="field"><span class="label">Tax Invoice No.:</span>  ${invNo}</div>
+      ${hasSupplierTin ? `<div class="field"><span class="label">Suppliers TIN:</span> ${supplierTinSafe}</div>` : ''}
+      <div class="field"><span class="label">Supplier's Name:</span> ${supplierName}</div>
+      <div class="field"><span class="label">Address:</span> ${supplierAddress}</div>
+      <div class="field"><span class="label">Telephone No:</span> ${supplierPhone}</div>
       <div class="field"><span class="label">Date of Delivery:</span> ${date}</div>
     </div>
     <div class="col">
-      <div class="field"><span class="label">Tax Invoice No.:</span> ${invNo}</div>
-      <div class="field"><span class="label">Customer's TIN:</span> ${purchaserTinSafe}</div>
+      <div class="field"><span class="label">Date of Invoice :</span> ${date}</div>
+      ${hasPurchaserTin ? `<div class="field"><span class="label">Customers TIN:</span> ${purchaserTinSafe}</div>` : ''}
       <div class="field"><span class="label">Customer's Name:</span> ${customerName}</div>
       <div class="field"><span class="label">Address:</span> ${customerAddress}</div>
       <div class="field"><span class="label">Telephone No:</span> ${customerPhone}</div>
@@ -208,8 +237,8 @@ function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSp
         <th>Description</th>
         <th>Qty</th>
         <th>Unit Price</th>
-        <th>Amount (Rs)</th>
-        <th>Total (Rs)</th>
+        <th>Amount </th>
+        <th>Total </th>
       </tr>
     </thead>
     <tbody>${rows}</tbody>
@@ -232,6 +261,7 @@ function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSp
   </div>
   ` : ''}
   <div class="footer">GasTech – Your Trusted Business Partner</div>
+  <div class="powered">Powered by everestx.com</div>
   </div>
 </body>
 </html>`;
@@ -266,6 +296,9 @@ export default function InvoiceScreen({ route, navigation }) {
   const [printing, setPrinting] = useState(false);
   const [printResult, setPrintResult] = useState(null);
   const [printError, setPrintError] = useState(null);
+  const [localPaymentSplit, setLocalPaymentSplit] = useState(null);
+  const [localChequeMeta, setLocalChequeMeta] = useState({ bankName: null, checkNumber: null });
+  const [partyInfo, setPartyInfo] = useState({});
 
   const styles = useMemo(
     () =>
@@ -450,10 +483,65 @@ export default function InvoiceScreen({ route, navigation }) {
       const data = await getSaleOrderDetailsFromDB(saleOrderId);
       setOrder(data.order);
       setLines(data.lines ?? []);
+      const split = await localPaymentsDb.getPaymentSplitBySaleOrderId(saleOrderId);
+      setLocalPaymentSplit(split || { cash: 0, cheque: 0, credit: 0 });
+      const paymentRows = await localPaymentsDb.getLocalPaymentsBySaleOrderId(saleOrderId);
+      const chequeRow = [...(paymentRows || [])].reverse().find((p) => String(p.payment_type || '').toLowerCase() === 'cheque');
+      setLocalChequeMeta({
+        bankName: chequeRow?.bank_name || null,
+        checkNumber: chequeRow?.check_number || null,
+      });
+
+      // Fetch supplier(company) and customer details for printed invoice.
+      let nextPartyInfo = {};
+      try {
+        const companyRows = await callOdoo('res.company', 'read', [[1]], {
+          fields: ['name', 'phone', 'vat', 'partner_id'],
+        });
+        const company = Array.isArray(companyRows) ? companyRows[0] : null;
+        const companyPartnerId = Array.isArray(company?.partner_id) ? company.partner_id[0] : null;
+        let companyStreet = '';
+        let companyCity = '';
+        if (companyPartnerId != null) {
+          const companyPartnerRows = await callOdoo('res.partner', 'read', [[companyPartnerId]], {
+            fields: ['street', 'street2', 'city'],
+          });
+          const cp = Array.isArray(companyPartnerRows) ? companyPartnerRows[0] : null;
+          companyStreet = [cp?.street, cp?.street2].filter(Boolean).join(', ');
+          companyCity = cp?.city || '';
+        }
+
+        const customerPartnerId = Array.isArray(data?.order?.partner_id) ? data.order.partner_id[0] : null;
+        let customerRows = [];
+        if (customerPartnerId != null) {
+          customerRows = await callOdoo('res.partner', 'read', [[customerPartnerId]], {
+            fields: ['name', 'phone', 'street', 'street2', 'city', 'vat'],
+          });
+        }
+        const customer = Array.isArray(customerRows) ? customerRows[0] : null;
+
+        nextPartyInfo = {
+          supplierName: company?.name || null,
+          supplierPhone: company?.phone || null,
+          supplierTin: company?.vat || null,
+          supplierAddress: [companyStreet, companyCity].filter(Boolean).join(', ') || null,
+          customerName: customer?.name || null,
+          customerPhone: customer?.phone || null,
+          customerTin: customer?.vat || null,
+          customerStreet: [customer?.street, customer?.street2].filter(Boolean).join(', ') || null,
+          customerCity: customer?.city || null,
+        };
+      } catch (_) {
+        nextPartyInfo = {};
+      }
+      setPartyInfo(nextPartyInfo);
     } catch (_) {
       setOrder(null);
       setLines([]);
       setInvoiceNumber(null);
+      setLocalPaymentSplit(null);
+      setLocalChequeMeta({ bankName: null, checkNumber: null });
+      setPartyInfo({});
     } finally {
       setLoading(false);
     }
@@ -474,7 +562,24 @@ export default function InvoiceScreen({ route, navigation }) {
     setPrintResult(null);
     setPrintError(null);
     try {
-      const html = buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSplit, logoUri, customerSignatureDataUrl, chequeBankName, checkNumber, invoiceNumber, supplierTin, purchaserTin);
+      const effectiveSplitForPrint = (paymentType === 'split' && paymentSplit) ? paymentSplit : (localPaymentSplit || paymentSplit);
+      const resolvedChequeBankName = chequeBankName || selectedBankName || localChequeMeta.bankName || null;
+      const resolvedChequeNumber = checkNumber || localChequeMeta.checkNumber || null;
+      const html = buildInvoiceHtml(
+        order,
+        lines,
+        paymentType,
+        selectedBankName,
+        effectiveSplitForPrint,
+        logoUri,
+        customerSignatureDataUrl,
+        resolvedChequeBankName,
+        resolvedChequeNumber,
+        invoiceNumber,
+        supplierTin,
+        purchaserTin,
+        partyInfo
+      );
       await Print.printAsync({ html });
       setPrintResult('success');
     } catch (err) {
@@ -486,7 +591,7 @@ export default function InvoiceScreen({ route, navigation }) {
       setHideSyncIndicator(false);
       runSync().catch((e) => console.warn('[InvoiceScreen] sync after print', e?.message ?? e));
     }
-  }, [order, lines, invoiceNumber, paymentType, selectedBankName, paymentSplit, logoUri, customerSignatureDataUrl, chequeBankName, checkNumber, supplierTin, purchaserTin]);
+  }, [order, lines, invoiceNumber, paymentType, selectedBankName, paymentSplit, localPaymentSplit, logoUri, customerSignatureDataUrl, chequeBankName, checkNumber, localChequeMeta.bankName, localChequeMeta.checkNumber, supplierTin, purchaserTin, partyInfo]);
 
   const goToHome = useCallback(() => {
     navigation.navigate('MainTabs', { screen: 'Dashboard' });
@@ -515,12 +620,17 @@ export default function InvoiceScreen({ route, navigation }) {
     : computedTax;
   const displayTotal = order?.amount_total ?? total ?? (displaySubtotal + displayTax);
 
+  const effectivePaymentSplit = (paymentType === 'split' && paymentSplit)
+    ? paymentSplit
+    : localPaymentSplit;
+
   const paymentLabel =
-    paymentType === 'split' && paymentSplit
+    (paymentType === 'split' && effectivePaymentSplit)
       ? [
-          paymentSplit.cash > 0 && `Cash ${formatInvoiceCurrency(paymentSplit.cash)}`,
-          paymentSplit.check > 0 && `Cheque ${formatInvoiceCurrency(paymentSplit.check)}`,
-          paymentSplit.credit > 0 && `Credit ${formatInvoiceCurrency(paymentSplit.credit)}`,
+          effectivePaymentSplit.cash > 0 && `Cash ${formatInvoiceCurrency(effectivePaymentSplit.cash)}`,
+          (effectivePaymentSplit.check > 0 || effectivePaymentSplit.cheque > 0) &&
+            `Cheque ${formatInvoiceCurrency(effectivePaymentSplit.check || effectivePaymentSplit.cheque || 0)}`,
+          effectivePaymentSplit.credit > 0 && `Credit ${formatInvoiceCurrency(effectivePaymentSplit.credit)}`,
         ].filter(Boolean).join(' • ') || 'Payment'
       : (paymentType === 'bank' || paymentType === 'check') && selectedBankName
         ? `Check: ${selectedBankName}`
@@ -528,7 +638,7 @@ export default function InvoiceScreen({ route, navigation }) {
           ? `Credit: ${selectedBankName}`
           : (paymentType != null || selectedBankName != null || paymentSplit != null) ? 'Cash' : 'Invoiced';
 
-  const hasCreditPayment = (paymentSplit?.credit ?? 0) > 0 || paymentType === 'credit';
+  const hasCreditPayment = (effectivePaymentSplit?.credit ?? 0) > 0 || paymentType === 'credit';
 
   if (loading) {
     return (
@@ -584,13 +694,12 @@ export default function InvoiceScreen({ route, navigation }) {
             <Text style={[styles.th, styles.thNo]}>No</Text>
             <Text style={[styles.th, styles.thProduct]}>Product</Text>
             <Text style={[styles.th, styles.thQty]}>Qty</Text>
-            <Text style={[styles.th, styles.thTax]}>Tax</Text>
+            <Text style={[styles.th, styles.thTax]}>Unit Price</Text>
             <Text style={[styles.th, styles.thTotal]}>Total</Text>
           </View>
           {(lines || []).map((line, index) => {
-            const lineSubtotal = Number(line.price_subtotal) || 0;
             const lineTotal = Number(line.price_total) || 0;
-            const lineTax = lineTotal - lineSubtotal;
+            const lineUnitPrice = Number(line.price_unit) || 0;
             return (
               <View
                 key={line.id}
@@ -601,7 +710,7 @@ export default function InvoiceScreen({ route, navigation }) {
                   {getProductDisplayName(line.product_id?.[1] ?? '—')}
                 </Text>
                 <Text style={[styles.td, styles.tdQty]}>{line.product_uom_qty}</Text>
-                <Text style={[styles.td, styles.tdTax]}>{formatAmount(lineTax)}</Text>
+                <Text style={[styles.td, styles.tdTax]}>{formatAmount(lineUnitPrice)}</Text>
                 <Text style={[styles.td, styles.tdTotal]}>
                   {formatAmount(lineTotal)}
                 </Text>
@@ -618,7 +727,7 @@ export default function InvoiceScreen({ route, navigation }) {
             </Text>
           </View>
           <View style={styles.totalsRow}>
-            <Text style={styles.totalsLabel}>Tax</Text>
+            <Text style={styles.totalsLabel}>VAT</Text>
             <Text style={styles.totalsValue}>
               {formatInvoiceCurrency(displayTax)}
             </Text>

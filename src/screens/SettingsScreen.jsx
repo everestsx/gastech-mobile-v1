@@ -27,10 +27,13 @@ export default function SettingsScreen({ navigation }) {
     setSyncPeriod,
     syncDateField,
     setSyncDateField,
+    syncInterval,
+    setSyncInterval,
   } = useTheme();
   const [user, setUser] = useState(null);
   const [showSyncPeriodModal, setShowSyncPeriodModal] = useState(false);
   const [showSyncDateFieldModal, setShowSyncDateFieldModal] = useState(false);
+  const [showSyncIntervalModal, setShowSyncIntervalModal] = useState(false);
 
   useEffect(() => {
     getUserSession().then(setUser);
@@ -141,6 +144,31 @@ export default function SettingsScreen({ navigation }) {
 
       <TouchableOpacity
         style={[styles.row, { backgroundColor: colors.surface, borderColor: colors.border }]}
+        onPress={() => setShowSyncIntervalModal(true)}
+        activeOpacity={0.8}
+      >
+        <View style={styles.rowLeft}>
+          <Ionicons name="time-outline" size={22} color={colors.primary} />
+          <Text style={[styles.rowLabel, { color: colors.text }]}>Sync Time</Text>
+        </View>
+        <View style={styles.rowRight}>
+          <Text style={[styles.syncPeriodValue, { color: colors.textSecondary }]}>
+            {syncInterval === '10min'
+              ? '10 minutes'
+              : syncInterval === '30min'
+                ? '30 minutes'
+                : syncInterval === '1hour'
+                  ? '1 hour'
+                  : syncInterval === '2hour'
+                    ? '2 hours'
+                    : '1 minute'}
+          </Text>
+          <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} style={{ marginLeft: 8 }} />
+        </View>
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={[styles.row, { backgroundColor: colors.surface, borderColor: colors.border }]}
         onPress={() => setShowSyncDateFieldModal(true)}
         activeOpacity={0.8}
       >
@@ -192,6 +220,50 @@ export default function SettingsScreen({ navigation }) {
             <TouchableOpacity
               style={[styles.modalCloseBtn, { backgroundColor: colors.primaryLight }]}
               onPress={() => setShowSyncPeriodModal(false)}
+              activeOpacity={0.7}
+            >
+              <Text style={[styles.modalCloseBtnText, { color: colors.primary }]}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={showSyncIntervalModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowSyncIntervalModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { backgroundColor: colors.surface }]}>
+            <Text style={[styles.modalTitle, { color: colors.text }]}>Select Sync Time</Text>
+            {[
+              { label: '1 minute', value: '1min' },
+              { label: '10 minutes', value: '10min' },
+              { label: '30 minutes', value: '30min' },
+              { label: '1 hour', value: '1hour' },
+              { label: '2 hours', value: '2hour' },
+            ].map((option) => (
+              <TouchableOpacity
+                key={option.value}
+                style={[styles.modalOption, { borderBottomColor: colors.border }]}
+                onPress={async () => {
+                  await setSyncInterval(option.value);
+                  setShowSyncIntervalModal(false);
+                }}
+                activeOpacity={0.6}
+              >
+                <Text style={[styles.modalOptionText, { color: colors.text }]}>
+                  {option.label}
+                </Text>
+                {syncInterval === option.value && (
+                  <Ionicons name="checkmark-circle" size={20} color={colors.primary} />
+                )}
+              </TouchableOpacity>
+            ))}
+            <TouchableOpacity
+              style={[styles.modalCloseBtn, { backgroundColor: colors.primaryLight }]}
+              onPress={() => setShowSyncIntervalModal(false)}
               activeOpacity={0.7}
             >
               <Text style={[styles.modalCloseBtnText, { color: colors.primary }]}>Close</Text>

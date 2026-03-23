@@ -31,7 +31,10 @@ const TAB_CREDIT = 'credit';
 const TAB_ALL = 'all';
 
 function formatDate(d) {
-  return d.toISOString().split('T')[0];
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 function isToday(d) {
@@ -71,7 +74,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
   const [loading, setLoading] = useState(true);
   const [selectedDate, setSelectedDate] = useState(() => new Date());
   const [showPicker, setShowPicker] = useState(false);
-  const [activeTab, setActiveTab] = useState(TAB_CASH);
+  const [activeTab, setActiveTab] = useState(TAB_ALL);
 
   /** All delivered orders (with or without payment). Cash/Cheque/Credit tabs filter by payment_type. */
   const deliveredOrders = useMemo(
@@ -391,6 +394,19 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.tabsScroll}
         >
+           <TouchableOpacity
+            style={[styles.tab, activeTab === TAB_ALL && styles.tabActive]}
+            onPress={() => setActiveTab(TAB_ALL)}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="list-outline" size={18} color={activeTab === TAB_ALL ? '#fff' : colors.text} />
+            <Text style={[styles.tabText, activeTab === TAB_ALL && styles.tabTextActive]}>All</Text>
+            <View style={[styles.tabBadge, activeTab === TAB_ALL && styles.tabBadgeActive]}>
+              <Text style={[styles.tabBadgeText, activeTab === TAB_ALL && styles.tabBadgeTextActive]}>
+                {tabCounts[TAB_ALL]}
+              </Text>
+            </View>
+          </TouchableOpacity>
           <TouchableOpacity
             style={[styles.tab, activeTab === TAB_CASH && styles.tabActive]}
             onPress={() => setActiveTab(TAB_CASH)}
@@ -429,20 +445,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
                 {tabCounts[TAB_CREDIT]}
               </Text>
             </View>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.tab, activeTab === TAB_ALL && styles.tabActive]}
-            onPress={() => setActiveTab(TAB_ALL)}
-            activeOpacity={0.8}
-          >
-            <Ionicons name="list-outline" size={18} color={activeTab === TAB_ALL ? '#fff' : colors.text} />
-            <Text style={[styles.tabText, activeTab === TAB_ALL && styles.tabTextActive]}>All</Text>
-            <View style={[styles.tabBadge, activeTab === TAB_ALL && styles.tabBadgeActive]}>
-              <Text style={[styles.tabBadgeText, activeTab === TAB_ALL && styles.tabBadgeTextActive]}>
-                {tabCounts[TAB_ALL]}
-              </Text>
-            </View>
-          </TouchableOpacity>
+          </TouchableOpacity>   
         </ScrollView>
       </View>
 
