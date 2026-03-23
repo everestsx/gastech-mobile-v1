@@ -68,6 +68,7 @@ export async function upsertSaleOrders(rows, options = {}) {
           empty(partner.name),
           empty(r.state),
           empty(r.date_order),
+          empty(r.commitment_date),
           num(r.amount_total),
           num(r.amount_untaxed),
           num(r.amount_tax),
@@ -84,13 +85,13 @@ export async function upsertSaleOrders(rows, options = {}) {
         try {
           await tx.runAsync(
             `INSERT INTO sale_orders (
-              id, name, partner_id, partner_name, state, date_order,
+              id, name, partner_id, partner_name, state, date_order, commitment_date,
               amount_total, amount_untaxed, amount_tax, invoice_status, order_line,
               route_id, route_name, vehicle_id, vehicle_name, updated_at, payload, payment_type
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
               name=excluded.name, partner_id=excluded.partner_id, partner_name=excluded.partner_name,
-              state=excluded.state, date_order=excluded.date_order,
+              state=excluded.state, date_order=excluded.date_order, commitment_date=excluded.commitment_date,
               amount_total=excluded.amount_total, amount_untaxed=excluded.amount_untaxed, amount_tax=excluded.amount_tax,
               invoice_status=excluded.invoice_status, order_line=excluded.order_line,
               route_id=excluded.route_id, route_name=excluded.route_name,
@@ -115,35 +116,37 @@ export async function upsertSaleOrders(rows, options = {}) {
 /**
  * @param {number | null} [vehicleId] - When set, return only sale orders for this vehicle.
  */
-export async function getAllSaleOrders(vehicleId = null) {
+export async function getAllSaleOrders(vehicleId = null, sortField = 'date_order') {
   const op = 'getAllSaleOrders';
-  logQuery(op, `vehicleId=${vehicleId ?? 'null'}`);
+  const orderColumn = sortField === 'commitment_date' ? 'commitment_date' : 'date_order';
+  logQuery(op, `vehicleId=${vehicleId ?? 'null'} sortField=${orderColumn}`);
   const db = await getDb();
   const sql =
     vehicleId != null
-      ? `SELECT * FROM sale_orders WHERE vehicle_id = ? ORDER BY date_order DESC LIMIT 500`
-      : `SELECT * FROM sale_orders ORDER BY date_order DESC LIMIT 500`;
+      ? `SELECT * FROM sale_orders WHERE vehicle_id = ? ORDER BY ${orderColumn} DESC, id DESC LIMIT 500`
+      : `SELECT * FROM sale_orders ORDER BY ${orderColumn} DESC, id DESC LIMIT 500`;
   const args = vehicleId != null ? [vehicleId] : [];
   try {
     const rows = await db.getAllAsync(sql, args);
     const result = (rows || []).map((row) => ({
-    id: row.id,
-    name: row.name,
-    partner_id: row.partner_id != null ? [row.partner_id, row.partner_name ?? ''] : null,
-    state: row.state,
-    date_order: row.date_order,
-    amount_total: row.amount_total,
-    amount_untaxed: row.amount_untaxed,
-    amount_tax: row.amount_tax,
-    invoice_status: row.invoice_status,
-    order_line: safeParseJson(row.order_line, []),
-    route_id: row.route_id != null ? [row.route_id, row.route_name ?? ''] : null,
-    vehicle_id: row.vehicle_id != null ? [row.vehicle_id, row.vehicle_name ?? ''] : null,
-    payment_type: row.payment_type ?? null,
-    amount_credit: row.amount_credit != null ? row.amount_credit : null,
-    amount_cash: row.amount_cash != null ? row.amount_cash : null,
-    amount_cheque: row.amount_cheque != null ? row.amount_cheque : null,
-  }));
+      id: row.id,
+      name: row.name,
+      partner_id: row.partner_id != null ? [row.partner_id, row.partner_name ?? ''] : null,
+      state: row.state,
+      date_order: row.date_order,
+      commitment_date: row.commitment_date,
+      amount_total: row.amount_total,
+      amount_untaxed: row.amount_untaxed,
+      amount_tax: row.amount_tax,
+      invoice_status: row.invoice_status,
+      order_line: safeParseJson(row.order_line, []),
+      route_id: row.route_id != null ? [row.route_id, row.route_name ?? ''] : null,
+      vehicle_id: row.vehicle_id != null ? [row.vehicle_id, row.vehicle_name ?? ''] : null,
+      payment_type: row.payment_type ?? null,
+      amount_credit: row.amount_credit != null ? row.amount_credit : null,
+      amount_cash: row.amount_cash != null ? row.amount_cash : null,
+      amount_cheque: row.amount_cheque != null ? row.amount_cheque : null,
+    }));
     logQuery(op, `done count=${result.length}`);
     return result;
   } catch (err) {
@@ -184,6 +187,31 @@ export async function getSaleOrderById(id) {
     }
   }
 }
+
+/**
+ * Keep only the provided sale order ids in local table. Useful when sync window changes
+ * (e.g. creation date vs delivery date) so stale local rows do not remain visible.
+ * @param {Array<number>} keepIds
+ * @param {{ preserveLocalForSaleOrderIds?: Set<number> | number[] }} [options]
+ */
+export async function pruneSaleOrdersToIds(keepIds = [], options = {}) {
+  const db = await getDb();
+  const preserveSet = options.preserveLocalForSaleOrderIds;
+  const preserveIds = preserveSet instanceof Set ? Array.from(preserveSet) : (Array.isArray(preserveSet) ? preserveSet : []);
+  const merged = [...new Set([...(keepIds || []), ...preserveIds].map((id) => num(id)).filter((id) => Number.isFinite(id) && id > 0))];
+
+  if (merged.length === 0) {
+    await db.runAsync('DELETE FROM sale_orders');
+    return;
+  }
+
+  const placeholders = merged.map(() => '?').join(',');
+  await db.runAsync(
+    `DELETE FROM sale_orders WHERE id NOT IN (${placeholders})`,
+    merged
+  );
+}
+
 function safeParseJson(str, fallback) {
   if (str == null || str === '') return fallback;
   try {

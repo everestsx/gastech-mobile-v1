@@ -64,7 +64,7 @@ function getPrimaryPaymentType(paymentSplit, fallbackPaymentType) {
 }
 
 export default function DeliveredOrdersScreen({ route, navigation }) {
-  const { colors } = useTheme();
+  const { colors, syncDateField } = useTheme();
   const insets = useSafeAreaInsets();
   const [orders, setOrders] = useState([]);
   const [journals, setJournals] = useState([]);
@@ -207,7 +207,10 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
       const data = await getCachedOrders(vehicleId);
       const all = Array.isArray(data) ? data : [];
       const dateStr = formatDate(selectedDate);
-      const list = all.filter((o) => (o.date_order || '').startsWith(dateStr));
+      const list = all.filter((o) => {
+        const selectedDateValue = syncDateField === 'delivery_date' ? o.commitment_date : o.date_order;
+        return String(selectedDateValue || '').startsWith(dateStr);
+      });
       const orderIds = list.map((o) => o.id);
       const [totals, pickings, allLines, paymentSplits, journalsList] = await Promise.all([
         getOrderLineTotalsFromDB(list),
@@ -271,7 +274,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
     } finally {
       setLoading(false);
     }
-  }, [selectedDate]);
+  }, [selectedDate, syncDateField]);
 
   useEffect(() => {
     loadOrders();

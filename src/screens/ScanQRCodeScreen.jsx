@@ -13,7 +13,7 @@ function formatDate(d) {
 }
 
 /** Get today's first (non-cancelled) order for this customer from cache. */
-async function getTodayOrderForCustomer(customerId) {
+async function getTodayOrderForCustomer(customerId, syncDateField) {
   const user = await getUserSession();
   const vehicleId = user?.isAdmin === false ? user.vehicleId : null;
   const data = await getCachedOrders(vehicleId);
@@ -21,7 +21,7 @@ async function getTodayOrderForCustomer(customerId) {
   const todayStr = formatDate(new Date());
   const list = all.filter(
     (o) =>
-      (o.date_order || '').startsWith(todayStr) &&
+      String((syncDateField === 'delivery_date' ? o.commitment_date : o.date_order) || '').startsWith(todayStr) &&
       o.partner_id?.[0] === customerId &&
       String(o.state || '') !== 'cancel'
   );
@@ -29,7 +29,7 @@ async function getTodayOrderForCustomer(customerId) {
 }
 
 export default function ScanQRCodeScreen({ navigation, route }) {
-  const { colors } = useTheme();
+  const { colors, syncDateField } = useTheme();
   const returnTo = route?.params?.returnTo ?? null;
   const [permission, requestPermission] = useCameraPermissions();
   const [scanned, setScanned] = useState(false);
@@ -135,7 +135,7 @@ export default function ScanQRCodeScreen({ navigation, route }) {
         return;
       }
       try {
-        const order = await getTodayOrderForCustomer(customerId);
+        const order = await getTodayOrderForCustomer(customerId, syncDateField);
         if (order?.id) {
           navigateToOrderDetails(order.id);
         } else {
@@ -152,7 +152,7 @@ export default function ScanQRCodeScreen({ navigation, route }) {
         });
       }
     },
-    [navigation, returnTo, navigateToOrderDetails, navigateToScanResult]
+    [navigation, returnTo, navigateToOrderDetails, navigateToScanResult, syncDateField]
   );
 
   const handleBarCodeScanned = useCallback(
