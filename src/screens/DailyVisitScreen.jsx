@@ -91,7 +91,10 @@ export default function DailyVisitScreen({ route, navigation }) {
       const all = Array.isArray(data) ? data : [];
       const dateStr = formatDate(selectedDate);
       let filtered = all.filter((o) => {
-        const selectedDateValue = syncDateField === 'delivery_date' ? o.commitment_date : o.date_order;
+        const selectedDateValue =
+          syncDateField === 'delivery_date'
+            ? (o.commitment_date || o.date_order)
+            : o.date_order;
         return String(selectedDateValue || '').startsWith(dateStr);
       });
       if (customerId != null) {
@@ -137,11 +140,11 @@ export default function DailyVisitScreen({ route, navigation }) {
   };
 
   const onOrderPress = (order) => {
-    if (order.isDelivered) {
-      navigation.navigate('ProceedPayment', {
+    const isInvoiced = String(order?.invoice_status) === 'invoiced';
+    if (isInvoiced) {
+      navigation.navigate('InvoiceScreen', {
         saleOrderId: order.id,
         total: order.amount_total,
-        deliveryDone: true,
       });
     } else {
       navigation.navigate('SaleOrderDetails', { saleOrderId: order.id });

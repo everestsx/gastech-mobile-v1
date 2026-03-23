@@ -15,11 +15,12 @@ import { CommonActions } from '@react-navigation/native';
 import SignatureCanvas from 'react-native-signature-canvas';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
+import * as Network from 'expo-network';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { useSync } from '../context/SyncContext';
 import { spacing, borderRadius } from '../constants/theme';
-import { getCachedJournals, getSaleOrderDetailsFromDB, getDeliveryDataFromDB, getUserSession, getLastSyncTime } from '../services/sync.service';
+import { getCachedJournals, getSaleOrderDetailsFromDB, getDeliveryDataFromDB, getUserSession, getLastSyncTime, runSync } from '../services/sync.service';
 import { getVehicleJournalsByLicensePlate } from '../services/vehicle.service';
 import * as saleOrdersDb from '../database/saleOrders.js';
 import * as syncQueueDb from '../database/syncQueue.js';
@@ -434,6 +435,22 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         checkNumber: needsCheck ? (checkNumber || undefined) : undefined,
         customerSignatureDataUrl: customerSignatureDataUrl ?? undefined,
       };
+
+      // Auto-sync immediately only when internet is available.
+      // Offline flow stays local and fast (no sync attempt).
+      try {
+        const networkState = await Network.getNetworkStateAsync();
+        const isOnline =
+          !!networkState?.isConnected &&
+          networkState?.isInternetReachable === true;
+        if (isOnline) {
+          runSync().catch((e) => {
+            console.warn('[ProceedPayment] auto-sync after payment failed', e?.message ?? e);
+          });
+        }
+      } catch (_) {
+        // If network check fails, keep local flow unchanged and skip auto-sync.
+      }
 
       // Reset stack so InvoiceScreen is always on top (visible even if user had navigated away).
       navigation.dispatch(

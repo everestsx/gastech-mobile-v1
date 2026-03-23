@@ -57,9 +57,10 @@ export default function SaleOrderListScreen({ route, navigation }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchField, setSearchField] = useState('customer');
   const [showFieldDropdown, setShowFieldDropdown] = useState(false);
-  // Orders tab: not delivered, or delivered but not yet invoiced (so we can collect payment)
+  // Offline-first: Orders tab should hide any order already invoiced locally,
+  // even if picking state is not yet refreshed.
   const filteredOrders = useMemo(
-    () => orders.filter((o) => !o.isDelivered || String(o.invoice_status) !== 'invoiced'),
+    () => orders.filter((o) => String(o.invoice_status) !== 'invoiced'),
     [orders]
   );
   const searchFieldLabels = { customer: 'Customer', orderId: 'Order ID' };
@@ -233,7 +234,10 @@ export default function SaleOrderListScreen({ route, navigation }) {
       const all = Array.isArray(data) ? data : [];
       const dateStr = formatDate(selectedDate);
       let list = all.filter((o) => {
-        const selectedDateValue = syncDateField === 'delivery_date' ? o.commitment_date : o.date_order;
+        const selectedDateValue =
+          syncDateField === 'delivery_date'
+            ? (o.commitment_date || o.date_order)
+            : o.date_order;
         return String(selectedDateValue || '').startsWith(dateStr);
       });
       if (customerId != null) {
@@ -323,8 +327,8 @@ export default function SaleOrderListScreen({ route, navigation }) {
   };
 
   const onOrderPress = (order) => {
-    const delivereAndInvoiced = order.isDelivered && String(order.invoice_status) === 'invoiced';
-    if (delivereAndInvoiced) {
+    const isInvoiced = String(order.invoice_status) === 'invoiced';
+    if (isInvoiced) {
       navigation.navigate('InvoiceScreen', {
         saleOrderId: order.id,
         total: order.amount_total,

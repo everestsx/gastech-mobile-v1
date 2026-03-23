@@ -320,9 +320,14 @@ export default function DashboardScreen({ navigation }) {
   }, [pickingsBySaleId]);
 
   /** Today's orders that are actually delivered (picking state 'done') for this vehicle */
-  //Check and Uncomment this if you want to use the pickingStateBySaleId to get the delivered today orders
+  // Offline-first: treat local invoiced orders as delivered immediately; picking state remains a fallback.
   const deliveredTodayOrders = useMemo(
-      () => todayOrders.filter((o) => (pickingStateBySaleId[o.id] || '') === 'done'),
+      () =>
+        todayOrders.filter(
+          (o) =>
+            String(o?.invoice_status) === 'invoiced' ||
+            (pickingStateBySaleId[o.id] || '') === 'done'
+        ),
       [todayOrders, pickingStateBySaleId]
   );
 
@@ -443,8 +448,10 @@ export default function DashboardScreen({ navigation }) {
       const key = partnerId ?? 'unknown';
       if (!byPartner[key]) byPartner[key] = { shopId: `S${partnerId}`, shopName: partnerName, delivered: 0, pending: 0 };
       const qty = Math.round(Number(chartLineTotalsByOrder[o.id]) || 0);
-      //Check and Uncomment this if you want to use the chartPickingStateBySaleId to get the delivered today orders
-      const isDone = (chartPickingStateBySaleId[o.id] || '') === 'done';
+      // Offline-first: invoiced means delivered locally even before picking sync refresh.
+      const isDone =
+        String(o?.invoice_status) === 'invoiced' ||
+        (chartPickingStateBySaleId[o.id] || '') === 'done';
       // const isDone = true;
       if (isDone) byPartner[key].delivered += qty;
       else byPartner[key].pending += qty;
@@ -508,7 +515,7 @@ export default function DashboardScreen({ navigation }) {
         lastSyncedRow: {
           flexDirection: 'row',
           alignItems: 'flex-start',
-          gap: 8,
+          gap: 6,
         },
         lastSyncedBlock: { alignItems: 'flex-end' },
         lastSyncedLabel: {
@@ -526,33 +533,32 @@ export default function DashboardScreen({ navigation }) {
         },
         orderStatusCirclesRow: {
           flexDirection: 'row',
-          flexWrap: 'wrap',
           justifyContent: 'flex-end',
-          gap: spacing.xs,
-          marginTop: spacing.xs,
+          alignItems: 'center',
+          gap: 10,
+          marginTop: 4,
         },
         orderStatusCircleItem: {
           alignItems: 'center',
-          width: 40,
         },
         orderStatusCircle: {
-          width: 28,
-          height: 28,
-          borderRadius: 14,
+          width: 30,
+          height: 30,
+          borderRadius: 15,
           justifyContent: 'center',
           alignItems: 'center',
+          borderWidth: 1,
+          borderColor: 'rgba(255,255,255,0.25)',
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: 1 },
+          shadowOpacity: 0.15,
+          shadowRadius: 2,
+          elevation: 2,
         },
         orderStatusCircleText: {
-          fontSize: 12,
+          fontSize: 11,
           fontWeight: '800',
           color: '#fff',
-        },
-        orderStatusCircleLabel: {
-          fontSize: 8,
-          fontWeight: '700',
-          color: 'rgba(255,255,255,0.75)',
-          marginTop: 3,
-          textAlign: 'center',
         },
         dailyVisitBtnTop: {
           backgroundColor: 'transparent',

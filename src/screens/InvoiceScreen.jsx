@@ -579,6 +579,14 @@ export default function InvoiceScreen({ route, navigation }) {
   const displayTotal = order?.amount_total ?? total ?? (displaySubtotal + displayTax);
 
   const effectivePaymentSplit = paymentSplit ?? savedPaymentSplit;
+  const normalizedPaymentSplit = useMemo(() => {
+    if (!effectivePaymentSplit) return null;
+    return {
+      cash: Number(effectivePaymentSplit.cash) || 0,
+      cheque: Number(effectivePaymentSplit.cheque ?? effectivePaymentSplit.check) || 0,
+      credit: Number(effectivePaymentSplit.credit) || 0,
+    };
+  }, [effectivePaymentSplit]);
   const effectivePaymentType = paymentType ?? order?.payment_type ?? null;
   const effectiveSupplierTin =
     supplierTin != null && String(supplierTin).trim() !== ''
@@ -590,13 +598,13 @@ export default function InvoiceScreen({ route, navigation }) {
       : (order?.partner_vat != null && String(order.partner_vat).trim() !== '' ? String(order.partner_vat).trim() : '');
 
   const paymentLabel =
-    effectivePaymentType === 'split' && effectivePaymentSplit
+    effectivePaymentType === 'split' && normalizedPaymentSplit
       ? [
-          effectivePaymentSplit.cash > 0 && `Cash ${formatInvoiceCurrency(effectivePaymentSplit.cash)}`,
-          effectivePaymentSplit.cheque > 0 && `Cheque ${formatInvoiceCurrency(effectivePaymentSplit.cheque)}`,
+          normalizedPaymentSplit.cash > 0 && `Cash ${formatInvoiceCurrency(normalizedPaymentSplit.cash)}`,
+          normalizedPaymentSplit.cheque > 0 && `Cheque ${formatInvoiceCurrency(normalizedPaymentSplit.cheque)}`,
           // If cash/cheque is partially paid and there is remaining credit, show "Amount Due"
-          effectivePaymentSplit.credit > 0 &&
-            `${effectivePaymentSplit.cash > 0 || effectivePaymentSplit.cheque > 0 ? 'Amount Due' : 'Credit'} ${formatInvoiceCurrency(effectivePaymentSplit.credit)}`,
+          normalizedPaymentSplit.credit > 0 &&
+            `${normalizedPaymentSplit.cash > 0 || normalizedPaymentSplit.cheque > 0 ? 'Amount Due' : 'Credit'} ${formatInvoiceCurrency(normalizedPaymentSplit.credit)}`,
         ].filter(Boolean).join(' • ') || 'Payment'
       : (effectivePaymentType === 'bank' || effectivePaymentType === 'check') && selectedBankName
         ? `Check: ${selectedBankName}`
@@ -608,15 +616,15 @@ export default function InvoiceScreen({ route, navigation }) {
               ? `Cheque ${formatInvoiceCurrency(displayTotal)}`
               : (effectivePaymentType === 'credit')
                 ? `Credit ${formatInvoiceCurrency(displayTotal)}`
-                : (effectivePaymentSplit && (
-                    (Number(effectivePaymentSplit.cash) || 0) > 0 ||
-                    (Number(effectivePaymentSplit.cheque) || 0) > 0 ||
-                    (Number(effectivePaymentSplit.credit) || 0) > 0
+                : (normalizedPaymentSplit && (
+                    normalizedPaymentSplit.cash > 0 ||
+                    normalizedPaymentSplit.cheque > 0 ||
+                    normalizedPaymentSplit.credit > 0
                   ))
                   ? [
-                      (Number(effectivePaymentSplit.cash) || 0) > 0 && `Cash ${formatInvoiceCurrency(effectivePaymentSplit.cash)}`,
-                      (Number(effectivePaymentSplit.cheque) || 0) > 0 && `Cheque ${formatInvoiceCurrency(effectivePaymentSplit.cheque)}`,
-                      (Number(effectivePaymentSplit.credit) || 0) > 0 && `${(Number(effectivePaymentSplit.cash) || 0) > 0 || (Number(effectivePaymentSplit.cheque) || 0) > 0 ? 'Amount Due' : 'Credit'} ${formatInvoiceCurrency(effectivePaymentSplit.credit)}`,
+                      normalizedPaymentSplit.cash > 0 && `Cash ${formatInvoiceCurrency(normalizedPaymentSplit.cash)}`,
+                      normalizedPaymentSplit.cheque > 0 && `Cheque ${formatInvoiceCurrency(normalizedPaymentSplit.cheque)}`,
+                      normalizedPaymentSplit.credit > 0 && `${normalizedPaymentSplit.cash > 0 || normalizedPaymentSplit.cheque > 0 ? 'Amount Due' : 'Credit'} ${formatInvoiceCurrency(normalizedPaymentSplit.credit)}`,
                     ].filter(Boolean).join(' • ')
                   : 'Invoiced';
 

@@ -209,7 +209,10 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
       const all = Array.isArray(data) ? data : [];
       const dateStr = formatDate(selectedDate);
       const list = all.filter((o) => {
-        const selectedDateValue = syncDateField === 'delivery_date' ? o.commitment_date : o.date_order;
+        const selectedDateValue =
+          syncDateField === 'delivery_date'
+            ? (o.commitment_date || o.date_order)
+            : o.date_order;
         return String(selectedDateValue || '').startsWith(dateStr);
       });
       const orderIds = list.map((o) => o.id);
