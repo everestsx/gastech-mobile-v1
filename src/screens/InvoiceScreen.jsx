@@ -19,6 +19,7 @@ import { getSaleOrderDetailsFromDB, runSync } from '../services/sync.service';
 import { getOrAssignInvoiceNumber } from '../utils/invoiceNumber';
 import { getProductDisplayName } from '../utils/productDisplay';
 import { formatAmount } from '../utils/format';
+import * as localPaymentsDb from '../database/localPayments.js';
 
 /** Currency in invoice section: "Rs" (e.g. "Rs 944.00"). */
 function formatInvoiceCurrency(amount) {
@@ -32,7 +33,23 @@ function safeDisplay(val) {
   return s === '' || s.toLowerCase() === 'false' ? '—' : s;
 }
 
-function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSplit, logoUri, customerSignatureDataUrl, chequeBankName, checkNumber, invoiceNumber, supplierTin = '—', purchaserTin = '—') {
+function buildInvoiceHtml(
+  order,
+  lines,
+  paymentType,
+  selectedBankName,
+  paymentSplit,
+  logoUri,
+  customerSignatureDataUrl,
+  chequeBankName,
+  checkNumber,
+  invoiceNumber,
+  supplierTin = '—',
+  purchaserTin = '—',
+  supplierName = 'GasTech',
+  supplierAddress = '—',
+  supplierPhone = '—'
+) {
   const date = order?.date_order
     ? new Date(order.date_order).toLocaleDateString('en-LK', {
         year: 'numeric',
@@ -41,19 +58,30 @@ function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSp
       })
     : new Date().toLocaleDateString('en-LK');
   const customerName = safeDisplay(order?.partner_id?.[1]).replace(/</g, '&lt;');
+  const streetPart = safeDisplay(order?.street);
   const cityPart = safeDisplay(order?.city);
   const phonePart = safeDisplay(order?.partner_phone);
-  const customerAddress = [cityPart, phonePart].filter((s) => s !== '—').join(', ').replace(/</g, '&lt;') || '—';
+  // Customer address formatting: street, city (when available).
+  const customerAddress = [streetPart, cityPart]
+    .filter((s) => s !== '—')
+    .join(', ')
+    .replace(/</g, '&lt;') || '—';
   const customerPhone = (phonePart !== '—' ? phonePart : '—').replace(/</g, '&lt;');
   const supplierTinSafe = (supplierTin != null && String(supplierTin).trim()) ? String(supplierTin).trim().replace(/</g, '&lt;') : '—';
   const purchaserTinSafe = (purchaserTin != null && String(purchaserTin).trim()) ? String(purchaserTin).trim().replace(/</g, '&lt;') : '—';
+  const supplierNameSafe = (supplierName != null && String(supplierName).trim()) ? String(supplierName).trim().replace(/</g, '&lt;') : 'GasTech';
+  const supplierAddressSafe = (supplierAddress != null && String(supplierAddress).trim()) ? String(supplierAddress).trim().replace(/</g, '&lt;') : '—';
+  const supplierPhoneSafe = (supplierPhone != null && String(supplierPhone).trim()) ? String(supplierPhone).trim().replace(/</g, '&lt;') : '—';
   const invNo = invoiceNumber ?? order?.name ?? '—';
   const paymentLabel =
     paymentType === 'split' && paymentSplit
       ? [
           paymentSplit.cash > 0 && `Cash ${formatInvoiceCurrency(paymentSplit.cash)}`,
-          paymentSplit.check > 0 && `Check ${formatInvoiceCurrency(paymentSplit.check)}`,
-          paymentSplit.credit > 0 && `Credit ${formatInvoiceCurrency(paymentSplit.credit)}`,
+          (Number(paymentSplit.cheque ?? paymentSplit.check) || 0) > 0 &&
+            `Check ${formatInvoiceCurrency(paymentSplit.cheque ?? paymentSplit.check)}`,
+          // If cash/cheque is partially paid and there is remaining credit, show "Amount Due"
+          paymentSplit.credit > 0 &&
+            `${paymentSplit.cash > 0 || (Number(paymentSplit.cheque ?? paymentSplit.check) || 0) > 0 ? 'Amount Due' : 'Credit'} ${formatInvoiceCurrency(paymentSplit.credit)}`,
         ].filter(Boolean).join(' • ') || 'Payment'
       : (paymentType === 'bank' || paymentType === 'check') && selectedBankName
         ? `Check: ${selectedBankName}`
@@ -93,8 +121,8 @@ function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSp
   const amountTotal = order?.amount_total ?? (amountUntaxed + amountTax);
 
   const logoImg = logoUri
-    ? `<img src="${logoUri}" alt="GasTech" style="max-width:50mm;height:auto;display:block;margin:0 0 4px 0;" />`
-    : '<h1 style="margin:0 0 4px 0;font-size:12px;font-weight:700;color:#1e5aa8;text-align:left">GasTech</h1>';
+    ? `<img src="${logoUri}" alt="GasTech" style="max-width:44mm;height:auto;display:block;margin:0 auto 3px auto;" />`
+    : '<h1 style="margin:0 auto 3px auto;font-size:11px;font-weight:700;color:#1e5aa8;text-align:center">GasTech</h1>';
 
   return `
 <!DOCTYPE html>
@@ -115,7 +143,7 @@ function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSp
       font-weight: 700;
       color: #000;
       margin: 0;
-      padding: 4px 6px;
+      padding: 2px 4px;
       width: 80mm;
       max-width: 80mm;
       overflow-x: hidden;
@@ -124,14 +152,14 @@ function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSp
     }
     .page { width: 74mm; max-width: 100%; margin: 0 auto; }
     .title {
-      font-size: 11px;
+      font-size: 10.5px;
       font-weight: 700;
       text-align: center;
-      margin: 4px 0 6px;
+      margin: 2px 0 4px;
       border: 1px solid #000;
-      padding: 4px 6px;
+      padding: 3px 5px;
     }
-    .two-col { display: flex; gap: 6px; margin-bottom: 6px; line-height: 1.3; }
+    .two-col { display: flex; gap: 6px; margin-bottom: 4px; line-height: 1.3; }
     .col { flex: 1; min-width: 0; overflow: hidden; }
     .field { margin-bottom: 2px; font-size: 8px; font-weight: 700; word-break: break-word; }
     .label { font-weight: 700; color: #000; }
@@ -172,11 +200,13 @@ function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSp
     td:nth-child(4) { padding-left: 4px; }
     td:nth-child(3), td:nth-child(4), td:nth-child(5), td:nth-child(6), td:nth-child(7) { text-align: right; }
     tr:last-child td { border-bottom: none; }
-    .totals { margin-top: 4px; border-top: 1px solid #000; padding-top: 4px; font-size: 8px; font-weight: 700; }
-    .row { display: flex; justify-content: space-between; margin: 2px 0; align-items: flex-start; gap: 4px; }
-    .total-row { font-weight: 700; font-size: 9px; margin-top: 2px; }
+    .totals { margin-top: 2px; border-top: 1px solid #000; padding-top: 2px; font-size: 7px; font-weight: 700; }
+    .row { display: flex; justify-content: space-between; margin: 1px 0; align-items: flex-start; gap: 4px; }
+    .total-row { font-weight: 700; font-size: 8px; margin-top: 1px; }
     .payment { margin-top: 4px; padding: 4px; background: #e8e8e8; font-size: 8px; font-weight: 700; text-align: center; }
     .footer { margin-top: 6px; font-size: 8px; font-weight: 700; color: #333; text-align: center; }
+    .footerPowered { margin-top: 2px; font-size: 8px; font-weight: 700; font-style: italic; color: #333; text-align: center; }
+    .poweredBrand { font-weight: 700; }
   </style>
 </head>
 <body>
@@ -185,16 +215,16 @@ function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSp
   <div class="title">Tax Invoice</div>
   <div class="two-col">
     <div class="col">
-      <div class="field"><span class="label">Date of Invoice:</span> ${date}</div>
-      <div class="field"><span class="label">Supplier's TIN:</span> ${supplierTinSafe}</div>
-      <div class="field"><span class="label">Supplier's Name:</span> GasTech</div>
-      <div class="field"><span class="label">Address:</span> —</div>
-      <div class="field"><span class="label">Telephone No:</span> —</div>
+      <div class="field" style="text-align:left"><span class="label">Tax Invoice No.:</span> ${invNo}</div>
+      ${supplierTinSafe !== '—' ? `<div class="field"><span class="label">Supplier's TIN:</span> ${supplierTinSafe}</div>` : ''}
+      <div class="field"><span class="label">Supplier's Name:</span> ${supplierNameSafe}</div>
+      <div class="field"><span class="label">Address:</span> ${supplierAddressSafe}</div>
+      <div class="field"><span class="label">Telephone No:</span> ${supplierPhoneSafe}</div>
       <div class="field"><span class="label">Date of Delivery:</span> ${date}</div>
     </div>
     <div class="col">
-      <div class="field"><span class="label">Tax Invoice No.:</span> ${invNo}</div>
-      <div class="field"><span class="label">Customer's TIN:</span> ${purchaserTinSafe}</div>
+      <div class="field" style="text-align:right"><span class="label">Date of Invoice:</span> ${date}</div>
+      ${purchaserTinSafe !== '—' ? `<div class="field"><span class="label">Customer's TIN:</span> ${purchaserTinSafe}</div>` : ''}
       <div class="field"><span class="label">Customer's Name:</span> ${customerName}</div>
       <div class="field"><span class="label">Address:</span> ${customerAddress}</div>
       <div class="field"><span class="label">Telephone No:</span> ${customerPhone}</div>
@@ -232,6 +262,7 @@ function buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSp
   </div>
   ` : ''}
   <div class="footer">GasTech – Your Trusted Business Partner</div>
+  <div class="footerPowered">Powered by <span class="poweredBrand">everestx.com</span></div>
   </div>
 </body>
 </html>`;
@@ -256,12 +287,16 @@ export default function InvoiceScreen({ route, navigation }) {
     customerSignatureDataUrl,
     supplierTin,
     purchaserTin,
+    supplierName,
+    supplierAddress,
+    supplierPhone,
   } = route.params ?? {};
 
   const { setHideSyncIndicator } = useSync();
   const [order, setOrder] = useState(null);
   const [lines, setLines] = useState([]);
   const [invoiceNumber, setInvoiceNumber] = useState(null);
+  const [savedPaymentSplit, setSavedPaymentSplit] = useState(null);
   const [loading, setLoading] = useState(true);
   const [printing, setPrinting] = useState(false);
   const [printResult, setPrintResult] = useState(null);
@@ -271,7 +306,7 @@ export default function InvoiceScreen({ route, navigation }) {
     () =>
       StyleSheet.create({
         container: { flex: 1, backgroundColor: colors.background },
-        content: { paddingHorizontal: spacing.sm, paddingVertical: spacing.md, paddingBottom: spacing.xl + 60 },
+        content: { paddingHorizontal: spacing.sm, paddingVertical: spacing.sm, paddingBottom: spacing.xl + 60 },
         center: {
           flex: 1,
           justifyContent: 'center',
@@ -281,8 +316,8 @@ export default function InvoiceScreen({ route, navigation }) {
         previewCard: {
           backgroundColor: colors.surface,
           borderRadius: borderRadius.lg,
-          paddingVertical: spacing.md,
-          paddingHorizontal: spacing.sm,
+          paddingVertical: spacing.sm,
+          paddingHorizontal: spacing.xs,
           marginBottom: spacing.lg,
           elevation: 2,
           shadowColor: '#000',
@@ -291,16 +326,17 @@ export default function InvoiceScreen({ route, navigation }) {
           shadowRadius: 4,
           alignSelf: 'stretch',
         },
-        logo: { width: 80, height: 56, marginBottom: 6, alignSelf: 'flex-start' },
-        invoiceTitle: { fontSize: 14, fontWeight: '700', color: colors.textSecondary, marginBottom: spacing.sm },
-        metaRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 3, alignItems: 'flex-start' },
+        logo: { width: 70, height: 50, marginBottom: spacing.xs, alignSelf: 'center' },
+        invoiceTitle: { fontSize: 14, fontWeight: '700', color: colors.textSecondary, marginBottom: spacing.xs },
+        metaRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 2, alignItems: 'flex-start' },
+        metaRowLeft: { flexDirection: 'row', justifyContent: 'flex-start', gap: 8, marginBottom: 2, alignItems: 'flex-start' },
         metaLabel: { fontSize: 12, color: colors.textSecondary, minWidth: 72 },
         metaValue: { fontSize: 13, fontWeight: '600', color: colors.text, flex: 1, marginLeft: 4 },
         tableWrapper: {
           borderWidth: 1,
           borderColor: colors.border,
           borderRadius: 8,
-          marginTop: spacing.sm,
+          marginTop: spacing.xs,
           overflow: 'hidden',
         },
         tableHeader: {
@@ -332,13 +368,13 @@ export default function InvoiceScreen({ route, navigation }) {
         tdQty: { flex: 0.7, minWidth: 36, textAlign: 'right', marginLeft: 4 },
         tdTax: { flex: 0.9, minWidth: 44, textAlign: 'right', marginLeft: 4 },
         tdTotal: { flex: 1, minWidth: 52, textAlign: 'right', marginLeft: 8 },
-        totalsSection: { marginTop: spacing.sm, paddingTop: spacing.sm, borderTopWidth: 1, borderTopColor: colors.border },
-        totalsRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 },
-        totalsRowMain: { marginTop: 4 },
-        totalsLabel: { fontSize: 13, color: colors.textSecondary },
-        totalsValue: { fontSize: 13, fontWeight: '600', color: colors.text },
-        totalsLabelMain: { fontSize: 16, fontWeight: '700', color: colors.text },
-        totalsValueMain: { fontSize: 16, fontWeight: '800', color: colors.text },
+        totalsSection: { marginTop: spacing.xs, paddingTop: spacing.xs, borderTopWidth: 1, borderTopColor: colors.border },
+        totalsRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 2 },
+        totalsRowMain: { marginTop: 2 },
+        totalsLabel: { fontSize: 11, color: colors.textSecondary },
+        totalsValue: { fontSize: 12, fontWeight: '600', color: colors.text },
+        totalsLabelMain: { fontSize: 14, fontWeight: '700', color: colors.text },
+        totalsValueMain: { fontSize: 14, fontWeight: '800', color: colors.text },
         paymentBadge: {
           marginTop: spacing.sm,
           padding: spacing.sm,
@@ -450,10 +486,13 @@ export default function InvoiceScreen({ route, navigation }) {
       const data = await getSaleOrderDetailsFromDB(saleOrderId);
       setOrder(data.order);
       setLines(data.lines ?? []);
+      const split = await localPaymentsDb.getPaymentSplitBySaleOrderId(saleOrderId);
+      setSavedPaymentSplit(split || null);
     } catch (_) {
       setOrder(null);
       setLines([]);
       setInvoiceNumber(null);
+      setSavedPaymentSplit(null);
     } finally {
       setLoading(false);
     }
@@ -474,7 +513,31 @@ export default function InvoiceScreen({ route, navigation }) {
     setPrintResult(null);
     setPrintError(null);
     try {
-      const html = buildInvoiceHtml(order, lines, paymentType, selectedBankName, paymentSplit, logoUri, customerSignatureDataUrl, chequeBankName, checkNumber, invoiceNumber, supplierTin, purchaserTin);
+      const splitForPrint = paymentSplit ?? savedPaymentSplit;
+      const typeForPrint = paymentType ?? order?.payment_type ?? null;
+      const supplierTinForPrint =
+        supplierTin != null && String(supplierTin).trim() !== '' ? String(supplierTin).trim() : '';
+      const purchaserTinForPrint =
+        purchaserTin != null && String(purchaserTin).trim() !== ''
+          ? String(purchaserTin).trim()
+          : (order?.partner_vat != null && String(order.partner_vat).trim() !== '' ? String(order.partner_vat).trim() : '');
+      const html = buildInvoiceHtml(
+        order,
+        lines,
+        typeForPrint === 'split' || paymentType === 'split' ? 'split' : typeForPrint,
+        selectedBankName,
+        splitForPrint,
+        logoUri,
+        customerSignatureDataUrl,
+        chequeBankName,
+        checkNumber,
+        invoiceNumber,
+        supplierTinForPrint,
+        purchaserTinForPrint,
+        supplierName,
+        supplierAddress,
+        supplierPhone
+      );
       await Print.printAsync({ html });
       setPrintResult('success');
     } catch (err) {
@@ -486,7 +549,7 @@ export default function InvoiceScreen({ route, navigation }) {
       setHideSyncIndicator(false);
       runSync().catch((e) => console.warn('[InvoiceScreen] sync after print', e?.message ?? e));
     }
-  }, [order, lines, invoiceNumber, paymentType, selectedBankName, paymentSplit, logoUri, customerSignatureDataUrl, chequeBankName, checkNumber, supplierTin, purchaserTin]);
+  }, [order, lines, invoiceNumber, paymentType, selectedBankName, paymentSplit, savedPaymentSplit, logoUri, customerSignatureDataUrl, chequeBankName, checkNumber, supplierTin, purchaserTin, supplierName, supplierAddress, supplierPhone]);
 
   const goToHome = useCallback(() => {
     navigation.navigate('MainTabs', { screen: 'Dashboard' });
@@ -515,18 +578,47 @@ export default function InvoiceScreen({ route, navigation }) {
     : computedTax;
   const displayTotal = order?.amount_total ?? total ?? (displaySubtotal + displayTax);
 
+  const effectivePaymentSplit = paymentSplit ?? savedPaymentSplit;
+  const effectivePaymentType = paymentType ?? order?.payment_type ?? null;
+  const effectiveSupplierTin =
+    supplierTin != null && String(supplierTin).trim() !== ''
+      ? String(supplierTin).trim()
+      : '';
+  const effectivePurchaserTin =
+    purchaserTin != null && String(purchaserTin).trim() !== ''
+      ? String(purchaserTin).trim()
+      : (order?.partner_vat != null && String(order.partner_vat).trim() !== '' ? String(order.partner_vat).trim() : '');
+
   const paymentLabel =
-    paymentType === 'split' && paymentSplit
+    effectivePaymentType === 'split' && effectivePaymentSplit
       ? [
-          paymentSplit.cash > 0 && `Cash ${formatInvoiceCurrency(paymentSplit.cash)}`,
-          paymentSplit.check > 0 && `Cheque ${formatInvoiceCurrency(paymentSplit.check)}`,
-          paymentSplit.credit > 0 && `Credit ${formatInvoiceCurrency(paymentSplit.credit)}`,
+          effectivePaymentSplit.cash > 0 && `Cash ${formatInvoiceCurrency(effectivePaymentSplit.cash)}`,
+          effectivePaymentSplit.cheque > 0 && `Cheque ${formatInvoiceCurrency(effectivePaymentSplit.cheque)}`,
+          // If cash/cheque is partially paid and there is remaining credit, show "Amount Due"
+          effectivePaymentSplit.credit > 0 &&
+            `${effectivePaymentSplit.cash > 0 || effectivePaymentSplit.cheque > 0 ? 'Amount Due' : 'Credit'} ${formatInvoiceCurrency(effectivePaymentSplit.credit)}`,
         ].filter(Boolean).join(' • ') || 'Payment'
-      : (paymentType === 'bank' || paymentType === 'check') && selectedBankName
+      : (effectivePaymentType === 'bank' || effectivePaymentType === 'check') && selectedBankName
         ? `Check: ${selectedBankName}`
-        : paymentType === 'credit' && selectedBankName
+        : effectivePaymentType === 'credit' && selectedBankName
           ? `Credit: ${selectedBankName}`
-          : (paymentType != null || selectedBankName != null || paymentSplit != null) ? 'Cash' : 'Invoiced';
+          : (effectivePaymentType === 'cash')
+            ? `Cash ${formatInvoiceCurrency(displayTotal)}`
+            : (effectivePaymentType === 'cheque' || effectivePaymentType === 'check')
+              ? `Cheque ${formatInvoiceCurrency(displayTotal)}`
+              : (effectivePaymentType === 'credit')
+                ? `Credit ${formatInvoiceCurrency(displayTotal)}`
+                : (effectivePaymentSplit && (
+                    (Number(effectivePaymentSplit.cash) || 0) > 0 ||
+                    (Number(effectivePaymentSplit.cheque) || 0) > 0 ||
+                    (Number(effectivePaymentSplit.credit) || 0) > 0
+                  ))
+                  ? [
+                      (Number(effectivePaymentSplit.cash) || 0) > 0 && `Cash ${formatInvoiceCurrency(effectivePaymentSplit.cash)}`,
+                      (Number(effectivePaymentSplit.cheque) || 0) > 0 && `Cheque ${formatInvoiceCurrency(effectivePaymentSplit.cheque)}`,
+                      (Number(effectivePaymentSplit.credit) || 0) > 0 && `${(Number(effectivePaymentSplit.cash) || 0) > 0 || (Number(effectivePaymentSplit.cheque) || 0) > 0 ? 'Amount Due' : 'Credit'} ${formatInvoiceCurrency(effectivePaymentSplit.credit)}`,
+                    ].filter(Boolean).join(' • ')
+                  : 'Invoiced';
 
   const hasCreditPayment = (paymentSplit?.credit ?? 0) > 0 || paymentType === 'credit';
 
@@ -556,13 +648,14 @@ export default function InvoiceScreen({ route, navigation }) {
       <View style={styles.previewCard}>
         <Image source={LOGO_SOURCE} style={styles.logo} resizeMode="contain" />
         <Text style={styles.invoiceTitle}>Tax Invoice</Text>
-        <View style={styles.metaRow}>
+        {/* Header alignment: Invoice No. left, Date right */}
+        <View style={styles.metaRowLeft}>
           <Text style={styles.metaLabel}>Invoice No.</Text>
-          <Text style={styles.metaValue}>{invoiceNumber ?? '—'}</Text>
+          <Text style={[styles.metaValue, { textAlign: 'left', marginLeft: 0 }]}>{invoiceNumber ?? '—'}</Text>
         </View>
         <View style={styles.metaRow}>
           <Text style={styles.metaLabel}>Date</Text>
-          <Text style={styles.metaValue}>{invoiceDate}</Text>
+          <Text style={[styles.metaValue, { textAlign: 'left', marginLeft: 0 }]}>{invoiceDate}</Text>
         </View>
         <View style={styles.metaRow}>
           <Text style={styles.metaLabel}>Customer</Text>
@@ -570,11 +663,19 @@ export default function InvoiceScreen({ route, navigation }) {
             {order?.partner_id?.[1] ?? '—'}
           </Text>
         </View>
-        {(safeDisplay(order?.city) !== '—' || safeDisplay(order?.partner_phone) !== '—') ? (
+        {safeDisplay(order?.city) !== '—' ? (
           <View style={styles.metaRow}>
             <Text style={styles.metaLabel}>Address</Text>
             <Text style={styles.metaValue} numberOfLines={2}>
-              {[safeDisplay(order?.city), safeDisplay(order?.partner_phone)].filter((s) => s !== '—').join(', ') || '—'}
+              {safeDisplay(order?.city)}
+            </Text>
+          </View>
+        ) : null}
+        {safeDisplay(order?.partner_phone) !== '—' ? (
+          <View style={styles.metaRow}>
+            <Text style={styles.metaLabel}>Mobile</Text>
+            <Text style={styles.metaValue} numberOfLines={2}>
+              {safeDisplay(order?.partner_phone)}
             </Text>
           </View>
         ) : null}
@@ -584,13 +685,13 @@ export default function InvoiceScreen({ route, navigation }) {
             <Text style={[styles.th, styles.thNo]}>No</Text>
             <Text style={[styles.th, styles.thProduct]}>Product</Text>
             <Text style={[styles.th, styles.thQty]}>Qty</Text>
-            <Text style={[styles.th, styles.thTax]}>Tax</Text>
+            <Text style={[styles.th, styles.thTax]}>Unit Price</Text>
             <Text style={[styles.th, styles.thTotal]}>Total</Text>
           </View>
           {(lines || []).map((line, index) => {
             const lineSubtotal = Number(line.price_subtotal) || 0;
             const lineTotal = Number(line.price_total) || 0;
-            const lineTax = lineTotal - lineSubtotal;
+            const lineUnitPrice = Number(line.price_unit) || 0;
             return (
               <View
                 key={line.id}
@@ -601,7 +702,7 @@ export default function InvoiceScreen({ route, navigation }) {
                   {getProductDisplayName(line.product_id?.[1] ?? '—')}
                 </Text>
                 <Text style={[styles.td, styles.tdQty]}>{line.product_uom_qty}</Text>
-                <Text style={[styles.td, styles.tdTax]}>{formatAmount(lineTax)}</Text>
+                <Text style={[styles.td, styles.tdTax]}>{formatAmount(lineUnitPrice)}</Text>
                 <Text style={[styles.td, styles.tdTotal]}>
                   {formatAmount(lineTotal)}
                 </Text>
@@ -618,7 +719,7 @@ export default function InvoiceScreen({ route, navigation }) {
             </Text>
           </View>
           <View style={styles.totalsRow}>
-            <Text style={styles.totalsLabel}>Tax</Text>
+            <Text style={styles.totalsLabel}>VAT</Text>
             <Text style={styles.totalsValue}>
               {formatInvoiceCurrency(displayTax)}
             </Text>

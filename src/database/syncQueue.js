@@ -78,6 +78,25 @@ export async function getPendingSaleOrderIds() {
   return ids;
 }
 
+/**
+ * Get sale order ids that have pending (not yet synced) PAYMENT queue items.
+ * Used by Dashboard to distinguish locally-completed-but-not-yet-backedend-synced payments.
+ */
+export async function getPendingPaymentSaleOrderIds() {
+  const db = await getDb();
+  const rows = await db.getAllAsync(
+    `SELECT payload FROM sync_queue WHERE action_type = ? AND COALESCE(is_uploaded, 0) = 0 AND synced_at IS NULL`,
+    [ACTION_PAYMENT]
+  );
+  const ids = new Set();
+  for (const row of rows || []) {
+    const p = safeParseJson(row.payload, {});
+    const soId = p.saleOrderId ?? p.sale_id ?? p.sale_order_id;
+    if (soId != null) ids.add(Number(soId));
+  }
+  return ids;
+}
+
 /** Get pending (unsynced) payment queue item for a sale order, if any. Returns { id, payload } or null. Used to avoid duplicate queue entries. */
 export async function getPendingPaymentItemBySaleOrderId(saleOrderId) {
   if (saleOrderId == null) return null;

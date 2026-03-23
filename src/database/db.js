@@ -54,8 +54,10 @@ async function runMigrations(db) {
     CREATE TABLE IF NOT EXISTS partners (
       id INTEGER PRIMARY KEY,
       name TEXT,
+      street TEXT,
       city TEXT,
       phone TEXT,
+      vat TEXT,
       updated_at TEXT
     );
     CREATE TABLE IF NOT EXISTS sale_orders (
@@ -427,6 +429,23 @@ async function runMigrations(db) {
       console.warn('[Migration] sale_orders commitment_date:', e);
     }
     await db.runAsync('PRAGMA user_version = 16');
+  }
+
+  // Migration 17: Add street + vat columns to partners (for invoice address/TIN).
+  if (current < 17) {
+    try {
+      const info = await db.getAllAsync('PRAGMA table_info(partners)');
+      const names = new Set((info || []).map((c) => c.name));
+      if (!names.has('street')) {
+        await db.runAsync('ALTER TABLE partners ADD COLUMN street TEXT');
+      }
+      if (!names.has('vat')) {
+        await db.runAsync('ALTER TABLE partners ADD COLUMN vat TEXT');
+      }
+    } catch (e) {
+      console.warn('[Migration] Error adding street/vat to partners:', e);
+    }
+    await db.runAsync('PRAGMA user_version = 17');
   }
 }
 

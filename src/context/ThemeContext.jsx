@@ -25,7 +25,8 @@ export function ThemeProvider({ children }) {
   const [showCreateSalesOrder, setShowCreateSalesOrderState] = useState(true);
   const [showReturnOrder, setShowReturnOrderState] = useState(true);
   const [syncPeriod, setSyncPeriodState] = useState('7days');
-  const [syncDateField, setSyncDateFieldState] = useState('creation_date');
+  // Default sync field should be delivery date.
+  const [syncDateField, setSyncDateFieldState] = useState('delivery_date');
   const [ready, setReady] = useState(false);
 
   const colors = getThemeColors(theme);

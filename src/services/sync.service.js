@@ -1184,9 +1184,9 @@ async function getSyncDateFieldSetting() {
   try {
     const storage = await getAsyncStorage();
     const raw = await storage.getItem(KEYS.SYNC_DATE_FIELD);
-    return raw === 'delivery_date' ? 'delivery_date' : 'creation_date';
+    return raw === 'creation_date' ? 'creation_date' : 'delivery_date';
   } catch (_) {
-    return 'creation_date';
+    return 'delivery_date';
   }
 }
 

@@ -1,7 +1,7 @@
 // services/customer.service.js
 import { callOdoo } from "./index.service";
 
-const PARTNER_FIELDS = ["id", "name", "phone", "street", "street2", "city", "zip", "ref"];
+const PARTNER_FIELDS = ["id", "name", "phone", "street", "street2", "city", "zip", "ref", "vat"];
 
 export const getCustomers = () =>
   callOdoo(
@@ -31,7 +31,7 @@ export const getCustomerByRef = async (ref) => {
       ],
     ],
     {
-      fields: ["id", "name", "ref", "phone", "street", "city"],
+      fields: ["id", "name", "ref", "phone", "street", "city", "vat"],
       limit: 1,
     }
   );

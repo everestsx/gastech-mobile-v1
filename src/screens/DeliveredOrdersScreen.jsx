@@ -71,7 +71,8 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
   const [loading, setLoading] = useState(true);
   const [selectedDate, setSelectedDate] = useState(() => new Date());
   const [showPicker, setShowPicker] = useState(false);
-  const [activeTab, setActiveTab] = useState(TAB_CASH);
+  // Default tab: All
+  const [activeTab, setActiveTab] = useState(TAB_ALL);
 
   /** All delivered orders (with or without payment). Cash/Cheque/Credit tabs filter by payment_type. */
   const deliveredOrders = useMemo(
@@ -392,6 +393,19 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
           contentContainerStyle={styles.tabsScroll}
         >
           <TouchableOpacity
+            style={[styles.tab, activeTab === TAB_ALL && styles.tabActive]}
+            onPress={() => setActiveTab(TAB_ALL)}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="list-outline" size={18} color={activeTab === TAB_ALL ? '#fff' : colors.text} />
+            <Text style={[styles.tabText, activeTab === TAB_ALL && styles.tabTextActive]}>All</Text>
+            <View style={[styles.tabBadge, activeTab === TAB_ALL && styles.tabBadgeActive]}>
+              <Text style={[styles.tabBadgeText, activeTab === TAB_ALL && styles.tabBadgeTextActive]}>
+                {tabCounts[TAB_ALL]}
+              </Text>
+            </View>
+          </TouchableOpacity>
+          <TouchableOpacity
             style={[styles.tab, activeTab === TAB_CASH && styles.tabActive]}
             onPress={() => setActiveTab(TAB_CASH)}
             activeOpacity={0.8}
@@ -427,19 +441,6 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
             <View style={[styles.tabBadge, activeTab === TAB_CREDIT && styles.tabBadgeActive]}>
               <Text style={[styles.tabBadgeText, activeTab === TAB_CREDIT && styles.tabBadgeTextActive]}>
                 {tabCounts[TAB_CREDIT]}
-              </Text>
-            </View>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.tab, activeTab === TAB_ALL && styles.tabActive]}
-            onPress={() => setActiveTab(TAB_ALL)}
-            activeOpacity={0.8}
-          >
-            <Ionicons name="list-outline" size={18} color={activeTab === TAB_ALL ? '#fff' : colors.text} />
-            <Text style={[styles.tabText, activeTab === TAB_ALL && styles.tabTextActive]}>All</Text>
-            <View style={[styles.tabBadge, activeTab === TAB_ALL && styles.tabBadgeActive]}>
-              <Text style={[styles.tabBadgeText, activeTab === TAB_ALL && styles.tabBadgeTextActive]}>
-                {tabCounts[TAB_ALL]}
               </Text>
             </View>
           </TouchableOpacity>

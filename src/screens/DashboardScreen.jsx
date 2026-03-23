@@ -32,6 +32,7 @@ import {
   getOrderLinesByOrderIdsFromDB,
 } from '../services/sync.service';
 import * as localPaymentsDb from '../database/localPayments.js';
+import * as syncQueueDb from '../database/syncQueue.js';
 import {
   getActiveCommissionPlan,
   calculateCommissionProgressByProducts,
@@ -80,6 +81,7 @@ export default function DashboardScreen({ navigation }) {
   const [loading, setLoading] = useState(true);
   const [lastSyncTime, setLastSyncTime] = useState(null);
   const [syncLog, setSyncLog] = useState([]);
+  const [pendingPaymentSaleOrderIds, setPendingPaymentSaleOrderIds] = useState([]);
   const [selectedChartDate, setSelectedChartDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [showChartDatePicker, setShowChartDatePicker] = useState(false);
   const [chartLineTotalsByOrder, setChartLineTotalsByOrder] = useState({});
@@ -153,12 +155,21 @@ export default function DashboardScreen({ navigation }) {
 
   const loadSyncStatus = useCallback(async () => {
     try {
-      const [time, log] = await Promise.all([
+      const [time, log, pendingPaymentIds] = await Promise.all([
         getLastSyncTime(),
         getSyncLogRecent(10),
+        syncQueueDb.getPendingPaymentSaleOrderIds(),
       ]);
       setLastSyncTime(time);
       setSyncLog(log || []);
+
+      const pendingPaymentArray =
+        pendingPaymentIds instanceof Set
+          ? Array.from(pendingPaymentIds)
+          : Array.isArray(pendingPaymentIds)
+            ? pendingPaymentIds
+            : [];
+      setPendingPaymentSaleOrderIds(pendingPaymentArray);
     } catch (_) {}
   }, []);
 
@@ -266,6 +277,38 @@ export default function DashboardScreen({ navigation }) {
 
   const today = new Date().toISOString().split('T')[0];
   const todayOrders = orders.filter((o) => (o.date_order || '').startsWith(today));
+
+  const orderStatusCounts = useMemo(() => {
+    const todayIdSet = new Set(
+      (todayOrders || [])
+        .map((o) => o?.id)
+        .filter((id) => id != null)
+        .map((id) => Number(id))
+        .filter((n) => Number.isFinite(n))
+    );
+
+    const pendingPaymentSet = new Set(
+      (pendingPaymentSaleOrderIds || [])
+        .map((id) => Number(id))
+        .filter((n) => Number.isFinite(n))
+    );
+
+    // Locally completed-but-not-yet-backend-synced payments
+    const completedLocal = Array.from(todayIdSet).filter((id) => pendingPaymentSet.has(id)).length;
+
+    // Synced to backend: invoiced orders that do NOT have a pending payment queue for them.
+    const syncedBackend = (todayOrders || []).filter((o) => {
+      const idNum = o?.id != null ? Number(o.id) : null;
+      if (idNum == null || !Number.isFinite(idNum)) return false;
+      if (String(o?.invoice_status) !== 'invoiced') return false;
+      return !pendingPaymentSet.has(idNum);
+    }).length;
+
+    // Pending means remaining/left sale orders.
+    const pending = Math.max(0, todayOrders.length - completedLocal - syncedBackend);
+
+    return { pending, completedLocal, syncedBackend };
+  }, [todayOrders, pendingPaymentSaleOrderIds]);
 
   const pickingStateBySaleId = useMemo(() => {
     const map = {};
@@ -464,7 +507,7 @@ export default function DashboardScreen({ navigation }) {
         hint: { fontSize: 14, color: colors.textSecondary, marginTop: 2 },
         lastSyncedRow: {
           flexDirection: 'row',
-          alignItems: 'center',
+          alignItems: 'flex-start',
           gap: 8,
         },
         lastSyncedBlock: { alignItems: 'flex-end' },
@@ -480,6 +523,36 @@ export default function DashboardScreen({ navigation }) {
           fontWeight: '600',
           color: 'rgba(255,255,255,0.95)',
           marginTop: 2,
+        },
+        orderStatusCirclesRow: {
+          flexDirection: 'row',
+          flexWrap: 'wrap',
+          justifyContent: 'flex-end',
+          gap: spacing.xs,
+          marginTop: spacing.xs,
+        },
+        orderStatusCircleItem: {
+          alignItems: 'center',
+          width: 40,
+        },
+        orderStatusCircle: {
+          width: 28,
+          height: 28,
+          borderRadius: 14,
+          justifyContent: 'center',
+          alignItems: 'center',
+        },
+        orderStatusCircleText: {
+          fontSize: 12,
+          fontWeight: '800',
+          color: '#fff',
+        },
+        orderStatusCircleLabel: {
+          fontSize: 8,
+          fontWeight: '700',
+          color: 'rgba(255,255,255,0.75)',
+          marginTop: 3,
+          textAlign: 'center',
         },
         dailyVisitBtnTop: {
           backgroundColor: 'transparent',
@@ -740,6 +813,27 @@ export default function DashboardScreen({ navigation }) {
                       })
                     : '—'}
                 </Text>
+
+                {/* Order status indicators (Pending / Completed Local / Synced) */}
+                <View style={styles.orderStatusCirclesRow}>
+                  <View style={styles.orderStatusCircleItem}>
+                    <View style={[styles.orderStatusCircle, { backgroundColor: colors.textSecondary }]}>
+                      <Text style={styles.orderStatusCircleText}>{orderStatusCounts.pending}</Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.orderStatusCircleItem}>
+                    <View style={[styles.orderStatusCircle, { backgroundColor: colors.warning }]}>
+                      <Text style={styles.orderStatusCircleText}>{orderStatusCounts.completedLocal}</Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.orderStatusCircleItem}>
+                    <View style={[styles.orderStatusCircle, { backgroundColor: colors.success }]}>
+                      <Text style={styles.orderStatusCircleText}>{orderStatusCounts.syncedBackend}</Text>
+                    </View>
+                  </View>
+                </View>
               </View>
             </View>
             {/* //Daily Visit Keep Commented for now */}

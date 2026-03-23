@@ -161,7 +161,7 @@ export async function getSaleOrderById(id) {
   const db = await getDb();
   try {
     const row = await db.getFirstAsync(`
-      SELECT so.*, p.city as partner_city, p.phone as partner_phone
+      SELECT so.*, p.street as partner_street, p.city as partner_city, p.phone as partner_phone, p.vat as partner_vat
       FROM sale_orders so
       LEFT JOIN partners p ON so.partner_id = p.id
       WHERE so.id = ?
@@ -171,8 +171,10 @@ export async function getSaleOrderById(id) {
 
     return {
       ...row,
+      street: row.partner_street || '',
       city: row.partner_city || '',
       partner_phone: row.partner_phone ?? '',
+      partner_vat: row.partner_vat ?? '',
       partner_id: row.partner_id != null ? [row.partner_id, row.partner_name ?? ''] : null,
       order_line: safeParseJson(row.order_line, []),
     };
