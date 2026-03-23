@@ -29,6 +29,7 @@ const SALE_ORDERS_COLUMNS = [
   { name: 'partner_name', def: 'TEXT' },
   { name: 'state', def: 'TEXT' },
   { name: 'date_order', def: 'TEXT' },
+  { name: 'commitment_date', def: 'TEXT' }, // for delivery-date-based sync filtering/sorting
   { name: 'amount_total', def: 'REAL' },
   { name: 'amount_untaxed', def: 'REAL' },
   { name: 'amount_tax', def: 'REAL' },
@@ -64,6 +65,7 @@ async function runMigrations(db) {
       partner_name TEXT,
       state TEXT,
       date_order TEXT,
+      commitment_date TEXT,
       amount_total REAL,
       amount_untaxed REAL,
       amount_tax REAL,
@@ -411,6 +413,20 @@ async function runMigrations(db) {
       console.warn('[Migration] sync_queue is_uploaded:', e);
     }
     await db.runAsync('PRAGMA user_version = 15');
+  }
+
+  // Migration 16: Add commitment_date to sale_orders for delivery-date-based sync filtering/sorting
+  if (current < 16) {
+    try {
+      const info = await db.getAllAsync('PRAGMA table_info(sale_orders)');
+      const names = new Set((info || []).map((c) => c.name));
+      if (!names.has('commitment_date')) {
+        await db.runAsync('ALTER TABLE sale_orders ADD COLUMN commitment_date TEXT');
+      }
+    } catch (e) {
+      console.warn('[Migration] sale_orders commitment_date:', e);
+    }
+    await db.runAsync('PRAGMA user_version = 16');
   }
 }
 

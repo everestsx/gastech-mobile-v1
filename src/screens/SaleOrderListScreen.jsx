@@ -38,7 +38,7 @@ function isToday(d) {
 }
 
 export default function SaleOrderListScreen({ route, navigation }) {
-  const { colors } = useTheme();
+  const { colors, syncDateField } = useTheme();
   const insets = useSafeAreaInsets();
   const customerId = route?.params?.customerId ?? null;
   const customerNameFromParams = route?.params?.customerName ?? null;
@@ -232,7 +232,10 @@ export default function SaleOrderListScreen({ route, navigation }) {
       ]);
       const all = Array.isArray(data) ? data : [];
       const dateStr = formatDate(selectedDate);
-      let list = all.filter((o) => (o.date_order || '').startsWith(dateStr));
+      let list = all.filter((o) => {
+        const selectedDateValue = syncDateField === 'delivery_date' ? o.commitment_date : o.date_order;
+        return String(selectedDateValue || '').startsWith(dateStr);
+      });
       if (customerId != null) {
         list = list.filter((o) => o.partner_id?.[0] === customerId);
         const partner = Array.isArray(cachedCustomers)
@@ -276,7 +279,7 @@ export default function SaleOrderListScreen({ route, navigation }) {
     } finally {
       setLoading(false);
     }
-  }, [customerId, selectedDate]);
+  }, [customerId, selectedDate, syncDateField]);
 
   useEffect(() => {
     loadOrders();

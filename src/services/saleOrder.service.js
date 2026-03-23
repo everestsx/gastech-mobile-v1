@@ -13,6 +13,7 @@ const SALE_ORDER_FIELDS = [
   "partner_id",
   "state",
   "date_order",
+  "commitment_date",
   "amount_total",
   "amount_untaxed",
   "amount_tax",
@@ -26,19 +27,31 @@ const SALE_ORDER_FIELDS = [
   // "x_payment_type",
 ];
 
+function resolveDateField(syncDateField) {
+  return syncDateField === 'delivery_date' ? 'commitment_date' : 'date_order';
+}
+
+function resolveDateValue(dateFrom) {
+  if (!dateFrom) return null;
+  return String(dateFrom).includes(' ') ? String(dateFrom) : `${dateFrom} 00:00:00`;
+}
+
 /**
  * Get ALL sale orders (with invoice_status for list display)
  * @param {string} dateFrom - Optional ISO date string (e.g., "2024-03-13") to filter orders from this date onward
+ * @param {'creation_date'|'delivery_date'} syncDateField - Filter and sort field selector from sync settings
  */
-export const getAllSaleOrders = (dateFrom) => {
-  const domain = dateFrom ? [['date_order', '>=', dateFrom]] : [];
+export const getAllSaleOrders = (dateFrom, syncDateField = 'creation_date') => {
+  const dateField = resolveDateField(syncDateField);
+  const dateValue = resolveDateValue(dateFrom);
+  const domain = dateValue ? [[dateField, '>=', dateValue]] : [];
   return callOdoo(
     "sale.order",
     "search_read",
     [domain],
     {
       fields: SALE_ORDER_FIELDS,
-      order: "date_order desc",
+      order: `${dateField} desc, id desc`,
       limit: 500,
     }
   );
@@ -48,11 +61,14 @@ export const getAllSaleOrders = (dateFrom) => {
  * Get sale orders for a specific vehicle only (for vehicle-scoped sync).
  * @param {number} vehicleId - The vehicle ID to filter by
  * @param {string} dateFrom - Optional ISO date string (e.g., "2024-03-13") to filter orders from this date onward
+ * @param {'creation_date'|'delivery_date'} syncDateField - Filter and sort field selector from sync settings
  */
-export const getSaleOrdersByVehicle = (vehicleId, dateFrom) => {
+export const getSaleOrdersByVehicle = (vehicleId, dateFrom, syncDateField = 'creation_date') => {
+  const dateField = resolveDateField(syncDateField);
+  const dateValue = resolveDateValue(dateFrom);
   const domain = [['vehicle_id', '=', vehicleId]];
-  if (dateFrom) {
-    domain.push(['date_order', '>=', dateFrom]);
+  if (dateValue) {
+    domain.push([dateField, '>=', dateValue]);
   }
   return callOdoo(
     "sale.order",
@@ -60,7 +76,7 @@ export const getSaleOrdersByVehicle = (vehicleId, dateFrom) => {
     [domain],
     {
       fields: SALE_ORDER_FIELDS,
-      order: "date_order desc",
+      order: `${dateField} desc, id desc`,
       limit: 500,
     }
   );

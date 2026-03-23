@@ -15,9 +15,22 @@ import { getUserSession } from '../services/sync.service';
 import { spacing, borderRadius } from '../constants/theme';
 
 export default function SettingsScreen({ navigation }) {
-  const { colors, theme, setTheme, showCreateSalesOrder, showReturnOrder, setShowCreateSalesOrder, setShowReturnOrder, syncPeriod, setSyncPeriod } = useTheme();
+  const {
+    colors,
+    theme,
+    setTheme,
+    showCreateSalesOrder,
+    showReturnOrder,
+    setShowCreateSalesOrder,
+    setShowReturnOrder,
+    syncPeriod,
+    setSyncPeriod,
+    syncDateField,
+    setSyncDateField,
+  } = useTheme();
   const [user, setUser] = useState(null);
   const [showSyncPeriodModal, setShowSyncPeriodModal] = useState(false);
+  const [showSyncDateFieldModal, setShowSyncDateFieldModal] = useState(false);
 
   useEffect(() => {
     getUserSession().then(setUser);
@@ -126,6 +139,23 @@ export default function SettingsScreen({ navigation }) {
         </View>
       </TouchableOpacity>
 
+      <TouchableOpacity
+        style={[styles.row, { backgroundColor: colors.surface, borderColor: colors.border }]}
+        onPress={() => setShowSyncDateFieldModal(true)}
+        activeOpacity={0.8}
+      >
+        <View style={styles.rowLeft}>
+          <Ionicons name="funnel-outline" size={22} color={colors.primary} />
+          <Text style={[styles.rowLabel, { color: colors.text }]}>Sync Date Field</Text>
+        </View>
+        <View style={styles.rowRight}>
+          <Text style={[styles.syncPeriodValue, { color: colors.textSecondary }]}>
+            {syncDateField === 'delivery_date' ? 'Delivery date' : 'Creation date'}
+          </Text>
+          <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} style={{ marginLeft: 8 }} />
+        </View>
+      </TouchableOpacity>
+
       <Modal
         visible={showSyncPeriodModal}
         transparent
@@ -162,6 +192,47 @@ export default function SettingsScreen({ navigation }) {
             <TouchableOpacity
               style={[styles.modalCloseBtn, { backgroundColor: colors.primaryLight }]}
               onPress={() => setShowSyncPeriodModal(false)}
+              activeOpacity={0.7}
+            >
+              <Text style={[styles.modalCloseBtnText, { color: colors.primary }]}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={showSyncDateFieldModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowSyncDateFieldModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { backgroundColor: colors.surface }]}>
+            <Text style={[styles.modalTitle, { color: colors.text }]}>Select Sync Date Field</Text>
+            {[
+              { label: 'Creation date', value: 'creation_date' },
+              { label: 'Delivery date', value: 'delivery_date' },
+            ].map((option) => (
+              <TouchableOpacity
+                key={option.value}
+                style={[styles.modalOption, { borderBottomColor: colors.border }]}
+                onPress={async () => {
+                  await setSyncDateField(option.value);
+                  setShowSyncDateFieldModal(false);
+                }}
+                activeOpacity={0.6}
+              >
+                <Text style={[styles.modalOptionText, { color: colors.text }]}>
+                  {option.label}
+                </Text>
+                {syncDateField === option.value && (
+                  <Ionicons name="checkmark-circle" size={20} color={colors.primary} />
+                )}
+              </TouchableOpacity>
+            ))}
+            <TouchableOpacity
+              style={[styles.modalCloseBtn, { backgroundColor: colors.primaryLight }]}
+              onPress={() => setShowSyncDateFieldModal(false)}
               activeOpacity={0.7}
             >
               <Text style={[styles.modalCloseBtnText, { color: colors.primary }]}>Close</Text>
