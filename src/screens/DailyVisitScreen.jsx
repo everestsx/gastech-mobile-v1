@@ -25,7 +25,7 @@ function formatDate(d) {
 }
 
 export default function DailyVisitScreen({ route, navigation }) {
-  const { colors } = useTheme();
+  const { colors, syncDateField } = useTheme();
   const customerId = route?.params?.customerId ?? null;
   const [orders, setOrders] = useState([]);
   const [selectedDate, setSelectedDate] = useState(new Date());
@@ -90,7 +90,10 @@ export default function DailyVisitScreen({ route, navigation }) {
       const data = await getCachedOrders(vehicleId);
       const all = Array.isArray(data) ? data : [];
       const dateStr = formatDate(selectedDate);
-      let filtered = all.filter((o) => (o.date_order || '').startsWith(dateStr));
+      let filtered = all.filter((o) => {
+        const selectedDateValue = syncDateField === 'delivery_date' ? o.commitment_date : o.date_order;
+        return String(selectedDateValue || '').startsWith(dateStr);
+      });
       if (customerId != null) {
         filtered = filtered.filter((o) => o.partner_id?.[0] === customerId);
       }
@@ -122,7 +125,7 @@ export default function DailyVisitScreen({ route, navigation }) {
     } finally {
       setLoading(false);
     }
-  }, [selectedDate, customerId]);
+  }, [selectedDate, customerId, syncDateField]);
 
   useEffect(() => {
     loadOrders();

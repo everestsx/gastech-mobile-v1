@@ -47,6 +47,8 @@ const KEYS = {
   USER: '@gastech_user',
   LAST_SYNC: '@gastech_last_sync',
   LAST_VEHICLE_ID: '@gastech_last_vehicle_id',
+  SYNC_PERIOD: '@gastech_sync_period',
+  SYNC_DATE_FIELD: '@gastech_sync_date_field',
 };
 
 const SYNC_INTERVAL_MS = 600 * 1000; // 1 minute auto-sync when online
@@ -128,7 +130,18 @@ export async function getFilteredCustomers(vehicleId) {
  */
 export async function getCachedOrders(vehicleId = null) {
   try {
-    return await saleOrdersDb.getAllSaleOrders(vehicleId);
+    const storage = await getAsyncStorage();
+    const syncDateField = await storage.getItem(KEYS.SYNC_DATE_FIELD);
+    const sortField = syncDateField === 'delivery_date' ? 'commitment_date' : 'date_order';
+    const rows = await saleOrdersDb.getAllSaleOrders(vehicleId, sortField);
+    if (syncDateField === 'delivery_date') {
+      return (rows || []).filter((o) => {
+        const v = o?.commitment_date;
+        if (typeof v === 'string') return v.trim().length > 0;
+        return v != null;
+      });
+    }
+    return rows;
   } catch (e) {
     console.warn('getCachedOrders', e);
     return [];
@@ -542,6 +555,7 @@ async function processSyncQueue() {
     log('queue', `processing ${pending.length} pending`);
     const delivery = pending.filter((p) => p.action_type === syncQueueDb.ACTION_DELIVERY);
     const payment = pending.filter((p) => p.action_type === syncQueueDb.ACTION_PAYMENT);
+    const inventoryUpdate = pending.filter((p) => p.action_type === syncQueueDb.ACTION_INVENTORY_UPDATE);
 
     // Keep only the latest pending payment item per sale order to avoid duplicate chatter posts.
     const latestPaymentItemBySaleOrder = new Map();
@@ -687,6 +701,34 @@ async function processSyncQueue() {
         log('queue', `delivery synced id=${item.id}`);
       } catch (e) {
         logWarn('queue delivery', e);
+      }
+    }
+
+    // Inventory queue item purpose in current flow:
+    // local inventory is reduced immediately on device (is_locally_modified=1), then delivery sync updates Odoo.
+    // After delivery sync succeeds, clear local-modified flags so next inventory pull can overwrite with server truth.
+    for (const item of inventoryUpdate) {
+      try {
+        const p = item.payload || {};
+        const locationId = p.locationId != null ? Number(p.locationId) : null;
+        const updates = Array.isArray(p.updates) ? p.updates : [];
+
+        if (locationId == null || updates.length === 0) {
+          await syncQueueDb.markSynced(Number(item.id));
+          log('queue', `inventory synced id=${item.id} (no-op payload)`);
+          continue;
+        }
+
+        for (const u of updates) {
+          const productId = u?.productId != null ? Number(u.productId) : null;
+          if (productId == null) continue;
+          await vehicleInventoriesDb.clearLocalModificationFlagByLocation(locationId, productId);
+        }
+
+        await syncQueueDb.markSynced(Number(item.id));
+        log('queue', `inventory synced id=${item.id} location=${locationId} items=${updates.length}`);
+      } catch (e) {
+        logWarn('queue inventory_update', e);
       }
     }
 
@@ -1055,6 +1097,18 @@ async function processSyncQueue() {
 export async function deleteLocalData() {
   const { getDb } = await import('../database/db.js');
   const db = await getDb();
+  const pendingQueueCount = await syncQueueDb.getPendingCount();
+  const pendingAttachmentRow = await db.getFirstAsync(
+    `SELECT COUNT(*) as c FROM offline_attachments WHERE sync_status = 'pending'`
+  );
+  const pendingAttachmentCount = pendingAttachmentRow?.c ?? 0;
+
+  if (pendingQueueCount > 0 || pendingAttachmentCount > 0) {
+    throw new Error(
+      `Cannot clear local data while pending sync exists (sync_queue=${pendingQueueCount}, attachments=${pendingAttachmentCount}). Sync pending items first.`
+    );
+  }
+
   const tables = [
     'partners',
     'sale_orders',
@@ -1095,8 +1149,8 @@ export function getSyncIntervalMinutes() {
 // Helper function to compute cutoff date based on sync period setting
 async function getCutoffDateForSync() {
   try {
-    const AsyncStorage = require('@react-native-async-storage/async-storage').default;
-    const syncPeriod = await AsyncStorage.getItem('@gastech_sync_period') || '7days';
+    const storage = await getAsyncStorage();
+    const syncPeriod = await storage.getItem(KEYS.SYNC_PERIOD) || '7days';
 
     const now = new Date();
     let cutoffDate = new Date(now);
@@ -1126,6 +1180,16 @@ async function getCutoffDateForSync() {
   }
 }
 
+async function getSyncDateFieldSetting() {
+  try {
+    const storage = await getAsyncStorage();
+    const raw = await storage.getItem(KEYS.SYNC_DATE_FIELD);
+    return raw === 'delivery_date' ? 'delivery_date' : 'creation_date';
+  } catch (_) {
+    return 'creation_date';
+  }
+}
+
 // ---------- Sync: pull from Odoo and store in SQLite ----------
 
 export async function runSync() {
@@ -1149,10 +1213,14 @@ export async function runSync() {
     // Vehicle-scoped sync: when user has vehicleId and is not admin, sync only that vehicle's data.
     const vehicleId = (user?.vehicleId != null && user?.isAdmin !== true) ? user.vehicleId : null;
 
-    // Get sync period cutoff date
-    const dateFromFilter = await getCutoffDateForSync();
+    // Get sync period + selected date field (creation or delivery date)
+    const [dateFromFilter, syncDateField] = await Promise.all([
+      getCutoffDateForSync(),
+      getSyncDateFieldSetting(),
+    ]);
+    const syncDateFieldLabel = syncDateField === 'delivery_date' ? 'commitment_date' : 'date_order';
     if (dateFromFilter) {
-      log('sync', `using date filter: ${dateFromFilter}`);
+      log('sync', `using date filter: ${dateFromFilter} field=${syncDateFieldLabel}`);
     }
 
     let orders = [];
@@ -1160,7 +1228,7 @@ export async function runSync() {
 
     if (vehicleId != null) {
       log('fetch', `orders for vehicle ${vehicleId} only`);
-      orders = await getSaleOrdersByVehicle(vehicleId, dateFromFilter).catch((e) => {
+      orders = await getSaleOrdersByVehicle(vehicleId, dateFromFilter, syncDateField).catch((e) => {
         logWarn('fetch orders by vehicle', e);
         return [];
       });
@@ -1177,7 +1245,7 @@ export async function runSync() {
           logWarn('fetch customers', e);
           return [];
         }),
-        getAllSaleOrders(dateFromFilter).catch((e) => {
+        getAllSaleOrders(dateFromFilter, syncDateField).catch((e) => {
           logWarn('fetch orders', e);
           return [];
         }),
@@ -1185,11 +1253,25 @@ export async function runSync() {
     }
 
     result.customers = (customers || []).length;
+    if (syncDateField === 'delivery_date') {
+      orders = (orders || []).filter((o) => {
+        const v = o?.commitment_date;
+        if (typeof v === 'string') return v.trim().length > 0;
+        return v != null;
+      });
+      log('sync', `delivery-date mode: orders with commitment_date only => ${orders.length}`);
+    }
     result.orders = (orders || []).length;
     log('fetch', `customers=${result.customers} orders=${result.orders}`);
     if (isLoggingOut) return { error: 'Logout in progress' };
     // Dashboard and order lists read from local DB only; preserve local state for orders with pending upload.
     const pendingSaleOrderIds = await syncQueueDb.getPendingSaleOrderIds();
+    const fetchedOrderIds = (orders || []).map((o) => o?.id).filter((id) => id != null).map((id) => Number(id));
+
+    // Remove stale local orders that are outside the active sync window/method.
+    // Keep pending queue orders to avoid deleting unsynced offline work.
+    await saleOrdersDb.pruneSaleOrdersToIds(fetchedOrderIds, { preserveLocalForSaleOrderIds: pendingSaleOrderIds });
+
     log('db', 'partners');
     await partnersDb.upsertPartners(customers || []);
     log('db', 'sale_orders');

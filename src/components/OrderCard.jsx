@@ -41,7 +41,7 @@ export function getOrderTotalQty(order) {
  * When isDelivered and paymentSplit is provided, shows payment breakdown: Cash Paid, Cheque Paid, Credit Balance, Remaining balance.
  */
 export default function OrderCard({ order, onPress, isDelivered, orderLines = [], paymentSplit = null }) {
-  const { colors } = useTheme();
+  const { colors, syncDateField } = useTheme();
 
   // Consistent colors per gas size so users quickly identify Small/Medium/Large/Big across all cards
   const GAS_SIZE_COLORS = useMemo(
@@ -163,6 +163,7 @@ export default function OrderCard({ order, onPress, isDelivered, orderLines = []
   if (!order) return null;
 
   const state = order.state || 'draft';
+  const displayDate = syncDateField === 'delivery_date' ? order.commitment_date : order.date_order;
   const lines = Array.isArray(orderLines) && orderLines.length > 0
     ? orderLines
     : (order.orderLines || []);
@@ -200,7 +201,7 @@ export default function OrderCard({ order, onPress, isDelivered, orderLines = []
 
       {/* Row 3: Order date (left); Total amount (right), horizontally aligned */}
       <View style={[styles.rowBetween, styles.dateAmountRow]}>
-        <Text style={styles.orderDate}>{formatOrderDate(order.date_order)}</Text>
+        <Text style={styles.orderDate}>{formatOrderDate(displayDate)}</Text>
         <Text style={styles.amount}>{formatCurrency(order.amount_total)}</Text>
       </View>
 
