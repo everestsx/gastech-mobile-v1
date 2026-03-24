@@ -49,7 +49,8 @@ const LOGO_SIZE = 48;
 
 function StockCard({ item, colors, cardWidth, isLeft }) {
   const qty = Number(item.quantity) || 0;
-  const available = Number(item.available_quantity) ?? qty;
+  const available = Number.isFinite(Number(item.available_quantity)) ? Number(item.available_quantity) : qty;
+  const delivered = Math.max(0, qty - available);
   const rawName = item.product_name || `Product ${item.product_id || ''}`.trim() || '—';
   const name = formatProductName(rawName);
   const lowStock = available <= 0;
@@ -79,13 +80,23 @@ function StockCard({ item, colors, cardWidth, isLeft }) {
         <Text style={[styles.cardProductName, { color: colors.text }]} numberOfLines={2}>
           {name}
         </Text>
-        <View style={styles.cardQtyRow}>
-          <Text style={[styles.cardQtyValue, { color: colors.text }]}>{available}</Text>
-          <Text style={[styles.cardQtyLabel, { color: colors.textSecondary }]}>On hand</Text>
+        <View style={styles.stockRowsWrap}>
+          <View style={styles.stockRow}>
+            <Text style={[styles.stockRowLabel, { color: colors.textSecondary }]}>Total Stock</Text>
+            <Text style={[styles.stockRowValue, { color: colors.text }]}>{qty}</Text>
+          </View>
+          <View style={styles.stockRow}>
+            <Text style={[styles.stockRowLabel, { color: colors.textSecondary }]}>Delivered Stock</Text>
+            <Text style={[styles.stockRowValue, { color: colors.text }]}>{delivered}</Text>
+          </View>
+          <View style={styles.stockRow}>
+            <Text style={[styles.stockRowLabel, { color: colors.textSecondary }]}>Remaining Stock</Text>
+            <Text style={[styles.stockRowValue, { color: lowStock ? colors.error : colors.primary }]}>{available}</Text>
+          </View>
         </View>
         <View style={[styles.badge, { backgroundColor: lowStock ? colors.error + '20' : colors.primarySurface }]}>
           <Text style={[styles.badgeText, { color: lowStock ? colors.error : colors.primary }]}>
-            {qty} Total
+            {lowStock ? 'Out of stock' : 'In stock'}
           </Text>
         </View>
       </View>
@@ -125,19 +136,22 @@ const styles = StyleSheet.create({
     marginBottom: spacing.sm,
     minHeight: 40,
   },
-  cardQtyRow: {
+  stockRowsWrap: {
+    marginBottom: spacing.sm,
+    gap: 4,
+  },
+  stockRow: {
     flexDirection: 'row',
-    alignItems: 'baseline',
-    gap: 6,
-    marginBottom: spacing.xs,
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
-  cardQtyValue: {
-    fontSize: 26,
-    fontWeight: '800',
-  },
-  cardQtyLabel: {
+  stockRowLabel: {
     fontSize: 12,
     fontWeight: '600',
+  },
+  stockRowValue: {
+    fontSize: 15,
+    fontWeight: '800',
   },
   badge: {
     alignSelf: 'flex-start',
