@@ -9,7 +9,10 @@ import { getCachedOrders, getUserSession } from '../services/sync.service';
 const CUSTOMER_PREFIX = 'CUSTOMER:';
 
 function formatDate(d) {
-  return d.toISOString().split('T')[0];
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 /** Get today's first (non-cancelled) order for this customer from cache. */
@@ -21,7 +24,11 @@ async function getTodayOrderForCustomer(customerId, syncDateField) {
   const todayStr = formatDate(new Date());
   const list = all.filter(
     (o) =>
-      String((syncDateField === 'delivery_date' ? o.commitment_date : o.date_order) || '').startsWith(todayStr) &&
+      String(
+        (syncDateField === 'delivery_date'
+          ? (o.commitment_date || o.date_order)
+          : (o.date_order || o.commitment_date)) || ''
+      ).startsWith(todayStr) &&
       o.partner_id?.[0] === customerId &&
       String(o.state || '') !== 'cancel'
   );

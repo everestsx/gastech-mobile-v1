@@ -148,10 +148,7 @@ export default function DashboardScreen({ navigation }) {
       // 1) Pending orders (not yet invoiced/completed)
       // 2) Completed locally while offline (payment queued, not uploaded yet)
       // 3) Completed and synced to backend (payment uploaded)
-      const [pendingQueueItems, syncedPaymentOrderIds] = await Promise.all([
-        syncQueueDb.getPending(),
-        syncQueueDb.getSyncedPaymentSaleOrderIds(),
-      ]);
+      const pendingQueueItems = await syncQueueDb.getPending();
 
       const pendingPaymentOrderIds = new Set(
         (pendingQueueItems || [])
@@ -168,11 +165,10 @@ export default function DashboardScreen({ navigation }) {
         const orderId = Number(order?.id);
         const isCompleted = String(order?.invoice_status || '').toLowerCase() === 'invoiced';
         const isPendingUpload = pendingPaymentOrderIds.has(orderId);
-        const isSyncedUpload = syncedPaymentOrderIds.has(orderId) && !isPendingUpload;
 
         if (!isCompleted) pendingOrders += 1;
         else if (isPendingUpload) localCompleted += 1;
-        else if (isSyncedUpload) syncedCompleted += 1;
+        else syncedCompleted += 1;
       }
 
       setOrderSyncStats({
