@@ -141,13 +141,6 @@ export async function getCachedOrders(vehicleId = null) {
     const syncDateField = await storage.getItem(KEYS.SYNC_DATE_FIELD);
     const sortField = syncDateField === 'delivery_date' ? 'commitment_date' : 'date_order';
     const rows = await saleOrdersDb.getAllSaleOrders(vehicleId, sortField);
-    if (syncDateField === 'delivery_date') {
-      return (rows || []).filter((o) => {
-        const v = o?.commitment_date;
-        if (typeof v === 'string') return v.trim().length > 0;
-        return v != null;
-      });
-    }
     return rows;
   } catch (e) {
     console.warn('getCachedOrders', e);
@@ -1260,14 +1253,9 @@ export async function runSync() {
     }
 
     result.customers = (customers || []).length;
-    if (syncDateField === 'delivery_date') {
-      orders = (orders || []).filter((o) => {
-        const v = o?.commitment_date;
-        if (typeof v === 'string') return v.trim().length > 0;
-        return v != null;
-      });
-      log('sync', `delivery-date mode: orders with commitment_date only => ${orders.length}`);
-    }
+    // Keep all fetched orders in local DB.
+    // In delivery-date mode, UI reads commitment_date first and falls back to date_order
+    // so offline-completed orders do not disappear when commitment_date is missing.
     result.orders = (orders || []).length;
     log('fetch', `customers=${result.customers} orders=${result.orders}`);
     if (isLoggingOut) return { error: 'Logout in progress' };

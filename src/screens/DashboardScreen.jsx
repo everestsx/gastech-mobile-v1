@@ -68,7 +68,7 @@ const SYNC_INDICATOR_GAP = 12;
 export default function DashboardScreen({ navigation }) {
   const insets = useSafeAreaInsets();
   const { isSyncing, syncCompleteTimestamp } = useSync();
-  const { colors, showCreateSalesOrder: userShowCreate, showReturnOrder: userShowReturn } = useTheme();
+  const { colors, showCreateSalesOrder: userShowCreate, showReturnOrder: userShowReturn, syncDateField } = useTheme();
   // Visibility from config file; user preference (theme/settings) can further hide when config allows
   const showCreateSalesOrder = dashboardConfig.showCreateSalesOrder && userShowCreate;
   const showReturnOrder = dashboardConfig.showReturnOrder && userShowReturn;
@@ -104,6 +104,19 @@ export default function DashboardScreen({ navigation }) {
     setExpandedCollectionCard((p) => (p === key ? null : key));
   }, []);
 
+  const formatLocalDate = useCallback((d) => {
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }, []);
+
+  const getOrderDateForSyncMode = useCallback((order) => {
+    const preferred = syncDateField === 'delivery_date' ? order?.commitment_date : order?.date_order;
+    const fallback = order?.date_order || order?.commitment_date;
+    return String(preferred || fallback || '');
+  }, [syncDateField]);
+
   const loadData = useCallback(async () => {
     try {
       const [userData, routesData] = await Promise.all([
@@ -116,8 +129,8 @@ export default function DashboardScreen({ navigation }) {
       const vehicleId = user?.isAdmin === false ? user.vehicleId : null;
       const data = await getCachedOrders(vehicleId);
       setOrders(Array.isArray(data) ? data : []);
-      const today = new Date().toISOString().split('T')[0];
-      const todayOrders = (Array.isArray(data) ? data : []).filter((o) => (o.date_order || '').startsWith(today));
+      const today = formatLocalDate(new Date());
+      const todayOrders = (Array.isArray(data) ? data : []).filter((o) => getOrderDateForSyncMode(o).startsWith(today));
       console.log('todayOrders', todayOrders);
       const orderIds = todayOrders.map((o) => o.id);
       const [totals, pickings, orderLines, splits] = await Promise.all([
@@ -177,7 +190,7 @@ export default function DashboardScreen({ navigation }) {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [formatLocalDate, getOrderDateForSyncMode]);
 
 
   const loadCommissionData = useCallback(async () => {
@@ -250,13 +263,13 @@ export default function DashboardScreen({ navigation }) {
   }, [loadData, loadSyncStatus]);
 
   useEffect(() => {
-    const today = new Date().toISOString().split('T')[0];
+    const today = formatLocalDate(new Date());
     if (selectedChartDate === today) {
       setChartLineTotalsByOrder(lineTotalsByOrder);
       setChartPickingsBySaleId(pickingsBySaleId);
       return;
     }
-    const dateOrders = orders.filter((o) => (o.date_order || '').startsWith(selectedChartDate));
+    const dateOrders = orders.filter((o) => getOrderDateForSyncMode(o).startsWith(selectedChartDate));
     const orderIds = dateOrders.map((o) => o.id);
     if (orderIds.length === 0) {
       setChartLineTotalsByOrder({});
@@ -282,7 +295,7 @@ export default function DashboardScreen({ navigation }) {
       }
     })();
     return () => { cancelled = true; };
-  }, [selectedChartDate, orders, lineTotalsByOrder, pickingsBySaleId]);
+  }, [selectedChartDate, orders, lineTotalsByOrder, pickingsBySaleId, formatLocalDate, getOrderDateForSyncMode]);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -308,8 +321,8 @@ export default function DashboardScreen({ navigation }) {
     }
   };
 
-  const today = new Date().toISOString().split('T')[0];
-  const todayOrders = orders.filter((o) => (o.date_order || '').startsWith(today));
+  const today = formatLocalDate(new Date());
+  const todayOrders = orders.filter((o) => getOrderDateForSyncMode(o).startsWith(today));
 
   const pickingStateBySaleId = useMemo(() => {
     const map = {};
@@ -425,8 +438,8 @@ export default function DashboardScreen({ navigation }) {
   const gasPct = totalGasInOrders > 0 ? Math.min(100, Math.round((totalGasDelivered / totalGasInOrders) * 100)) : 0;
 
   const chartDateOrders = useMemo(
-      () => orders.filter((o) => (o.date_order || '').startsWith(selectedChartDate)),
-      [orders, selectedChartDate]
+      () => orders.filter((o) => getOrderDateForSyncMode(o).startsWith(selectedChartDate)),
+      [orders, selectedChartDate, getOrderDateForSyncMode]
   );
   const chartPickingStateBySaleId = useMemo(() => {
     const map = {};
@@ -1007,7 +1020,7 @@ export default function DashboardScreen({ navigation }) {
                 onPress={() => {
                   const d = new Date(selectedChartDate + 'T12:00:00');
                   d.setDate(d.getDate() - 1);
-                  setSelectedChartDate(d.toISOString().split('T')[0]);
+                  setSelectedChartDate(formatLocalDate(d));
                 }}
                 style={{ padding: 6 }}
                 activeOpacity={0.8}
@@ -1015,7 +1028,7 @@ export default function DashboardScreen({ navigation }) {
                 <Ionicons name="chevron-back" size={22} color={colors.primary} />
               </TouchableOpacity>
               <Text style={{ fontSize: 12, color: colors.textSecondary, minWidth: 72, textAlign: 'center' }}>
-                {selectedChartDate === new Date().toISOString().split('T')[0]
+                {selectedChartDate === formatLocalDate(new Date())
                   ? 'Today'
                   : new Date(selectedChartDate + 'T12:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
               </Text>
@@ -1023,7 +1036,7 @@ export default function DashboardScreen({ navigation }) {
                 onPress={() => {
                   const d = new Date(selectedChartDate + 'T12:00:00');
                   d.setDate(d.getDate() + 1);
-                  setSelectedChartDate(d.toISOString().split('T')[0]);
+                  setSelectedChartDate(formatLocalDate(d));
                 }}
                 style={{ padding: 6 }}
                 activeOpacity={0.8}
@@ -1044,7 +1057,7 @@ export default function DashboardScreen({ navigation }) {
                   display={Platform.OS === 'ios' ? 'spinner' : 'default'}
                   onChange={(_, date) => {
                     if (Platform.OS === 'android') setShowChartDatePicker(false);
-                    if (date) setSelectedChartDate(date.toISOString().split('T')[0]);
+                    if (date) setSelectedChartDate(formatLocalDate(date));
                   }}
                 />
               )}

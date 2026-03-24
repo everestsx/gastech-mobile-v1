@@ -236,7 +236,9 @@ export default function SaleOrderListScreen({ route, navigation }) {
       const all = Array.isArray(data) ? data : [];
       const dateStr = formatDate(selectedDate);
       let list = all.filter((o) => {
-        const selectedDateValue = syncDateField === 'delivery_date' ? o.commitment_date : o.date_order;
+        const selectedDateValue = syncDateField === 'delivery_date'
+          ? (o.commitment_date || o.date_order)
+          : (o.date_order || o.commitment_date);
         return String(selectedDateValue || '').startsWith(dateStr);
       });
       if (customerId != null) {

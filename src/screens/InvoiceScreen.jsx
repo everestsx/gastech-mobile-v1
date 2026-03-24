@@ -214,9 +214,9 @@ function buildInvoiceHtml(
   <div class="title">Tax Invoice</div>
   <div class="two-col">
     <div class="col">
-      <div class="field"><span class="label">Tax Invoice No.:</span>  ${invNo}</div>
+      <div class="field"><span class="label">Invoice No.:</span>  ${invNo}</div>
       ${hasSupplierTin ? `<div class="field"><span class="label">Suppliers TIN:</span> ${supplierTinSafe}</div>` : ''}
-      <div class="field"><span class="label">Supplier's Name:</span> ${supplierName}</div>
+      <div class="field"><span class="label">Supplier Name:</span> ${supplierName}</div>
       <div class="field"><span class="label">Address:</span> ${supplierAddress}</div>
       <div class="field"><span class="label">Telephone No:</span> ${supplierPhone}</div>
       <div class="field"><span class="label">Date of Delivery:</span> ${date}</div>
@@ -224,7 +224,7 @@ function buildInvoiceHtml(
     <div class="col">
       <div class="field"><span class="label">Date of Invoice :</span> ${date}</div>
       ${hasPurchaserTin ? `<div class="field"><span class="label">Customers TIN:</span> ${purchaserTinSafe}</div>` : ''}
-      <div class="field"><span class="label">Customer's Name:</span> ${customerName}</div>
+      <div class="field"><span class="label">Customer Name:</span> ${customerName}</div>
       <div class="field"><span class="label">Address:</span> ${customerAddress}</div>
       <div class="field"><span class="label">Telephone No:</span> ${customerPhone}</div>
       <div class="field"><span class="label">Place of Supply:</span> ${cityPart !== '—' ? cityPart.replace(/</g, '&lt;') : '—'}</div>
