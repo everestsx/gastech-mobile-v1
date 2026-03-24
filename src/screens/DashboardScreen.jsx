@@ -63,6 +63,15 @@ function formatShort(amount) {
   return `Rs. ${n}`;
 }
 
+/** Local calendar YYYY-MM-DD (avoid UTC day-shift from toISOString()). */
+function formatLocalYyyyMmDd(d) {
+  if (!(d instanceof Date) || Number.isNaN(d.getTime())) return '';
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 const SYNC_INDICATOR_GAP = 12;
 
 export default function DashboardScreen({ navigation }) {
@@ -81,7 +90,7 @@ export default function DashboardScreen({ navigation }) {
   const [loading, setLoading] = useState(true);
   const [lastSyncTime, setLastSyncTime] = useState(null);
   const [syncLog, setSyncLog] = useState([]);
-  const [selectedChartDate, setSelectedChartDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [selectedChartDate, setSelectedChartDate] = useState(() => formatLocalYyyyMmDd(new Date()));
   const [showChartDatePicker, setShowChartDatePicker] = useState(false);
   const [chartLineTotalsByOrder, setChartLineTotalsByOrder] = useState({});
   const [chartPickingsBySaleId, setChartPickingsBySaleId] = useState([]);
@@ -104,12 +113,7 @@ export default function DashboardScreen({ navigation }) {
     setExpandedCollectionCard((p) => (p === key ? null : key));
   }, []);
 
-  const formatLocalDate = useCallback((d) => {
-    const year = d.getFullYear();
-    const month = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
-  }, []);
+  const formatLocalDate = useCallback((d) => formatLocalYyyyMmDd(d), []);
 
   const getOrderDateForSyncMode = useCallback((order) => {
     const preferred = syncDateField === 'delivery_date' ? order?.commitment_date : order?.date_order;
