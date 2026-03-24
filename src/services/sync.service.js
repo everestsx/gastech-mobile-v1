@@ -1186,7 +1186,7 @@ async function getSyncDateFieldSetting() {
     const raw = await storage.getItem(KEYS.SYNC_DATE_FIELD);
     return raw === 'delivery_date' ? 'delivery_date' : 'creation_date';
   } catch (_) {
-    return 'delivery_date';
+    return 'creation_date';
   }
 }
 
@@ -1225,10 +1225,12 @@ export async function runSync() {
 
     let orders = [];
     let customers = [];
+    let orderFetchFailed = false;
 
     if (vehicleId != null) {
       log('fetch', `orders for vehicle ${vehicleId} only`);
       orders = await getSaleOrdersByVehicle(vehicleId, dateFromFilter, syncDateField).catch((e) => {
+        orderFetchFailed = true;
         logWarn('fetch orders by vehicle', e);
         return [];
       });
@@ -1246,6 +1248,7 @@ export async function runSync() {
           return [];
         }),
         getAllSaleOrders(dateFromFilter, syncDateField).catch((e) => {
+          orderFetchFailed = true;
           logWarn('fetch orders', e);
           return [];
         }),
@@ -1261,18 +1264,31 @@ export async function runSync() {
     if (isLoggingOut) return { error: 'Logout in progress' };
     // Dashboard and order lists read from local DB only; preserve local state for orders with pending upload.
     const pendingSaleOrderIds = await syncQueueDb.getPendingSaleOrderIds();
+    const syncedPaymentSaleOrderIds = await syncQueueDb.getSyncedPaymentSaleOrderIds();
     const fetchedOrderIds = (orders || []).map((o) => o?.id).filter((id) => id != null).map((id) => Number(id));
+    const fetchedOrderIdSet = new Set(fetchedOrderIds);
+    const preserveLocalSaleOrderIds = new Set(pendingSaleOrderIds);
+    for (const soId of syncedPaymentSaleOrderIds) {
+      const idNum = Number(soId);
+      if (Number.isFinite(idNum) && fetchedOrderIdSet.has(idNum)) {
+        preserveLocalSaleOrderIds.add(idNum);
+      }
+    }
 
-    // Remove stale local orders that are outside the active sync window/method.
-    // Keep pending queue orders to avoid deleting unsynced offline work.
-    await saleOrdersDb.pruneSaleOrdersToIds(fetchedOrderIds, { preserveLocalForSaleOrderIds: pendingSaleOrderIds });
+    // Remove stale local orders only when order fetch is healthy and non-empty.
+    // This prevents accidental local wipe if backend temporarily returns empty/error.
+    if (!orderFetchFailed && fetchedOrderIds.length > 0) {
+      await saleOrdersDb.pruneSaleOrdersToIds(fetchedOrderIds, { preserveLocalForSaleOrderIds: preserveLocalSaleOrderIds });
+    } else {
+      log('sync', `skip local prune (orderFetchFailed=${orderFetchFailed}, fetchedOrders=${fetchedOrderIds.length})`);
+    }
 
     log('db', 'partners');
     await partnersDb.upsertPartners(customers || []);
     log('db', 'sale_orders');
-    await saleOrdersDb.upsertSaleOrders(orders || [], { preserveLocalForSaleOrderIds: pendingSaleOrderIds });
+    await saleOrdersDb.upsertSaleOrders(orders || [], { preserveLocalForSaleOrderIds: preserveLocalSaleOrderIds });
 
-    await refreshPaymentTypesFromOdoo(orders || [], { skipOrderIds: pendingSaleOrderIds });
+    await refreshPaymentTypesFromOdoo(orders || [], { skipOrderIds: preserveLocalSaleOrderIds });
 
     const orderIds = (orders || []).map((o) => o.id);
     let allLines = [];
