@@ -46,6 +46,7 @@ const SALE_ORDERS_COLUMNS = [
 
 async function runMigrations(db) {
   await db.execAsync('PRAGMA journal_mode = WAL');
+  await db.execAsync('PRAGMA busy_timeout = 5000');
   const versionRow = await db.getFirstAsync('PRAGMA user_version');
   const current = versionRow?.user_version ?? 0;
 
@@ -436,7 +437,25 @@ async function runMigrations(db) {
 function enqueue(fn) {
   const p = _queue.then(async () => {
     const db = await getRawDb();
-    return fn(db);
+    const isLockedError = (err) => {
+      const msg = (err?.message || String(err || '')).toLowerCase();
+      return msg.includes('database is locked') || msg.includes('error code : database is locked');
+    };
+    const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    const maxAttempts = 3;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await fn(db);
+      } catch (err) {
+        if (!isLockedError(err) || attempt === maxAttempts) {
+          throw err;
+        }
+        const backoffMs = 80 * attempt;
+        console.warn(`[DB] database locked (attempt ${attempt}/${maxAttempts}); retrying in ${backoffMs}ms`);
+        await delay(backoffMs);
+      }
+    }
   });
   _queue = p.catch(() => { }); // keep queue moving so next op can run
   return p;

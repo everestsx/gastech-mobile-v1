@@ -48,7 +48,7 @@ if (__DEV__) {
   try {
     const c = getOdooConfig();
     console.log('[Odoo] Using server:', getHostFromUrl(c.url));
-  } catch (_) {}
+  } catch (_) { }
 }
 
 /** fetch with a real timeout (React Native fetch ignores timeout option). */
@@ -71,6 +71,27 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = REQUEST_TIMEOUT_M
     throw e;
   }
 }
+
+/**
+ * Quick connectivity probe to avoid long sync hangs when device is offline.
+ * Returns true when server responds (any HTTP status), false on network/timeout.
+ */
+export const isOdooReachable = async (timeoutMs = 2500) => {
+  try {
+    const { url } = getOdooConfig();
+    const response = await fetchWithTimeout(
+      url,
+      {
+        method: 'HEAD',
+        credentials: USE_SESSION ? 'include' : 'omit',
+      },
+      timeoutMs
+    );
+    return !!response;
+  } catch (_) {
+    return false;
+  }
+};
 
 export const callOdoo = async (model, method, domain = [], options = {}) => {
   const { url, db, uid, apiKey } = getOdooConfig();

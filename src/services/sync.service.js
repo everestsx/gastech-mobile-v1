@@ -43,6 +43,7 @@ export function setSyncCompleteListener(fn) {
   _syncCompleteListener = fn;
 }
 let _isProcessingSyncQueue = false;
+let _activeRunSyncPromise = null;
 const KEYS = {
   USER: '@gastech_user',
   LAST_SYNC: '@gastech_last_sync',
@@ -1193,334 +1194,358 @@ async function getSyncDateFieldSetting() {
 // ---------- Sync: pull from Odoo and store in SQLite ----------
 
 export async function runSync() {
-  if (_syncStateListener) _syncStateListener(true);
-  log('start', new Date().toISOString());
-  const result = { customers: 0, orders: 0, orderLines: 0, pickings: 0, moves: 0, moveLines: 0, journals: 0, routes: 0, vehicles: 0, vehicleWarehouses: 0, vehicleInventories: 0, error: null };
-  const syncAt = new Date().toISOString();
-  log('start', syncAt);
+  if (_activeRunSyncPromise) {
+    log('sync', 'runSync already in progress; joining existing run');
+    return _activeRunSyncPromise;
+  }
 
-  try {
-    if (isLoggingOut) {
-      return { error: 'Logout in progress' };
-    }
-    const session = await getUserSession();
-    if (!session) {
-      return { error: 'No active session' };
-    }
-    await processSyncQueue();
+  const syncPromise = (async () => {
+    if (_syncStateListener) _syncStateListener(true);
+    log('start', new Date().toISOString());
+    const result = { customers: 0, orders: 0, orderLines: 0, pickings: 0, moves: 0, moveLines: 0, journals: 0, routes: 0, vehicles: 0, vehicleWarehouses: 0, vehicleInventories: 0, error: null };
+    const syncAt = new Date().toISOString();
+    log('start', syncAt);
 
-    const user = await getUserSession();
-    // Vehicle-scoped sync: when user has vehicleId and is not admin, sync only that vehicle's data.
-    const vehicleId = (user?.vehicleId != null && user?.isAdmin !== true) ? user.vehicleId : null;
+    try {
+      if (isLoggingOut) {
+        return { error: 'Logout in progress' };
+      }
+      const session = await getUserSession();
+      if (!session) {
+        return { error: 'No active session' };
+      }
 
-    // Get sync period + selected date field (creation or delivery date)
-    const [dateFromFilter, syncDateField] = await Promise.all([
-      getCutoffDateForSync(),
-      getSyncDateFieldSetting(),
-    ]);
-    const syncDateFieldLabel = syncDateField === 'delivery_date' ? 'commitment_date' : 'date_order';
-    if (dateFromFilter) {
-      log('sync', `using date filter: ${dateFromFilter} field=${syncDateFieldLabel}`);
-    }
+      // Fast-fail when offline/unreachable so sync indicator does not stay for long timeouts.
+      const { isOdooReachable } = await import('./index.service');
+      const reachable = await isOdooReachable(2500);
+      if (!reachable) {
+        return { ...result, error: 'Server unreachable (offline). Sync will retry automatically.' };
+      }
 
-    let orders = [];
-    let customers = [];
-    let orderFetchFailed = false;
+      await processSyncQueue();
 
-    if (vehicleId != null) {
-      log('fetch', `orders for vehicle ${vehicleId} only`);
-      orders = await getSaleOrdersByVehicle(vehicleId, dateFromFilter, syncDateField).catch((e) => {
-        orderFetchFailed = true;
-        logWarn('fetch orders by vehicle', e);
-        return [];
-      });
-      const partnerIds = [...new Set((orders || []).map((o) => (Array.isArray(o.partner_id) ? o.partner_id[0] : o.partner_id)).filter(Boolean))];
-      log('fetch', `partners for vehicle (${partnerIds.length} ids)`);
-      customers = await getPartnersByIds(partnerIds).catch((e) => {
-        logWarn('fetch partners by ids', e);
-        return [];
-      });
-    } else {
-      log('fetch', 'customers + orders (full sync)');
-      [customers, orders] = await Promise.all([
-        getCustomers().catch((e) => {
-          logWarn('fetch customers', e);
-          return [];
-        }),
-        getAllSaleOrders(dateFromFilter, syncDateField).catch((e) => {
-          orderFetchFailed = true;
-          logWarn('fetch orders', e);
-          return [];
-        }),
+      const user = await getUserSession();
+      // Vehicle-scoped sync: when user has vehicleId and is not admin, sync only that vehicle's data.
+      const vehicleId = (user?.vehicleId != null && user?.isAdmin !== true) ? user.vehicleId : null;
+
+      // Get sync period + selected date field (creation or delivery date)
+      const [dateFromFilter, syncDateField] = await Promise.all([
+        getCutoffDateForSync(),
+        getSyncDateFieldSetting(),
       ]);
-    }
-
-    result.customers = (customers || []).length;
-    // Keep all fetched orders in local DB.
-    // In delivery-date mode, UI reads commitment_date first and falls back to date_order
-    // so offline-completed orders do not disappear when commitment_date is missing.
-    result.orders = (orders || []).length;
-    log('fetch', `customers=${result.customers} orders=${result.orders}`);
-    if (isLoggingOut) return { error: 'Logout in progress' };
-    // Dashboard and order lists read from local DB only; preserve local state for orders with pending upload.
-    const pendingSaleOrderIds = await syncQueueDb.getPendingSaleOrderIds();
-    const syncedPaymentSaleOrderIds = await syncQueueDb.getSyncedPaymentSaleOrderIds();
-    const fetchedOrderIds = (orders || []).map((o) => o?.id).filter((id) => id != null).map((id) => Number(id));
-    const fetchedOrderIdSet = new Set(fetchedOrderIds);
-    const preserveLocalSaleOrderIds = new Set(pendingSaleOrderIds);
-    for (const soId of syncedPaymentSaleOrderIds) {
-      const idNum = Number(soId);
-      if (Number.isFinite(idNum) && fetchedOrderIdSet.has(idNum)) {
-        preserveLocalSaleOrderIds.add(idNum);
-      }
-    }
-
-    // Remove stale local orders only when order fetch is healthy and non-empty.
-    // This prevents accidental local wipe if backend temporarily returns empty/error.
-    if (!orderFetchFailed && fetchedOrderIds.length > 0) {
-      await saleOrdersDb.pruneSaleOrdersToIds(fetchedOrderIds, { preserveLocalForSaleOrderIds: preserveLocalSaleOrderIds });
-    } else {
-      log('sync', `skip local prune (orderFetchFailed=${orderFetchFailed}, fetchedOrders=${fetchedOrderIds.length})`);
-    }
-
-    log('db', 'partners');
-    await partnersDb.upsertPartners(customers || []);
-    log('db', 'sale_orders');
-    await saleOrdersDb.upsertSaleOrders(orders || [], { preserveLocalForSaleOrderIds: preserveLocalSaleOrderIds });
-
-    await refreshPaymentTypesFromOdoo(orders || [], { skipOrderIds: preserveLocalSaleOrderIds });
-
-    const orderIds = (orders || []).map((o) => o.id);
-    let allLines = [];
-    let allPickings = [];
-    let allMoves = [];
-    let allMoveLines = [];
-    const productIds = new Set();
-
-    const { callOdoo } = await import('./index.service');
-
-    if (orderIds.length > 0) {
-      const lineIds = [];
-      (orders || []).forEach((o) => {
-        (o.order_line || []).forEach((entry) => {
-          const id = Array.isArray(entry) ? entry[0] : entry;
-          if (id != null) lineIds.push(id);
-        });
-      });
-      if (lineIds.length > 0) {
-        log('fetch', `order lines (${lineIds.length} ids)`);
-        const lines = await callOdoo(
-          'sale.order.line',
-          'search_read',
-          [[['id', 'in', lineIds]]],
-          {
-            fields: ['id', 'order_id', 'product_id', 'name', 'product_uom_qty', 'price_unit', 'price_subtotal', 'price_total'],
-            limit: 1000,
-          }
-        );
-        allLines = lines || [];
-        result.orderLines = allLines.length;
-        allLines.forEach((l) => {
-          const pid = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
-          if (pid) productIds.add(pid);
-        });
-        log('fetch', `orderLines=${result.orderLines}`);
+      const syncDateFieldLabel = syncDateField === 'delivery_date' ? 'commitment_date' : 'date_order';
+      if (dateFromFilter) {
+        log('sync', `using date filter: ${dateFromFilter} field=${syncDateFieldLabel}`);
       }
 
-      log('fetch', 'stock.picking');
-      allPickings = await callOdoo(
-        'stock.picking',
-        'search_read',
-        [[['sale_id', 'in', orderIds]]],
-        { fields: ['id', 'name', 'sale_id', 'state', 'move_ids', 'backorder_ids'], limit: 500 }
-      ) || [];
-      result.pickings = allPickings.length;
-      log('fetch', `pickings=${result.pickings}`);
+      let orders = [];
+      let customers = [];
+      let orderFetchFailed = false;
 
-      for (const p of allPickings) {
-        const moveIds = p.move_ids || (Array.isArray(p.move_ids) ? p.move_ids : []);
-        if (moveIds.length === 0) continue;
-        const [moves, moveLines] = await Promise.all([
-          getStockMovesByPickingId(p.id),
-          getStockMoveLinesByMoveIds(moveIds),
+      if (vehicleId != null) {
+        log('fetch', `orders for vehicle ${vehicleId} only`);
+        orders = await getSaleOrdersByVehicle(vehicleId, dateFromFilter, syncDateField).catch((e) => {
+          orderFetchFailed = true;
+          logWarn('fetch orders by vehicle', e);
+          return [];
+        });
+        const partnerIds = [...new Set((orders || []).map((o) => (Array.isArray(o.partner_id) ? o.partner_id[0] : o.partner_id)).filter(Boolean))];
+        log('fetch', `partners for vehicle (${partnerIds.length} ids)`);
+        customers = await getPartnersByIds(partnerIds).catch((e) => {
+          logWarn('fetch partners by ids', e);
+          return [];
+        });
+      } else {
+        log('fetch', 'customers + orders (full sync)');
+        [customers, orders] = await Promise.all([
+          getCustomers().catch((e) => {
+            logWarn('fetch customers', e);
+            return [];
+          }),
+          getAllSaleOrders(dateFromFilter, syncDateField).catch((e) => {
+            orderFetchFailed = true;
+            logWarn('fetch orders', e);
+            return [];
+          }),
         ]);
-        (moves || []).forEach((m) => {
-          allMoves.push({ ...m, picking_id: m.picking_id ?? p.id });
-          const pid = Array.isArray(m.product_id) ? m.product_id[0] : m.product_id;
-          if (pid) productIds.add(pid);
-        });
-        (moveLines || []).forEach((ml) => allMoveLines.push(ml));
       }
-      result.moves = allMoves.length;
-      result.moveLines = allMoveLines.length;
-      log('fetch', `moves=${result.moves} moveLines=${result.moveLines}`);
-    }
 
-    log('db', 'sale_order_lines');
-    await saleOrderLinesDb.upsertSaleOrderLines(allLines);
-    log('db', 'stock_pickings');
-    await stockPickingsDb.upsertStockPickings(allPickings, { preserveLocalStateForSaleOrderIds: pendingSaleOrderIds });
-    log('db', 'stock_moves');
-    await stockMovesDb.upsertStockMoves(allMoves);
-    log('db', 'stock_move_lines');
-    await stockMoveLinesDb.upsertStockMoveLines(allMoveLines);
-    if (productIds.size > 0) {
-      const ids = Array.from(productIds);
-      try {
-        log('fetch', vehicleId != null ? `product.product (${ids.length} ids)` : 'product.product');
-        const products = vehicleId != null
-          ? await getProductsByIds(ids)
-          : await getAllProducts();
-        if (products?.length) {
-          log('db', `products (${products.length})`);
-          await productsDb.upsertProducts(products);
-        } else {
+      result.customers = (customers || []).length;
+      // Keep all fetched orders in local DB.
+      // In delivery-date mode, UI reads commitment_date first and falls back to date_order
+      // so offline-completed orders do not disappear when commitment_date is missing.
+      result.orders = (orders || []).length;
+      log('fetch', `customers=${result.customers} orders=${result.orders}`);
+      if (isLoggingOut) return { error: 'Logout in progress' };
+      // Dashboard and order lists read from local DB only; preserve local state for orders with pending upload.
+      const pendingSaleOrderIds = await syncQueueDb.getPendingSaleOrderIds();
+      const syncedPaymentSaleOrderIds = await syncQueueDb.getSyncedPaymentSaleOrderIds();
+      const fetchedOrderIds = (orders || []).map((o) => o?.id).filter((id) => id != null).map((id) => Number(id));
+      const fetchedOrderIdSet = new Set(fetchedOrderIds);
+      const preserveLocalSaleOrderIds = new Set(pendingSaleOrderIds);
+      for (const soId of syncedPaymentSaleOrderIds) {
+        const idNum = Number(soId);
+        if (Number.isFinite(idNum) && fetchedOrderIdSet.has(idNum)) {
+          preserveLocalSaleOrderIds.add(idNum);
+        }
+      }
+
+      // Remove stale local orders only when order fetch is healthy and non-empty.
+      // This prevents accidental local wipe if backend temporarily returns empty/error.
+      if (!orderFetchFailed && fetchedOrderIds.length > 0) {
+        await saleOrdersDb.pruneSaleOrdersToIds(fetchedOrderIds, { preserveLocalForSaleOrderIds: preserveLocalSaleOrderIds });
+      } else {
+        log('sync', `skip local prune (orderFetchFailed=${orderFetchFailed}, fetchedOrders=${fetchedOrderIds.length})`);
+      }
+
+      log('db', 'partners');
+      await partnersDb.upsertPartners(customers || []);
+      log('db', 'sale_orders');
+      await saleOrdersDb.upsertSaleOrders(orders || [], { preserveLocalForSaleOrderIds: preserveLocalSaleOrderIds });
+
+      await refreshPaymentTypesFromOdoo(orders || [], { skipOrderIds: preserveLocalSaleOrderIds });
+
+      const orderIds = (orders || []).map((o) => o.id);
+      let allLines = [];
+      let allPickings = [];
+      let allMoves = [];
+      let allMoveLines = [];
+      const productIds = new Set();
+
+      const { callOdoo } = await import('./index.service');
+
+      if (orderIds.length > 0) {
+        const lineIds = [];
+        (orders || []).forEach((o) => {
+          (o.order_line || []).forEach((entry) => {
+            const id = Array.isArray(entry) ? entry[0] : entry;
+            if (id != null) lineIds.push(id);
+          });
+        });
+        if (lineIds.length > 0) {
+          log('fetch', `order lines (${lineIds.length} ids)`);
+          const lines = await callOdoo(
+            'sale.order.line',
+            'search_read',
+            [[['id', 'in', lineIds]]],
+            {
+              fields: ['id', 'order_id', 'product_id', 'name', 'product_uom_qty', 'price_unit', 'price_subtotal', 'price_total'],
+              limit: 1000,
+            }
+          );
+          allLines = lines || [];
+          result.orderLines = allLines.length;
+          allLines.forEach((l) => {
+            const pid = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
+            if (pid) productIds.add(pid);
+          });
+          log('fetch', `orderLines=${result.orderLines}`);
+        }
+
+        log('fetch', 'stock.picking');
+        allPickings = await callOdoo(
+          'stock.picking',
+          'search_read',
+          [[['sale_id', 'in', orderIds]]],
+          { fields: ['id', 'name', 'sale_id', 'state', 'move_ids', 'backorder_ids'], limit: 500 }
+        ) || [];
+        result.pickings = allPickings.length;
+        log('fetch', `pickings=${result.pickings}`);
+
+        for (const p of allPickings) {
+          const moveIds = p.move_ids || (Array.isArray(p.move_ids) ? p.move_ids : []);
+          if (moveIds.length === 0) continue;
+          const [moves, moveLines] = await Promise.all([
+            getStockMovesByPickingId(p.id),
+            getStockMoveLinesByMoveIds(moveIds),
+          ]);
+          (moves || []).forEach((m) => {
+            allMoves.push({ ...m, picking_id: m.picking_id ?? p.id });
+            const pid = Array.isArray(m.product_id) ? m.product_id[0] : m.product_id;
+            if (pid) productIds.add(pid);
+          });
+          (moveLines || []).forEach((ml) => allMoveLines.push(ml));
+        }
+        result.moves = allMoves.length;
+        result.moveLines = allMoveLines.length;
+        log('fetch', `moves=${result.moves} moveLines=${result.moveLines}`);
+      }
+
+      log('db', 'sale_order_lines');
+      await saleOrderLinesDb.upsertSaleOrderLines(allLines);
+      log('db', 'stock_pickings');
+      await stockPickingsDb.upsertStockPickings(allPickings, { preserveLocalStateForSaleOrderIds: pendingSaleOrderIds });
+      log('db', 'stock_moves');
+      await stockMovesDb.upsertStockMoves(allMoves);
+      log('db', 'stock_move_lines');
+      await stockMoveLinesDb.upsertStockMoveLines(allMoveLines);
+      if (productIds.size > 0) {
+        const ids = Array.from(productIds);
+        try {
+          log('fetch', vehicleId != null ? `product.product (${ids.length} ids)` : 'product.product');
+          const products = vehicleId != null
+            ? await getProductsByIds(ids)
+            : await getAllProducts();
+          if (products?.length) {
+            log('db', `products (${products.length})`);
+            await productsDb.upsertProducts(products);
+          } else {
+            await productsDb.upsertProducts(ids.map((id) => ({ id, name: null })));
+          }
+        } catch (e) {
+          logWarn('fetch products', e);
           await productsDb.upsertProducts(ids.map((id) => ({ id, name: null })));
         }
-      } catch (e) {
-        logWarn('fetch products', e);
-        await productsDb.upsertProducts(ids.map((id) => ({ id, name: null })));
       }
-    }
 
-    // When vehicle-scoped: fetch only journals + routes + single vehicle. Otherwise full list.
-    log('fetch', vehicleId != null ? 'journals + routes + current vehicle' : 'journals + routes + vehicles');
-    let vehiclesList;
-    if (vehicleId != null) {
-      const [journals, routes, singleVehicle] = await Promise.all([
-        getJournals().catch((e) => {
-          logWarn('fetch journals', e);
-          return [];
-        }),
-        getRoutes().catch((e) => {
-          logWarn('fetch routes', e);
-          return [];
-        }),
-        getVehicleById(vehicleId).catch((e) => {
-          logWarn('fetch vehicle by id', e);
-          return null;
-        }),
-      ]);
-      result.journals = (journals || []).length;
-      result.routes = (routes || []).length;
-      vehiclesList = singleVehicle ? [singleVehicle] : [];
-      result.vehicles = vehiclesList.length;
-      log('db', 'journals + routes + vehicles');
-      await journalsDb.upsertJournals(journals || []);
-      await routesDb.upsertRoutes(routes || []);
-      await vehiclesDb.upsertVehicles(vehiclesList);
-    } else {
-      const [journals, routes, vehicles] = await Promise.all([
-        getJournals().catch((e) => {
-          logWarn('fetch journals', e);
-          return [];
-        }),
-        getRoutes().catch((e) => {
-          logWarn('fetch routes', e);
-          return [];
-        }),
-        getVehicles().catch((e) => {
-          logWarn('fetch vehicles', e);
-          return [];
-        }),
-      ]);
-      result.journals = (journals || []).length;
-      result.routes = (routes || []).length;
-      result.vehicles = (vehicles || []).length;
-      vehiclesList = vehicles || [];
-      log('db', 'journals + routes + vehicles');
-      await journalsDb.upsertJournals(journals || []);
-      await routesDb.upsertRoutes(routes || []);
-      await vehiclesDb.upsertVehicles(vehiclesList);
-    }
+      // When vehicle-scoped: fetch only journals + routes + single vehicle. Otherwise full list.
+      log('fetch', vehicleId != null ? 'journals + routes + current vehicle' : 'journals + routes + vehicles');
+      let vehiclesList;
+      if (vehicleId != null) {
+        const [journals, routes, singleVehicle] = await Promise.all([
+          getJournals().catch((e) => {
+            logWarn('fetch journals', e);
+            return [];
+          }),
+          getRoutes().catch((e) => {
+            logWarn('fetch routes', e);
+            return [];
+          }),
+          getVehicleById(vehicleId).catch((e) => {
+            logWarn('fetch vehicle by id', e);
+            return null;
+          }),
+        ]);
+        result.journals = (journals || []).length;
+        result.routes = (routes || []).length;
+        vehiclesList = singleVehicle ? [singleVehicle] : [];
+        result.vehicles = vehiclesList.length;
+        log('db', 'journals + routes + vehicles');
+        await journalsDb.upsertJournals(journals || []);
+        await routesDb.upsertRoutes(routes || []);
+        await vehiclesDb.upsertVehicles(vehiclesList);
+      } else {
+        const [journals, routes, vehicles] = await Promise.all([
+          getJournals().catch((e) => {
+            logWarn('fetch journals', e);
+            return [];
+          }),
+          getRoutes().catch((e) => {
+            logWarn('fetch routes', e);
+            return [];
+          }),
+          getVehicles().catch((e) => {
+            logWarn('fetch vehicles', e);
+            return [];
+          }),
+        ]);
+        result.journals = (journals || []).length;
+        result.routes = (routes || []).length;
+        result.vehicles = (vehicles || []).length;
+        vehiclesList = vehicles || [];
+        log('db', 'journals + routes + vehicles');
+        await journalsDb.upsertJournals(journals || []);
+        await routesDb.upsertRoutes(routes || []);
+        await vehiclesDb.upsertVehicles(vehiclesList);
+      }
 
-    const allVehicleWarehouses = [];
-    const allVehicleInventories = [];
-    const vehiclesToFetchInventory = vehiclesList;
-    for (const v of vehiclesToFetchInventory) {
-      const vId = v.id;
-      const licensePlate = v.license_plate || (v.name || '').split('/').pop() || '';
-      if (!licensePlate) continue;
-      try {
-        log('fetch', `vehicle warehouse ${licensePlate}`);
-        const locations = await getStockLocationByVehicle(licensePlate).catch(() => []);
-        const loc = locations && locations[0] ? locations[0] : null;
-        if (loc) {
-          allVehicleWarehouses.push({
-            id: loc.id,
-            vehicle_id: vId,
-            name: loc.name,
-            complete_name: loc.complete_name,
-          });
-          log('fetch', `vehicle inventory location ${loc.id}  ${vehicleId}`);
-          const quants = await getVehicleInventoryByLocation(loc.id).catch(() => []);
-          (quants || []).forEach((q) => {
-            allVehicleInventories.push({
-              ...q,
-              location_id: loc.id,
+      const allVehicleWarehouses = [];
+      const allVehicleInventories = [];
+      const vehiclesToFetchInventory = vehiclesList;
+      for (const v of vehiclesToFetchInventory) {
+        const vId = v.id;
+        const licensePlate = v.license_plate || (v.name || '').split('/').pop() || '';
+        if (!licensePlate) continue;
+        try {
+          log('fetch', `vehicle warehouse ${licensePlate}`);
+          const locations = await getStockLocationByVehicle(licensePlate).catch(() => []);
+          const loc = locations && locations[0] ? locations[0] : null;
+          if (loc) {
+            allVehicleWarehouses.push({
+              id: loc.id,
               vehicle_id: vId,
+              name: loc.name,
+              complete_name: loc.complete_name,
             });
-          });
-          await vehicleInventoriesDb.upsertVehicleInventories(allVehicleInventories);
+            log('fetch', `vehicle inventory location ${loc.id}  ${vehicleId}`);
+            const quants = await getVehicleInventoryByLocation(loc.id).catch(() => []);
+            (quants || []).forEach((q) => {
+              allVehicleInventories.push({
+                ...q,
+                location_id: loc.id,
+                vehicle_id: vId,
+              });
+            });
+            await vehicleInventoriesDb.upsertVehicleInventories(allVehicleInventories);
+          }
+        } catch (e) {
+          logWarn(`vehicle ${vId} warehouse/inventory`, e);
         }
-      } catch (e) {
-        logWarn(`vehicle ${vId} warehouse/inventory`, e);
       }
-    }
-    result.vehicleWarehouses = allVehicleWarehouses.length;
-    result.vehicleInventories = allVehicleInventories.length;
-    if (allVehicleWarehouses.length > 0) {
-      log('db', 'vehicle_warehouses');
-      await vehicleWarehousesDb.upsertVehicleWarehouses(allVehicleWarehouses);
-    }
-    if (allVehicleInventories.length > 0) {
-      log('db', 'vehicle_inventories');
-      await vehicleInventoriesDb.upsertVehicleInventories(allVehicleInventories);
-    }
-    //TODO: count column should renamed to results
-    await syncLogDb.appendLog({
-      sync_at: syncAt,
-      status: 'success',
-      message: result.error ? result.error : 'Sync successful',
-      counts: JSON.stringify(result),
-    });
-    const storage = await getAsyncStorage();
-    await storage.setItem(KEYS.LAST_SYNC, syncAt);
-    log('done', JSON.stringify(result));
-    if (_syncCompleteListener) {
-      try {
-        _syncCompleteListener(true);
-      } catch (e) {
-        console.warn(`${LOG_TAG} syncCompleteListener`, e?.message ?? e);
+      result.vehicleWarehouses = allVehicleWarehouses.length;
+      result.vehicleInventories = allVehicleInventories.length;
+      if (allVehicleWarehouses.length > 0) {
+        log('db', 'vehicle_warehouses');
+        await vehicleWarehousesDb.upsertVehicleWarehouses(allVehicleWarehouses);
       }
-    }
-    return result;
-  } catch (err) {
-    result.error = err?.message || 'Sync failed';
-    logWarn('error', err);
-    console.warn(`${LOG_TAG} error detail`, err);
-    //TODO: count column should renamed to results
-    try {
+      if (allVehicleInventories.length > 0) {
+        log('db', 'vehicle_inventories');
+        await vehicleInventoriesDb.upsertVehicleInventories(allVehicleInventories);
+      }
+      //TODO: count column should renamed to results
       await syncLogDb.appendLog({
         sync_at: syncAt,
-        status: 'error',
-        message: typeof result.error === 'string' ? result.error : String(result.error ?? 'Sync failed'),
+        status: 'success',
+        message: result.error ? result.error : 'Sync successful',
         counts: JSON.stringify(result),
       });
-    } catch (logErr) {
-      console.warn(`${LOG_TAG} could not append error to sync_log`, logErr?.message ?? logErr);
-    }
-    if (_syncCompleteListener) {
-      try {
-        const msg = typeof result.error === 'string' ? result.error : String(result.error ?? 'Sync failed');
-        _syncCompleteListener(false, msg);
-      } catch (e) {
-        console.warn(`${LOG_TAG} syncCompleteListener`, e?.message ?? e);
+      const storage = await getAsyncStorage();
+      await storage.setItem(KEYS.LAST_SYNC, syncAt);
+      log('done', JSON.stringify(result));
+      if (_syncCompleteListener) {
+        try {
+          _syncCompleteListener(true);
+        } catch (e) {
+          console.warn(`${LOG_TAG} syncCompleteListener`, e?.message ?? e);
+        }
       }
+      return result;
+    } catch (err) {
+      result.error = err?.message || 'Sync failed';
+      logWarn('error', err);
+      console.warn(`${LOG_TAG} error detail`, err);
+      //TODO: count column should renamed to results
+      try {
+        await syncLogDb.appendLog({
+          sync_at: syncAt,
+          status: 'error',
+          message: typeof result.error === 'string' ? result.error : String(result.error ?? 'Sync failed'),
+          counts: JSON.stringify(result),
+        });
+      } catch (logErr) {
+        console.warn(`${LOG_TAG} could not append error to sync_log`, logErr?.message ?? logErr);
+      }
+      if (_syncCompleteListener) {
+        try {
+          const msg = typeof result.error === 'string' ? result.error : String(result.error ?? 'Sync failed');
+          _syncCompleteListener(false, msg);
+        } catch (e) {
+          console.warn(`${LOG_TAG} syncCompleteListener`, e?.message ?? e);
+        }
+      }
+      return result;
+    } finally {
+      if (_syncStateListener) _syncStateListener(false);
     }
-    return result;
+  })();
+
+  _activeRunSyncPromise = syncPromise;
+  try {
+    return await syncPromise;
   } finally {
-    if (_syncStateListener) _syncStateListener(false);
+    if (_activeRunSyncPromise === syncPromise) {
+      _activeRunSyncPromise = null;
+    }
   }
 }
 
