@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -16,6 +16,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Print from 'expo-print';
 import * as FileSystem from 'expo-file-system';
 import { RongtaPrinters } from 'expo-printers-sdk';
+import ViewShot from 'react-native-view-shot';
+import ThermalReceiptView from '../components/ThermalReceiptView';
 import { useTheme } from '../context/ThemeContext';
 import { useSync } from '../context/SyncContext';
 import { spacing, borderRadius } from '../constants/theme';
@@ -309,6 +311,7 @@ export default function InvoiceScreen({ route, navigation }) {
   const [localInvoice, setLocalInvoice] = useState(null);
   const [printerAddress, setPrinterAddress] = useState(null);
   const [discoveredPrinters, setDiscoveredPrinters] = useState([]);
+  const receiptViewRef = useRef(null);
 
   const styles = useMemo(
     () =>
@@ -689,103 +692,74 @@ export default function InvoiceScreen({ route, navigation }) {
           }
         }
 
-        console.log('Selected Rongta printer:', selectedPrinter);
-
-        const invoiceDate = order?.date_order
-          ? new Date(order.date_order).toLocaleDateString('en-LK', { year: 'numeric', month: 'short', day: 'numeric' })
-          : new Date().toLocaleDateString('en-LK');
-
-        const computedUntaxed = (lines || []).reduce((sum, l) => sum + (Number(l.price_subtotal) || 0), 0);
-        const computedTax = (lines || []).reduce(
-          (sum, l) => sum + ((Number(l.price_total) || 0) - (Number(l.price_subtotal) || 0)),
-          0
-        );
-        const amountUntaxed = order?.amount_untaxed != null && order.amount_untaxed !== 0 ? Number(order.amount_untaxed) : computedUntaxed;
-        const amountTax = order?.amount_tax != null && order.amount_tax !== 0 ? Number(order.amount_tax) : computedTax;
-        const amountTotal = order?.amount_total ?? (amountUntaxed + amountTax);
-
-        const paymentLabel =
-          paymentType === 'split' && effectiveSplitForPrint
-            ? [
-                effectiveSplitForPrint.cash > 0 && `Cash ${formatInvoiceCurrency(effectiveSplitForPrint.cash)}`,
-                (effectiveSplitForPrint.check > 0 || effectiveSplitForPrint.cheque > 0) &&
-                  `Cheque ${formatInvoiceCurrency(effectiveSplitForPrint.check || effectiveSplitForPrint.cheque || 0)}`,
-                effectiveSplitForPrint.credit > 0 && `Credit ${formatInvoiceCurrency(effectiveSplitForPrint.credit)}`,
-              ]
-                .filter(Boolean)
-                .join(' • ') || 'Payment'
-            : paymentType === 'bank' && selectedBankName
-              ? `Check: ${selectedBankName}`
-              : paymentType === 'credit' && selectedBankName
-                ? `Credit: ${selectedBankName}`
-                : (paymentType != null || selectedBankName != null || paymentSplit != null) ? 'Cash' : 'Invoiced';
-
-        const lineRows = (lines || []).map((l) => {
-          const productName = getProductDisplayName(l.product_id?.[1] ?? '—');
-          const qty = String(Number(l.product_uom_qty ?? 0));
-          const total = formatAmount(Number(l.price_total) || 0);
-          return [{ text: productName, style: { wrap: true } }, qty, total];
+        console.log('[RONGTA] Selected Rongta printer:', selectedPrinter);
+        console.log('[RONGTA] Printer details:', {
+          connectionType: selectedPrinter.connectionType,
+          address: selectedPrinter.type?.address,
+          name: selectedPrinter.type?.name,
         });
 
-        const receiptNodes = [];
-        receiptNodes.push({ type: 'text', content: 'GasTech', style: { align: 'center', bold: true, size: 2 } });
-        receiptNodes.push({ type: 'text', content: 'TAX INVOICE', style: { align: 'center', bold: true } });
-        receiptNodes.push({ type: 'line' });
-        receiptNodes.push({
-          type: 'columns',
-          columns: [
-            { content: `Inv: ${invoiceNumber ?? '—'}`, width: 20, align: 'left' },
-            { content: invoiceDate, width: 34, align: 'right' },
-          ],
-        });
-        receiptNodes.push({ type: 'line' });
-        receiptNodes.push({ type: 'text', content: `Customer: ${order?.partner_id?.[1] ?? '—'}`, style: { bold: true } });
-        if (purchaserTinResolved && purchaserTinResolved !== '—') {
-          receiptNodes.push({ type: 'text', content: `Customer TIN: ${purchaserTinResolved}`, style: { bold: true } });
-        }
-        if (supplierTinResolved && supplierTinResolved !== '—') {
-          receiptNodes.push({ type: 'text', content: `Supplier TIN: ${supplierTinResolved}`, style: { bold: true } });
-        }
-        receiptNodes.push({ type: 'line' });
-        receiptNodes.push({
-          type: 'table',
-          headers: ['Item', 'Qty', 'Total'],
-          rows: lineRows,
-          columnWidths: [28, 8, 12],
-          alignments: ['left', 'right', 'right'],
-          wrapCells: true,
-        });
-        receiptNodes.push({ type: 'line' });
-        receiptNodes.push({ type: 'text', content: `Gross: Rs ${formatAmount(amountUntaxed)}`, style: { align: 'right', bold: true } });
-        receiptNodes.push({ type: 'text', content: `VAT: Rs ${formatAmount(amountTax)}`, style: { align: 'right', bold: true } });
-        receiptNodes.push({ type: 'text', content: `NET: Rs ${formatAmount(amountTotal)}`, style: { align: 'right', bold: true, size: 2 } });
-        receiptNodes.push({ type: 'line' });
-        receiptNodes.push({ type: 'text', content: `Payment: ${paymentLabel}`, style: { align: 'center', bold: true } });
-        if (resolvedChequeBankName) receiptNodes.push({ type: 'text', content: `Bank: ${resolvedChequeBankName}` });
-        if (resolvedChequeNumber) receiptNodes.push({ type: 'text', content: `Cheque No: ${resolvedChequeNumber}` });
+        console.log('[RONGTA] Preparing to capture receipt as PNG image...');
 
-        if (customerSignatureDataUrlResolved) {
-          receiptNodes.push({ type: 'line' });
-          receiptNodes.push({ type: 'text', content: 'Customer Signature', style: { align: 'center', bold: true } });
-          const match = customerSignatureDataUrlResolved.match(/^data:([^;]+);base64,(.*)$/);
-          const base64 = match?.[2];
-          if (base64) {
-            receiptNodes.push({ type: 'image', imagePath: customerSignatureDataUrlResolved, options: { align: 'center', marginMm: 2 } });
-          }
+        // Capture receipt component as PNG image (NOT PDF)
+        // This matches exactly how Rongta official SDK expects data
+        if (!receiptViewRef.current) {
+          throw new Error('Receipt view ref not available. Please try again.');
         }
 
-        receiptNodes.push({ type: 'feed', lines: 2 });
-        receiptNodes.push({ type: 'cut' });
-
-        const receiptHtml = buildReceiptHtml(receiptNodes);
+        console.log('[RONGTA] Capturing receipt view as PNG...');
+        const captureUri = await receiptViewRef.current.capture();
         
-        const { uri } = await Print.printToFileAsync({ html: receiptHtml });
-        const base64Image = await FileSystem.readAsStringAsync(uri, {
+        console.log('[RONGTA] PNG captured at:', captureUri);
+        
+        // Verify file exists and get info
+        const fileInfo = await FileSystem.getInfoAsync(captureUri);
+        console.log('[RONGTA] File info:', {
+          exists: fileInfo.exists,
+          size: Math.round(fileInfo.size / 1024) + ' KB',
+          uri: captureUri,
+        });
+        
+        if (!fileInfo.exists) {
+          throw new Error('Failed to capture receipt image');
+        }
+        
+        // Read as base64 (pure base64, no data URI prefix)
+        let base64Image = await FileSystem.readAsStringAsync(captureUri, {
           encoding: FileSystem.EncodingType.Base64,
         });
-        await FileSystem.deleteAsync(uri, { idempotent: true });
+        
+        // CRITICAL: Remove data URI prefix if present
+        // Rongta SDK expects pure base64, not data:image/png;base64,XXX
+        if (base64Image.startsWith('data:')) {
+          console.log('[RONGTA] Removing data URI prefix...');
+          const parts = base64Image.split(',');
+          base64Image = parts[1] || base64Image;
+        }
+        
+        // Validate base64 format
+        const base64Pattern = /^[A-Za-z0-9+/]*={0,2}$/;
+        if (!base64Pattern.test(base64Image.substring(0, 100))) {
+          console.error('[RONGTA] Invalid base64 format detected!');
+          throw new Error('Invalid image encoding format');
+        }
+        
+        console.log('[RONGTA] Base64 image prepared:', {
+          length: base64Image.length,
+          sizeKB: Math.round(base64Image.length * 0.75 / 1024),
+          prefix: base64Image.substring(0, 20),
+          hasDataPrefix: base64Image.startsWith('data:'),
+        });
+        
+        // Clean up temp file
+        await FileSystem.deleteAsync(captureUri, { idempotent: true });
 
-        console.log('Sending print job to Rongta printer...');
+        console.log('[RONGTA] Sending image to Rongta SDK...');
+        console.log('[RONGTA] Printer:', {
+          type: selectedPrinter.connectionType,
+          address: selectedPrinter.type?.address,
+        });
+        
         const printSuccess = await RongtaPrinters.printImage(base64Image, selectedPrinter);
         
         if (!printSuccess) {
@@ -898,14 +872,6 @@ export default function InvoiceScreen({ route, navigation }) {
 
   const hasCreditPayment = (effectivePaymentSplit?.credit ?? 0) > 0 || paymentType === 'credit';
 
-  if (loading) {
-    return (
-      <View style={styles.center}>
-        <ActivityIndicator size="large" color={colors.primary} />
-      </View>
-    );
-  }
-
   const invoiceDate = order?.date_order
     ? new Date(order.date_order).toLocaleDateString('en-LK', {
         year: 'numeric',
@@ -913,6 +879,57 @@ export default function InvoiceScreen({ route, navigation }) {
         day: 'numeric',
       })
     : new Date().toLocaleDateString('en-LK');
+
+  const supplierTinForDisplay = localInvoice?.supplier_tin ?? partyInfo?.supplierTin ?? supplierTin ?? '—';
+  const purchaserTinForDisplay = localInvoice?.purchaser_tin ?? partyInfo?.customerTin ?? purchaserTin ?? '—';
+
+  const resolvedChequeBankName = chequeBankName || selectedBankName || localChequeMeta.bankName || null;
+  const resolvedChequeNumber = checkNumber || localChequeMeta.checkNumber || null;
+
+  const thermalReceiptData = useMemo(() => {
+    const lineItemsData = (lines || []).map((line) => ({
+      name: getProductDisplayName(line.product_id?.[1] ?? '—'),
+      qty: String(Number(line.product_uom_qty ?? 0)),
+      total: formatAmount(Number(line.price_total) || 0),
+    }));
+
+    const computedUntaxedForReceipt = (lines || []).reduce((sum, l) => sum + (Number(l.price_subtotal) || 0), 0);
+    const computedTaxForReceipt = (lines || []).reduce(
+      (sum, l) => sum + ((Number(l.price_total) || 0) - (Number(l.price_subtotal) || 0)),
+      0
+    );
+    const amountUntaxedForReceipt = order?.amount_untaxed != null && order.amount_untaxed !== 0 
+      ? Number(order.amount_untaxed) 
+      : computedUntaxedForReceipt;
+    const amountTaxForReceipt = order?.amount_tax != null && order.amount_tax !== 0 
+      ? Number(order.amount_tax) 
+      : computedTaxForReceipt;
+    const amountTotalForReceipt = order?.amount_total ?? (amountUntaxedForReceipt + amountTaxForReceipt);
+
+    return {
+      companyName: 'GasTech',
+      invoiceNumber: invoiceNumber ?? '—',
+      date: invoiceDate,
+      customer: order?.partner_id?.[1] ?? '—',
+      customerTIN: purchaserTinForDisplay !== '—' ? purchaserTinForDisplay : null,
+      supplierTIN: supplierTinForDisplay !== '—' ? supplierTinForDisplay : null,
+      lineItems: lineItemsData,
+      grossAmount: formatAmount(amountUntaxedForReceipt),
+      vatAmount: formatAmount(amountTaxForReceipt),
+      netAmount: formatAmount(amountTotalForReceipt),
+      paymentInfo: paymentLabel,
+      chequeBankName: resolvedChequeBankName,
+      chequeNumber: resolvedChequeNumber,
+    };
+  }, [invoiceNumber, invoiceDate, order, lines, paymentLabel, purchaserTinForDisplay, supplierTinForDisplay, resolvedChequeBankName, resolvedChequeNumber]);
+
+  if (loading) {
+    return (
+      <View style={styles.center}>
+        <ActivityIndicator size="large" color={colors.primary} />
+      </View>
+    );
+  }
 
   return (
     <ScrollView
@@ -1100,6 +1117,24 @@ export default function InvoiceScreen({ route, navigation }) {
             "Print invoice". The app will scan for paired printers and connect automatically.
           </Text>
         </View>
+      </View>
+
+      {/* Hidden receipt view for thermal printing - captures as PNG image */}
+      <View style={{ position: 'absolute', left: -10000, top: 0 }}>
+        <ViewShot 
+          ref={receiptViewRef}
+          options={{
+            format: 'png',
+            quality: 1.0,
+            width: 576,
+            height: undefined,
+          }}
+        >
+          <ThermalReceiptView 
+            data={thermalReceiptData}
+            signature={customerSignatureDataUrl || (localInvoice?.customer_signature_file_path ? `file://${localInvoice.customer_signature_file_path}` : null)}
+          />
+        </ViewShot>
       </View>
 
     </ScrollView>
