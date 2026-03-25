@@ -223,7 +223,7 @@ function buildInvoiceHtml(
     </div>
     <div class="col">
       <div class="field"><span class="label">Date of Invoice :</span> ${date}</div>
-      ${hasPurchaserTin ? `<div class="field"><span class="label">Customers TIN:</span> ${purchaserTinSafe}</div>` : ''}
+      ${hasPurchaserTin ? `<div class="field"><span class="label">Customer TIN:</span> ${purchaserTinSafe}</div>` : ''}
       <div class="field"><span class="label">Customer Name:</span> ${customerName}</div>
       <div class="field"><span class="label">Address:</span> ${customerAddress}</div>
       <div class="field"><span class="label">Telephone No:</span> ${customerPhone}</div>
