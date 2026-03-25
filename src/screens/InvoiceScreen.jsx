@@ -14,7 +14,6 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as Print from 'expo-print';
 import * as FileSystem from 'expo-file-system';
 import { useTheme } from '../context/ThemeContext';
 import { useSync } from '../context/SyncContext';
@@ -587,45 +586,13 @@ export default function InvoiceScreen({ route, navigation }) {
 
       const rnfsManager = NativeModules?.RNFSManager;
       const thermalAvailable = !!rnfsManager;
-
-      // Resolve signature as dataUrl for expo-print fallback (some invoices may not have dataUrl anymore).
-      let customerSignatureDataUrlResolved = customerSignatureDataUrl;
-      if (!customerSignatureDataUrlResolved && localInvoice?.customer_signature_file_path) {
-        try {
-          const base64 = await FileSystem.readAsStringAsync(localInvoice.customer_signature_file_path, {
-            encoding: FileSystem.EncodingType.Base64,
-          });
-          const mime = localInvoice.customer_signature_mime_type || 'image/png';
-          customerSignatureDataUrlResolved = `data:${mime};base64,${base64}`;
-        } catch (_) {
-          // ignore signature conversion errors; invoice can still print without signature
-        }
-      }
-
-      // Fallback: if thermal native modules aren't available (Expo Go), use expo-print.
+      console.log('[InvoiceScreen] RNFSManager:', rnfsManager ? 'present' : 'null');
       if (!thermalAvailable) {
-        const supplierTinResolved = localInvoice?.supplier_tin ?? partyInfo?.supplierTin ?? supplierTin ?? '—';
-        const purchaserTinResolved =
-          localInvoice?.purchaser_tin ?? partyInfo?.customerTin ?? purchaserTin ?? '—';
-
-        const html = buildInvoiceHtml(
-          order,
-          lines,
-          paymentType,
-          selectedBankName,
-          effectiveSplitForPrint,
-          logoUri,
-          customerSignatureDataUrlResolved,
-          resolvedChequeBankName,
-          resolvedChequeNumber,
-          invoiceNumber,
-          supplierTinResolved,
-          purchaserTinResolved,
-          partyInfo
+        // If user runs Expo Go (or an APK that wasn't rebuilt with native modules),
+        // RNFSManager will be null and Bluetooth thermal printing can't work.
+        throw new Error(
+          'Thermal Bluetooth printing requires a Development Build (native modules). Please install/run from expo dev-client / development build (not Expo Go).'
         );
-        await Print.printAsync({ html });
-        setPrintResult('success');
-        return;
       }
 
       // Thermal printing (native modules present)
