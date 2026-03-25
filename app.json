@@ -50,15 +50,10 @@
         {
           "cameraPermission": "Allow GasTech to scan customer QR codes"
         }
-      ]
+      ],
+      "expo-font",
+      "expo-sqlite"
     ],
-    "build": {
-      "preview": {
-        "android": {
-          "buildType": "apk"
-        }
-      }
-    },
     "extra": {
       "eas": {
         "projectId": "fb10e6b3-f5ab-4960-a520-cc96cff26408"
