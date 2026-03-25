@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Print from 'expo-print';
 import * as FileSystem from 'expo-file-system';
 import { useTheme } from '../context/ThemeContext';
 import { useSync } from '../context/SyncContext';
@@ -578,24 +579,58 @@ export default function InvoiceScreen({ route, navigation }) {
     setPrintResult(null);
     setPrintError(null);
     try {
-      // react-native-fs is required by @finan-me/react-native-thermal-printer (native module).
-      // Expo Go does not include it, so RNFSManager will be null and the app would crash.
-      const rnfsManager = NativeModules?.RNFSManager;
-      console.log('[InvoiceScreen] RNFSManager:', rnfsManager ? 'present' : 'null');
-      if (!rnfsManager) {
-        throw new Error(
-          'Thermal printing requires a Development Build (native modules). Please install/run the app from expo dev-client / development build (not Expo Go).'
-        );
-      }
-
-      const thermalModule = await import('@finan-me/react-native-thermal-printer');
-      const { ThermalPrinter } = thermalModule;
-
       const effectiveSplitForPrint =
         paymentType === 'split' && paymentSplit ? paymentSplit : (localPaymentSplit || paymentSplit);
 
       const resolvedChequeBankName = chequeBankName || selectedBankName || localChequeMeta.bankName || null;
       const resolvedChequeNumber = checkNumber || localChequeMeta.checkNumber || null;
+
+      const rnfsManager = NativeModules?.RNFSManager;
+      const thermalAvailable = !!rnfsManager;
+
+      // Resolve signature as dataUrl for expo-print fallback (some invoices may not have dataUrl anymore).
+      let customerSignatureDataUrlResolved = customerSignatureDataUrl;
+      if (!customerSignatureDataUrlResolved && localInvoice?.customer_signature_file_path) {
+        try {
+          const base64 = await FileSystem.readAsStringAsync(localInvoice.customer_signature_file_path, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          const mime = localInvoice.customer_signature_mime_type || 'image/png';
+          customerSignatureDataUrlResolved = `data:${mime};base64,${base64}`;
+        } catch (_) {
+          // ignore signature conversion errors; invoice can still print without signature
+        }
+      }
+
+      // Fallback: if thermal native modules aren't available (Expo Go), use expo-print.
+      if (!thermalAvailable) {
+        const supplierTinResolved = localInvoice?.supplier_tin ?? partyInfo?.supplierTin ?? supplierTin ?? '—';
+        const purchaserTinResolved =
+          localInvoice?.purchaser_tin ?? partyInfo?.customerTin ?? purchaserTin ?? '—';
+
+        const html = buildInvoiceHtml(
+          order,
+          lines,
+          paymentType,
+          selectedBankName,
+          effectiveSplitForPrint,
+          logoUri,
+          customerSignatureDataUrlResolved,
+          resolvedChequeBankName,
+          resolvedChequeNumber,
+          invoiceNumber,
+          supplierTinResolved,
+          purchaserTinResolved,
+          partyInfo
+        );
+        await Print.printAsync({ html });
+        setPrintResult('success');
+        return;
+      }
+
+      // Thermal printing (native modules present)
+      const thermalModule = await import('@finan-me/react-native-thermal-printer');
+      const { ThermalPrinter } = thermalModule;
 
       const supplierTinResolved = localInvoice?.supplier_tin ?? partyInfo?.supplierTin ?? supplierTin ?? '—';
       const purchaserTinResolved = localInvoice?.purchaser_tin ?? partyInfo?.customerTin ?? purchaserTin ?? '—';

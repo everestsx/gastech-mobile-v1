@@ -25,7 +25,7 @@ import * as vehicleInventoriesDb from '../database/vehicleInventories.js';
 import * as productsDb from '../database/products.js';
 import * as syncLogDb from '../database/syncLog.js';
 import * as syncQueueDb from '../database/syncQueue.js';
-import { getDb } from "@/src/database/db";
+import { getDb } from '../database/db.js';
 export let isLoggingOut = false;
 export const setIsLoggingOut = (value) => {
   isLoggingOut = value;
@@ -1551,6 +1551,12 @@ export async function runSync() {
 
 export async function syncVehiclesOnly() {
   try {
+    // Avoid overlapping with full sync to prevent SQLite transaction contention.
+    if (_activeRunSyncPromise) {
+      const runResult = await _activeRunSyncPromise;
+      return !(runResult?.error);
+    }
+
     const { getVehicles } = await import('./vehicle.service');
     const vehicles = await getVehicles();
 

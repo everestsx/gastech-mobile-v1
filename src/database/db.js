@@ -497,6 +497,9 @@ export async function getDb() {
     runAsync: (...args) => enqueue((db) => db.runAsync(...args)),
     execAsync: (sql) => enqueue((db) => db.execAsync(sql)),
     withTransactionAsync: (fn) =>
+      // expo-sqlite's withTransactionAsync callback is defined as `() => Promise<void>`
+      // (no tx argument). Our DB modules expect a `tx` param, so we pass the raw `db`
+      // instance as the `tx` argument for compatibility.
       enqueue((db) => db.withTransactionAsync(() => fn(db))),
   };
 }
