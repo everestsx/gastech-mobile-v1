@@ -28,6 +28,7 @@ import * as stockPickingsDb from '../database/stockPickings.js';
 import * as localInvoicesDb from '../database/localInvoices.js';
 import * as localPaymentsDb from '../database/localPayments.js';
 import * as FileSystem from 'expo-file-system';
+import { callOdoo } from '../services/index.service';
 
 import { JOURNAL_CODE_CASH, JOURNAL_CODE_CHEQUE } from '../constants/journals';
 import { SRI_LANKA_BANKS } from '../constants/sriLankaBanks';
@@ -393,6 +394,51 @@ export default function ProceedPaymentScreen({ route, navigation }) {
 
       const amountUntaxed = orderInfo.amount_untaxed != null ? Number(orderInfo.amount_untaxed) : orderTotal;
       const amountTax = orderInfo.amount_tax != null ? Number(orderInfo.amount_tax) : 0;
+
+      // Persist metadata needed for offline invoice preview/printing (TIN + signature image).
+      let supplierTin = null;
+      let purchaserTin = null;
+      try {
+        const companyRows = await callOdoo('res.company', 'read', [[1]], { fields: ['vat'] });
+        const company = Array.isArray(companyRows) ? companyRows[0] : null;
+        supplierTin = company?.vat ?? null;
+
+        if (partnerId != null) {
+          const customerRows = await callOdoo('res.partner', 'read', [[partnerId]], { fields: ['vat'] });
+          const customer = Array.isArray(customerRows) ? customerRows[0] : null;
+          purchaserTin = customer?.vat ?? null;
+        }
+      } catch (e) {
+        // Offline mode: keep TINs null; InvoiceScreen will retry when online.
+        console.warn('[Payment] Could not fetch TINs from Odoo', e?.message ?? e);
+      }
+
+      let customerSignatureFilePath = null;
+      let customerSignatureMimeType = null;
+      if (customerSignatureDataUrl && typeof customerSignatureDataUrl === 'string') {
+        try {
+          // SignatureCanvas provides: data:image/png;base64,AAAA...
+          const match = customerSignatureDataUrl.match(/^data:([^;]+);base64,(.*)$/);
+          const mimeType = match?.[1] || 'image/png';
+          const base64 = match?.[2];
+          if (base64) {
+            const ext =
+              mimeType.includes('png') ? 'png'
+              : (mimeType.includes('jpeg') || mimeType.includes('jpg')) ? 'jpg'
+              : 'png';
+            const fileName = `customer_signature_${soId}_${timestamp}.${ext}`;
+            const fileUri = `${FileSystem.documentDirectory}${fileName}`;
+            await FileSystem.writeAsStringAsync(fileUri, base64, {
+              encoding: FileSystem.EncodingType.Base64,
+            });
+            customerSignatureFilePath = fileUri;
+            customerSignatureMimeType = mimeType;
+          }
+        } catch (e) {
+          console.warn('[Payment] Could not persist signature image', e?.message ?? e);
+        }
+      }
+
       const invoiceId = await localInvoicesDb.upsertLocalInvoice({
         sale_order_id: soId,
         invoice_number: invoiceNumber,
@@ -400,6 +446,10 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         amount_untaxed: amountUntaxed,
         amount_tax: amountTax,
         state: 'posted',
+        supplier_tin: supplierTin,
+        purchaser_tin: purchaserTin,
+        customer_signature_file_path: customerSignatureFilePath,
+        customer_signature_mime_type: customerSignatureMimeType,
       });
       const paymentRows = payments.map((p) => ({
         sale_order_id: soId,

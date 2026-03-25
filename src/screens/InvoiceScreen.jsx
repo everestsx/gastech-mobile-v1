@@ -9,9 +9,12 @@ import {
   Platform,
   Image,
   Modal,
+  PermissionsAndroid,
+  NativeModules,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import * as Print from 'expo-print';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as FileSystem from 'expo-file-system';
 import { useTheme } from '../context/ThemeContext';
 import { useSync } from '../context/SyncContext';
 import { spacing, borderRadius } from '../constants/theme';
@@ -19,6 +22,7 @@ import { getSaleOrderDetailsFromDB, runSync } from '../services/sync.service';
 import { getOrAssignInvoiceNumber } from '../utils/invoiceNumber';
 import { getProductDisplayName } from '../utils/productDisplay';
 import { formatAmount } from '../utils/format';
+import * as localInvoicesDb from '../database/localInvoices.js';
 import * as localPaymentsDb from '../database/localPayments.js';
 import { callOdoo } from '../services/index.service';
 
@@ -268,6 +272,7 @@ function buildInvoiceHtml(
 }
 
 const LOGO_SOURCE = require('../../assets/images/AppLogo.png');
+const LAST_USED_PRINTER_ADDRESS_KEY = 'last_printer_address';
 
 export default function InvoiceScreen({ route, navigation }) {
   const { colors } = useTheme();
@@ -299,6 +304,8 @@ export default function InvoiceScreen({ route, navigation }) {
   const [localPaymentSplit, setLocalPaymentSplit] = useState(null);
   const [localChequeMeta, setLocalChequeMeta] = useState({ bankName: null, checkNumber: null });
   const [partyInfo, setPartyInfo] = useState({});
+  const [localInvoice, setLocalInvoice] = useState(null);
+  const [printerAddress, setPrinterAddress] = useState(null);
 
   const styles = useMemo(
     () =>
@@ -492,6 +499,14 @@ export default function InvoiceScreen({ route, navigation }) {
         checkNumber: chequeRow?.check_number || null,
       });
 
+      // Load locally saved invoice metadata for offline preview/printing.
+      try {
+        const localInv = await localInvoicesDb.getLocalInvoiceBySaleOrderId(saleOrderId);
+        setLocalInvoice(localInv);
+      } catch (e) {
+        setLocalInvoice(null);
+      }
+
       // Fetch supplier(company) and customer details for printed invoice.
       let nextPartyInfo = {};
       try {
@@ -542,6 +557,7 @@ export default function InvoiceScreen({ route, navigation }) {
       setLocalPaymentSplit(null);
       setLocalChequeMeta({ bankName: null, checkNumber: null });
       setPartyInfo({});
+      setLocalInvoice(null);
     } finally {
       setLoading(false);
     }
@@ -562,36 +578,203 @@ export default function InvoiceScreen({ route, navigation }) {
     setPrintResult(null);
     setPrintError(null);
     try {
-      const effectiveSplitForPrint = (paymentType === 'split' && paymentSplit) ? paymentSplit : (localPaymentSplit || paymentSplit);
+      // react-native-fs is required by @finan-me/react-native-thermal-printer (native module).
+      // Expo Go does not include it, so RNFSManager will be null and the app would crash.
+      const rnfsManager = NativeModules?.RNFSManager;
+      console.log('[InvoiceScreen] RNFSManager:', rnfsManager ? 'present' : 'null');
+      if (!rnfsManager) {
+        throw new Error(
+          'Thermal printing requires a Development Build (native modules). Please install/run the app from expo dev-client / development build (not Expo Go).'
+        );
+      }
+
+      const thermalModule = await import('@finan-me/react-native-thermal-printer');
+      const { ThermalPrinter } = thermalModule;
+
+      const effectiveSplitForPrint =
+        paymentType === 'split' && paymentSplit ? paymentSplit : (localPaymentSplit || paymentSplit);
+
       const resolvedChequeBankName = chequeBankName || selectedBankName || localChequeMeta.bankName || null;
       const resolvedChequeNumber = checkNumber || localChequeMeta.checkNumber || null;
-      const html = buildInvoiceHtml(
-        order,
-        lines,
-        paymentType,
-        selectedBankName,
-        effectiveSplitForPrint,
-        logoUri,
-        customerSignatureDataUrl,
-        resolvedChequeBankName,
-        resolvedChequeNumber,
-        invoiceNumber,
-        supplierTin,
-        purchaserTin,
-        partyInfo
+
+      const supplierTinResolved = localInvoice?.supplier_tin ?? partyInfo?.supplierTin ?? supplierTin ?? '—';
+      const purchaserTinResolved = localInvoice?.purchaser_tin ?? partyInfo?.customerTin ?? purchaserTin ?? '—';
+
+      // Use stored signature file first; otherwise persist dataUrl (for invoices created before this schema change).
+      let signatureFilePath = localInvoice?.customer_signature_file_path ?? null;
+      if (!signatureFilePath && customerSignatureDataUrl && typeof customerSignatureDataUrl === 'string') {
+        const match = customerSignatureDataUrl.match(/^data:([^;]+);base64,(.*)$/);
+        const mimeType = match?.[1] || 'image/png';
+        const base64 = match?.[2];
+        if (base64) {
+          const ext = mimeType.includes('jpg') ? 'jpg' : 'png';
+          const fileName = `customer_signature_${saleOrderId}_${Date.now()}.${ext}`;
+          const fileUri = `${FileSystem.documentDirectory}${fileName}`;
+          await FileSystem.writeAsStringAsync(fileUri, base64, { encoding: FileSystem.EncodingType.Base64 });
+          signatureFilePath = fileUri;
+        }
+      }
+
+      // Resolve printer address: saved last printer, else scan and pick first paired/found device.
+      let address = printerAddress || (await AsyncStorage.getItem(LAST_USED_PRINTER_ADDRESS_KEY));
+      if (!address) {
+        if (Platform.OS === 'android') {
+          if (Platform.Version >= 31) {
+            await PermissionsAndroid.requestMultiple([
+              PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
+              PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
+            ]);
+          } else {
+            await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION);
+          }
+        }
+
+        const scanResult = await ThermalPrinter.scanDevices();
+        const pick = scanResult?.paired?.[0] || scanResult?.found?.[0];
+        if (!pick?.address) throw new Error('No Bluetooth printer found. Turn on the printer and try again.');
+
+        address = pick.address;
+        setPrinterAddress(address);
+        await AsyncStorage.setItem(LAST_USED_PRINTER_ADDRESS_KEY, address);
+      }
+
+      const test = await ThermalPrinter.testConnection(address);
+      if (!test?.success) {
+        throw new Error(test?.error?.message || 'Printer connection test failed.');
+      }
+
+      const invoiceDate = order?.date_order
+        ? new Date(order.date_order).toLocaleDateString('en-LK', { year: 'numeric', month: 'short', day: 'numeric' })
+        : new Date().toLocaleDateString('en-LK');
+
+      const computedUntaxed = (lines || []).reduce((sum, l) => sum + (Number(l.price_subtotal) || 0), 0);
+      const computedTax = (lines || []).reduce(
+        (sum, l) => sum + ((Number(l.price_total) || 0) - (Number(l.price_subtotal) || 0)),
+        0
       );
-      await Print.printAsync({ html });
+      const amountUntaxed = order?.amount_untaxed != null && order.amount_untaxed !== 0 ? Number(order.amount_untaxed) : computedUntaxed;
+      const amountTax = order?.amount_tax != null && order.amount_tax !== 0 ? Number(order.amount_tax) : computedTax;
+      const amountTotal = order?.amount_total ?? (amountUntaxed + amountTax);
+
+      const paymentLabel =
+        paymentType === 'split' && effectiveSplitForPrint
+          ? [
+              effectiveSplitForPrint.cash > 0 && `Cash ${formatInvoiceCurrency(effectiveSplitForPrint.cash)}`,
+              (effectiveSplitForPrint.check > 0 || effectiveSplitForPrint.cheque > 0) &&
+                `Cheque ${formatInvoiceCurrency(effectiveSplitForPrint.check || effectiveSplitForPrint.cheque || 0)}`,
+              effectiveSplitForPrint.credit > 0 && `Credit ${formatInvoiceCurrency(effectiveSplitForPrint.credit)}`,
+            ]
+              .filter(Boolean)
+              .join(' • ') || 'Payment'
+          : paymentType === 'bank' && selectedBankName
+            ? `Check: ${selectedBankName}`
+            : paymentType === 'credit' && selectedBankName
+              ? `Credit: ${selectedBankName}`
+              : (paymentType != null || selectedBankName != null || paymentSplit != null) ? 'Cash' : 'Invoiced';
+
+      const lineRows = (lines || []).map((l) => {
+        const productName = getProductDisplayName(l.product_id?.[1] ?? '—');
+        const qty = String(Number(l.product_uom_qty ?? 0));
+        const total = formatAmount(Number(l.price_total) || 0);
+        return [{ text: productName, style: { wrap: true } }, qty, total];
+      });
+
+      const receiptNodes = [];
+      receiptNodes.push({ type: 'text', content: 'GasTech', style: { align: 'center', bold: true, size: 2 } });
+      receiptNodes.push({ type: 'text', content: 'TAX INVOICE', style: { align: 'center', bold: true } });
+      receiptNodes.push({ type: 'line' });
+      receiptNodes.push({
+        type: 'columns',
+        columns: [
+          { content: `Inv: ${invoiceNumber ?? '—'}`, width: 20, align: 'left' },
+          { content: invoiceDate, width: 34, align: 'right' },
+        ],
+      });
+      receiptNodes.push({ type: 'line' });
+      receiptNodes.push({ type: 'text', content: `Customer: ${order?.partner_id?.[1] ?? '—'}`, style: { bold: true } });
+      if (purchaserTinResolved && purchaserTinResolved !== '—') {
+        receiptNodes.push({ type: 'text', content: `Customer TIN: ${purchaserTinResolved}`, style: { bold: true } });
+      }
+      if (supplierTinResolved && supplierTinResolved !== '—') {
+        receiptNodes.push({ type: 'text', content: `Supplier TIN: ${supplierTinResolved}`, style: { bold: true } });
+      }
+      receiptNodes.push({ type: 'line' });
+      receiptNodes.push({
+        type: 'table',
+        headers: ['Item', 'Qty', 'Total'],
+        rows: lineRows,
+        columnWidths: [28, 8, 12],
+        alignments: ['left', 'right', 'right'],
+        wrapCells: true,
+      });
+      receiptNodes.push({ type: 'line' });
+      receiptNodes.push({ type: 'text', content: `Gross: Rs ${formatAmount(amountUntaxed)}`, style: { align: 'right', bold: true } });
+      receiptNodes.push({ type: 'text', content: `VAT: Rs ${formatAmount(amountTax)}`, style: { align: 'right', bold: true } });
+      receiptNodes.push({ type: 'text', content: `NET: Rs ${formatAmount(amountTotal)}`, style: { align: 'right', bold: true, size: 2 } });
+      receiptNodes.push({ type: 'line' });
+      receiptNodes.push({ type: 'text', content: `Payment: ${paymentLabel}`, style: { align: 'center', bold: true } });
+      if (resolvedChequeBankName) receiptNodes.push({ type: 'text', content: `Bank: ${resolvedChequeBankName}` });
+      if (resolvedChequeNumber) receiptNodes.push({ type: 'text', content: `Cheque No: ${resolvedChequeNumber}` });
+
+      if (signatureFilePath) {
+        receiptNodes.push({ type: 'line' });
+        receiptNodes.push({ type: 'text', content: 'Customer Signature', style: { align: 'center', bold: true } });
+        receiptNodes.push({ type: 'image', imagePath: signatureFilePath, options: { align: 'center', marginMm: 2 } });
+      }
+
+      receiptNodes.push({ type: 'feed', lines: 2 });
+      receiptNodes.push({ type: 'cut' });
+
+      const job = {
+        printers: [
+          {
+            address,
+            copies: 1,
+            options: { paperWidthMm: 58, encoding: 'CP1258', marginMm: 1 },
+          },
+        ],
+        documents: [receiptNodes],
+        options: { concurrent: false, continueOnError: false },
+      };
+
+      const result = await ThermalPrinter.printReceipt(job);
+      const addrResult = result?.results?.get ? result.results.get(address) : null;
+      const ok = !!(result?.success || addrResult?.success);
+      if (!ok) {
+        const msg = addrResult?.error?.message || 'Thermal printing failed.';
+        throw new Error(msg);
+      }
+
       setPrintResult('success');
     } catch (err) {
       console.error(err);
       setPrintResult('failed');
-      setPrintError(err?.message || 'Could not print. Ensure a printer is available (Bluetooth, USB, or Network).');
+      setPrintError(err?.message || 'Could not print. Ensure Bluetooth printer is connected and permissions are granted.');
     } finally {
       setPrinting(false);
       setHideSyncIndicator(false);
       runSync().catch((e) => console.warn('[InvoiceScreen] sync after print', e?.message ?? e));
     }
-  }, [order, lines, invoiceNumber, paymentType, selectedBankName, paymentSplit, localPaymentSplit, logoUri, customerSignatureDataUrl, chequeBankName, checkNumber, localChequeMeta.bankName, localChequeMeta.checkNumber, supplierTin, purchaserTin, partyInfo]);
+  }, [
+    order,
+    lines,
+    saleOrderId,
+    invoiceNumber,
+    paymentType,
+    selectedBankName,
+    paymentSplit,
+    localPaymentSplit,
+    customerSignatureDataUrl,
+    chequeBankName,
+    checkNumber,
+    localChequeMeta.bankName,
+    localChequeMeta.checkNumber,
+    supplierTin,
+    purchaserTin,
+    partyInfo,
+    localInvoice,
+    printerAddress,
+  ]);
 
   const goToHome = useCallback(() => {
     navigation.navigate('MainTabs', { screen: 'Dashboard' });
@@ -742,10 +925,13 @@ export default function InvoiceScreen({ route, navigation }) {
         <View style={styles.paymentBadge}>
           <Text style={styles.paymentText}>Payment: {paymentLabel}</Text>
         </View>
-        {customerSignatureDataUrl ? (
+        {(localInvoice?.customer_signature_file_path || customerSignatureDataUrl) ? (
           <View style={{ marginTop: spacing.sm, paddingTop: spacing.sm, borderTopWidth: 1, borderTopColor: colors.border }}>
             <Text style={[styles.totalsLabel, { marginBottom: 4 }]}>Customer signature</Text>
-            <Image source={{ uri: customerSignatureDataUrl }} style={{ width: '100%', maxWidth: 180, height: 70, resizeMode: 'contain' }} />
+            <Image
+              source={{ uri: localInvoice?.customer_signature_file_path || customerSignatureDataUrl }}
+              style={{ width: '100%', maxWidth: 180, height: 70, resizeMode: 'contain' }}
+            />
           </View>
         ) : null}
       </View>
@@ -833,13 +1019,10 @@ export default function InvoiceScreen({ route, navigation }) {
       <View style={styles.printerNote}>
         <Ionicons name="hardware-chip-outline" size={20} color={colors.primary} />
         <View style={styles.printerNoteTextWrap}>
-          <Text style={styles.printerNoteTitle}>Connect to printer</Text>
+          <Text style={styles.printerNoteTitle}>Thermal printer</Text>
           <Text style={styles.printerNoteText}>
-            To use a Zebra or other thermal printer: connect it via Bluetooth, USB, or
-            Wi‑Fi. It will appear in your device's printers when you tap "Print invoice".
-            {Platform.OS === 'android'
-              ? ' Add printers in Settings → Connected devices → Connection preferences → Printing.'
-              : ' On iOS use AirPrint-compatible printers.'}
+            This screen uses Bluetooth thermal printing. Keep your printer turned on (and in range), then tap
+            "Print invoice". The app will scan for paired printers and connect automatically.
           </Text>
         </View>
       </View>

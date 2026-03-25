@@ -19,6 +19,10 @@ export async function upsertLocalInvoice(row) {
   const amountUntaxed = numOrNull(row.amount_untaxed) ?? amountTotal;
   const amountTax = numOrNull(row.amount_tax) ?? 0;
   const state = empty(row.state) || 'posted';
+  const supplierTin = empty(row.supplier_tin);
+  const purchaserTin = empty(row.purchaser_tin);
+  const customerSignatureFilePath = empty(row.customer_signature_file_path);
+  const customerSignatureMimeType = empty(row.customer_signature_mime_type);
 
   const existing = await db.getFirstAsync(
     'SELECT id FROM local_invoices WHERE sale_order_id = ?',
@@ -26,16 +30,55 @@ export async function upsertLocalInvoice(row) {
   );
   if (existing?.id != null) {
     await db.runAsync(
-      `UPDATE local_invoices SET invoice_number = ?, amount_total = ?, amount_untaxed = ?, amount_tax = ?, state = ?, updated_at = ? WHERE sale_order_id = ?`,
-      [invoiceNumber, amountTotal, amountUntaxed, amountTax, state, now, saleOrderId]
+      `UPDATE local_invoices SET
+        invoice_number = ?,
+        amount_total = ?,
+        amount_untaxed = ?,
+        amount_tax = ?,
+        state = ?,
+        supplier_tin = ?,
+        purchaser_tin = ?,
+        customer_signature_file_path = ?,
+        customer_signature_mime_type = ?,
+        updated_at = ?
+      WHERE sale_order_id = ?`,
+      [
+        invoiceNumber,
+        amountTotal,
+        amountUntaxed,
+        amountTax,
+        state,
+        supplierTin || null,
+        purchaserTin || null,
+        customerSignatureFilePath || null,
+        customerSignatureMimeType || null,
+        now,
+        saleOrderId,
+      ]
     );
     return num(existing.id);
   }
   // Avoid using runAsync return value (can trigger "Cannot convert to Kotlin type" on Android APK)
   await db.runAsync(
-    `INSERT INTO local_invoices (sale_order_id, invoice_number, amount_total, amount_untaxed, amount_tax, state, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [saleOrderId, invoiceNumber, amountTotal, amountUntaxed, amountTax, state, now, now]
+    `INSERT INTO local_invoices
+      (sale_order_id, invoice_number, amount_total, amount_untaxed, amount_tax, state,
+       supplier_tin, purchaser_tin, customer_signature_file_path, customer_signature_mime_type,
+       created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      saleOrderId,
+      invoiceNumber,
+      amountTotal,
+      amountUntaxed,
+      amountTax,
+      state,
+      supplierTin || null,
+      purchaserTin || null,
+      customerSignatureFilePath || null,
+      customerSignatureMimeType || null,
+      now,
+      now,
+    ]
   );
   const inserted = await db.getFirstAsync(
     'SELECT id FROM local_invoices WHERE sale_order_id = ? ORDER BY id DESC LIMIT 1',
@@ -94,6 +137,10 @@ function mapRow(row) {
     amount_untaxed: row.amount_untaxed,
     amount_tax: row.amount_tax,
     state: row.state,
+    supplier_tin: row.supplier_tin != null ? row.supplier_tin : null,
+    purchaser_tin: row.purchaser_tin != null ? row.purchaser_tin : null,
+    customer_signature_file_path: row.customer_signature_file_path != null ? row.customer_signature_file_path : null,
+    customer_signature_mime_type: row.customer_signature_mime_type != null ? row.customer_signature_mime_type : null,
     created_at: row.created_at,
     updated_at: row.updated_at,
     synced_at: row.synced_at,

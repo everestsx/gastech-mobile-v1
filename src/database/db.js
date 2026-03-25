@@ -429,6 +429,31 @@ async function runMigrations(db) {
     }
     await db.runAsync('PRAGMA user_version = 16');
   }
+
+  // Migration 17: Store invoice metadata needed for offline printing (signature + TIN)
+  if (current < 17) {
+    try {
+      const info = await db.getAllAsync('PRAGMA table_info(local_invoices)');
+      const names = new Set((info || []).map((c) => c.name));
+
+      if (!names.has('supplier_tin')) {
+        await db.runAsync('ALTER TABLE local_invoices ADD COLUMN supplier_tin TEXT');
+      }
+      if (!names.has('purchaser_tin')) {
+        await db.runAsync('ALTER TABLE local_invoices ADD COLUMN purchaser_tin TEXT');
+      }
+      if (!names.has('customer_signature_file_path')) {
+        await db.runAsync('ALTER TABLE local_invoices ADD COLUMN customer_signature_file_path TEXT');
+      }
+      if (!names.has('customer_signature_mime_type')) {
+        await db.runAsync('ALTER TABLE local_invoices ADD COLUMN customer_signature_mime_type TEXT');
+      }
+    } catch (e) {
+      console.warn('[Migration] local_invoices signature/tin:', e);
+    }
+
+    await db.runAsync('PRAGMA user_version = 17');
+  }
 }
 
 /**

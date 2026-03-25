@@ -8,6 +8,7 @@ config.resolver.sourceExts = [...config.resolver.sourceExts, 'mjs'];
 config.resolver.extraNodeModules = {
   ...config.resolver.extraNodeModules,
   'react-native': require.resolve('react-native'),
+  'react-native-fs': require.resolve('react-native-fs'),
 };
 
 // Add support for Hermes

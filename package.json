@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",
+    "@finan-me/react-native-thermal-printer": "^1.0.9",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@react-native-community/datetimepicker": "8.4.4",
     "@react-native/virtualized-lists": "0.81.5",
@@ -29,6 +30,7 @@
     "react": "19.1.0",
     "react-native": "0.81.5",
     "react-native-dotenv": "^3.4.11",
+    "react-native-fs": "^2.20.0",
     "react-native-qrcode-svg": "^6.3.21",
     "react-native-safe-area-context": "^5.6.2",
     "react-native-screens": "~4.16.0",
