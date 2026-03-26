@@ -25,7 +25,7 @@ import * as vehicleInventoriesDb from '../database/vehicleInventories.js';
 import * as productsDb from '../database/products.js';
 import * as syncLogDb from '../database/syncLog.js';
 import * as syncQueueDb from '../database/syncQueue.js';
-import { getDb } from "@/src/database/db";
+import { getDb } from '../database/db.js';
 export let isLoggingOut = false;
 export const setIsLoggingOut = (value) => {
   isLoggingOut = value;
@@ -42,7 +42,8 @@ let _syncCompleteListener = null;
 export function setSyncCompleteListener(fn) {
   _syncCompleteListener = fn;
 }
-let _isProcessingSyncQueue = false;
+/** In-flight queue processor; concurrent callers await the same promise (do not skip uploads). */
+let _processSyncQueuePromise = null;
 const KEYS = {
   USER: '@gastech_user',
   LAST_SYNC: '@gastech_last_sync',
@@ -544,12 +545,12 @@ export async function getCollectionTotalsFromOdoo(orderNames) {
 
 /** Process pending sync queue: push delivery and payment actions to Odoo. Run at start of runSync. */
 async function processSyncQueue() {
-  if (_isProcessingSyncQueue) {
-    log('queue', 'already processing; skip re-entry');
-    return;
+  if (_processSyncQueuePromise) {
+    log('queue', 'already processing; awaiting same run');
+    return _processSyncQueuePromise;
   }
-  _isProcessingSyncQueue = true;
-  try {
+  _processSyncQueuePromise = (async () => {
+    try {
     const pending = await syncQueueDb.getPending();
     if (!pending.length) return;
     log('queue', `processing ${pending.length} pending`);
@@ -1008,8 +1009,13 @@ async function processSyncQueue() {
         }
 
         if (pendingCount > 0 && attachmentIds.length === 0) {
-          logWarn('queue payment proof', new Error('Had pending proof photos but no attachment ids — check file path and createProofAttachment'));
-          continue;
+          logWarn(
+            'queue payment proof',
+            new Error(
+              'Pending proof photos could not be uploaded (missing file or API error). Posting chatter without attachments so invoice/payment still completes; attachments stay pending for retry.'
+            )
+          );
+          // Do not continue: previously this left the queue item unsynced forever even when Odoo already had the payment.
         }
 
         const hasProof = attachmentIds.length > 0;
@@ -1084,17 +1090,24 @@ async function processSyncQueue() {
         logWarn('queue payment', e);
       }
     }
-  } finally {
-    _isProcessingSyncQueue = false;
-  }
+    } finally {
+      _processSyncQueuePromise = null;
+    }
+  })();
+  return _processSyncQueuePromise;
 }
 
 /**
  * Delete all local synced data from SQLite (partners, orders, pickings, etc.)
  * and clear last-sync state. Does not remove user session.
  * After this, running Sync again will repopulate from Odoo.
+ *
+ * @param {{ discardUnsynced?: boolean }} [options] — If false (default), blocks when sync_queue or
+ *   pending attachments exist so Odoo is not missing mobile-only actions. Set true only after user
+ *   confirms they accept losing unsynced deliveries/payments/chatter uploads.
  */
-export async function deleteLocalData() {
+export async function deleteLocalData(options = {}) {
+  const discardUnsynced = options.discardUnsynced === true;
   const { getDb } = await import('../database/db.js');
   const db = await getDb();
   const pendingQueueCount = await syncQueueDb.getPendingCount();
@@ -1103,10 +1116,14 @@ export async function deleteLocalData() {
   );
   const pendingAttachmentCount = pendingAttachmentRow?.c ?? 0;
 
-  if (pendingQueueCount > 0 || pendingAttachmentCount > 0) {
-    throw new Error(
+  if (!discardUnsynced && (pendingQueueCount > 0 || pendingAttachmentCount > 0)) {
+    const err = new Error(
       `Cannot clear local data while pending sync exists (sync_queue=${pendingQueueCount}, attachments=${pendingAttachmentCount}). Sync pending items first.`
     );
+    err.code = 'PENDING_SYNC';
+    err.pendingQueueCount = pendingQueueCount;
+    err.pendingAttachmentCount = pendingAttachmentCount;
+    throw err;
   }
 
   const tables = [

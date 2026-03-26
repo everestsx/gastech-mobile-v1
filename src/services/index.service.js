@@ -3,11 +3,21 @@ import { ODOO_URL, ODOO_DB, ODOO_API_KEY, UID } from '@env';
 
 const REQUEST_TIMEOUT_MS = 35000;
 
-let API_KEY = ODOO_API_KEY;
+/** Strip BOM/CRLF, trim, remove optional wrapping quotes (common .env / Windows issues). */
+function normalizeEnvString(v) {
+  if (v == null) return '';
+  let s = String(v).replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '').trim();
+  if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+    s = s.slice(1, -1).trim();
+  }
+  return s;
+}
+
+let API_KEY = normalizeEnvString(ODOO_API_KEY);
 let USE_SESSION = false;
 
 export const setApiSession = (uid, apiKey) => {
-  API_KEY = apiKey;
+  API_KEY = normalizeEnvString(apiKey);
   USE_SESSION = false;
 };
 
@@ -18,10 +28,11 @@ export const setEmployeeSession = (uid) => {
 
 /** Resolve Odoo credentials (env is inlined at bundle time; restart with cache clear after .env change). */
 function getOdooConfig() {
-  const url = typeof ODOO_URL === 'string' ? ODOO_URL.trim() : '';
-  const db = typeof ODOO_DB === 'string' ? ODOO_DB.trim() : '';
-  const apiKey = typeof ODOO_API_KEY === 'string' ? ODOO_API_KEY.trim() : (API_KEY || '');
-  const uid = UID != null && UID !== '' ? parseInt(String(UID), 10) : NaN;
+  const url = normalizeEnvString(ODOO_URL);
+  const db = normalizeEnvString(ODOO_DB);
+  const fromEnv = normalizeEnvString(ODOO_API_KEY);
+  const apiKey = fromEnv || normalizeEnvString(API_KEY);
+  const uid = UID != null && UID !== '' ? parseInt(normalizeEnvString(UID), 10) : NaN;
   if (!url || !db || !apiKey || Number.isNaN(uid)) {
     const missing = [];
     if (!url) missing.push('ODOO_URL');
@@ -47,7 +58,7 @@ function getHostFromUrl(u) {
 if (__DEV__) {
   try {
     const c = getOdooConfig();
-    console.log('[Odoo] Using server:', getHostFromUrl(c.url));
+    console.log('[Odoo] Using server:', getHostFromUrl(c.url), '| db:', c.db, '| uid:', c.uid, '| apiKeyLen:', c.apiKey?.length ?? 0);
   } catch (_) {}
 }
 

@@ -78,13 +78,42 @@ export default function MenuScreen({ navigation }) {
           text: 'Delete',
           style: 'destructive',
           onPress: async () => {
-          hideAlert()
+            hideAlert();
             try {
               await deleteLocalData();
               await refreshLastSync();
               showAlert('Done', 'Local data deleted. Use Sync to load data from Odoo again.');
             } catch (e) {
-              showAlert('Error', e?.message || 'Failed to delete local data.');
+              if (e?.code === 'PENDING_SYNC') {
+                const q = e.pendingQueueCount ?? 0;
+                const a = e.pendingAttachmentCount ?? 0;
+                showAlert(
+                  'Unsynced data on device',
+                  `There are items not yet sent to Odoo (sync queue: ${q}, pending attachments: ${a}). Tap "Sync" and try again, or discard that data and clear the local database anyway. Discarding means those actions will not appear on the server.`,
+                  [
+                    { text: 'Cancel', style: 'cancel', onPress: hideAlert },
+                    {
+                      text: 'Discard & delete',
+                      style: 'destructive',
+                      onPress: async () => {
+                        hideAlert();
+                        try {
+                          await deleteLocalData({ discardUnsynced: true });
+                          await refreshLastSync();
+                          showAlert(
+                            'Done',
+                            'Local data deleted (unsynced items were discarded). Use Sync to load data from Odoo again.'
+                          );
+                        } catch (e2) {
+                          showAlert('Error', e2?.message || 'Failed to delete local data.');
+                        }
+                      },
+                    },
+                  ]
+                );
+              } else {
+                showAlert('Error', e?.message || 'Failed to delete local data.');
+              }
             }
           },
         },

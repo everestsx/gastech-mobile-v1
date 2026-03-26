@@ -33,6 +33,7 @@ import {
 } from '../services/sync.service';
 import * as localPaymentsDb from '../database/localPayments.js';
 import * as syncQueueDb from '../database/syncQueue.js';
+import * as vehicleInventoriesDb from '../database/vehicleInventories.js';
 import {
   getActiveCommissionPlan,
   calculateCommissionProgressByProducts,
@@ -104,6 +105,9 @@ export default function DashboardScreen({ navigation }) {
     localCompleted: 0,
     syncedCompleted: 0,
   });
+
+  // Stock overview (local lorry stock) computed from vehicle_inventories.
+  const [stockCards, setStockCards] = useState([]);
 
   // Collection cards: tap to expand one (shows full amount), tap again to collapse
   const [expandedCollectionCard, setExpandedCollectionCard] = useState(null);
@@ -180,6 +184,77 @@ export default function DashboardScreen({ navigation }) {
         localCompleted,
         syncedCompleted,
       });
+
+      // Stock overview:
+      // pending in lorry = total loaded - delivered/invoiced quantity
+      // Delivered quantity is derived from:
+      // 1) sale_orders.invoice_status === 'invoiced' OR
+      // 2) stock.picking.state === 'done'
+      // across ALL cached orders (not just today's list), so dashboard stays accurate.
+      try {
+        if (vehicleId != null) {
+          const allOrderIds = (Array.isArray(data) ? data : [])
+            .map((o) => Number(o?.id))
+            .filter((id) => Number.isFinite(id));
+          const [allPickings, allOrderLines] = await Promise.all([
+            allOrderIds.length ? getPickingsBySaleIdsFromDB(allOrderIds) : Promise.resolve([]),
+            allOrderIds.length ? getOrderLinesByOrderIdsFromDB(allOrderIds) : Promise.resolve([]),
+          ]);
+
+          const deliveredByPicking = new Set(
+            (allPickings || [])
+              .filter((p) => String(p?.state || '').toLowerCase() === 'done')
+              .map((p) => {
+                const saleId = Array.isArray(p?.sale_id) ? p.sale_id[0] : p?.sale_id;
+                return Number(saleId);
+              })
+              .filter((id) => Number.isFinite(id))
+          );
+
+          const deliveredOrderIds = new Set(
+            (Array.isArray(data) ? data : [])
+              .filter((o) => String(o?.invoice_status || '').toLowerCase() === 'invoiced')
+              .map((o) => Number(o?.id))
+              .filter((id) => Number.isFinite(id))
+          );
+          for (const id of deliveredByPicking) deliveredOrderIds.add(id);
+
+          const deliveredQtyByProductId = {};
+          for (const line of allOrderLines || []) {
+            const orderId = Array.isArray(line.order_id) ? line.order_id[0] : line.order_id;
+            const soId = orderId != null ? Number(orderId) : null;
+            if (soId == null || !deliveredOrderIds.has(soId)) continue;
+
+            const pidRaw = Array.isArray(line.product_id) ? line.product_id[0] : line.product_id;
+            const pid = pidRaw != null ? Number(pidRaw) : null;
+            if (pid == null || !Number.isFinite(pid)) continue;
+
+            const qty = Number(line.product_uom_qty) || 0;
+            deliveredQtyByProductId[pid] = (deliveredQtyByProductId[pid] || 0) + qty;
+          }
+
+          const inventories = await vehicleInventoriesDb.getVehicleInventoryByVehicleId(vehicleId);
+          const byProduct = {};
+          for (const inv of inventories || []) {
+            const pid = inv?.product_id != null ? Number(inv.product_id) : null;
+            if (pid == null) continue;
+            const total = Number(inv.quantity) || 0;
+            const delivered = Number(deliveredQtyByProductId[pid]) || 0;
+            const remaining = Math.max(0, total - delivered);
+            byProduct[pid] = {
+              product_id: pid,
+              product_name: inv?.product_name ?? `Product ${pid}`,
+              total,
+              remaining,
+            };
+          }
+          setStockCards(Object.values(byProduct).sort((a, b) => (a.product_name || '').localeCompare(b.product_name || '')));
+        } else {
+          setStockCards([]);
+        }
+      } catch (_) {
+        setStockCards([]);
+      }
     } catch (_) {
       setOrders([]);
       setLineTotalsByOrder({});
@@ -187,6 +262,7 @@ export default function DashboardScreen({ navigation }) {
       setTodayOrderLines([]);
       setPaymentSplitsByOrderId({});
       setOrderSyncStats({ pendingOrders: 0, localCompleted: 0, syncedCompleted: 0 });
+      setStockCards([]);
     } finally {
       setLoading(false);
     }
@@ -578,16 +654,22 @@ export default function DashboardScreen({ navigation }) {
           marginBottom: spacing.sm,
         },
         commissionCard: {
-          backgroundColor: colors.primaryLight ?? '#312e81',
+          backgroundColor: colors.primary ?? '#4f46e5',
           borderRadius: borderRadius.lg,
           padding: spacing.lg,
-          marginHorizontal: spacing.md,
-          marginTop: -20,
+          marginTop: spacing.md,
           marginBottom: spacing.md,
+          borderWidth: 1,
+          borderColor: 'rgba(255,255,255,0.22)',
+          elevation: 3,
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: 2 },
+          shadowOpacity: 0.12,
+          shadowRadius: 6,
         },
-        commissionTitle: { fontSize: 12, fontWeight: '700', color: colors.text, letterSpacing: 0.5 },
-        commissionAmount: { fontSize: 28, fontWeight: '800', color: colors.text, marginTop: 4 },
-        commissionPct: { fontSize: 14, color: colors.text, marginTop: 4 },
+        commissionTitle: { fontSize: 12, fontWeight: '700', color: 'rgba(255,255,255,0.92)', letterSpacing: 0.5 },
+        commissionAmount: { fontSize: 30, fontWeight: '900', color: '#fff', marginTop: 6 },
+        commissionPct: { fontSize: 14, color: 'rgba(255,255,255,0.92)', marginTop: 6 },
         collectionSectionLabel: {
           fontSize: 12,
           fontWeight: '700',
@@ -868,24 +950,63 @@ export default function DashboardScreen({ navigation }) {
           </View>
         </View>
 
-        {/* 2. Commission card - tap to open My Commission */}
-        <TouchableOpacity
-          style={styles.commissionCard}
-          activeOpacity={0.8}
-          onPress={() => navigation.navigate('MyCommissions')}
-        >
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-            <Text style={styles.commissionTitle}>YOUR COMMISSION TODAY</Text>
-            <Ionicons name="chevron-forward" size={20} color={colors.text} />
-          </View>
-          <Text style={styles.commissionAmount}>
-            {formatCurrency(commissionEarned)} / {Number(commissionTarget).toFixed(2)}
-          </Text>
-          <Text style={styles.commissionPct}>
-            {commissionPct}% of target achieved
-            {commissionLoading && ' (loading...)'}
-          </Text>
-        </TouchableOpacity>
+        {/* 2. Stock overview (lorry stock) */}
+        <View style={{ paddingHorizontal: spacing.md, marginTop: -20, marginBottom: spacing.md }}>
+          <TouchableOpacity
+            onPress={() => navigation.navigate('MyStocks')}
+            activeOpacity={0.8}
+            style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.xs }}
+          >
+            <Text style={styles.sectionTitle}></Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+              {/* <Text style={{ color: colors.textSecondary, fontSize: 12, fontWeight: '600' }}>Open My Stocks</Text>
+              <Ionicons name="chevron-forward" size={16} color={colors.textSecondary} /> */}
+            </View>
+          </TouchableOpacity>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            {stockCards.length > 0 ? (
+              stockCards.map((s) => {
+                const pending = Number(s.remaining) || 0; // pending stock in lorry
+                const LOW_STOCK_THRESHOLD = 2;
+                const isOut = pending <= 0;
+                const isLow = !isOut && pending <= LOW_STOCK_THRESHOLD;
+                const statusColor = isOut ? '#dc2626' : isLow ? '#d97706' : '#059669';
+
+                return (
+                  <TouchableOpacity
+                    key={s.product_id}
+                    activeOpacity={0.85}
+                    onPress={() => navigation.navigate('MyStocks')}
+                    style={{
+                      backgroundColor: colors.surface,
+                      borderRadius: borderRadius.lg,
+                      padding: spacing.md,
+                      borderWidth: 1.5,
+                      borderColor: statusColor,
+                      marginRight: spacing.sm,
+                      minWidth: 160,
+                    }}
+                  >
+                    <Text style={{ fontSize: 13, fontWeight: '800', color: colors.text }} numberOfLines={1}>
+                      {s.product_name}
+                    </Text>
+                    <View style={{ height: 8 }} />
+                    <Text style={{ fontSize: 12, color: colors.textSecondary, fontWeight: '800' }}>
+                      Pending in lorry
+                    </Text>
+                    <Text style={{ fontSize: 18, fontWeight: '900', color: statusColor, marginTop: 4 }}>
+                      {pending.toLocaleString('en-IN')}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })
+            ) : (
+              <View style={{ paddingVertical: spacing.md }}>
+                <Text style={{ color: colors.textSecondary }}>No stock data available.</Text>
+              </View>
+            )}
+          </ScrollView>
+        </View>
 
         {/* 3. Collection today - Cash, Cheque, Credit (tap to expand / tap again to collapse) */}
         <Text style={styles.collectionSectionLabel}>Sales Today</Text>
@@ -1072,6 +1193,27 @@ export default function DashboardScreen({ navigation }) {
             </View>
           }
         />
+      </View>
+
+      {/* Commission section (separate card below Delivery Progress) */}
+      <View style={{ paddingHorizontal: spacing.md }}>
+        <TouchableOpacity
+          style={styles.commissionCard}
+          activeOpacity={0.86}
+          onPress={() => navigation.navigate('MyCommissions')}
+        >
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+            <Text style={styles.commissionTitle}>YOUR COMMISSION TODAY</Text>
+            <Ionicons name="chevron-forward" size={20} color="#fff" />
+          </View>
+          <Text style={styles.commissionAmount}>
+            {formatCurrency(commissionEarned)} / {Number(commissionTarget).toFixed(2)}
+          </Text>
+          <Text style={styles.commissionPct}>
+            {commissionPct}% of target achieved
+            {commissionLoading && ' (loading...)'}
+          </Text>
+        </TouchableOpacity>
       </View>
 
         {/* 6. Configurable: Create Sales Order & Return */}

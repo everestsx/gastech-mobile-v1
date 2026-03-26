@@ -11,54 +11,87 @@ function numOrNull(v) {
   return Number.isFinite(n) ? n : null;
 }
 
+/** Odoo sometimes returns id as number or [id, label]; normalize for SQLite PK + dedupe. */
+export function coalesceVehicleId(raw) {
+  let id = raw;
+  if (Array.isArray(id)) id = id[0];
+  const n = Number(id);
+  return Number.isFinite(n) ? n : null;
+}
 
-// export async function getAllVehicles() {
-//   const db = await getDb();
-//   const rows = await db.getAllAsync(
-//     'SELECT id, name, license_plate, model_id FROM vehicles ORDER BY name ASC'
-//   );
-//   return (rows || []).map((row) => ({
-//     id: row.id,
-//     name: row.name,
-//     license_plate: row.license_plate,
-//     model_id: row.model_id != null ? [row.model_id, null] : null,
-//   }));
-// }
-export async function getAllVehicles() {
-  const db = await getDb();
-  const rows = await db.getAllAsync(
-      'SELECT id, name, license_plate, model_id FROM vehicles ORDER BY name ASC'
-  );
+/**
+ * One row per Odoo vehicle id (last wins). Skips rows without a valid id.
+ */
+export function dedupeVehiclesById(rows) {
+  const map = new Map();
+  for (const r of rows || []) {
+    const id = coalesceVehicleId(r?.id);
+    if (id == null) continue;
+    map.set(id, { ...r, id });
+  }
+  return Array.from(map.values());
+}
 
-  // --- DEBUG LOGS ---
-  console.log(`--- Total Vehicles in DB: ${rows.length} ---`);
-  rows.forEach((row, index) => {
-    console.log(`Vehicle [${index}]: ID=${row.id} | Plate=${row.license_plate} | Name=${row.name}`);
+/**
+ * After unique ids: one entry per non-empty license_plate (keeps lowest id) so login list
+ * does not show the same truck twice if legacy rows duplicated plates.
+ */
+export function dedupeVehiclesByLicensePlate(rows) {
+  const list = [...(rows || [])].sort((a, b) => {
+    const na = (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' });
+    if (na !== 0) return na;
+    return coalesceVehicleId(a.id) - coalesceVehicleId(b.id);
   });
-  console.log('------------------------------------------');
-  // ------------------
+  const seenPlate = new Map();
+  const out = [];
+  for (const v of list) {
+    const plate = (v.license_plate != null ? String(v.license_plate) : '').trim().toLowerCase();
+    if (plate) {
+      if (seenPlate.has(plate)) continue;
+      seenPlate.set(plate, true);
+    }
+    out.push(v);
+  }
+  return out;
+}
 
-  return (rows || []).map((row) => ({
-    id: row.id,
+function mapVehicleRow(row) {
+  const id = coalesceVehicleId(row.id);
+  return {
+    id,
     name: row.name,
     license_plate: row.license_plate,
     model_id: row.model_id != null ? [row.model_id, null] : null,
-  }));
+  };
+}
+
+export async function getAllVehicles() {
+  const db = await getDb();
+  const rows = await db.getAllAsync(
+    'SELECT id, name, license_plate, model_id FROM vehicles ORDER BY name ASC'
+  );
+  const mapped = (rows || []).map(mapVehicleRow).filter((v) => v.id != null);
+  const byId = dedupeVehiclesById(mapped);
+  return dedupeVehiclesByLicensePlate(byId);
 }
 
 export async function upsertVehicles(rows) {
   if (!rows?.length) return;
+  const deduped = dedupeVehiclesById(rows);
+  if (!deduped.length) return;
   const db = await getDb();
   const now = new Date().toISOString();
 
   await db.withTransactionAsync(async (tx) => {
-    for (const r of rows) {
-      const deterministicPIN = ((r.id * 12345) % 9000 + 1000).toString();
+    for (const r of deduped) {
+      const id = coalesceVehicleId(r.id);
+      if (id == null) continue;
+      const deterministicPIN = ((id * 12345) % 9000 + 1000).toString();
       const cashJid = numOrNull(r.cash_journal_id);
       const checkJid = numOrNull(r.check_journal_id);
 
       await tx.runAsync(
-          `INSERT INTO vehicles (id, name, license_plate, password, cash_journal_id, check_journal_id, updated_at) 
+        `INSERT INTO vehicles (id, name, license_plate, password, cash_journal_id, check_journal_id, updated_at) 
          VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            name = excluded.name,
@@ -66,7 +99,7 @@ export async function upsertVehicles(rows) {
            cash_journal_id = excluded.cash_journal_id,
            check_journal_id = excluded.check_journal_id,
            updated_at = excluded.updated_at`,
-          [r.id, r.name, r.license_plate, deterministicPIN, cashJid, checkJid, now]
+        [id, r.name, r.license_plate, deterministicPIN, cashJid, checkJid, now]
       );
     }
   });

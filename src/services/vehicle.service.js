@@ -3,8 +3,15 @@ import { callOdoo } from "./index.service";
 /**
  * Get all fleet vehicles (fleet.vehicle search_read)
  */
-/** Fields for fleet.vehicle including journal ids (stored locally for offline Cash/Cheque). */
-const VEHICLE_FIELDS = ["id", "name", "license_plate", "model_id", "cash_journal_id", "check_journal_id"];
+/** Fields for fleet.vehicle (aligned with Odoo ACLs; avoid model_id if user lacks fleet.model access). */
+const VEHICLE_FIELDS = [
+  "id",
+  "name",
+  "license_plate",
+  "cash_journal_id",
+  "check_journal_id",
+  "sales_team_id",
+];
 
 export const getVehicles = () =>
   callOdoo(

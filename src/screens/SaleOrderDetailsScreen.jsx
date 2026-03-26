@@ -62,6 +62,10 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
   const [order, setOrder] = useState(null);
   const [lines, setLines] = useState([]);
   const [isDelivered, setIsDelivered] = useState(false);
+  // True when the picking/delivery is already validated ("done") locally.
+  // In that case, lorry stock has already been deducted once, so we should
+  // allow editing delivered quantity even if remaining stock is 0.
+  const [isDeliveryDone, setIsDeliveryDone] = useState(false);
   const [modifyEnabled, setModifyEnabled] = useState(false);
   const [qtyChanged, setQtyChanged] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -377,6 +381,8 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
       );
       setQtyChanged(false);
       const { picking } = await getDeliveryDataFromDB(saleOrderId);
+      const deliveryDone = ((picking?.state || '') + '').toLowerCase() === 'done';
+      setIsDeliveryDone(deliveryDone);
       setIsDelivered(data.order?.invoice_status === 'invoiced');
 
 
@@ -417,6 +423,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
       setOrder(null);
       setLines([]);
       setIsDelivered(false);
+      setIsDeliveryDone(false);
     } finally {
       setLoading(false);
     }
@@ -433,53 +440,44 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
     }
   }, [navigation, order?.name, order?.id]);
 
-  // When available quantity is 0 for a product, force delivered quantity to 0
-  useEffect(() => {
-    if (Object.keys(productIdToAvailable).length === 0) return;
-    setLines((prev) =>
-      prev.map((l) => {
-        const productId = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
-        const available = productId != null ? productIdToAvailable[productId] : undefined;
-        if (available !== undefined && available === 0) {
-          return { ...l, newQty: '0' };
-        }
-        return l;
-      })
-    );
-  }, [productIdToAvailable]);
-
     const setLineQty = useCallback((lineId, value) => {
       setUpdateError(null);
       const trimmed = value.replace(/[^0-9.]/g, '');
       const num = trimmed === '' ? 0 : parseFloat(trimmed);
-      let safeQty = isNaN(num) || num < 0 ? 0 : num;
+
+      const minQty = isDeliveryDone ? 0 : 1;
+      let safeQty = isNaN(num) || num < 0 ? minQty : num;
 
       setLines((prev) => {
-        // Find the line from the previous state
-        const line = prev.find(l => l.id === lineId);
-
+        const line = prev.find((l) => l.id === lineId);
         if (line) {
           const productId = Array.isArray(line.product_id) ? line.product_id[0] : line.product_id;
+          const baseQty = Number(line.product_uom_qty ?? 0) || 0;
 
-          // Check against available stock
+          // productIdToAvailable[productId] is the remaining extra stock in the lorry.
+          // Max delivered for this line = baseQty + remaining.
           if (productId != null && productIdToAvailable[productId] !== undefined) {
-            const maxAllowed = productIdToAvailable[productId];
+            const availableExtra = Number(productIdToAvailable[productId]) || 0;
+            const maxAllowed = baseQty + Math.max(0, availableExtra);
             safeQty = Math.min(safeQty, maxAllowed);
           }
+
+          // Allow decreasing delivered qty even when remaining is 0.
+          safeQty = Math.max(minQty, safeQty);
         }
 
         return prev.map((l) =>
-          l.id === lineId
-            ? { ...l, newQty: trimmed === '' ? '' : String(safeQty) }
-            : l
+          l.id === lineId ? { ...l, newQty: trimmed === '' ? '' : String(safeQty) } : l
         );
       });
 
       setQtyChanged(true);
-    }, [productIdToAvailable]);
+    }, [productIdToAvailable, isDeliveryDone]);
 const changeQtyBy = useCallback((lineId, delta) => {
   setUpdateError(null);
   const MAX_QTY = 9999;
+  const minQty = isDeliveryDone ? 0 : 1;
+
   setLines((prev) =>
     prev.map((l) => {
       if (l.id !== lineId) return l;
@@ -487,24 +485,23 @@ const changeQtyBy = useCallback((lineId, delta) => {
       const current = parseFloat(l.newQty) || 0;
       let next = current + delta;
 
-
       const productId = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
+      const baseQty = Number(l.product_uom_qty ?? 0) || 0;
+
       if (productId != null && productIdToAvailable[productId] !== undefined) {
-        const maxAllowed = Math.min(MAX_QTY, productIdToAvailable[productId]);
-        if (maxAllowed === 0) {
-          next = 0;
-        } else {
-          next = Math.max(1, Math.min(maxAllowed, next));
-        }
+        const availableExtra = Number(productIdToAvailable[productId]) || 0;
+        const maxAllowed = Math.min(MAX_QTY, baseQty + Math.max(0, availableExtra));
+        next = Math.max(minQty, Math.min(maxAllowed, next));
       } else {
-        next = Math.max(1, Math.min(MAX_QTY, next));
+        next = Math.max(minQty, Math.min(MAX_QTY, next));
       }
 
       return { ...l, newQty: String(next) };
     })
   );
+
   setQtyChanged(true);
-}, [productIdToAvailable]);
+}, [productIdToAvailable, isDeliveryDone]);
   const hasQtyChanges = useCallback(() => {
     return lines.some(
       (l) => Number(l.newQty) !== Number(l.product_uom_qty)
@@ -512,30 +509,62 @@ const changeQtyBy = useCallback((lineId, delta) => {
   }, [lines]);
 
 const validateQuantities = useCallback(() => {
+  // 1) Basic qty constraints
   for (const l of lines) {
     const qty = Number(l.newQty);
     const productName = getProductDisplayName(l.product_id?.[1] ?? l.name ?? '');
 
-    const productId = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
-    const availableStock = productId != null ? productIdToAvailable[productId] : undefined;
-
-    if (availableStock !== undefined && availableStock === 0) {
-      if (qty !== 0) {
-        return `No stock available for "${productName}". Delivered quantity must be 0.`;
-      }
-      continue;
+    if (!Number.isFinite(qty) || qty < 0) {
+      return `Invalid quantity for "${productName}".`;
     }
 
-    if (Number.isNaN(qty) || qty < 1) {
-      return `Quantity for "${productName}" must be at least 1 (cannot be 0)`;
-    }
-
-    if (availableStock !== undefined && qty > availableStock) {
-      return `Insufficient stock for "${productName}". Available: ${availableStock}, Requested: ${qty}`;
+    // Before delivery is done we keep the old rule: qty cannot be 0.
+    if (!isDeliveryDone && qty < 1) {
+      return `Quantity for "${productName}" must be at least 1 (cannot be 0).`;
     }
   }
+
+  // 2) Stock constraint (only applies when increasing beyond baseQty)
+  // productIdToAvailable[pid] represents remaining "extra stock" in the lorry.
+  const baseTotalByProductId = {};
+  const requestedTotalByProductId = {};
+
+  for (const l of lines) {
+    const productId = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
+    if (productId == null) continue;
+
+    const baseQty = Number(l.product_uom_qty ?? 0) || 0;
+    const requestedQty = Number(l.newQty ?? 0) || 0;
+
+    baseTotalByProductId[productId] = (baseTotalByProductId[productId] || 0) + baseQty;
+    requestedTotalByProductId[productId] = (requestedTotalByProductId[productId] || 0) + requestedQty;
+  }
+
+  for (const pid of Object.keys(requestedTotalByProductId)) {
+    const productId = Number(pid);
+    const availableExtra = productIdToAvailable[productId];
+    if (availableExtra === undefined) continue;
+
+    const baseTotal = baseTotalByProductId[productId] || 0;
+    const requestedTotal = requestedTotalByProductId[productId] || 0;
+
+    const maxAllowedTotal = baseTotal + Math.max(0, Number(availableExtra) || 0);
+    if (requestedTotal > maxAllowedTotal) {
+      const lineForName = lines.find((l) => {
+        const pid2 = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
+        return Number(pid2) === productId;
+      });
+      const productName = lineForName
+        ? getProductDisplayName(lineForName.product_id?.[1] ?? lineForName.name ?? '')
+        : `Product ${productId}`;
+
+      const extraRequested = requestedTotal - baseTotal;
+      return `Insufficient stock for "${productName}". Available extra: ${availableExtra}, Requested extra: ${extraRequested}`;
+    }
+  }
+
   return null;
-}, [lines, productIdToAvailable]);
+}, [lines, productIdToAvailable, isDeliveryDone]);
   /** Apply qty updates locally (offline DB). When markDeliveryDone is true, also enqueue delivery and set picking done. When false, only update lines/moves (for "Proceed to Payment") — delivery is enqueued only after payment success. Returns delivery payload for passing to ProceedPayment. */
   const applyQtyDoneAndValidate = useCallback(
     async (effectiveQtys, markDeliveryDone = false) => {
@@ -605,11 +634,12 @@ const getStockWarning = useCallback((lineId) => {
   const qty = Number(line.newQty);
   const productId = Array.isArray(line.product_id) ? line.product_id[0] : line.product_id;
 
-  if (productId != null && productIdToAvailable[productId] !== undefined) {
-    const availableStock = productIdToAvailable[productId];
-    if (qty > availableStock) {
-      return `Exceeds available stock (${availableStock})`;
-    }
+  if (productId == null || productIdToAvailable[productId] === undefined) return null;
+  const availableExtra = Number(productIdToAvailable[productId]) || 0;
+  const baseQty = Number(line.product_uom_qty ?? 0) || 0;
+  const maxAllowed = baseQty + Math.max(0, availableExtra);
+  if (qty > maxAllowed) {
+    return `Insufficient stock (max allowed for this order: ${maxAllowed})`;
   }
   return null;
 }, [lines, productIdToAvailable]);
@@ -654,8 +684,11 @@ const handleProceedToPayment = useCallback(async () => {
     // Delivery is enqueued and marked done only after payment is completed on ProceedPaymentScreen.
     const deliveryPayload = await applyQtyDoneAndValidate(effectiveQtys, false);
 
-    // Update vehicle inventory - deduct stock
-    await updateVehicleInventory(effectiveQtys);
+    // Update vehicle inventory only if delivery isn't already done locally.
+    // This avoids double-deducting lorry stock for "delivered but not invoiced yet" flows.
+    if (!isDeliveryDone) {
+      await updateVehicleInventory(effectiveQtys);
+    }
 
     const subtotal =
       !noChanges && lines.length
@@ -684,7 +717,7 @@ const handleProceedToPayment = useCallback(async () => {
   } finally {
     setUpdating(false);
   }
-}, [order, lines, validateQuantities, hasQtyChanges, applyQtyDoneAndValidate, updateVehicleInventory, navigation]);
+}, [order, lines, validateQuantities, hasQtyChanges, applyQtyDoneAndValidate, updateVehicleInventory, isDeliveryDone, navigation]);
   /** Per-product total qty in this order (current newQty values). Used for dynamic "remaining after order" stock. */
   const totalQtyByProductId = useMemo(() => {
     const map = {};
@@ -744,7 +777,6 @@ const handleProceedToPayment = useCallback(async () => {
     const totalOrderedForProduct = productId != null ? (totalQtyByProductId[productId] ?? 0) : 0;
     const remainingAfterOrder = availableStock !== undefined ? availableStock - totalOrderedForProduct : undefined;
     const imageSource = getProductImageSource(productName);
-    const isZeroStock = availableStock !== undefined && availableStock === 0;
 
     return (
       <View style={[styles.lineCard]}>
@@ -763,32 +795,30 @@ const handleProceedToPayment = useCallback(async () => {
                   <Text style={styles.lineProductName} numberOfLines={1}>
                     {getProductDisplayName(productName) || 'Unknown'} ×
                   </Text>
-                  <View style={[styles.qtyControls, isZeroStock && styles.qtyControlsDisabled]}>
+                  <View style={styles.qtyControls}>
                     <TouchableOpacity
                       style={styles.qtyIconBtn}
-                      onPress={isZeroStock ? undefined : () => changeQtyBy(item.id, -1)}
+                      onPress={() => changeQtyBy(item.id, -1)}
                       activeOpacity={0.8}
-                      disabled={isZeroStock}
                     >
-                      <Ionicons name="remove" size={22} color={isZeroStock ? colors.textSecondary : colors.primary} />
+                      <Ionicons name="remove" size={22} color={colors.primary} />
                     </TouchableOpacity>
                     <TextInput
-                      style={[styles.qtyInput, isZeroStock && styles.qtyInputDisabled]}
+                      style={styles.qtyInput}
                       value={item.newQty}
-                      onChangeText={isZeroStock ? undefined : (text) => setLineQty(item.id, text)}
+                      onChangeText={(text) => setLineQty(item.id, text)}
                       keyboardType="decimal-pad"
                       placeholder="0"
                       placeholderTextColor={colors.textSecondary}
                       selectTextOnFocus
-                      editable={!isZeroStock}
+                      editable
                     />
                     <TouchableOpacity
                       style={styles.qtyIconBtn}
-                      onPress={isZeroStock ? undefined : () => changeQtyBy(item.id, 1)}
+                      onPress={() => changeQtyBy(item.id, 1)}
                       activeOpacity={0.8}
-                      disabled={isZeroStock}
                     >
-                      <Ionicons name="add" size={22} color={isZeroStock ? colors.textSecondary : colors.primary} />
+                      <Ionicons name="add" size={22} color={colors.primary} />
                     </TouchableOpacity>
                   </View>
                 </View>
