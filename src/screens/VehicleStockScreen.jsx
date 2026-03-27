@@ -82,15 +82,15 @@ function StockCard({ item, colors, cardWidth, isLeft }) {
         </Text>
         <View style={styles.stockRowsWrap}>
           <View style={styles.stockRow}>
-            <Text style={[styles.stockRowLabel, { color: colors.textSecondary }]}>Total Stock</Text>
+            <Text style={[styles.stockRowLabel, { color: colors.textSecondary }]}>On Hand Stock</Text>
             <Text style={[styles.stockRowValue, { color: colors.text }]}>{qty}</Text>
           </View>
           <View style={styles.stockRow}>
-            <Text style={[styles.stockRowLabel, { color: colors.textSecondary }]}>Delivered Stock</Text>
+            <Text style={[styles.stockRowLabel, { color: colors.textSecondary }]}>Ordered Stock</Text>
             <Text style={[styles.stockRowValue, { color: colors.text }]}>{delivered}</Text>
           </View>
           <View style={styles.stockRow}>
-            <Text style={[styles.stockRowLabel, { color: colors.textSecondary }]}>Remaining Stock</Text>
+            <Text style={[styles.stockRowLabel, { color: colors.textSecondary }]}>Extra Stock</Text>
             <Text style={[styles.stockRowValue, { color: lowStock ? colors.error : colors.primary }]}>{available}</Text>
           </View>
         </View>

@@ -10,6 +10,7 @@ import {
   Platform,
   LayoutAnimation,
   UIManager,
+  Image,
 } from 'react-native';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
@@ -74,6 +75,23 @@ function formatLocalYyyyMmDd(d) {
 }
 
 const SYNC_INDICATOR_GAP = 12;
+
+const GAS_IMAGE_BY_KEYWORD = [
+  { keys: ['37.5', '37_5', '37-5', '375kg', '37.5kg'], image: require('../../assets/Gas_Image/37.5kg.png') },
+  { keys: ['12.5', '12_5', '12-5', '125kg', '12.5kg'], image: require('../../assets/Gas_Image/gas12.5k.png') },
+  { keys: ['5kg', '5 kg', ' 5 ', '5.0'], image: require('../../assets/Gas_Image/5kg.png') },
+  { keys: ['2.3', '2_3', '2-3', '23kg', '2.3kg'], image: require('../../assets/Gas_Image/2.3kg.png') },
+];
+
+function getGasImageByProductName(productName) {
+  const normalized = String(productName || '').toLowerCase();
+  for (const item of GAS_IMAGE_BY_KEYWORD) {
+    if (item.keys.some((k) => normalized.includes(k))) {
+      return item.image;
+    }
+  }
+  return null;
+}
 
 export default function DashboardScreen({ navigation }) {
   const insets = useSafeAreaInsets();
@@ -966,11 +984,13 @@ export default function DashboardScreen({ navigation }) {
           <ScrollView horizontal showsHorizontalScrollIndicator={false}>
             {stockCards.length > 0 ? (
               stockCards.map((s) => {
-                const pending = Number(s.remaining) || 0; // pending stock in lorry
+                const onHandStock = Number(s.total) || 0;
                 const LOW_STOCK_THRESHOLD = 2;
-                const isOut = pending <= 0;
-                const isLow = !isOut && pending <= LOW_STOCK_THRESHOLD;
+                const isOut = onHandStock <= 0;
+                const isLow = !isOut && onHandStock <= LOW_STOCK_THRESHOLD;
                 const statusColor = isOut ? '#dc2626' : isLow ? '#d97706' : '#059669';
+                const productLabel = String(s.product_name || '').replace(/^\[[^\]]+\]\s*/, '');
+                const gasImageSource = getGasImageByProductName(productLabel);
 
                 return (
                   <TouchableOpacity
@@ -987,15 +1007,39 @@ export default function DashboardScreen({ navigation }) {
                       minWidth: 160,
                     }}
                   >
-                    <Text style={{ fontSize: 13, fontWeight: '800', color: colors.text }} numberOfLines={1}>
-                      {s.product_name}
-                    </Text>
-                    <View style={{ height: 8 }} />
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                      {gasImageSource ? (
+                        <Image
+                          source={gasImageSource}
+                          style={{ width: 30, height: 30, borderRadius: 6 }}
+                          resizeMode="contain"
+                        />
+                      ) : (
+                        <View
+                          style={{
+                            width: 30,
+                            height: 30,
+                            borderRadius: 6,
+                            borderWidth: 1,
+                            borderColor: colors.border,
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            backgroundColor: colors.background,
+                          }}
+                        >
+                          <Ionicons name="flame-outline" size={16} color={colors.textSecondary} />
+                        </View>
+                      )}
+                      <Text style={{ fontSize: 13, fontWeight: '800', color: colors.text, flex: 1 }} numberOfLines={2}>
+                        {productLabel}
+                      </Text>
+                    </View>
+                    <View style={{ height: 6 }} />
                     <Text style={{ fontSize: 12, color: colors.textSecondary, fontWeight: '800' }}>
-                      Pending in lorry
+                      On Hand Stock
                     </Text>
                     <Text style={{ fontSize: 18, fontWeight: '900', color: statusColor, marginTop: 4 }}>
-                      {pending.toLocaleString('en-IN')}
+                      {s.total.toLocaleString('en-IN')}
                     </Text>
                   </TouchableOpacity>
                 );

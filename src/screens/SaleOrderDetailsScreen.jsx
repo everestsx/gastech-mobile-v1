@@ -404,7 +404,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
               (inventories || []).forEach((inv) => {
                 const pid = inv.product_id != null ? inv.product_id : inv.id;
                 if (pid != null) {
-                  map[pid] = Number(inv.available_quantity) ?? 0;
+                  map[pid] = Number(inv.quantity) ?? 0;
                 }
               });
               setProductIdToAvailable(map);
@@ -445,8 +445,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
       const trimmed = value.replace(/[^0-9.]/g, '');
       const num = trimmed === '' ? 0 : parseFloat(trimmed);
 
-      const minQty = isDeliveryDone ? 0 : 1;
-      let safeQty = isNaN(num) || num < 0 ? minQty : num;
+      let safeQty = isNaN(num) || num < 0 ? 0 : num;
 
       setLines((prev) => {
         const line = prev.find((l) => l.id === lineId);
@@ -454,16 +453,13 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
           const productId = Array.isArray(line.product_id) ? line.product_id[0] : line.product_id;
           const baseQty = Number(line.product_uom_qty ?? 0) || 0;
 
-          // productIdToAvailable[productId] is the remaining extra stock in the lorry.
-          // Max delivered for this line = baseQty + remaining.
+          // productIdToAvailable[productId] is the on-hand stock in the lorry.
+          // Max that can be delivered for this line = on-hand stock total.
           if (productId != null && productIdToAvailable[productId] !== undefined) {
-            const availableExtra = Number(productIdToAvailable[productId]) || 0;
-            const maxAllowed = baseQty + Math.max(0, availableExtra);
+            const onHandTotal = Number(productIdToAvailable[productId]) || 0;
+            const maxAllowed = onHandTotal;
             safeQty = Math.min(safeQty, maxAllowed);
           }
-
-          // Allow decreasing delivered qty even when remaining is 0.
-          safeQty = Math.max(minQty, safeQty);
         }
 
         return prev.map((l) =>
@@ -476,7 +472,6 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
 const changeQtyBy = useCallback((lineId, delta) => {
   setUpdateError(null);
   const MAX_QTY = 9999;
-  const minQty = isDeliveryDone ? 0 : 1;
 
   setLines((prev) =>
     prev.map((l) => {
@@ -489,11 +484,11 @@ const changeQtyBy = useCallback((lineId, delta) => {
       const baseQty = Number(l.product_uom_qty ?? 0) || 0;
 
       if (productId != null && productIdToAvailable[productId] !== undefined) {
-        const availableExtra = Number(productIdToAvailable[productId]) || 0;
-        const maxAllowed = Math.min(MAX_QTY, baseQty + Math.max(0, availableExtra));
-        next = Math.max(minQty, Math.min(maxAllowed, next));
+        const onHandTotal = Number(productIdToAvailable[productId]) || 0;
+        const maxAllowed = Math.min(MAX_QTY, onHandTotal);
+        next = Math.max(0, Math.min(maxAllowed, next));
       } else {
-        next = Math.max(minQty, Math.min(MAX_QTY, next));
+        next = Math.max(0, Math.min(MAX_QTY, next));
       }
 
       return { ...l, newQty: String(next) };
@@ -518,9 +513,9 @@ const validateQuantities = useCallback(() => {
       return `Invalid quantity for "${productName}".`;
     }
 
-    // Before delivery is done we keep the old rule: qty cannot be 0.
-    if (!isDeliveryDone && qty < 1) {
-      return `Quantity for "${productName}" must be at least 1 (cannot be 0).`;
+    // Qty can be set to any value (including 0) for removal/cancellation
+    if (qty < 0) {
+      return `Quantity for "${productName}" cannot be negative.`;
     }
   }
 
@@ -542,13 +537,13 @@ const validateQuantities = useCallback(() => {
 
   for (const pid of Object.keys(requestedTotalByProductId)) {
     const productId = Number(pid);
-    const availableExtra = productIdToAvailable[productId];
-    if (availableExtra === undefined) continue;
+    const onHandTotal = productIdToAvailable[productId];
+    if (onHandTotal === undefined) continue;
 
     const baseTotal = baseTotalByProductId[productId] || 0;
     const requestedTotal = requestedTotalByProductId[productId] || 0;
 
-    const maxAllowedTotal = baseTotal + Math.max(0, Number(availableExtra) || 0);
+    const maxAllowedTotal = Math.min(Number(onHandTotal) || 0, baseTotal + Math.max(0, Number(onHandTotal) || 0));
     if (requestedTotal > maxAllowedTotal) {
       const lineForName = lines.find((l) => {
         const pid2 = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;

@@ -203,29 +203,30 @@ export default function ProceedPaymentScreen({ route, navigation }) {
     return () => setHideSyncIndicator(false);
   }, [setHideSyncIndicator]);
 
-  // Auto-select Credit when cash + check is less than total (remaining goes to credit)
+  // Auto-manage Credit based on remaining gap after cash/cheque.
+  // Keep user flexibility: never force credit-only mode.
   useEffect(() => {
     const cashPlusCheck = cashAmountNum + checkAmountNum;
-    if (cashPlusCheck < orderTotalRounded && creditAmountNum > 0 && !selectedPaymentMethods.includes(PAYMENT_CREDIT)) {
-      setSelectedPaymentMethods((prev) => [...prev, PAYMENT_CREDIT]);
-    }
-  }, [cashAmountNum, checkAmountNum, orderTotalRounded, creditAmountNum, selectedPaymentMethods]);
+    const hasGap = cashPlusCheck < orderTotalRounded;
+    const shouldHaveCredit = hasGap && creditAmountNum > 0;
+    setSelectedPaymentMethods((prev) => {
+      const hasCredit = prev.includes(PAYMENT_CREDIT);
+      if (shouldHaveCredit && !hasCredit) {
+        return [...prev, PAYMENT_CREDIT];
+      }
+      if (!shouldHaveCredit && hasCredit) {
+        const next = prev.filter((m) => m !== PAYMENT_CREDIT);
+        return next.length ? next : [PAYMENT_CASH];
+      }
+      return prev;
+    });
+  }, [cashAmountNum, checkAmountNum, orderTotalRounded, creditAmountNum]);
 
-  // Auto-deselect Credit when cash + check covers full total (credit amount becomes 0)
-  useEffect(() => {
-    if (creditAmountNum === 0 && selectedPaymentMethods.includes(PAYMENT_CREDIT)) {
-      setSelectedPaymentMethods((prev) => prev.filter((m) => m !== PAYMENT_CREDIT));
-    }
-  }, [creditAmountNum, selectedPaymentMethods]);
 
   const togglePaymentMethod = useCallback((method) => {
     setSelectedPaymentMethods((prev) => {
       const has = prev.includes(method);
       if (has) {
-        if (method === PAYMENT_CREDIT) {
-          // Keep at least one default payment tab selected.
-          return [PAYMENT_CASH];
-        }
         const next = prev.filter((m) => m !== method);
         if (method === PAYMENT_CASH) setCashAmount('');
         if (method === PAYMENT_CHECK) {
@@ -237,22 +238,15 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       }
 
       if (method === PAYMENT_CREDIT) {
-        // Credit means full credit payment (no partial cash/cheque).
-        setCashAmount('');
-        setCheckAmount('');
-        setSelectedLocalBankId(null);
-        setCheckNumber('');
-        return [PAYMENT_CREDIT];
+        // Allow combinations with cash/cheque; credit amount is auto-calculated.
+        return [...prev, PAYMENT_CREDIT];
       }
-      const cashNum = parseFloat(String(cashAmount).replace(/,/g, '')) || 0;
-      const checkNum = parseFloat(String(checkAmount).replace(/,/g, '')) || 0;
-      const remaining = Math.max(0, orderTotalRounded - (method === PAYMENT_CASH ? checkNum : cashNum));
-      if (method === PAYMENT_CASH) setCashAmount(remaining > 0 ? formatAmount(remaining) : '');
-      if (method === PAYMENT_CHECK) setCheckAmount(remaining > 0 ? formatAmount(remaining) : '');
+      // For combinations of cash/cheque: allow manual entry, don't auto-fill
+      // User will manually enter amounts
       const withoutCredit = prev.filter((m) => m !== PAYMENT_CREDIT);
       return [...withoutCredit, method];
     });
-  }, [orderTotalRounded, cashAmount, checkAmount]);
+  }, [orderTotalRounded]);
 
   const handleProceed = async (customerSignatureDataUrl = null) => {
     if (!canProceed) return;
