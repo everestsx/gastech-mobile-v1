@@ -3,6 +3,28 @@ import { setSyncStateListener, setSyncCompleteListener } from '../services/sync.
 
 const SyncContext = createContext(null);
 
+function toFriendlySyncErrorMessage(errorMessage) {
+  const raw = (errorMessage || '').toString().trim();
+  const msg = raw.toLowerCase();
+  if (!raw) return 'Could not sync right now. We will retry automatically when you are online.';
+
+  const isNetworkLike =
+    msg.includes('cannot reach server') ||
+    msg.includes('network request failed') ||
+    msg.includes('failed to fetch') ||
+    msg.includes('network error') ||
+    msg.includes('request timed out') ||
+    msg.includes('timed out') ||
+    msg.includes('aborterror') ||
+    msg.includes('socket');
+
+  if (isNetworkLike) {
+    return 'No internet connection. Your data is saved offline and sync will retry automatically when the connection is back.';
+  }
+
+  return 'Could not sync right now. We will retry automatically in the background.';
+}
+
 export function useSync() {
   const ctx = useContext(SyncContext);
   return ctx ?? { isSyncing: false, syncJustCompleted: false, syncCompleteTimestamp: 0, syncResult: null, syncErrorMessage: null, hideSyncIndicator: false, setHideSyncIndicator: () => {} };
@@ -34,7 +56,7 @@ export function SyncProvider({ children }) {
         setSyncErrorMessage(null);
       } else {
         setSyncResult('failed');
-        setSyncErrorMessage(errorMessage || 'Could not sync. Will retry when online.');
+        setSyncErrorMessage(toFriendlySyncErrorMessage(errorMessage));
       }
       timeoutRef.current = setTimeout(() => {
         setSyncJustCompleted(false);

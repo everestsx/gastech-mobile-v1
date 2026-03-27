@@ -57,6 +57,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   const [selectedPaymentMethods, setSelectedPaymentMethods] = useState([PAYMENT_CASH]);
   const [cashAmount, setCashAmount] = useState(() => (orderTotalRounded > 0 ? formatAmount(orderTotalRounded) : ''));
   const [checkAmount, setCheckAmount] = useState('');
+  const [lastEditedAmount, setLastEditedAmount] = useState(PAYMENT_CASH);
   const [selectedJournalId, setSelectedJournalId] = useState(null);
   const [checkNumber, setCheckNumber] = useState('');
   const [selectedLocalBankId, setSelectedLocalBankId] = useState(null);
@@ -97,29 +98,70 @@ export default function ProceedPaymentScreen({ route, navigation }) {
     [journals]
   );
   const journalsForType = selectedPaymentMethods.includes(PAYMENT_CHECK) ? chequeJournals : [];
+  const hasCashSelected = selectedPaymentMethods.includes(PAYMENT_CASH);
+  const hasChequeSelected = selectedPaymentMethods.includes(PAYMENT_CHECK);
+  const hasCreditSelected = selectedPaymentMethods.includes(PAYMENT_CREDIT);
+
   const cashAmountNum = useMemo(() => {
-    if (!selectedPaymentMethods.includes(PAYMENT_CASH)) return 0;
+    if (!hasCashSelected) return 0;
     const n = parseFloat(String(cashAmount).replace(/,/g, ''));
     if (!Number.isFinite(n) || n < 0) return 0;
     return Math.round(n * 100) / 100;
-  }, [cashAmount, selectedPaymentMethods]);
+  }, [cashAmount, hasCashSelected]);
 
   const checkAmountNum = useMemo(() => {
-    if (!selectedPaymentMethods.includes(PAYMENT_CHECK)) return 0;
+    if (!hasChequeSelected) return 0;
     const n = parseFloat(String(checkAmount).replace(/,/g, ''));
     if (!Number.isFinite(n) || n < 0) return 0;
     return Math.round(n * 100) / 100;
-  }, [checkAmount, selectedPaymentMethods]);
+  }, [checkAmount, hasChequeSelected]);
 
-  const creditAmountNum = useMemo(() => {
-    const remaining = orderTotalRounded - cashAmountNum - checkAmountNum;
-    const r = Math.round(remaining * 100) / 100;
-    // Treat tiny rounding remainder as 0 so full cash+cheque becomes fully paid.
-    if (r <= 0.01) return 0;
-    return Math.max(0, r);
-  }, [orderTotalRounded, cashAmountNum, checkAmountNum]);
-  const totalEntered = cashAmountNum + checkAmountNum + creditAmountNum;
-  const hasAnyPayment = totalEntered > 0;
+  const paymentAmounts = useMemo(() => {
+    let cash = hasCashSelected ? cashAmountNum : 0;
+    let cheque = hasChequeSelected ? checkAmountNum : 0;
+
+    if (!hasCreditSelected) {
+      if (hasCashSelected && !hasChequeSelected) {
+        cash = orderTotalRounded;
+      } else if (!hasCashSelected && hasChequeSelected) {
+        cheque = orderTotalRounded;
+      } else if (hasCashSelected && hasChequeSelected) {
+        if (lastEditedAmount === PAYMENT_CHECK) {
+          const rem = Math.max(0, Math.round((orderTotalRounded - cheque) * 100) / 100);
+          cash = rem;
+        } else {
+          const rem = Math.max(0, Math.round((orderTotalRounded - cash) * 100) / 100);
+          cheque = rem;
+        }
+      }
+    }
+
+    const rawRemaining = Math.round((orderTotalRounded - cash - cheque) * 100) / 100;
+    const credit = hasCreditSelected ? Math.max(0, rawRemaining <= 0.01 ? 0 : rawRemaining) : 0;
+    const total = Math.round((cash + cheque + credit) * 100) / 100;
+    const overpaid = total > orderTotalRounded + 0.01;
+
+    return {
+      cash,
+      cheque,
+      credit,
+      total,
+      overpaid,
+    };
+  }, [
+    hasCashSelected,
+    hasChequeSelected,
+    hasCreditSelected,
+    cashAmountNum,
+    checkAmountNum,
+    orderTotalRounded,
+    lastEditedAmount,
+  ]);
+
+  const cashPayAmount = paymentAmounts.cash;
+  const chequePayAmount = paymentAmounts.cheque;
+  const creditAmountNum = paymentAmounts.credit;
+  const hasAnyPayment = paymentAmounts.total > 0;
   const remainingCreditLabel = useMemo(() => {
     if (creditAmountNum <= 0) return 'Credit Amount';
     const hasCash = cashAmountNum > 0;
@@ -143,13 +185,15 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   }, [selectedLocalBankId, selectedLocalBank, bankSearchQuery]);
   // Cash/Cheque require vehicle-specific journal IDs (cash_journal_id / check_journal_id)
   const paymentComplete =
+    selectedPaymentMethods.length > 0 &&
     hasAnyPayment &&
-    totalEntered >= orderTotalRounded &&
-    (cashAmountNum <= 0 || vehicleJournalIds.cashJournalId != null) &&
-    (checkAmountNum <= 0 || (vehicleJournalIds.chequeJournalId != null && checkNumberTrimmed !== '' && selectedLocalBankId != null)) &&
+    !paymentAmounts.overpaid &&
+    Math.abs(paymentAmounts.total - orderTotalRounded) <= 0.01 &&
+    (cashPayAmount <= 0 || vehicleJournalIds.cashJournalId != null) &&
+    (chequePayAmount <= 0 || (vehicleJournalIds.chequeJournalId != null && checkNumberTrimmed !== '' && selectedLocalBankId != null)) &&
     (creditAmountNum <= 0 || true);
 
-  const evidenceRequired = checkAmountNum > 0 || creditAmountNum > 0;
+  const evidenceRequired = chequePayAmount > 0 || creditAmountNum > 0;
   const canProceed =
     paymentComplete &&
     (evidenceRequired ? deliveryPhotos.length >= 1 : true);
@@ -203,24 +247,26 @@ export default function ProceedPaymentScreen({ route, navigation }) {
     return () => setHideSyncIndicator(false);
   }, [setHideSyncIndicator]);
 
-  // Auto-manage Credit based on remaining gap after cash/cheque.
-  // Keep user flexibility: never force credit-only mode.
+  // Auto-fill amount values based on selected methods only.
+  // Method selection remains fully manual.
   useEffect(() => {
-    const cashPlusCheck = cashAmountNum + checkAmountNum;
-    const hasGap = cashPlusCheck < orderTotalRounded;
-    const shouldHaveCredit = hasGap && creditAmountNum > 0;
-    setSelectedPaymentMethods((prev) => {
-      const hasCredit = prev.includes(PAYMENT_CREDIT);
-      if (shouldHaveCredit && !hasCredit) {
-        return [...prev, PAYMENT_CREDIT];
-      }
-      if (!shouldHaveCredit && hasCredit) {
-        const next = prev.filter((m) => m !== PAYMENT_CREDIT);
-        return next.length ? next : [PAYMENT_CASH];
-      }
-      return prev;
-    });
-  }, [cashAmountNum, checkAmountNum, orderTotalRounded, creditAmountNum]);
+    const nextCash = hasCashSelected ? formatAmount(cashPayAmount) : '';
+    const nextCheque = hasChequeSelected ? formatAmount(chequePayAmount) : '';
+
+    if (hasCashSelected && cashAmount !== nextCash) {
+      setCashAmount(nextCash);
+    }
+    if (!hasCashSelected && cashAmount !== '') {
+      setCashAmount('');
+    }
+
+    if (hasChequeSelected && checkAmount !== nextCheque) {
+      setCheckAmount(nextCheque);
+    }
+    if (!hasChequeSelected && checkAmount !== '') {
+      setCheckAmount('');
+    }
+  }, [hasCashSelected, hasChequeSelected, cashPayAmount, chequePayAmount, cashAmount, checkAmount]);
 
 
   const togglePaymentMethod = useCallback((method) => {
@@ -234,27 +280,29 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           setSelectedLocalBankId(null);
           setCheckNumber('');
         }
-        return next.length ? next : [PAYMENT_CASH];
+        return next;
       }
 
       if (method === PAYMENT_CREDIT) {
-        // Allow combinations with cash/cheque; credit amount is auto-calculated.
         return [...prev, PAYMENT_CREDIT];
       }
-      // For combinations of cash/cheque: allow manual entry, don't auto-fill
-      // User will manually enter amounts
-      const withoutCredit = prev.filter((m) => m !== PAYMENT_CREDIT);
-      return [...withoutCredit, method];
+      if (method === PAYMENT_CASH && prev.includes(PAYMENT_CHECK)) {
+        setLastEditedAmount(PAYMENT_CHECK);
+      }
+      if (method === PAYMENT_CHECK && prev.includes(PAYMENT_CASH)) {
+        setLastEditedAmount(PAYMENT_CASH);
+      }
+      return [...prev, method];
     });
-  }, [orderTotalRounded]);
+  }, []);
 
   const handleProceed = async (customerSignatureDataUrl = null) => {
     if (!canProceed) return;
     // Use only logged-in vehicle's cash_journal_id and check_journal_id (no default/fallback journals).
     const cashJournalId = vehicleJournalIds.cashJournalId ?? null;
     const checkJournalId = vehicleJournalIds.chequeJournalId ?? null;
-    const needsCash = cashAmountNum > 0 && cashJournalId != null;
-    const needsCheck = checkAmountNum > 0 && checkJournalId != null;
+    const needsCash = cashPayAmount > 0 && cashJournalId != null;
+    const needsCheck = chequePayAmount > 0 && checkJournalId != null;
     const needsCredit = creditAmountNum > 0 && selectedPaymentMethods.includes(PAYMENT_CREDIT);
     if (!needsCash && !needsCheck && !needsCredit) return;
     try {
@@ -304,17 +352,17 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       const payments = [];
       const paymentSplit = { cash: 0, check: 0, credit: 0 };
       if (needsCash) {
-        payments.push({ type: 'cash', amount: cashAmountNum, journalId: cashJournalId });
-        paymentSplit.cash = cashAmountNum;
+        payments.push({ type: 'cash', amount: cashPayAmount, journalId: cashJournalId });
+        paymentSplit.cash = cashPayAmount;
       }
       if (needsCheck) {
         payments.push({
           type: 'check',
-          amount: checkAmountNum,
+          amount: chequePayAmount,
           journalId: checkJournalId,
           checkNumber: checkNumberTrimmed || undefined,
         });
-        paymentSplit.check = checkAmountNum;
+        paymentSplit.check = chequePayAmount;
       }
       if (needsCredit) {
         payments.push({ type: 'credit', amount: creditAmountNum });
@@ -872,8 +920,10 @@ export default function ProceedPaymentScreen({ route, navigation }) {
                   ref={cashInputRef}
                   style={styles.cashInput}
                   value={cashAmount}
-                  onChangeText={setCashAmount}
-                  onFocus={() => setCashAmount('')}
+                  onChangeText={(v) => {
+                    setLastEditedAmount(PAYMENT_CASH);
+                    setCashAmount(v);
+                  }}
                   placeholder="Cash"
                   placeholderTextColor={colors.textSecondary}
                   keyboardType="decimal-pad"
@@ -890,8 +940,10 @@ export default function ProceedPaymentScreen({ route, navigation }) {
                   ref={checkInputRef}
                   style={styles.cashInput}
                   value={checkAmount}
-                  onChangeText={setCheckAmount}
-                  onFocus={() => setCheckAmount('')}
+                  onChangeText={(v) => {
+                    setLastEditedAmount(PAYMENT_CHECK);
+                    setCheckAmount(v);
+                  }}
                   placeholder="Cheque"
                   placeholderTextColor={colors.textSecondary}
                   keyboardType="decimal-pad"
@@ -902,14 +954,14 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         </View>
       )}
 
-      {!journalsLoading && selectedPaymentMethods.includes(PAYMENT_CASH) && cashAmountNum > 0 && vehicleJournalIds.cashJournalId == null && (
+      {!journalsLoading && selectedPaymentMethods.includes(PAYMENT_CASH) && cashPayAmount > 0 && vehicleJournalIds.cashJournalId == null && (
         <Text style={[styles.cashHint, { color: hasSyncedOnce ? colors.error : colors.textSecondary, marginBottom: spacing.sm }]}>
           {hasSyncedOnce
             ? 'Vehicle Cash journal is not configured. Please contact admin.'
             : 'Sync when online to load Cash payment option.'}
         </Text>
       )}
-      {!journalsLoading && selectedPaymentMethods.includes(PAYMENT_CHECK) && checkAmountNum > 0 && vehicleJournalIds.chequeJournalId == null && (
+      {!journalsLoading && selectedPaymentMethods.includes(PAYMENT_CHECK) && chequePayAmount > 0 && vehicleJournalIds.chequeJournalId == null && (
         <Text style={[styles.cashHint, { color: hasSyncedOnce ? colors.error : colors.textSecondary, marginBottom: spacing.sm }]}>
           {hasSyncedOnce
             ? 'Vehicle Cheque journal is not configured. Please contact admin.'
