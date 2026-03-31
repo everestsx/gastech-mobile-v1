@@ -311,7 +311,7 @@ export default function MenuScreen({ navigation }) {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  content: { padding: spacing.lg, paddingTop: spacing.xl },
+  content: { padding: spacing.lg, paddingTop: spacing.xl + spacing.lg },
   profileCard: {
     flexDirection: 'row',
     alignItems: 'center',

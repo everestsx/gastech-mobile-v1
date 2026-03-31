@@ -14,6 +14,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
 import { getUserSession, getCachedVehicleInventoryByLocation, getVehicleLocationId } from '../services/sync.service';
+import { getGasTypeBlueColor } from '../utils/productDisplay';
 
 const CARD_MIN_WIDTH = 160;
 const CARD_GAP = spacing.md;
@@ -55,16 +56,17 @@ function StockCard({ item, colors, cardWidth, isLeft }) {
   const name = formatProductName(rawName);
   const lowStock = available <= 0;
   const logoSource = getProductLogo(item);
+  const gasBlueColor = getGasTypeBlueColor(rawName);
 
   return (
     <View
       style={[
         styles.card,
-        { backgroundColor: colors.surface, borderColor: colors.border, width: cardWidth },
+        { backgroundColor: colors.surface, borderColor: lowStock ? colors.error : gasBlueColor, borderWidth: lowStock ? 2 : 2.5, width: cardWidth },
         isLeft && { marginRight: CARD_GAP },
       ]}
     >
-      <View style={[styles.cardAccent, { backgroundColor: lowStock ? colors.error : colors.primary }]} />
+      <View style={[styles.cardAccent, { backgroundColor: lowStock ? colors.error : gasBlueColor }]} />
       <View style={styles.cardContent}>
         <View style={styles.cardIconWrap}>
           {logoSource ? (
@@ -73,7 +75,7 @@ function StockCard({ item, colors, cardWidth, isLeft }) {
             <Ionicons
               name="cube-outline"
               size={28}
-              color={lowStock ? colors.error : colors.primary}
+              color={lowStock ? colors.error : gasBlueColor}
             />
           )}
         </View>
@@ -91,11 +93,11 @@ function StockCard({ item, colors, cardWidth, isLeft }) {
           </View>
           <View style={styles.stockRow}>
             <Text style={[styles.stockRowLabel, { color: colors.textSecondary }]}>Extra Stock</Text>
-            <Text style={[styles.stockRowValue, { color: lowStock ? colors.error : colors.primary }]}>{available}</Text>
+            <Text style={[styles.stockRowValue, { color: lowStock ? colors.error : '#3b82f6' }]}>{available}</Text>
           </View>
         </View>
-        <View style={[styles.badge, { backgroundColor: lowStock ? colors.error + '20' : colors.primarySurface }]}>
-          <Text style={[styles.badgeText, { color: lowStock ? colors.error : colors.primary }]}>
+        <View style={[styles.badge, { backgroundColor: lowStock ? colors.error + '20' : gasBlueColor + '20' }]}>
+          <Text style={[styles.badgeText, { color: lowStock ? colors.error : '#3b82f6' }]}>
             {lowStock ? 'Out of stock' : 'In stock'}
           </Text>
         </View>

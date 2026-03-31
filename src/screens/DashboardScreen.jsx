@@ -22,6 +22,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
 import { dashboardConfig } from '../constants/dashboardConfig';
+import { getGasTypeBlueColor } from '../utils/productDisplay';
 import {
   getCachedOrders,
   getCachedRoutes,
@@ -987,8 +988,8 @@ export default function DashboardScreen({ navigation }) {
                 const onHandStock = Number(s.total) || 0;
                 const LOW_STOCK_THRESHOLD = 2;
                 const isOut = onHandStock <= 0;
-                const isLow = !isOut && onHandStock <= LOW_STOCK_THRESHOLD;
-                const statusColor = isOut ? '#dc2626' : isLow ? '#d97706' : '#059669';
+                const gasBlueColor = getGasTypeBlueColor(String(s.product_name || ''));
+                const statusColor = isOut ? '#dc2626' : gasBlueColor;
                 const productLabel = String(s.product_name || '').replace(/^\[[^\]]+\]\s*/, '');
                 const gasImageSource = getGasImageByProductName(productLabel);
 
@@ -1001,7 +1002,7 @@ export default function DashboardScreen({ navigation }) {
                       backgroundColor: colors.surface,
                       borderRadius: borderRadius.lg,
                       padding: spacing.md,
-                      borderWidth: 1.5,
+                      borderWidth: isOut ? 2 : 2.5,
                       borderColor: statusColor,
                       marginRight: spacing.sm,
                       minWidth: 160,
@@ -1021,13 +1022,13 @@ export default function DashboardScreen({ navigation }) {
                             height: 30,
                             borderRadius: 6,
                             borderWidth: 1,
-                            borderColor: colors.border,
+                            borderColor: statusColor,
                             alignItems: 'center',
                             justifyContent: 'center',
                             backgroundColor: colors.background,
                           }}
                         >
-                          <Ionicons name="flame-outline" size={16} color={colors.textSecondary} />
+                          <Ionicons name="flame-outline" size={16} color={statusColor} />
                         </View>
                       )}
                       <Text style={{ fontSize: 13, fontWeight: '800', color: colors.text, flex: 1 }} numberOfLines={2}>
@@ -1038,7 +1039,7 @@ export default function DashboardScreen({ navigation }) {
                     <Text style={{ fontSize: 12, color: colors.textSecondary, fontWeight: '800' }}>
                       On Hand Stock
                     </Text>
-                    <Text style={{ fontSize: 18, fontWeight: '900', color: statusColor, marginTop: 4 }}>
+                    <Text style={{ fontSize: 18, fontWeight: '900', color: isOut ? '#dc2626' : '#3b82f6', marginTop: 4 }}>
                       {s.total.toLocaleString('en-IN')}
                     </Text>
                   </TouchableOpacity>

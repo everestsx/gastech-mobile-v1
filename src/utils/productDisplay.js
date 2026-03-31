@@ -45,3 +45,23 @@ export function getGasSizeFromProductName(raw) {
   const found = SIZE_MAP.find((s) => Math.abs(s.kg - kg) < 0.01);
   return found ? { ...found, kg } : null;
 }
+
+/**
+ * Get the blue color shade for a gas type based on cylinder size.
+ * Lighter blue for smaller cylinders, darker for larger ones.
+ * @param {string} raw - Raw product name (e.g. "Gas 12.5 kg").
+ * @returns {string} - Blue hex color for the gas type.
+ */
+export function getGasTypeBlueColor(raw) {
+  const gasSize = getGasSizeFromProductName(raw);
+  if (!gasSize) return '#60a5fa'; // Default medium blue
+
+  const blueShades = {
+    small: '#93c5fd',    // Lightest blue (2.3 kg)
+    medium: '#60a5fa',   // Light blue (5 kg)
+    large: '#3b82f6',    // Medium-dark blue (12.5 kg)
+    big: '#1d4ed8',      // Darkest blue (37.5 kg)
+  };
+
+  return blueShades[gasSize.size] || '#60a5fa';
+}
