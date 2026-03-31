@@ -14,7 +14,6 @@ import {
 import { CommonActions } from '@react-navigation/native';
 import SignatureCanvas from 'react-native-signature-canvas';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import * as ImagePicker from 'expo-image-picker';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { useSync } from '../context/SyncContext';
@@ -23,11 +22,9 @@ import { getCachedJournals, getSaleOrderDetailsFromDB, getDeliveryDataFromDB, ge
 import { getVehicleJournalsByLicensePlate } from '../services/vehicle.service';
 import * as saleOrdersDb from '../database/saleOrders.js';
 import * as syncQueueDb from '../database/syncQueue.js';
-import * as offlineAttachmentsDb from '../database/offlineAttachments.js';
 import * as stockPickingsDb from '../database/stockPickings.js';
 import * as localInvoicesDb from '../database/localInvoices.js';
 import * as localPaymentsDb from '../database/localPayments.js';
-import * as FileSystem from 'expo-file-system';
 
 import { JOURNAL_CODE_CASH, JOURNAL_CODE_CHEQUE } from '../constants/journals';
 import { SRI_LANKA_BANKS } from '../constants/sriLankaBanks';
@@ -62,13 +59,15 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   const [checkNumber, setCheckNumber] = useState('');
   const [selectedLocalBankId, setSelectedLocalBankId] = useState(null);
   const [bankSearchQuery, setBankSearchQuery] = useState('');
-  const [deliveryPhotos, setDeliveryPhotos] = useState([]);
   const cashInputRef = useRef(null);
   const checkInputRef = useRef(null);
-  const signatureRef = useRef(null);
+  const customerSignatureRef = useRef(null);
+  const driverSignatureRef = useRef(null);
   const [showSignatureModal, setShowSignatureModal] = useState(false);
-
-  const MAX_PHOTOS = 3;
+  const [signatureStep, setSignatureStep] = useState('customer'); // 'customer' | 'driver'
+  const [customerSignatureData, setCustomerSignatureData] = useState(null);
+  const [driverSignatureData, setDriverSignatureData] = useState(null);
+  const [editingField, setEditingField] = useState(null);
 
   // Use only vehicle-specific journals for Cash and Cheque (cash_journal_id / check_journal_id from fleet.vehicle).
   const cashJournals = useMemo(() => {
@@ -193,10 +192,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
     (chequePayAmount <= 0 || (vehicleJournalIds.chequeJournalId != null && checkNumberTrimmed !== '' && selectedLocalBankId != null)) &&
     (creditAmountNum <= 0 || true);
 
-  const evidenceRequired = chequePayAmount > 0 || creditAmountNum > 0;
-  const canProceed =
-    paymentComplete &&
-    (evidenceRequired ? deliveryPhotos.length >= 1 : true);
+  const canProceed = paymentComplete;
 
   const loadJournals = useCallback(async () => {
     setJournalsLoading(true);
@@ -253,20 +249,22 @@ export default function ProceedPaymentScreen({ route, navigation }) {
     const nextCash = hasCashSelected ? formatAmount(cashPayAmount) : '';
     const nextCheque = hasChequeSelected ? formatAmount(chequePayAmount) : '';
 
-    if (hasCashSelected && cashAmount !== nextCash) {
-      setCashAmount(nextCash);
-    }
-    if (!hasCashSelected && cashAmount !== '') {
+    if (hasCashSelected) {
+      if (editingField !== PAYMENT_CASH && cashAmount !== nextCash) {
+        setCashAmount(nextCash);
+      }
+    } else if (cashAmount !== '') {
       setCashAmount('');
     }
 
-    if (hasChequeSelected && checkAmount !== nextCheque) {
-      setCheckAmount(nextCheque);
-    }
-    if (!hasChequeSelected && checkAmount !== '') {
+    if (hasChequeSelected) {
+      if (editingField !== PAYMENT_CHECK && checkAmount !== nextCheque) {
+        setCheckAmount(nextCheque);
+      }
+    } else if (checkAmount !== '') {
       setCheckAmount('');
     }
-  }, [hasCashSelected, hasChequeSelected, cashPayAmount, chequePayAmount, cashAmount, checkAmount]);
+  }, [hasCashSelected, hasChequeSelected, cashPayAmount, chequePayAmount, cashAmount, checkAmount, editingField]);
 
 
   const togglePaymentMethod = useCallback((method) => {
@@ -296,8 +294,14 @@ export default function ProceedPaymentScreen({ route, navigation }) {
     });
   }, []);
 
-  const handleProceed = async (customerSignatureDataUrl = null) => {
+  const handleProceed = async (custSigData = null, drvSigData = null) => {
     if (!canProceed) return;
+    const custSig = custSigData ?? customerSignatureData;
+    const drvSig = drvSigData ?? driverSignatureData;
+    if (!custSig || !drvSig) {
+      Alert.alert('Error', 'Both customer and driver signatures are required.');
+      return;
+    }
     // Use only logged-in vehicle's cash_journal_id and check_journal_id (no default/fallback journals).
     const cashJournalId = vehicleJournalIds.cashJournalId ?? null;
     const checkJournalId = vehicleJournalIds.chequeJournalId ?? null;
@@ -370,44 +374,6 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       }
       if (payments.length === 0) return;
 
-      const timestamp = Date.now();
-      const photoCount = deliveryPhotos.length;
-      // Doc: store URI only in SQLite (no base64 in payload). Copy image to persistent path; sync will read path→base64→ir.attachment.create→message_post.
-      console.log(`[Payment] Proof photos: ${photoCount}. Storing in offline_attachments (sync will attach).`);
-      for (let i = 0; i < deliveryPhotos.length; i++) {
-        const uri = deliveryPhotos[i];
-        if (!uri || typeof uri !== 'string') continue;
-        try {
-          const ext = (uri.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg';
-          const fileName = `proof_${soId}_${timestamp}_${i}.${ext}`;
-          const source = new FileSystem.File(uri);
-          if (!source.exists) {
-            console.warn(`[Payment] source file missing: ${uri}`);
-            continue;
-          }
-
-          const dest = new FileSystem.File(FileSystem.Paths.document, fileName);
-          source.copy(dest);
-
-          const info = dest.info();
-          const destPath = dest.uri;
-          if (!info?.exists || (info.size ?? 0) < 100) {
-            console.warn(`[Payment] copied file missing/small: ${dest.uri}`);
-            continue;
-          }
-
-          await offlineAttachmentsDb.insert({
-            sale_order_id: soId,
-            local_file_path: destPath,
-            file_name: fileName,
-            mime_type: ext === 'png' ? 'image/png' : 'image/jpeg',
-          });
-          console.log(`[Payment] Proof ${i + 1}: saved to ${destPath}, row in offline_attachments.`);
-        } catch (e) {
-          console.warn('[Payment] save proof photo failed', { index: i, uri, message: e?.message, error: e });
-        }
-      }
-
       const paymentDateStr = new Date().toISOString().slice(0, 10);
       const queuePayload = {
         saleOrderId: soId,
@@ -467,10 +433,9 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         selectedBankId: needsCheck ? checkJournalId : null,
         selectedBankName: needsCheck ? selectedLocalBank?.name : undefined,
         chequeBankName: needsCheck ? (selectedLocalBank?.name ?? undefined) : undefined,
-        deliveryPhotoUris: deliveryPhotos,
-        cashAmount: paymentSplit.cash,
         checkNumber: needsCheck ? (checkNumber || undefined) : undefined,
-        customerSignatureDataUrl: customerSignatureDataUrl ?? undefined,
+        customerSignatureDataUrl: custSig ?? undefined,
+        driverSignatureDataUrl: drvSig ?? undefined,
       };
 
       // Reset stack so InvoiceScreen is always on top (visible even if user had navigated away).
@@ -920,6 +885,8 @@ export default function ProceedPaymentScreen({ route, navigation }) {
                   ref={cashInputRef}
                   style={styles.cashInput}
                   value={cashAmount}
+                  onFocus={() => setEditingField(PAYMENT_CASH)}
+                  onBlur={() => setEditingField(null)}
                   onChangeText={(v) => {
                     setLastEditedAmount(PAYMENT_CASH);
                     setCashAmount(v);
@@ -940,6 +907,8 @@ export default function ProceedPaymentScreen({ route, navigation }) {
                   ref={checkInputRef}
                   style={styles.cashInput}
                   value={checkAmount}
+                  onFocus={() => setEditingField(PAYMENT_CHECK)}
+                  onBlur={() => setEditingField(null)}
                   onChangeText={(v) => {
                     setLastEditedAmount(PAYMENT_CHECK);
                     setCheckAmount(v);
@@ -1081,100 +1050,11 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         </>
       )}
 
-      {/* Evidence of delivery: one common section below payment methods; required only if Check or Credit used */}
-      <Text style={styles.sectionLabel}>
-        Evidence of delivery
-        {evidenceRequired && <Text style={styles.requiredStar}> *</Text>}
-        {deliveryPhotos.length > 0 && (
-          <Text style={styles.photoCount}> ({deliveryPhotos.length}/{MAX_PHOTOS})</Text>
-        )}
-      </Text>
-      
-      {deliveryPhotos.length < MAX_PHOTOS && (
-        <View style={styles.photoButtonsRow}>
-          <TouchableOpacity
-            style={styles.photoBtn}
-            onPress={async () => {
-              const { status } = await ImagePicker.requestCameraPermissionsAsync();
-              if (status !== 'granted') {
-                Alert.alert('Permission', 'Camera access is required to take a photo.');
-                return;
-              }
-              const result = await ImagePicker.launchCameraAsync({
-                mediaTypes: ['images'],
-                allowsEditing: false,
-                quality: 0.8,
-              });
-              if (!result.canceled && result.assets?.[0]?.uri) {
-                setDeliveryPhotos((prev) =>
-                  prev.length < MAX_PHOTOS ? [...prev, result.assets[0].uri] : prev
-                );
-              }
-            }}
-            activeOpacity={0.8}
-          >
-            <Ionicons name="camera" size={28} color={colors.primary} />
-            <Text style={styles.photoBtnText}>Take photo</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.photoBtn}
-            onPress={async () => {
-              const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-              if (status !== 'granted') {
-                Alert.alert('Permission', 'Gallery access is required to choose a photo.');
-                return;
-              }
-              const result = await ImagePicker.launchImageLibraryAsync({
-                mediaTypes: ['images'],
-                allowsEditing: false,
-                quality: 0.8,
-              });
-              if (!result.canceled && result.assets?.[0]?.uri) {
-                setDeliveryPhotos((prev) =>
-                  prev.length < MAX_PHOTOS ? [...prev, result.assets[0].uri] : prev
-                );
-              }
-            }}
-            activeOpacity={0.8}
-          >
-            <Ionicons name="images-outline" size={28} color={colors.primary} />
-            <Text style={styles.photoBtnText}>Choose photo</Text>
-          </TouchableOpacity>
-        </View>
-      )}
-      {deliveryPhotos.length > 0 && (
-        <View style={styles.photoList}>
-          {deliveryPhotos.map((uri, index) => (
-            <View key={`${uri}-${index}`} style={styles.photoPreviewWrap}>
-              <Image source={{ uri }} style={styles.photoPreview} resizeMode="cover" />
-              <TouchableOpacity
-                style={styles.photoRemoveBtn}
-                onPress={() => setDeliveryPhotos((prev) => prev.filter((_, i) => i !== index))}
-                activeOpacity={0.8}
-              >
-                <Ionicons name="close-circle" size={28} color={colors.error} />
-              </TouchableOpacity>
-            </View>
-          ))}
-        </View>
-      )}
-      {deliveryPhotos.length === 0 && (
-        <Text style={styles.photoHint}>
-          {evidenceRequired ? `Attach at least 1 photo (max ${MAX_PHOTOS}) as evidence of delivery` : `Optional: attach up to ${MAX_PHOTOS} photos as evidence`}
-        </Text>
-      )}
-      {deliveryPhotos.length >= 1 && deliveryPhotos.length < MAX_PHOTOS && (
-        <Text style={styles.photoHint}>You can add up to {MAX_PHOTOS - deliveryPhotos.length} more</Text>
-      )}
-
-      {evidenceRequired && deliveryPhotos.length === 0 && (
-        <Text style={styles.evidenceAssistText}>Please update evidence of delivery to proceed</Text>
-      )}
-
       <TouchableOpacity
         style={[styles.payBtn, !canProceed && styles.payBtnDisabled]}
         onPress={() => {
           if (!canProceed) return;
+          setSignatureStep('customer');
           setShowSignatureModal(true);
         }}
         disabled={loading || !canProceed}
@@ -1185,7 +1065,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         ) : (
           <>
             <Ionicons name="checkmark-done-outline" size={22} color="#fff" />
-            <Text style={styles.btnText}>Confirm & Deliver</Text>
+            <Text style={styles.btnText}>Confirm Payment</Text>
           </>
         )}
       </TouchableOpacity>
@@ -1198,17 +1078,32 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       >
         <View style={styles.signatureModalOverlay}>
           <View style={[styles.signatureModalContent, { backgroundColor: colors.surface }]}>
-            <Text style={[styles.signatureModalTitle, { color: colors.text }]}>Customer signature</Text>
-            <Text style={[styles.signatureModalHint, { color: colors.textSecondary }]}>Sign in the box below, then tap Confirm</Text>
+            <Text style={[styles.signatureModalTitle, { color: colors.text }]}> 
+              {signatureStep === 'customer' ? 'Customer signature' : 'Driver signature'}
+            </Text>
+            <Text style={[styles.signatureModalHint, { color: colors.textSecondary }]}> 
+              {signatureStep === 'customer'
+                ? 'Customer: sign in the box below, then tap Next'
+                : 'Driver: sign in the box below, then tap Confirm'}
+            </Text>
             <View style={styles.signatureCanvasWrap}>
               <SignatureCanvas
-                ref={signatureRef}
+                ref={signatureStep === 'customer' ? customerSignatureRef : driverSignatureRef}
                 onOK={(dataUrl) => {
-                  setShowSignatureModal(false);
-                  handleProceed(dataUrl);
+                  if (signatureStep === 'customer') {
+                    setCustomerSignatureData(dataUrl);
+                    setSignatureStep('driver');
+                    setTimeout(() => {
+                      driverSignatureRef.current?.clearSignature();
+                    }, 100);
+                  } else {
+                    setDriverSignatureData(dataUrl);
+                    setShowSignatureModal(false);
+                    handleProceed(customerSignatureData, dataUrl);
+                  }
                 }}
                 onEmpty={() => {
-                  Alert.alert('Signature required', 'Please sign above before confirming.');
+                  Alert.alert('Signature required', `Please sign above before confirming (${signatureStep}).`);
                 }}
                 descriptionText=""
                 clearText=""
@@ -1223,22 +1118,43 @@ export default function ProceedPaymentScreen({ route, navigation }) {
             <View style={styles.signatureBtnRow}>
               <TouchableOpacity
                 style={[styles.signatureActionBtn, styles.signatureClearBtn, { borderColor: colors.border }]}
-                onPress={() => signatureRef.current?.clearSignature()}
+                onPress={() => {
+                  if (signatureStep === 'customer') {
+                    customerSignatureRef.current?.clearSignature();
+                  } else {
+                    driverSignatureRef.current?.clearSignature();
+                  }
+                }}
                 activeOpacity={0.8}
               >
                 <Text style={[styles.signatureActionBtnText, { color: colors.textSecondary }]}>Clear</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.signatureActionBtn, styles.signatureConfirmBtn, { backgroundColor: colors.primary }]}
-                onPress={() => signatureRef.current?.readSignature()}
+                onPress={() => {
+                  if (signatureStep === 'customer') {
+                    customerSignatureRef.current?.readSignature();
+                  } else {
+                    driverSignatureRef.current?.readSignature();
+                  }
+                }}
                 activeOpacity={0.8}
               >
-                <Text style={[styles.signatureActionBtnText, { color: '#fff' }]}>Confirm</Text>
+                <Text style={[styles.signatureActionBtnText, { color: '#fff' }]}>
+                  {signatureStep === 'customer' ? 'Next' : 'Confirm'}
+                </Text>
               </TouchableOpacity>
             </View>
             <TouchableOpacity
               style={[styles.signatureCancelBtn, { borderColor: colors.border }]}
-              onPress={() => setShowSignatureModal(false)}
+              onPress={() => {
+                setShowSignatureModal(false);
+                setSignatureStep('customer');
+                setCustomerSignatureData(null);
+                setDriverSignatureData(null);
+                customerSignatureRef.current?.clearSignature();
+                driverSignatureRef.current?.clearSignature();
+              }}
               activeOpacity={0.8}
             >
               <Text style={[styles.signatureCancelBtnText, { color: colors.textSecondary }]}>Cancel</Text>

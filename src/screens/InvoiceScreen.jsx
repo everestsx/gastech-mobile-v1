@@ -9,9 +9,12 @@ import {
   Platform,
   Image,
   Modal,
+  Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Print from 'expo-print';
+import * as ImagePicker from 'expo-image-picker';
+import * as FileSystem from 'expo-file-system';
 import { useTheme } from '../context/ThemeContext';
 import { useSync } from '../context/SyncContext';
 import { spacing, borderRadius } from '../constants/theme';
@@ -20,6 +23,7 @@ import { getOrAssignInvoiceNumber } from '../utils/invoiceNumber';
 import { getProductDisplayName } from '../utils/productDisplay';
 import { formatAmount } from '../utils/format';
 import * as localPaymentsDb from '../database/localPayments.js';
+import * as offlineAttachmentsDb from '../database/offlineAttachments.js';
 import { callOdoo } from '../services/index.service';
 
 /** Currency in invoice section: "Rs" (e.g. "Rs 944.00"). */
@@ -42,6 +46,7 @@ function buildInvoiceHtml(
   paymentSplit,
   logoUri,
   customerSignatureDataUrl,
+  driverSignatureDataUrl,
   chequeBankName,
   checkNumber,
   invoiceNumber,
@@ -260,6 +265,12 @@ function buildInvoiceHtml(
     <img src="${customerSignatureDataUrl}" alt="Signature" style="max-width:45mm;height:auto;max-height:20mm;display:block;" />
   </div>
   ` : ''}
+  ${driverSignatureDataUrl ? `
+  <div class="signature-section" style="margin-top:4px;padding-top:4px;border-top:1px solid #000;">
+    <div class="label" style="font-size:8px;font-weight:700;color:#000;margin-bottom:2px;">Driver signature</div>
+    <img src="${driverSignatureDataUrl}" alt="Signature" style="max-width:45mm;height:auto;max-height:20mm;display:block;" />
+  </div>
+  ` : ''}
   <div class="footer">GasTech – Your Trusted Business Partner</div>
   <div class="powered">Powered by everestx.com</div>
   </div>
@@ -284,6 +295,7 @@ export default function InvoiceScreen({ route, navigation }) {
     checkNumber,
     paymentSplit,
     customerSignatureDataUrl,
+    driverSignatureDataUrl,
     supplierTin,
     purchaserTin,
   } = route.params ?? {};
@@ -299,6 +311,10 @@ export default function InvoiceScreen({ route, navigation }) {
   const [localPaymentSplit, setLocalPaymentSplit] = useState(null);
   const [localChequeMeta, setLocalChequeMeta] = useState({ bankName: null, checkNumber: null });
   const [partyInfo, setPartyInfo] = useState({});
+  const [showEvidenceModal, setShowEvidenceModal] = useState(false);
+  const [deliveryPhotos, setDeliveryPhotos] = useState([]);
+  const [savingEvidence, setSavingEvidence] = useState(false);
+  const MAX_PHOTOS = 3;
 
   const styles = useMemo(
     () =>
@@ -467,6 +483,74 @@ export default function InvoiceScreen({ route, navigation }) {
         creditStepCheck: { fontSize: 16 },
         creditStepText: { fontSize: 13, color: colors.text, flex: 1 },
         creditStepNote: { fontSize: 12, color: colors.textSecondary, marginTop: 4, fontStyle: 'italic' },
+        evidenceModalOverlay: {
+          flex: 1,
+          backgroundColor: 'rgba(0,0,0,0.6)',
+          justifyContent: 'flex-end',
+        },
+        evidenceModalContent: {
+          backgroundColor: colors.surface,
+          borderTopLeftRadius: borderRadius.lg,
+          borderTopRightRadius: borderRadius.lg,
+          padding: spacing.lg,
+          maxHeight: '80%',
+        },
+        evidenceModalTitle: { fontSize: 18, fontWeight: '700', color: colors.text, marginBottom: spacing.sm },
+        evidenceModalHint: { fontSize: 13, color: colors.textSecondary, marginBottom: spacing.md },
+        evidencePhotoButtonsRow: { flexDirection: 'row', gap: spacing.md, marginBottom: spacing.md },
+        evidencePhotoBtn: {
+          flex: 1,
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 8,
+          paddingVertical: spacing.md,
+          backgroundColor: colors.surface,
+          borderRadius: borderRadius.lg,
+          borderWidth: 2,
+          borderColor: colors.border,
+          borderStyle: 'dashed',
+        },
+        evidencePhotoBtnText: { fontSize: 14, fontWeight: '600', color: colors.primary },
+        evidencePhotoList: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginBottom: spacing.md },
+        evidencePhotoPreviewWrap: {
+          width: 75,
+          height: 75,
+          borderRadius: borderRadius.md,
+          overflow: 'hidden',
+          backgroundColor: colors.surface,
+        },
+        evidencePhotoPreview: { width: '100%', height: '100%', backgroundColor: colors.background },
+        evidencePhotoRemoveBtn: {
+          position: 'absolute',
+          top: 4,
+          right: 4,
+          padding: 2,
+          backgroundColor: 'rgba(255,255,255,0.9)',
+          borderRadius: 14,
+        },
+        evidenceSaveBtn: {
+          backgroundColor: colors.primary,
+          paddingVertical: 14,
+          borderRadius: borderRadius.lg,
+          alignItems: 'center',
+          justifyContent: 'center',
+          flexDirection: 'row',
+          gap: 8,
+          marginTop: spacing.md,
+        },
+        evidenceSaveBtnText: { fontSize: 16, fontWeight: '700', color: '#fff' },
+        evidenceSkipBtn: {
+          borderWidth: 1,
+          borderColor: colors.border,
+          paddingVertical: 14,
+          borderRadius: borderRadius.lg,
+          alignItems: 'center',
+          justifyContent: 'center',
+          marginTop: spacing.sm,
+          marginBottom: spacing.xl,
+        },
+        evidenceSkipBtnText: { fontSize: 16, fontWeight: '700', color: colors.textSecondary },
       }),
     [colors]
   );
@@ -573,6 +657,7 @@ export default function InvoiceScreen({ route, navigation }) {
         effectiveSplitForPrint,
         logoUri,
         customerSignatureDataUrl,
+        driverSignatureDataUrl,
         resolvedChequeBankName,
         resolvedChequeNumber,
         invoiceNumber,
@@ -581,7 +666,8 @@ export default function InvoiceScreen({ route, navigation }) {
         partyInfo
       );
       await Print.printAsync({ html });
-      setPrintResult('success');
+      setShowEvidenceModal(true);
+      setPrintResult(null);
     } catch (err) {
       console.error(err);
       setPrintResult('failed');
@@ -589,13 +675,61 @@ export default function InvoiceScreen({ route, navigation }) {
     } finally {
       setPrinting(false);
       setHideSyncIndicator(false);
-      runSync().catch((e) => console.warn('[InvoiceScreen] sync after print', e?.message ?? e));
     }
-  }, [order, lines, invoiceNumber, paymentType, selectedBankName, paymentSplit, localPaymentSplit, logoUri, customerSignatureDataUrl, chequeBankName, checkNumber, localChequeMeta.bankName, localChequeMeta.checkNumber, supplierTin, purchaserTin, partyInfo]);
+  }, [order, lines, invoiceNumber, paymentType, selectedBankName, paymentSplit, localPaymentSplit, logoUri, customerSignatureDataUrl, driverSignatureDataUrl, chequeBankName, checkNumber, localChequeMeta.bankName, localChequeMeta.checkNumber, supplierTin, purchaserTin, partyInfo]);
 
   const goToHome = useCallback(() => {
     navigation.navigate('MainTabs', { screen: 'Dashboard' });
   }, [navigation]);
+
+  const handleSaveEvidence = useCallback(async () => {
+    if (deliveryPhotos.length === 0) {
+      runSync().catch((e) => console.warn('[InvoiceScreen] sync after evidence skip', e?.message ?? e));
+      goToHome();
+      return;
+    }
+
+    setSavingEvidence(true);
+    try {
+      const soId = Number(saleOrderId);
+      const timestamp = Date.now();
+      for (let i = 0; i < deliveryPhotos.length; i++) {
+        const uri = deliveryPhotos[i];
+        if (!uri || typeof uri !== 'string') continue;
+        try {
+          const ext = (uri.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg';
+          const fileName = `proof_${soId}_${timestamp}_${i}.${ext}`;
+          const source = new FileSystem.File(uri);
+          if (!source.exists) continue;
+
+          const dest = new FileSystem.File(FileSystem.Paths.document, fileName);
+          source.copy(dest);
+          const info = dest.info();
+          const destPath = dest.uri;
+          if (!info?.exists || (info.size ?? 0) < 100) continue;
+
+          await offlineAttachmentsDb.insert({
+            sale_order_id: soId,
+            local_file_path: destPath,
+            file_name: fileName,
+            mime_type: ext === 'png' ? 'image/png' : 'image/jpeg',
+          });
+        } catch (e) {
+          console.warn('[InvoiceScreen] save evidence photo failed', { index: i, uri, message: e?.message });
+        }
+      }
+
+      setShowEvidenceModal(false);
+      setDeliveryPhotos([]);
+      runSync().catch((e) => console.warn('[InvoiceScreen] sync after evidence save', e?.message ?? e));
+      goToHome();
+    } catch (err) {
+      console.error('[InvoiceScreen] save evidence failed', err);
+      Alert.alert('Error', 'Failed to save evidence photos. Please try again.');
+    } finally {
+      setSavingEvidence(false);
+    }
+  }, [deliveryPhotos, saleOrderId, goToHome]);
 
   /** Subtotal from lines: sum of price_subtotal */
   const computedSubtotal = useMemo(() => {
@@ -742,10 +876,20 @@ export default function InvoiceScreen({ route, navigation }) {
         <View style={styles.paymentBadge}>
           <Text style={styles.paymentText}>Payment: {paymentLabel}</Text>
         </View>
-        {customerSignatureDataUrl ? (
+        {(customerSignatureDataUrl || driverSignatureDataUrl) ? (
           <View style={{ marginTop: spacing.sm, paddingTop: spacing.sm, borderTopWidth: 1, borderTopColor: colors.border }}>
-            <Text style={[styles.totalsLabel, { marginBottom: 4 }]}>Customer signature</Text>
-            <Image source={{ uri: customerSignatureDataUrl }} style={{ width: '100%', maxWidth: 180, height: 70, resizeMode: 'contain' }} />
+            {customerSignatureDataUrl ? (
+              <>
+                <Text style={[styles.totalsLabel, { marginBottom: 4 }]}>Customer signature</Text>
+                <Image source={{ uri: customerSignatureDataUrl }} style={{ width: '100%', maxWidth: 180, height: 70, resizeMode: 'contain' }} />
+              </>
+            ) : null}
+            {driverSignatureDataUrl ? (
+              <>
+                <Text style={[styles.totalsLabel, { marginTop: customerSignatureDataUrl ? spacing.sm : 0, marginBottom: 4 }]}>Driver signature</Text>
+                <Image source={{ uri: driverSignatureDataUrl }} style={{ width: '100%', maxWidth: 180, height: 70, resizeMode: 'contain' }} />
+              </>
+            ) : null}
           </View>
         ) : null}
       </View>
@@ -779,7 +923,7 @@ export default function InvoiceScreen({ route, navigation }) {
 
       {/* After print: modal with Re-print or Go to home */}
       <Modal
-        visible={printResult != null && !printing}
+        visible={printResult === 'failed' && !printing}
         transparent
         animationType="fade"
         statusBarTranslucent
@@ -826,6 +970,128 @@ export default function InvoiceScreen({ route, navigation }) {
               </TouchableOpacity>
             </View>
           </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={showEvidenceModal}
+        animationType="slide"
+        transparent
+        onRequestClose={() => {
+          setShowEvidenceModal(false);
+          setDeliveryPhotos([]);
+          runSync().catch((e) => console.warn('[InvoiceScreen] sync after evidence close', e?.message ?? e));
+          goToHome();
+        }}
+      >
+        <View style={styles.evidenceModalOverlay}>
+          <ScrollView style={styles.evidenceModalContent} nestedScrollEnabled showsVerticalScrollIndicator={false}>
+            <Text style={styles.evidenceModalTitle}>Delivery Evidence Photos</Text>
+            <Text style={styles.evidenceModalHint}>Optionally attach photos as evidence of delivery</Text>
+
+            {deliveryPhotos.length < MAX_PHOTOS && (
+              <View style={styles.evidencePhotoButtonsRow}>
+                <TouchableOpacity
+                  style={styles.evidencePhotoBtn}
+                  onPress={async () => {
+                    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+                    if (status !== 'granted') {
+                      Alert.alert('Permission', 'Camera access is required to take a photo.');
+                      return;
+                    }
+                    const result = await ImagePicker.launchCameraAsync({
+                      mediaTypes: ['images'],
+                      allowsEditing: false,
+                      quality: 0.8,
+                    });
+                    if (!result.canceled && result.assets?.[0]?.uri) {
+                      setDeliveryPhotos((prev) => (prev.length < MAX_PHOTOS ? [...prev, result.assets[0].uri] : prev));
+                    }
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="camera" size={28} color={colors.primary} />
+                  <Text style={styles.evidencePhotoBtnText}>Take photo</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.evidencePhotoBtn}
+                  onPress={async () => {
+                    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+                    if (status !== 'granted') {
+                      Alert.alert('Permission', 'Gallery access is required to choose a photo.');
+                      return;
+                    }
+                    const result = await ImagePicker.launchImageLibraryAsync({
+                      mediaTypes: ['images'],
+                      allowsEditing: false,
+                      quality: 0.8,
+                    });
+                    if (!result.canceled && result.assets?.[0]?.uri) {
+                      setDeliveryPhotos((prev) => (prev.length < MAX_PHOTOS ? [...prev, result.assets[0].uri] : prev));
+                    }
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="images-outline" size={28} color={colors.primary} />
+                  <Text style={styles.evidencePhotoBtnText}>Choose photo</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {deliveryPhotos.length > 0 && (
+              <>
+                <Text style={[styles.evidenceModalHint, { marginBottom: spacing.lg, marginTop: spacing.md }]}>
+                  {deliveryPhotos.length} of {MAX_PHOTOS} photos
+                </Text>
+                <View style={styles.evidencePhotoList}>
+                  {deliveryPhotos.map((uri, index) => (
+                    <View key={`${uri}-${index}`} style={styles.evidencePhotoPreviewWrap}>
+                      <Image source={{ uri }} style={styles.evidencePhotoPreview} resizeMode="cover" />
+                      <TouchableOpacity
+                        style={styles.evidencePhotoRemoveBtn}
+                        onPress={() => setDeliveryPhotos((prev) => prev.filter((_, i) => i !== index))}
+                        activeOpacity={0.8}
+                      >
+                        <Ionicons name="close-circle" size={28} color={colors.error} />
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+                </View>
+              </>
+            )}
+
+            <TouchableOpacity
+              style={styles.evidenceSaveBtn}
+              onPress={handleSaveEvidence}
+              disabled={savingEvidence}
+              activeOpacity={0.8}
+            >
+              {savingEvidence ? (
+                <ActivityIndicator color="#fff" size="small" />
+              ) : (
+                <>
+                  <Ionicons name="checkmark-done-outline" size={22} color="#fff" />
+                  <Text style={styles.evidenceSaveBtnText}>{deliveryPhotos.length > 0 ? 'Save & Continue' : 'Skip'}</Text>
+                </>
+              )}
+            </TouchableOpacity>
+
+            {deliveryPhotos.length > 0 && (
+              <TouchableOpacity
+                style={styles.evidenceSkipBtn}
+                onPress={() => {
+                  setShowEvidenceModal(false);
+                  setDeliveryPhotos([]);
+                  runSync().catch((e) => console.warn('[InvoiceScreen] sync after evidence skip', e?.message ?? e));
+                  goToHome();
+                }}
+                disabled={savingEvidence}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.evidenceSkipBtnText}>Skip</Text>
+              </TouchableOpacity>
+            )}
+          </ScrollView>
         </View>
       </Modal>
 
