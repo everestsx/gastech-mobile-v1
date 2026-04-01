@@ -6,13 +6,22 @@
   "build": {
     "development": {
       "developmentClient": true,
-      "distribution": "internal"
+      "distribution": "internal",
+      "env": {
+        "EAS_DANGEROUS_OVERRIDE_ANDROID_APPLICATION_ID": "com.gastech.mobile"
+      }
     },
     "preview": {
-      "distribution": "internal"
+      "distribution": "internal",
+      "env": {
+        "EAS_DANGEROUS_OVERRIDE_ANDROID_APPLICATION_ID": "com.gastech.mobile"
+      }
     },
     "production": {
-      "autoIncrement": true
+      "autoIncrement": true,
+      "env": {
+        "EAS_DANGEROUS_OVERRIDE_ANDROID_APPLICATION_ID": "com.gastech.mobile"
+      }
     }
   },
   "submit": {

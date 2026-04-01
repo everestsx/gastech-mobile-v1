@@ -28,6 +28,7 @@ import * as offlineAttachmentsDb from '../database/offlineAttachments.js';
 import { callOdoo } from '../services/index.service';
 import {
   isRongtaNativeAvailable,
+  DEFAULT_THERMAL_WIDTH_DOTS,
   getStoredBluetoothPrinter,
   setStoredBluetoothPrinter,
   findBluetoothPrinters,
@@ -49,6 +50,18 @@ function safeDisplay(val) {
   return s === '' || s.toLowerCase() === 'false' ? '—' : s;
 }
 
+function formatPrintedDateTime(value = new Date()) {
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return new Date().toLocaleString('en-LK');
+  return d.toLocaleString('en-LK', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
 function buildInvoiceHtml(
   order,
   lines,
@@ -65,13 +78,16 @@ function buildInvoiceHtml(
   purchaserTin = '—',
   partyInfo = {}
 ) {
-  const date = order?.date_order
-    ? new Date(order.date_order).toLocaleDateString('en-LK', {
+  const orderDateRaw = order?.date_order || order?.create_date || order?.date;
+  const orderDateParsed = orderDateRaw ? new Date(orderDateRaw) : null;
+  const date = orderDateParsed && !Number.isNaN(orderDateParsed.getTime())
+    ? orderDateParsed.toLocaleDateString('en-LK', {
         year: 'numeric',
         month: 'short',
         day: 'numeric',
       })
     : new Date().toLocaleDateString('en-LK');
+  const printedAt = formatPrintedDateTime();
   const customerName = safeDisplay(partyInfo?.customerName || order?.partner_id?.[1]).replace(/</g, '&lt;');
   const streetPart = safeDisplay(order?.street || order?.partner_street || order?.partner_address);
   const cityPart = safeDisplay(partyInfo?.customerCity || order?.city);
@@ -236,6 +252,7 @@ function buildInvoiceHtml(
       <div class="field"><span class="label">Address:</span> ${supplierAddress}</div>
       <div class="field"><span class="label">Telephone No:</span> ${supplierPhone}</div>
       <div class="field"><span class="label">Date of Delivery:</span> ${date}</div>
+      <div class="field"><span class="label">Printed At:</span> ${printedAt}</div>
     </div>
     <div class="col">
       <div class="field"><span class="label">Date of Invoice :</span> ${date}</div>
@@ -289,8 +306,8 @@ function buildInvoiceHtml(
 </html>`;
 }
 
-/** Typical 58–80mm thermal: narrow columns match Rongta demo receipts */
-const PLAIN_WIDTH = 40;
+/** Typical 80mm thermal line width. */
+const PLAIN_WIDTH = 48;
 
 function thermalMoney(n) {
   const v = Number(n);
@@ -357,6 +374,7 @@ function buildInvoicePlainText(
   partyInfo = {}
 ) {
   const isoDate = formatPlainISODate(order);
+  const printedAt = formatPrintedDateTime();
   const customerName = safeDisplay(partyInfo?.customerName || order?.partner_id?.[1]);
   const streetPart = safeDisplay(order?.street || order?.partner_street || order?.partner_address);
   const cityPart = safeDisplay(partyInfo?.customerCity || order?.city);
@@ -393,42 +411,43 @@ function buildInvoicePlainText(
 
   const w = PLAIN_WIDTH;
   const parts = [
-    centerPlainLine('GasTech'),
-    centerPlainLine('TAX INVOICE'),
+    centerPlainLine('GasTech', w),
+    centerPlainLine('TAX INVOICE', w),
     dashLine(),
-    `Invoice:${invNo}`.slice(0, w),
-    `Date:${isoDate}`.slice(0, w),
+    lineLR('Invoice No.', invNo, w),
+    lineLR('Date of Invoice', isoDate, w),
     dashLine(),
-    `Customer: ${customerName}`.slice(0, w),
-    ...wrapPlainLines(
-      [custStreet, cityPart].filter((s) => s && s !== '—').join(', ') || '—',
-      w
-    ),
-    `Phone: ${customerPhone}`.slice(0, w),
-    purchaserTinSafe ? `TIN: ${purchaserTinSafe}`.slice(0, w) : null,
+    lineLR('Supplier Name', supplierName, w),
+    supplierTinSafe ? lineLR('Supplier TIN', supplierTinSafe, w) : null,
+    ...wrapPlainLines(`Address: ${supplierAddress}`, w),
+    lineLR('Telephone No.', supplierPhone, w),
+    lineLR('Date of Delivery', isoDate, w),
     dashLine(),
-    `Supplier: ${supplierName}`.slice(0, w),
-    ...wrapPlainLines(supplierAddress, w),
-    `Phone: ${supplierPhone}`.slice(0, w),
-    supplierTinSafe ? `TIN: ${supplierTinSafe}`.slice(0, w) : null,
+    lineLR('Customer Name', customerName, w),
+    purchaserTinSafe ? lineLR('Customer TIN', purchaserTinSafe, w) : null,
+    ...wrapPlainLines(`Address: ${[custStreet, cityPart].filter((s) => s && s !== '—').join(', ') || '—'}`, w),
+    lineLR('Telephone No.', customerPhone, w),
+    lineLR('Place of Supply', cityPart !== '—' ? cityPart : '—', w),
     dashLine(),
-    lineLR('No Desc', 'Qty Amt', w),
+    // 48-column table header (matches invoice structure better).
+    'No Description                  Qty   Unit      Total',
+    dashLine(),
   ];
 
   (lines || []).forEach((l, i) => {
-    const desc = getProductDisplayName(l.product_id?.[1] ?? '—');
-    const qty = Number(l.product_uom_qty ?? 0);
-    const amt = thermalMoney(l.price_total ?? 0);
-    const head = `${i + 1} `;
-    const tail = ` ${qty} ${amt}`;
-    const maxDesc = Math.max(4, w - head.length - tail.length);
-    parts.push(`${head}${desc.slice(0, maxDesc)}${tail}`.slice(0, w));
+    const idx = String(i + 1).padStart(2, ' ');
+    const desc = String(getProductDisplayName(l.product_id?.[1] ?? '—')).slice(0, 24).padEnd(24, ' ');
+    const qty = String(Number(l.product_uom_qty ?? 0)).padStart(4, ' ');
+    const unit = thermalMoney(l.price_unit ?? 0).padStart(8, ' ');
+    const total = thermalMoney(l.price_total ?? 0).padStart(9, ' ');
+    parts.push(`${idx} ${desc}${qty} ${unit} ${total}`.slice(0, w));
   });
   if (!lines?.length) parts.push('(No line items)'.slice(0, w));
 
   parts.push(dashLine());
+  parts.push(lineLR('Gross Amount', thermalMoney(amountUntaxed), w));
   parts.push(lineLR('VAT (18%)', thermalMoney(amountTax), w));
-  parts.push(lineLR('Net Total', thermalMoney(amountTotal), w));
+  parts.push(lineLR('Net Amount', thermalMoney(amountTotal), w));
   parts.push(dashLine());
 
   const split = paymentSplit;
@@ -457,7 +476,8 @@ function buildInvoicePlainText(
   }
 
   parts.push(dashLine());
-  parts.push(centerPlainLine('Thank you for your business'));
+  parts.push(lineLR('Printed At', printedAt, w));
+  parts.push(centerPlainLine('Thank you for your business', w));
 
   return `${parts.filter(Boolean).join('\r\n')}\r\n\r\n`;
 }
@@ -913,7 +933,11 @@ export default function InvoiceScreen({ route, navigation }) {
       if (!rongtaReady) return;
       const stored = await getStoredBluetoothPrinter();
       if (!cancelled && stored) {
-        setThermalPrinter(stored);
+        setThermalPrinter({
+          ...stored,
+          limitWidthDots: stored.limitWidthDots || DEFAULT_THERMAL_WIDTH_DOTS,
+          textAlign: stored.textAlign || 'left',
+        });
         setThermalConnected(false);
       }
     })();
@@ -993,6 +1017,7 @@ export default function InvoiceScreen({ route, navigation }) {
       );
 
       if (rongtaReady && thermalConnected && thermalPrinter?.address) {
+        // Avoid PDF raster on Rongta; some units print full-black pages.
         const plain = buildInvoicePlainText(
           order,
           lines,
@@ -1009,23 +1034,10 @@ export default function InvoiceScreen({ route, navigation }) {
           purchaserTin,
           partyInfo
         );
-        try {
-          await printTextToRongta(plain, thermalPrinter);
-          setShowEvidenceModal(true);
-          setPrintResult(null);
-          return;
-        } catch (thermalTextErr) {
-          console.warn('[InvoiceScreen] thermal text print failed, trying PDF raster', thermalTextErr?.message);
-          try {
-            const { uri } = await Print.printToFileAsync({ html });
-            await printPdfFileToRongta(uri, thermalPrinter);
-            setShowEvidenceModal(true);
-            setPrintResult(null);
-            return;
-          } catch (thermalPdfErr) {
-            throw thermalPdfErr;
-          }
-        }
+        await printTextToRongta(plain, thermalPrinter);
+        setShowEvidenceModal(true);
+        setPrintResult(null);
+        return;
       }
 
       await Print.printAsync({ html });
@@ -1376,6 +1388,8 @@ export default function InvoiceScreen({ route, navigation }) {
                       name: item.name,
                       address: item.address,
                       mac: item.mac || item.address,
+                      limitWidthDots: DEFAULT_THERMAL_WIDTH_DOTS,
+                      textAlign: 'left',
                     };
                     await disconnectRongtaPrinter();
                     setThermalPrinter(next);

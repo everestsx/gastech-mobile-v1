@@ -4,8 +4,21 @@ import * as Print from 'expo-print';
 
 const STORAGE_KEY_LAST_BT_PRINTER = '@gastech/last_bluetooth_printer';
 
-/** ~80mm thermal; use 384 for 58mm rolls. */
-export const DEFAULT_THERMAL_WIDTH_DOTS = 576;
+/** Wider default for your Rongta setup (104mm). */
+export const DEFAULT_THERMAL_WIDTH_DOTS = 832;
+export const PAPER_WIDTH_DOTS = {
+  MM58: 384,
+  MM80: 576,
+  MM104: 832,
+};
+
+function inferPaperWidthDots(printer) {
+  const name = String(printer?.name || '').toLowerCase();
+  if (name.includes('58')) return PAPER_WIDTH_DOTS.MM58;
+  if (name.includes('104') || name.includes('rp425') || name.includes('rp4')) return PAPER_WIDTH_DOTS.MM104;
+  if (name.includes('80')) return PAPER_WIDTH_DOTS.MM80;
+  return DEFAULT_THERMAL_WIDTH_DOTS;
+}
 
 export function isRongtaNativeAvailable() {
   return Platform.OS === 'android' && !!NativeModules.RongtaNativeModule;
@@ -103,10 +116,12 @@ export async function findBluetoothPrinters() {
 }
 
 function printerPayload(printer) {
+  const inferred = inferPaperWidthDots(printer);
   return {
     address: printer.address,
     mac: printer.mac || printer.address,
-    limitWidthDots: printer.limitWidthDots ?? DEFAULT_THERMAL_WIDTH_DOTS,
+    limitWidthDots: printer.limitWidthDots ?? inferred,
+    textAlign: printer.textAlign || 'left',
   };
 }
 

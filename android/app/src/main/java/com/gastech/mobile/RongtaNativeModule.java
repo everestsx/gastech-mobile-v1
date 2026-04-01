@@ -43,7 +43,7 @@ import java.util.Arrays;
 import java.util.Set;
 
 public class RongtaNativeModule extends ReactContextBaseJavaModule {
-    /** ~203 dpi printable width for 80mm roll; 58mm devices typically use 384. */
+    /** Safe default for common 80mm thermal mode. */
     private static final int DEFAULT_PRINT_WIDTH_DOTS = 576;
     private static final int MIN_PRINT_WIDTH_DOTS = 200;
     /** Matches EscCmd.getBitmapCmd cap. */
@@ -206,10 +206,8 @@ public class RongtaNativeModule extends ReactContextBaseJavaModule {
                 }
             }
 
-            WritableMap payload = Arguments.createMap();
-            payload.putArray("printers", array);
-            emitEvent("onPrintersFound", payload);
-
+            // Do not reuse the same WritableArray for both event + promise.
+            // RN bridge consumes it once and throws "Array already consumed".
             promise.resolve(array);
         } catch (Exception e) {
             promise.reject("RONGTA_DISCOVERY_FAILED", e);
@@ -301,8 +299,9 @@ public class RongtaNativeModule extends ReactContextBaseJavaModule {
                 // ESC @ (initialize) + ESC t 0 (code page default)
                 cmd.append(new byte[]{0x1B, 0x40});
                 cmd.append(new byte[]{0x1B, 0x74, 0x00});
-                // ESC a 0 = left alignment (invoice lines / tables)
-                cmd.append(new byte[]{0x1B, 0x61, 0x00});
+                // ESC a n alignment. Default center so receipt starts centered on wide paper.
+                int align = resolveTextAlign(printer);
+                cmd.append(new byte[]{0x1B, 0x61, (byte) align});
                 // Small initial feed so the first line doesn't get cut off.
                 cmd.append(new byte[]{0x0A, 0x0A});
                 cmd.append(textPayload.getBytes(StandardCharsets.UTF_8));
@@ -444,6 +443,18 @@ public class RongtaNativeModule extends ReactContextBaseJavaModule {
         } catch (Exception ignored) {
         }
         return DEFAULT_PRINT_WIDTH_DOTS;
+    }
+
+    private static int resolveTextAlign(ReadableMap printer) {
+        try {
+            if (printer != null && printer.hasKey("textAlign") && !printer.isNull("textAlign")) {
+                String align = printer.getString("textAlign");
+                if ("left".equalsIgnoreCase(align)) return 0;
+                if ("right".equalsIgnoreCase(align)) return 2;
+            }
+        } catch (Exception ignored) {
+        }
+        return 1; // center
     }
 
     /**
