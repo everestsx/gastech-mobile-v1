@@ -36,9 +36,18 @@ yarn-error.*
 # typescript
 *.tsbuildinfo
 
-# generated native folders
+# iOS (optional: generate with expo prebuild)
 /ios
-/android
+
+# Android: keep android/ in git so EAS Build includes custom native code (Rongta module + printer_library.jar).
+# Ignore Gradle outputs only — not the source tree.
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/**/*.iml
+android/.idea/
+android/captures/
 
 # local IDE/project files
 .idea/
