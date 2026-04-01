@@ -6,7 +6,10 @@
     "start": "npx expo start",
     "android": "npx expo start --android",
     "ios": "npx expo start --ios",
-    "web": "npx expo start --web"
+    "web": "npx expo start --web",
+    "run:android": "npx expo run:android",
+    "android:assemble-debug": "cd android && gradlew.bat clean assembleDebug",
+    "prebuild:android": "npx expo prebuild --platform android"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",

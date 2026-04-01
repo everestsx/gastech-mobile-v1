@@ -10,6 +10,7 @@ import {
   Image,
   Modal,
   Alert,
+  FlatList,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Print from 'expo-print';
@@ -25,6 +26,16 @@ import { formatAmount } from '../utils/format';
 import * as localPaymentsDb from '../database/localPayments.js';
 import * as offlineAttachmentsDb from '../database/offlineAttachments.js';
 import { callOdoo } from '../services/index.service';
+import {
+  isRongtaNativeAvailable,
+  getStoredBluetoothPrinter,
+  setStoredBluetoothPrinter,
+  findBluetoothPrinters,
+  printTextToRongta,
+  printPdfFileToRongta,
+  connectToRongtaPrinter,
+  disconnectRongtaPrinter,
+} from '../services/printerService';
 
 /** Currency in invoice section: "Rs" (e.g. "Rs 944.00"). */
 function formatInvoiceCurrency(amount) {
@@ -278,6 +289,179 @@ function buildInvoiceHtml(
 </html>`;
 }
 
+/** Typical 58–80mm thermal: narrow columns match Rongta demo receipts */
+const PLAIN_WIDTH = 40;
+
+function thermalMoney(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return '0.00';
+  return v.toFixed(2);
+}
+
+function dashLine() {
+  return '-'.repeat(PLAIN_WIDTH);
+}
+
+function centerPlainLine(text, w = PLAIN_WIDTH) {
+  const t = String(text).replace(/\r?\n/g, ' ').trim().slice(0, w);
+  const pad = Math.max(0, w - t.length);
+  const left = Math.floor(pad / 2);
+  return `${' '.repeat(left)}${t}${' '.repeat(pad - left)}`;
+}
+
+function lineLR(left, right, w = PLAIN_WIDTH) {
+  const L = String(left);
+  const R = String(right);
+  const gap = w - L.length - R.length;
+  if (gap >= 1) return `${L}${' '.repeat(gap)}${R}`;
+  return `${L.slice(0, w)}\n${R.padStart(w)}`;
+}
+
+function wrapPlainLines(text, w = PLAIN_WIDTH) {
+  const s = String(text || '').replace(/\s+/g, ' ').trim() || '—';
+  if (s.length <= w) return [s];
+  const out = [];
+  let rest = s;
+  while (rest.length > w) {
+    let cut = rest.lastIndexOf(' ', w);
+    if (cut < 8) cut = w;
+    out.push(rest.slice(0, cut).trim());
+    rest = rest.slice(cut).trim();
+  }
+  if (rest) out.push(rest);
+  return out;
+}
+
+function formatPlainISODate(order) {
+  const d = order?.date_order ? new Date(order.date_order) : new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function buildInvoicePlainText(
+  order,
+  lines,
+  paymentType,
+  selectedBankName,
+  paymentSplit,
+  _logoUri,
+  _customerSignatureDataUrl,
+  _driverSignatureDataUrl,
+  chequeBankName,
+  checkNumber,
+  invoiceNumber,
+  supplierTin = '—',
+  purchaserTin = '—',
+  partyInfo = {}
+) {
+  const isoDate = formatPlainISODate(order);
+  const customerName = safeDisplay(partyInfo?.customerName || order?.partner_id?.[1]);
+  const streetPart = safeDisplay(order?.street || order?.partner_street || order?.partner_address);
+  const cityPart = safeDisplay(partyInfo?.customerCity || order?.city);
+  const phonePart = safeDisplay(partyInfo?.customerPhone || order?.partner_phone);
+  const custStreet = safeDisplay(partyInfo?.customerStreet || streetPart);
+  const customerPhone = phonePart !== '—' ? phonePart : '—';
+  const supplierTinResolved = partyInfo?.supplierTin || supplierTin;
+  const purchaserTinResolved = partyInfo?.customerTin || purchaserTin;
+  const supplierTinSafe =
+    supplierTinResolved != null && String(supplierTinResolved).trim()
+      ? String(supplierTinResolved).trim()
+      : '';
+  const purchaserTinSafe =
+    purchaserTinResolved != null && String(purchaserTinResolved).trim()
+      ? String(purchaserTinResolved).trim()
+      : '';
+  const supplierName = safeDisplay(partyInfo?.supplierName || 'GasTech');
+  const supplierPhone = safeDisplay(partyInfo?.supplierPhone || '—');
+  const supplierAddress = safeDisplay(partyInfo?.supplierAddress || '—');
+  const invNo = invoiceNumber ?? order?.name ?? '—';
+
+  const lineAmounts = (lines || []).map((l) => {
+    const sub = Number(l.price_subtotal) || 0;
+    const total = Number(l.price_total) || 0;
+    return { sub, total, tax: total - sub };
+  });
+  const computedUntaxed = lineAmounts.reduce((s, a) => s + a.sub, 0);
+  const computedTax = lineAmounts.reduce((s, a) => s + a.tax, 0);
+  const amountUntaxed =
+    order?.amount_untaxed != null && order.amount_untaxed !== 0 ? order.amount_untaxed : computedUntaxed;
+  const amountTax =
+    order?.amount_tax != null && order.amount_tax !== 0 ? order.amount_tax : computedTax;
+  const amountTotal = order?.amount_total ?? (amountUntaxed + amountTax);
+
+  const w = PLAIN_WIDTH;
+  const parts = [
+    centerPlainLine('GasTech'),
+    centerPlainLine('TAX INVOICE'),
+    dashLine(),
+    `Invoice:${invNo}`.slice(0, w),
+    `Date:${isoDate}`.slice(0, w),
+    dashLine(),
+    `Customer: ${customerName}`.slice(0, w),
+    ...wrapPlainLines(
+      [custStreet, cityPart].filter((s) => s && s !== '—').join(', ') || '—',
+      w
+    ),
+    `Phone: ${customerPhone}`.slice(0, w),
+    purchaserTinSafe ? `TIN: ${purchaserTinSafe}`.slice(0, w) : null,
+    dashLine(),
+    `Supplier: ${supplierName}`.slice(0, w),
+    ...wrapPlainLines(supplierAddress, w),
+    `Phone: ${supplierPhone}`.slice(0, w),
+    supplierTinSafe ? `TIN: ${supplierTinSafe}`.slice(0, w) : null,
+    dashLine(),
+    lineLR('No Desc', 'Qty Amt', w),
+  ];
+
+  (lines || []).forEach((l, i) => {
+    const desc = getProductDisplayName(l.product_id?.[1] ?? '—');
+    const qty = Number(l.product_uom_qty ?? 0);
+    const amt = thermalMoney(l.price_total ?? 0);
+    const head = `${i + 1} `;
+    const tail = ` ${qty} ${amt}`;
+    const maxDesc = Math.max(4, w - head.length - tail.length);
+    parts.push(`${head}${desc.slice(0, maxDesc)}${tail}`.slice(0, w));
+  });
+  if (!lines?.length) parts.push('(No line items)'.slice(0, w));
+
+  parts.push(dashLine());
+  parts.push(lineLR('VAT (18%)', thermalMoney(amountTax), w));
+  parts.push(lineLR('Net Total', thermalMoney(amountTotal), w));
+  parts.push(dashLine());
+
+  const split = paymentSplit;
+  if (paymentType === 'split' && split) {
+    const chq = Number(split.check ?? split.cheque ?? 0);
+    parts.push(lineLR('Cash', thermalMoney(split.cash ?? 0), w));
+    parts.push(lineLR('Cheque', thermalMoney(chq), w));
+    parts.push(lineLR('Credit', thermalMoney(split.credit ?? 0), w));
+  } else {
+    const label =
+      (paymentType === 'bank' || paymentType === 'check') && selectedBankName
+        ? `Check: ${selectedBankName}`
+        : paymentType === 'credit' && selectedBankName
+          ? `Credit: ${selectedBankName}`
+          : !paymentType && !selectedBankName && !paymentSplit
+            ? 'Invoiced'
+            : 'Cash';
+    parts.push(lineLR('Mode', label.slice(0, 24), w));
+  }
+
+  if (chequeBankName) {
+    parts.push(`Bank: ${String(chequeBankName).slice(0, w - 6)}`.slice(0, w));
+  }
+  if (checkNumber) {
+    parts.push(`Cheque No: ${String(checkNumber).slice(0, w - 11)}`.slice(0, w));
+  }
+
+  parts.push(dashLine());
+  parts.push(centerPlainLine('Thank you for your business'));
+
+  return `${parts.filter(Boolean).join('\r\n')}\r\n\r\n`;
+}
+
 const LOGO_SOURCE = require('../../assets/images/AppLogo.png');
 
 export default function InvoiceScreen({ route, navigation }) {
@@ -314,7 +498,17 @@ export default function InvoiceScreen({ route, navigation }) {
   const [showEvidenceModal, setShowEvidenceModal] = useState(false);
   const [deliveryPhotos, setDeliveryPhotos] = useState([]);
   const [savingEvidence, setSavingEvidence] = useState(false);
+  const [thermalPrinter, setThermalPrinter] = useState(null);
+  const [printerModalVisible, setPrinterModalVisible] = useState(false);
+  const [loadingPairedPrinters, setLoadingPairedPrinters] = useState(false);
+  const [pairedPrinterRows, setPairedPrinterRows] = useState([]);
+  const [thermalConnected, setThermalConnected] = useState(false);
+  const [connectingThermal, setConnectingThermal] = useState(false);
+  const [connectThermalError, setConnectThermalError] = useState(null);
   const MAX_PHOTOS = 3;
+  const rongtaReady = Platform.OS === 'android' && isRongtaNativeAvailable();
+  const rongtaPrintBlocked =
+    rongtaReady && (!thermalPrinter?.address || !thermalConnected);
 
   const styles = useMemo(
     () =>
@@ -411,6 +605,79 @@ export default function InvoiceScreen({ route, navigation }) {
           shadowRadius: 4,
         },
         printBtnText: { fontSize: 16, fontWeight: '700', color: '#fff' },
+        printBtnDisabled: { opacity: 0.45 },
+        printBlockedHint: {
+          fontSize: 13,
+          color: colors.textSecondary,
+          textAlign: 'center',
+          marginBottom: spacing.md,
+          lineHeight: 20,
+          paddingHorizontal: spacing.sm,
+        },
+        thermalConnectBtn: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 8,
+          backgroundColor: colors.primary,
+          paddingVertical: 14,
+          paddingHorizontal: 16,
+          borderRadius: borderRadius.lg,
+          marginTop: spacing.sm,
+        },
+        thermalConnectBtnText: { fontSize: 16, fontWeight: '700', color: '#fff' },
+        thermalStatusOk: { fontSize: 13, fontWeight: '600', color: '#16a34a', marginTop: 8 },
+        thermalStatusErr: { fontSize: 13, color: '#dc2626', marginTop: 8 },
+        thermalPrinterCard: {
+          backgroundColor: colors.surface,
+          borderRadius: borderRadius.lg,
+          padding: spacing.md,
+          marginBottom: spacing.md,
+          borderWidth: 1,
+          borderColor: colors.border,
+        },
+        thermalPrinterTitle: { fontSize: 14, fontWeight: '700', color: colors.text, marginBottom: 6 },
+        thermalPrinterSub: { fontSize: 13, color: colors.textSecondary, marginBottom: spacing.sm },
+        thermalPrinterActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+        thermalPrinterBtn: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 6,
+          paddingVertical: 10,
+          paddingHorizontal: 14,
+          borderRadius: borderRadius.md,
+          backgroundColor: colors.primarySurface || '#eef2ff',
+        },
+        thermalPrinterBtnDanger: {
+          backgroundColor: colors.background,
+          borderWidth: 1,
+          borderColor: colors.border,
+        },
+        thermalPrinterBtnText: { fontSize: 14, fontWeight: '600', color: colors.primary },
+        thermalPrinterBtnTextMuted: { fontSize: 14, fontWeight: '600', color: colors.textSecondary },
+        printerPickBackdrop: {
+          flex: 1,
+          backgroundColor: 'rgba(0,0,0,0.5)',
+          justifyContent: 'flex-end',
+        },
+        printerPickSheet: {
+          backgroundColor: colors.surface,
+          borderTopLeftRadius: 16,
+          borderTopRightRadius: 16,
+          paddingHorizontal: spacing.md,
+          paddingTop: spacing.md,
+          paddingBottom: spacing.lg,
+          maxHeight: '70%',
+        },
+        printerPickHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.sm },
+        printerPickTitle: { fontSize: 17, fontWeight: '700', color: colors.text },
+        printerPickRow: {
+          paddingVertical: 14,
+          borderBottomWidth: StyleSheet.hairlineWidth,
+          borderBottomColor: colors.border,
+        },
+        printerPickName: { fontSize: 15, fontWeight: '600', color: colors.text },
+        printerPickAddr: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
         printerNote: {
           flexDirection: 'row',
           alignItems: 'flex-start',
@@ -640,13 +907,72 @@ export default function InvoiceScreen({ route, navigation }) {
     return () => setHideSyncIndicator(false);
   }, [setHideSyncIndicator]);
 
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!rongtaReady) return;
+      const stored = await getStoredBluetoothPrinter();
+      if (!cancelled && stored) {
+        setThermalPrinter(stored);
+        setThermalConnected(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [rongtaReady]);
+
+  useEffect(() => {
+    return () => {
+      if (Platform.OS === 'android' && isRongtaNativeAvailable()) {
+        disconnectRongtaPrinter();
+      }
+    };
+  }, []);
+
+  const handleConnectToRongta = useCallback(async () => {
+    if (!thermalPrinter?.address) {
+      Alert.alert('Printer', 'Choose a paired printer first.');
+      return;
+    }
+    setConnectingThermal(true);
+    setConnectThermalError(null);
+    try {
+      await connectToRongtaPrinter(thermalPrinter);
+      setThermalConnected(true);
+    } catch (e) {
+      setThermalConnected(false);
+      const msg = e?.message || 'Could not connect. Check Bluetooth is on and the printer is paired.';
+      setConnectThermalError(msg);
+      Alert.alert('Bluetooth connection failed', msg);
+    } finally {
+      setConnectingThermal(false);
+    }
+  }, [thermalPrinter]);
+
+  const openThermalPrinterPicker = useCallback(async () => {
+    if (!rongtaReady) return;
+    setPrinterModalVisible(true);
+    setLoadingPairedPrinters(true);
+    setPairedPrinterRows([]);
+    try {
+      const list = await findBluetoothPrinters();
+      setPairedPrinterRows(list);
+    } catch (e) {
+      Alert.alert('Bluetooth', e?.message || 'Could not list paired printers.');
+    } finally {
+      setLoadingPairedPrinters(false);
+    }
+  }, [rongtaReady]);
+
   const handlePrint = useCallback(async () => {
     if (!order) return;
     setPrinting(true);
     setPrintResult(null);
     setPrintError(null);
     try {
-      const effectiveSplitForPrint = (paymentType === 'split' && paymentSplit) ? paymentSplit : (localPaymentSplit || paymentSplit);
+      const effectiveSplitForPrint =
+        paymentType === 'split' && paymentSplit ? paymentSplit : localPaymentSplit || paymentSplit;
       const resolvedChequeBankName = chequeBankName || selectedBankName || localChequeMeta.bankName || null;
       const resolvedChequeNumber = checkNumber || localChequeMeta.checkNumber || null;
       const html = buildInvoiceHtml(
@@ -665,18 +991,78 @@ export default function InvoiceScreen({ route, navigation }) {
         purchaserTin,
         partyInfo
       );
+
+      if (rongtaReady && thermalConnected && thermalPrinter?.address) {
+        const plain = buildInvoicePlainText(
+          order,
+          lines,
+          paymentType,
+          selectedBankName,
+          effectiveSplitForPrint,
+          logoUri,
+          customerSignatureDataUrl,
+          driverSignatureDataUrl,
+          resolvedChequeBankName,
+          resolvedChequeNumber,
+          invoiceNumber,
+          supplierTin,
+          purchaserTin,
+          partyInfo
+        );
+        try {
+          await printTextToRongta(plain, thermalPrinter);
+          setShowEvidenceModal(true);
+          setPrintResult(null);
+          return;
+        } catch (thermalTextErr) {
+          console.warn('[InvoiceScreen] thermal text print failed, trying PDF raster', thermalTextErr?.message);
+          try {
+            const { uri } = await Print.printToFileAsync({ html });
+            await printPdfFileToRongta(uri, thermalPrinter);
+            setShowEvidenceModal(true);
+            setPrintResult(null);
+            return;
+          } catch (thermalPdfErr) {
+            throw thermalPdfErr;
+          }
+        }
+      }
+
       await Print.printAsync({ html });
       setShowEvidenceModal(true);
       setPrintResult(null);
     } catch (err) {
       console.error(err);
       setPrintResult('failed');
-      setPrintError(err?.message || 'Could not print. Ensure a printer is available (Bluetooth, USB, or Network).');
+      setPrintError(
+        err?.message || 'Could not print. Pair a Bluetooth printer below or use the system print dialog.'
+      );
     } finally {
       setPrinting(false);
       setHideSyncIndicator(false);
     }
-  }, [order, lines, invoiceNumber, paymentType, selectedBankName, paymentSplit, localPaymentSplit, logoUri, customerSignatureDataUrl, driverSignatureDataUrl, chequeBankName, checkNumber, localChequeMeta.bankName, localChequeMeta.checkNumber, supplierTin, purchaserTin, partyInfo]);
+  }, [
+    order,
+    lines,
+    invoiceNumber,
+    paymentType,
+    selectedBankName,
+    paymentSplit,
+    localPaymentSplit,
+    logoUri,
+    customerSignatureDataUrl,
+    driverSignatureDataUrl,
+    chequeBankName,
+    checkNumber,
+    localChequeMeta.bankName,
+    localChequeMeta.checkNumber,
+    supplierTin,
+    purchaserTin,
+    partyInfo,
+    rongtaReady,
+    thermalPrinter,
+    thermalConnected,
+  ]);
 
   const goToHome = useCallback(() => {
     navigation.navigate('MainTabs', { screen: 'Dashboard' });
@@ -894,12 +1280,139 @@ export default function InvoiceScreen({ route, navigation }) {
         ) : null}
       </View>
 
+      {rongtaReady ? (
+        <View style={styles.thermalPrinterCard}>
+          <Text style={styles.thermalPrinterTitle}>Bluetooth Rongta printer</Text>
+          <Text style={styles.thermalPrinterSub}>
+            {thermalPrinter
+              ? `${thermalPrinter.name}\n${thermalPrinter.address}`
+              : 'Step 1: Pair the printer in Android Settings → Bluetooth. Step 2: Choose it here.'}
+          </Text>
+          <View style={styles.thermalPrinterActions}>
+            <TouchableOpacity style={styles.thermalPrinterBtn} onPress={openThermalPrinterPicker} activeOpacity={0.8}>
+              <Ionicons name="bluetooth" size={20} color={colors.primary} />
+              <Text style={styles.thermalPrinterBtnText}>
+                {thermalPrinter ? 'Change printer' : 'Choose printer'}
+              </Text>
+            </TouchableOpacity>
+            {thermalPrinter ? (
+              <TouchableOpacity
+                style={[styles.thermalPrinterBtn, styles.thermalPrinterBtnDanger]}
+                onPress={async () => {
+                  await disconnectRongtaPrinter();
+                  setThermalPrinter(null);
+                  setThermalConnected(false);
+                  setConnectThermalError(null);
+                  await setStoredBluetoothPrinter(null);
+                }}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.thermalPrinterBtnTextMuted}>Clear</Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+          <TouchableOpacity
+            style={[styles.thermalConnectBtn, (!thermalPrinter?.address || connectingThermal) && { opacity: 0.5 }]}
+            onPress={handleConnectToRongta}
+            disabled={!thermalPrinter?.address || connectingThermal}
+            activeOpacity={0.85}
+          >
+            {connectingThermal ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Ionicons name="link" size={22} color="#fff" />
+            )}
+            <Text style={styles.thermalConnectBtnText}>
+              {connectingThermal ? 'Connecting…' : 'Connect to Bluetooth Rongta printer'}
+            </Text>
+          </TouchableOpacity>
+          {thermalConnected ? (
+            <Text style={styles.thermalStatusOk}>Connected — you can print the invoice.</Text>
+          ) : null}
+          {connectThermalError && !thermalConnected ? (
+            <Text style={styles.thermalStatusErr}>{connectThermalError}</Text>
+          ) : null}
+        </View>
+      ) : null}
+
+      <Modal
+        visible={printerModalVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setPrinterModalVisible(false)}
+      >
+        <View style={styles.printerPickBackdrop}>
+          <View style={styles.printerPickSheet}>
+            <View style={styles.printerPickHeader}>
+              <Text style={styles.printerPickTitle}>Paired Bluetooth printers</Text>
+              <TouchableOpacity
+                onPress={() => setPrinterModalVisible(false)}
+                hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+              >
+                <Ionicons name="close" size={26} color={colors.textSecondary} />
+              </TouchableOpacity>
+            </View>
+            <TouchableOpacity
+              style={[styles.thermalPrinterBtn, { alignSelf: 'flex-start', marginBottom: spacing.sm }]}
+              onPress={openThermalPrinterPicker}
+              disabled={loadingPairedPrinters}
+            >
+              {loadingPairedPrinters ? (
+                <ActivityIndicator size="small" color={colors.primary} />
+              ) : (
+                <Ionicons name="refresh" size={20} color={colors.primary} />
+              )}
+              <Text style={styles.thermalPrinterBtnText}>Refresh list</Text>
+            </TouchableOpacity>
+            <FlatList
+              data={pairedPrinterRows}
+              keyExtractor={(item) => item.address}
+              style={{ flexGrow: 0 }}
+              renderItem={({ item }) => (
+                <TouchableOpacity
+                  style={styles.printerPickRow}
+                  onPress={async () => {
+                    const next = {
+                      name: item.name,
+                      address: item.address,
+                      mac: item.mac || item.address,
+                    };
+                    await disconnectRongtaPrinter();
+                    setThermalPrinter(next);
+                    setThermalConnected(false);
+                    setConnectThermalError(null);
+                    await setStoredBluetoothPrinter(next);
+                    setPrinterModalVisible(false);
+                  }}
+                >
+                  <Text style={styles.printerPickName}>{item.name}</Text>
+                  <Text style={styles.printerPickAddr}>{item.address}</Text>
+                </TouchableOpacity>
+              )}
+              ListEmptyComponent={
+                loadingPairedPrinters ? null : (
+                  <Text style={{ color: colors.textSecondary, paddingVertical: 16 }}>
+                    No paired devices. Pair the printer in system Settings, then Refresh.
+                  </Text>
+                )
+              }
+            />
+          </View>
+        </View>
+      </Modal>
+
+      {rongtaPrintBlocked ? (
+        <Text style={styles.printBlockedHint}>
+          Choose a paired printer, tap &quot;Connect to Bluetooth Rongta printer&quot;, then Print invoice unlocks.
+        </Text>
+      ) : null}
+
       {/* Print invoice button - hidden after print so modal offers Re-print */}
       {printResult == null && (
         <TouchableOpacity
-          style={styles.printBtn}
+          style={[styles.printBtn, (printing || rongtaPrintBlocked) && styles.printBtnDisabled]}
           onPress={handlePrint}
-          disabled={printing}
+          disabled={printing || rongtaPrintBlocked}
           activeOpacity={0.8}
         >
           {printing ? (
@@ -1101,11 +1614,13 @@ export default function InvoiceScreen({ route, navigation }) {
         <View style={styles.printerNoteTextWrap}>
           <Text style={styles.printerNoteTitle}>Connect to printer</Text>
           <Text style={styles.printerNoteText}>
-            To use a Zebra or other thermal printer: connect it via Bluetooth, USB, or
-            Wi‑Fi. It will appear in your device's printers when you tap "Print invoice".
-            {Platform.OS === 'android'
-              ? ' Add printers in Settings → Connected devices → Connection preferences → Printing.'
-              : ' On iOS use AirPrint-compatible printers.'}
+            {Platform.OS === 'android' && rongtaReady
+              ? 'This build includes a Rongta Bluetooth driver: pair the printer in Settings → Bluetooth, choose it above, then Print invoice (PDF raster to the printer; plain-text fallback if needed). Without a selected printer, Android opens the normal print dialog. Custom native code does not run in Expo Go — use a dev build (expo run:android) or your APK.'
+              : 'To print from the system dialog, connect a printer via Bluetooth, USB, or Wi‑Fi where your device supports it.'}
+            {Platform.OS === 'android' && !rongtaReady
+              ? ' Add printers in Settings → Connected devices → Printing if available.'
+              : null}
+            {Platform.OS === 'ios' ? ' On iOS use AirPrint-compatible printers.' : null}
           </Text>
         </View>
       </View>
