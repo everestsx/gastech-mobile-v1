@@ -12,9 +12,11 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
+import { useSync } from '../context/SyncContext';
 import { spacing, borderRadius } from '../constants/theme';
-import { getUserSession, getCachedVehicleInventoryByLocation, getVehicleLocationId } from '../services/sync.service';
+import { getUserSession, getCachedVehicleInventoryByLocation, getVehicleLocationId, getCachedOrders, getPickingsBySaleIdsFromDB, getOrderLinesByOrderIdsFromDB } from '../services/sync.service';
 import { getGasTypeBlueColor } from '../utils/productDisplay';
+import * as productsDb from '../database/products.js';
 
 const CARD_MIN_WIDTH = 160;
 const CARD_GAP = spacing.md;
@@ -46,16 +48,36 @@ function formatProductName(name) {
   return name.replace(/^\[[^\]]+\]\s*/, '').trim() || name;
 }
 
+function formatLocalYyyyMmDd(d) {
+  if (!(d instanceof Date) || Number.isNaN(d.getTime())) return '';
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function orderDateToLocalDay(value) {
+  if (!value) return '';
+  const raw = String(value).trim();
+  if (!raw) return '';
+  const isoLike = raw.match(/^\d{4}-\d{2}-\d{2}/);
+  if (isoLike) return isoLike[0];
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? '' : formatLocalYyyyMmDd(parsed);
+}
+
 const LOGO_SIZE = 48;
 
-function StockCard({ item, colors, cardWidth, isLeft }) {
-  const qty = Number(item.quantity) || 0;
-  const available = Number.isFinite(Number(item.available_quantity)) ? Number(item.available_quantity) : qty;
-  const delivered = Math.max(0, qty - available);
+function StockCard({ item, colors, cardWidth, isLeft, productImageUri, deliveredQty }) {
   const rawName = item.product_name || `Product ${item.product_id || ''}`.trim() || '—';
   const name = formatProductName(rawName);
-  const lowStock = available <= 0;
-  const logoSource = getProductLogo(item);
+  const stockQuantity = Math.max(0, Number(item.quantity) || 0);
+  const extra = Math.max(0, Number(item.available_quantity ?? item.extra_quantity ?? 0) || 0);
+  const onHand = stockQuantity;
+  const ordered = Math.max(0, onHand - extra);
+  const delivered = Math.max(0, Number(deliveredQty) || 0);
+  const lowStock = onHand <= 0;
+  const logoSource = productImageUri ? { uri: productImageUri } : getProductLogo(item);
   const gasBlueColor = getGasTypeBlueColor(rawName);
 
   return (
@@ -85,15 +107,19 @@ function StockCard({ item, colors, cardWidth, isLeft }) {
         <View style={styles.stockRowsWrap}>
           <View style={styles.stockRow}>
             <Text style={[styles.stockRowLabel, { color: colors.textSecondary }]}>On Hand Stock</Text>
-            <Text style={[styles.stockRowValue, { color: colors.text }]}>{qty}</Text>
+            <Text style={[styles.stockRowValue, { color: colors.text }]}>{onHand}</Text>
           </View>
           <View style={styles.stockRow}>
             <Text style={[styles.stockRowLabel, { color: colors.textSecondary }]}>Ordered Stock</Text>
-            <Text style={[styles.stockRowValue, { color: colors.text }]}>{delivered}</Text>
+            <Text style={[styles.stockRowValue, { color: colors.text }]}>{ordered}</Text>
           </View>
           <View style={styles.stockRow}>
             <Text style={[styles.stockRowLabel, { color: colors.textSecondary }]}>Extra Stock</Text>
-            <Text style={[styles.stockRowValue, { color: lowStock ? colors.error : '#3b82f6' }]}>{available}</Text>
+            <Text style={[styles.stockRowValue, { color: colors.text }]}>{extra}</Text>
+          </View>
+          <View style={styles.stockRow}>
+            <Text style={[styles.stockRowLabel, { color: colors.textSecondary }]}>Delivered</Text>
+            <Text style={[styles.stockRowValue, { color: delivered > 0 ? '#16a34a' : colors.textSecondary }]}>{delivered}</Text>
           </View>
         </View>
         <View style={[styles.badge, { backgroundColor: lowStock ? colors.error + '20' : gasBlueColor + '20' }]}>
@@ -168,11 +194,15 @@ const styles = StyleSheet.create({
 });
 
 export default function VehicleStockScreen({ navigation }) {
-  const { colors } = useTheme();
+  const { colors, syncDateField } = useTheme();
+  const { syncCompleteTimestamp } = useSync();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const [user, setUser] = useState(null);
   const [inventory, setInventory] = useState([]);
+  const [productIdToImageUri, setProductIdToImageUri] = useState({});
+  const [productIdToName, setProductIdToName] = useState({});
+  const [productStatsById, setProductStatsById] = useState({});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -198,29 +228,88 @@ export default function VehicleStockScreen({ navigation }) {
   // }, []);
 
 const load = useCallback(async (forceRefresh = false) => {
+  setProductStatsById({});
   const session = await getUserSession();
   setUser(session || null);
+  const [imageMap, productNameMap] = await Promise.all([
+    productsDb.getProductImageUriMap(),
+    productsDb.getProductsMap(),
+  ]);
+  setProductIdToImageUri(imageMap || {});
+  setProductIdToName(productNameMap || {});
+
+  const getOrderDateForSyncMode = (order) => {
+    const preferred = syncDateField === 'delivery_date' ? order?.commitment_date : order?.date_order;
+    const fallback = order?.date_order || order?.commitment_date;
+    return String(preferred || fallback || '');
+  };
 
   const vId = session?.vehicleId ? Number(session.vehicleId) : null;
 
   if (vId) {
-    // Get the location_id for this vehicle
     const locationId = await getVehicleLocationId(vId);
     console.log(`[UI Debug] Vehicle ${vId} has location_id: ${locationId}`);
 
+    const orders = await getCachedOrders(vId);
+    const todayLocal = formatLocalYyyyMmDd(new Date());
+    const todayOrders = (Array.isArray(orders) ? orders : []).filter((o) =>
+      getOrderDateForSyncMode(o).startsWith(todayLocal)
+    );
+    const orderIds = todayOrders.map((o) => Number(o?.id)).filter((id) => Number.isFinite(id));
+
+    const [orderLines, pickings, data] = await Promise.all([
+      orderIds.length ? getOrderLinesByOrderIdsFromDB(orderIds) : Promise.resolve([]),
+      orderIds.length ? getPickingsBySaleIdsFromDB(orderIds) : Promise.resolve([]),
+      locationId ? getCachedVehicleInventoryByLocation(locationId) : Promise.resolve([]),
+    ]);
+
+    const deliveredOrderIds = new Set(
+      todayOrders
+        .filter((o) => String(o?.invoice_status || '').toLowerCase() === 'invoiced')
+        .map((o) => Number(o?.id))
+        .filter((id) => Number.isFinite(id))
+    );
+    (pickings || [])
+      .filter((p) => String(p?.state || '').toLowerCase() === 'done')
+      .forEach((p) => {
+        const saleId = Array.isArray(p?.sale_id) ? p.sale_id[0] : p?.sale_id;
+        const saleNum = Number(saleId);
+        if (Number.isFinite(saleNum)) deliveredOrderIds.add(saleNum);
+      });
+
+    const deliveredByProductId = {};
+    (orderLines || []).forEach((line) => {
+      const orderId = Array.isArray(line.order_id) ? line.order_id[0] : line.order_id;
+      const soId = orderId != null ? Number(orderId) : null;
+      const pidRaw = Array.isArray(line.product_id) ? line.product_id[0] : line.product_id;
+      const pid = pidRaw != null ? Number(pidRaw) : null;
+      if (soId == null || pid == null || !Number.isFinite(pid)) return;
+      const qty = Number(line.product_uom_qty) || 0;
+      if (deliveredOrderIds.has(soId)) {
+        deliveredByProductId[pid] = (deliveredByProductId[pid] || 0) + qty;
+      }
+    });
+    setProductStatsById(
+      Object.keys(deliveredByProductId).reduce((acc, key) => {
+        const pid = Number(key);
+        acc[pid] = { delivered: deliveredByProductId[pid] || 0 };
+        return acc;
+      }, {})
+    );
+
     if (locationId) {
-      // Fetch inventory by location_id instead of vehicle_id
-      const data = await getCachedVehicleInventoryByLocation(locationId);
       console.log(`[UI Debug] Found ${data.length} items for location ${locationId}`, data);
       setInventory(Array.isArray(data) ? data : []);
     } else {
       console.warn(`[UI Debug] No location_id found for vehicle ${vId}`);
       setInventory([]);
+      setProductStatsById({});
     }
   } else {
     setInventory([]);
+    setProductStatsById({});
   }
-}, []);
+}, [syncDateField]);
 
 // Update the focus listener to force refresh
 useEffect(() => {
@@ -238,9 +327,8 @@ useEffect(() => {
   }, [load]);
 
   useEffect(() => {
-    const unsub = navigation.addListener?.('focus', load);
-    return () => unsub?.();
-  }, [load, navigation]);
+    load(true).catch(() => {});
+  }, [syncCompleteTimestamp, load]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -321,10 +409,17 @@ useEffect(() => {
           inventory.map((item, index) => (
             <StockCard
               key={String(item.id)}
-              item={item}
+              item={{
+                ...item,
+                product_name: item.product_id != null
+                  ? (productIdToName[item.product_id] || item.product_name)
+                  : item.product_name,
+              }}
               colors={colors}
               cardWidth={cardWidth}
               isLeft={index % 2 === 0}
+              productImageUri={item.product_id != null ? productIdToImageUri[item.product_id] : null}
+              deliveredQty={item.product_id != null ? (productStatsById[item.product_id]?.delivered ?? 0) : 0}
             />
           ))
         ) : (

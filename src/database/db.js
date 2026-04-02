@@ -92,6 +92,7 @@ async function runMigrations(db) {
     CREATE TABLE IF NOT EXISTS products (
       id INTEGER PRIMARY KEY,
       name TEXT,
+      image_1920 TEXT,
       updated_at TEXT
     );
     CREATE TABLE IF NOT EXISTS stock_pickings (
@@ -444,6 +445,20 @@ async function runMigrations(db) {
       console.warn('[Migration] local_invoices signature columns:', e);
     }
     await db.runAsync('PRAGMA user_version = 17');
+  }
+
+  // Migration 18: Store Odoo product image_1920 on local products table
+  if (current < 18) {
+    try {
+      const info = await db.getAllAsync('PRAGMA table_info(products)');
+      const names = new Set((info || []).map((c) => c.name));
+      if (!names.has('image_1920')) {
+        await db.runAsync('ALTER TABLE products ADD COLUMN image_1920 TEXT');
+      }
+    } catch (e) {
+      console.warn('[Migration] products image_1920:', e);
+    }
+    await db.runAsync('PRAGMA user_version = 18');
   }
 }
 

@@ -153,8 +153,10 @@ export default function SettingsScreen({ navigation }) {
         </View>
         <View style={styles.rowRight}>
           <Text style={[styles.syncPeriodValue, { color: colors.textSecondary }]}>
-            {syncInterval === '10min'
-              ? '10 minutes'
+            {syncInterval === '5min'
+              ? '5 minutes'
+              : syncInterval === '10min'
+                ? '10 minutes'
               : syncInterval === '30min'
                 ? '30 minutes'
                 : syncInterval === '1hour'
@@ -239,6 +241,7 @@ export default function SettingsScreen({ navigation }) {
             <Text style={[styles.modalTitle, { color: colors.text }]}>Select Sync Time</Text>
             {[
               { label: '1 minute', value: '1min' },
+              { label: '5 minutes', value: '5min' },
               { label: '10 minutes', value: '10min' },
               { label: '30 minutes', value: '30min' },
               { label: '1 hour', value: '1hour' },

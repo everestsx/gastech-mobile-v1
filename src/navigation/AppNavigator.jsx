@@ -1,11 +1,10 @@
 import React, { useEffect, useRef } from 'react';
-import { AppState, View, Text, StyleSheet, Modal } from 'react-native';
+import { AppState, View, StyleSheet } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import SyncIndicator from '../components/SyncIndicator';
 import { useSync } from '../context/SyncContext';
 import { colors } from '../constants/theme';
 import SplashScreen from '../screens/SplashScreen';
@@ -213,10 +212,8 @@ function MainStackScreen() {
 export default function AppNavigator() {
   const syncIntervalRef = useRef(null);
   const appStateRef = useRef(AppState.currentState);
-  const insets = useSafeAreaInsets();
-  const { isSyncing, syncResult, syncErrorMessage, hideSyncIndicator } = useSync();
+  const { hideSyncIndicator } = useSync();
   const { syncInterval } = useTheme();
-  const showSyncResultModal = syncResult === 'success' || syncResult === 'failed';
   const hideSyncRef = useRef(hideSyncIndicator);
   hideSyncRef.current = hideSyncIndicator;
 
@@ -268,40 +265,6 @@ export default function AppNavigator() {
             />
           </RootStack.Navigator>
         </View>
-        {isSyncing && !hideSyncIndicator && (
-          <View style={styles.globalSyncIndicator} pointerEvents="none">
-            <SyncIndicator />
-          </View>
-        )}
-        <Modal
-          visible={showSyncResultModal}
-          transparent
-          animationType="fade"
-          statusBarTranslucent
-        >
-          <View style={[styles.toastBackdrop, { paddingTop: insets.top + 8 }]}>
-            <View style={styles.toastBar}>
-              <View style={styles.toastIconWrap}>
-                {syncResult === 'success' && (
-                  <Ionicons name="checkmark-circle" size={24} color="#22c55e" />
-                )}
-                {syncResult === 'failed' && (
-                  <Ionicons name="alert-circle" size={24} color="#ef4444" />
-                )}
-              </View>
-              <View style={styles.toastTextWrap}>
-                <Text style={styles.toastTitle}>
-                  {syncResult === 'success' && 'Sync complete'}
-                  {syncResult === 'failed' && 'Sync failed'}
-                </Text>
-                <Text style={styles.toastSubtitle} numberOfLines={1}>
-                  {syncResult === 'success' && 'All data is up to date'}
-                  {syncResult === 'failed' && (syncErrorMessage || 'Could not sync. Will retry when online.')}
-                </Text>
-              </View>
-            </View>
-          </View>
-        </Modal>
       </View>
     </NavigationContainer>
   );
@@ -310,54 +273,4 @@ export default function AppNavigator() {
 const styles = StyleSheet.create({
   navWrap: { flex: 1 },
   navContent: { flex: 1 },
-  globalSyncIndicator: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 10,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    width: '100%',
-    height: '100%',
-  },
-  toastBackdrop: {
-    flex: 1,
-    backgroundColor: 'transparent',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-  },
-  toastBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    borderRadius: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    minHeight: 48,
-    maxWidth: '100%',
-    shadowColor: 'rgba(0,0,0,0.4)',
-    shadowOffset: { width: 0, height: 4 },
-    shadowRadius: 12,
-    elevation: 8,
-  },
-  toastIconWrap: {
-    marginRight: 12,
-  },
-  toastTextWrap: {
-    flex: 1,
-    minWidth: 0,
-  },
-  toastTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: 'white',
-  },
-  toastSubtitle: {
-    fontSize: 13,
-    color: 'rgba(255,255,255,0.9)',
-    marginTop: 2,
-  },
 });

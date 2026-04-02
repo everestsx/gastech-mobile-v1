@@ -27,7 +27,7 @@ export function ThemeProvider({ children }) {
   const [showReturnOrder, setShowReturnOrderState] = useState(true);
   const [syncPeriod, setSyncPeriodState] = useState('7days');
   const [syncDateField, setSyncDateFieldState] = useState('delivery_date');
-  const [syncInterval, setSyncIntervalState] = useState('10min');
+  const [syncInterval, setSyncIntervalState] = useState('5min');
   const [ready, setReady] = useState(false);
 
   const colors = getThemeColors(theme);
@@ -50,7 +50,7 @@ export function ThemeProvider({ children }) {
       if (savedSyncDateField && ['creation_date', 'delivery_date'].includes(savedSyncDateField)) {
         setSyncDateFieldState(savedSyncDateField);
       }
-      if (savedSyncInterval && ['1min', '10min', '30min', '1hour', '2hour'].includes(savedSyncInterval)) {
+      if (savedSyncInterval && ['1min', '5min', '10min', '30min', '1hour', '2hour'].includes(savedSyncInterval)) {
         setSyncIntervalState(savedSyncInterval);
       }
     } catch (_) {}
@@ -99,7 +99,7 @@ export function ThemeProvider({ children }) {
   }, []);
 
   const setSyncInterval = useCallback(async (value) => {
-    const next = ['1min', '10min', '30min', '1hour', '2hour'].includes(value) ? value : '10min';
+    const next = ['1min', '5min', '10min', '30min', '1hour', '2hour'].includes(value) ? value : '5min';
     setSyncIntervalState(next);
     try {
       await AsyncStorage.setItem(STORAGE_KEYS.SYNC_INTERVAL, next);

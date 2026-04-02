@@ -19,14 +19,20 @@ export async function upsertVehicleInventories(rows) {
       const vehicleId = numOrNull(r.vehicle_id);
       const productId = numOrNull(product.id);
 
-      // Check if this row was locally modified - if so, skip it to preserve local changes
+      // Check if this row was locally modified.
+      // Keep local quantity/available_quantity, but still refresh product_name from backend
+      // so renamed products (e.g. GAS2.3 -> GAS2.4) appear correctly in UI.
       const existing = await tx.getFirstAsync(
         `SELECT is_locally_modified FROM vehicle_inventories WHERE vehicle_id = ? AND product_id = ?`,
         [vehicleId, productId]
       );
 
       if (existing?.is_locally_modified === 1) {
-        console.log(`[DB Sync] Skipping sync for locally modified inventory: vehicle ${vehicleId}, product ${productId}`);
+        await tx.runAsync(
+          `UPDATE vehicle_inventories SET product_name = ?, updated_at = ? WHERE vehicle_id = ? AND product_id = ?`,
+          [empty(product.name), now, vehicleId, productId]
+        );
+        console.log(`[DB Sync] Preserved local qty but refreshed name for locally modified inventory: vehicle ${vehicleId}, product ${productId}`);
         continue;
       }
 
@@ -167,5 +173,34 @@ export async function clearAllLocalModificationFlags(vehicleId) {
   } else {
     await db.runAsync(`UPDATE vehicle_inventories SET is_locally_modified = 0`);
   }
+}
+
+/**
+ * Keep only backend-returned quant ids for a location (preserve locally modified rows).
+ */
+export async function pruneInventoryForLocationToIds(locationId, keepQuantIds = []) {
+  if (locationId == null) return;
+  const db = await getDb();
+  const keep = (Array.isArray(keepQuantIds) ? keepQuantIds : [])
+    .map((id) => Number(id))
+    .filter((id) => Number.isFinite(id) && id > 0);
+
+  if (keep.length === 0) {
+    await db.runAsync(
+      `DELETE FROM vehicle_inventories
+       WHERE location_id = ? AND COALESCE(is_locally_modified, 0) = 0`,
+      [locationId]
+    );
+    return;
+  }
+
+  const placeholders = keep.map(() => '?').join(',');
+  await db.runAsync(
+    `DELETE FROM vehicle_inventories
+     WHERE location_id = ?
+       AND COALESCE(is_locally_modified, 0) = 0
+       AND id NOT IN (${placeholders})`,
+    [locationId, ...keep]
+  );
 }
 

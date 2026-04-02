@@ -9,6 +9,23 @@ function odooRel(idName) {
   return { id: idName, name: null };
 }
 
+function imageBase64ToDataUri(value) {
+  if (value == null) return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+  if (/^data:image\//i.test(raw)) return raw;
+
+  const clean = raw.replace(/\s+/g, '');
+  if (!clean) return null;
+
+  let mime = 'image/png';
+  if (clean.startsWith('/9j/')) mime = 'image/jpeg';
+  else if (clean.startsWith('R0lGOD')) mime = 'image/gif';
+  else if (clean.startsWith('UklGR')) mime = 'image/webp';
+
+  return `data:${mime};base64,${clean}`;
+}
+
 export async function upsertProducts(rows) {
   if (!rows?.length) return;
   const db = await getDb();
@@ -16,13 +33,17 @@ export async function upsertProducts(rows) {
   await db.withTransactionAsync(async (tx) => {
     for (const r of rows) {
       const product = typeof r === 'object' && (r.id != null || r.product_id != null)
-        ? { id: r.id ?? (Array.isArray(r.product_id) ? r.product_id[0] : r.product_id), name: r.name ?? (Array.isArray(r.product_id) ? r.product_id[1] : null) }
+        ? {
+          id: r.id ?? (Array.isArray(r.product_id) ? r.product_id[0] : r.product_id),
+          name: r.name ?? (Array.isArray(r.product_id) ? r.product_id[1] : null),
+          image_1920: r.image_1920 ?? null,
+        }
         : odooRel(r);
       const id = num(product.id);
       if (id === 0) continue;
       await tx.runAsync(
-        `INSERT OR REPLACE INTO products (id, name, updated_at) VALUES (?, ?, ?)`,
-        [id, empty(product.name), now]
+        `INSERT OR REPLACE INTO products (id, name, image_1920, updated_at) VALUES (?, ?, ?, ?)`,
+        [id, empty(product.name), empty(product.image_1920), now]
       );
     }
   });
@@ -31,7 +52,7 @@ export async function upsertProducts(rows) {
 export async function getProductById(id) {
   const db = await getDb();
   const row = await db.getFirstAsync('SELECT * FROM products WHERE id = ?', [id]);
-  return row ? { id: row.id, name: row.name } : null;
+  return row ? { id: row.id, name: row.name, image_1920: row.image_1920 } : null;
 }
 
 /** @returns {Promise<Record<number, string>>} Map product id -> name for display (e.g. sale order cards). */
@@ -41,6 +62,19 @@ export async function getProductsMap() {
   const map = {};
   (rows || []).forEach((r) => {
     if (r.id != null) map[r.id] = r.name ?? '';
+  });
+  return map;
+}
+
+/** @returns {Promise<Record<number, string>>} Map product id -> data URI built from image_1920. */
+export async function getProductImageUriMap() {
+  const db = await getDb();
+  const rows = await db.getAllAsync("SELECT id, image_1920 FROM products WHERE image_1920 IS NOT NULL AND TRIM(image_1920) <> ''");
+  const map = {};
+  (rows || []).forEach((r) => {
+    if (r.id == null) return;
+    const uri = imageBase64ToDataUri(r.image_1920);
+    if (uri) map[r.id] = uri;
   });
   return map;
 }

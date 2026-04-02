@@ -849,6 +849,19 @@ export default function InvoiceScreen({ route, navigation }) {
         },
         printBtnText: { fontSize: 16, fontWeight: '700', color: '#fff' },
         printBtnDisabled: { opacity: 0.45 },
+        skipPrintBtn: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 8,
+          backgroundColor: colors.surface,
+          borderWidth: 1,
+          borderColor: colors.border,
+          paddingVertical: 14,
+          borderRadius: borderRadius.lg,
+          marginBottom: spacing.md,
+        },
+        skipPrintBtnText: { fontSize: 16, fontWeight: '700', color: colors.textSecondary },
         printBlockedHint: {
           fontSize: 13,
           color: colors.textSecondary,
@@ -1729,6 +1742,18 @@ export default function InvoiceScreen({ route, navigation }) {
               <Text style={styles.printBtnText}>Print invoice</Text>
             </>
           )}
+        </TouchableOpacity>
+      )}
+
+      {printResult == null && (
+        <TouchableOpacity
+          style={styles.skipPrintBtn}
+          onPress={() => setShowEvidenceModal(true)}
+          disabled={printing}
+          activeOpacity={0.8}
+        >
+          <Ionicons name="play-forward-outline" size={22} color={colors.textSecondary} />
+          <Text style={styles.skipPrintBtnText}>Skip invoice printing</Text>
         </TouchableOpacity>
       )}
 

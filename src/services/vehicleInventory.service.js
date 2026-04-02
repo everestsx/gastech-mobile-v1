@@ -1,11 +1,8 @@
 import { callOdoo } from './index.service';
 
-/** Gas product default codes we care about for vehicle stock. */
-export const GAS_PRODUCT_CODES = ['GAS2.3', 'GAS5', 'GAS12.5', 'GAS37.5'];
-
 /**
  * Get lorry/vehicle inventory (stock.quant) for a given stock location.
- * Filters by gas product default codes.
+ * Uses backend stock rows directly (no hardcoded product codes) so renamed products are included.
  * @param {number} locationId - stock.location id (e.g. 94 for 7041/Stock)
  * @returns {Promise<Array>} [{ id, product_id, quantity, available_quantity }]
  */
@@ -17,11 +14,17 @@ export async function getVehicleInventoryByLocation(locationId) {
     [
       [
         ['location_id', '=', locationId],
-        ['product_id.default_code', 'in', GAS_PRODUCT_CODES],
+        ['product_id', '!=', false],
       ],
     ],
     { fields: ['product_id', 'quantity', 'available_quantity'] }
   );
-    console.log('[Vehicle Inventory API] locationId:', locationId, 'response:', JSON.stringify(response, null, 2));
-    return response;
+  const rows = Array.isArray(response) ? response : [];
+  const withStock = rows.filter((r) => {
+    const quantity = Number(r?.quantity) || 0;
+    const available = Number(r?.available_quantity) || 0;
+    return quantity > 0 || available > 0;
+  });
+  console.log('[Vehicle Inventory API] locationId:', locationId, 'rows:', rows.length, 'withStock:', withStock.length);
+  return withStock;
 }
