@@ -40,6 +40,7 @@ import {
   getActiveCommissionPlan,
   calculateCommissionProgressByProducts,
 } from '../services/commission.service';
+import * as productsDb from '../database/products.js';
 import DeliveryProgressBarChart from '../components/DeliveryProgressBarChart';
 import SyncIndicator from '../components/SyncIndicator';
 import { useSync } from '../context/SyncContext';
@@ -127,6 +128,7 @@ export default function DashboardScreen({ navigation }) {
 
   // Stock overview (local lorry stock) computed from vehicle_inventories.
   const [stockCards, setStockCards] = useState([]);
+  const [productIdToImageUri, setProductIdToImageUri] = useState({});
 
   // Collection cards: tap to expand one (shows full amount), tap again to collapse
   const [expandedCollectionCard, setExpandedCollectionCard] = useState(null);
@@ -156,6 +158,8 @@ export default function DashboardScreen({ navigation }) {
       const vehicleId = user?.isAdmin === false ? user.vehicleId : null;
       const data = await getCachedOrders(vehicleId);
       setOrders(Array.isArray(data) ? data : []);
+      const imageMap = await productsDb.getProductImageUriMap();
+      setProductIdToImageUri(imageMap || {});
       const today = formatLocalDate(new Date());
       const todayOrders = (Array.isArray(data) ? data : []).filter((o) => getOrderDateForSyncMode(o).startsWith(today));
       console.log('todayOrders', todayOrders);
@@ -282,6 +286,7 @@ export default function DashboardScreen({ navigation }) {
       setPaymentSplitsByOrderId({});
       setOrderSyncStats({ pendingOrders: 0, localCompleted: 0, syncedCompleted: 0 });
       setStockCards([]);
+      setProductIdToImageUri({});
     } finally {
       setLoading(false);
     }
@@ -431,9 +436,27 @@ export default function DashboardScreen({ navigation }) {
   /** Today's orders that are actually delivered (picking state 'done') for this vehicle */
   //Check and Uncomment this if you want to use the pickingStateBySaleId to get the delivered today orders
   const deliveredTodayOrders = useMemo(
-      () => todayOrders.filter((o) => (pickingStateBySaleId[o.id] || '') === 'done'),
+      () => todayOrders.filter((o) => (pickingStateBySaleId[o.id] || '') === 'done' || String(o?.invoice_status || '').toLowerCase() === 'invoiced'),
       [todayOrders, pickingStateBySaleId]
   );
+
+  const deliveredQtyByProductId = useMemo(() => {
+    const deliveredOrderIds = new Set(deliveredTodayOrders.map((o) => Number(o.id)));
+    const map = {};
+    (todayOrderLines || []).forEach((line) => {
+      const orderId = Array.isArray(line.order_id) ? line.order_id[0] : line.order_id;
+      const soId = orderId != null ? Number(orderId) : null;
+      if (soId == null || !deliveredOrderIds.has(soId)) return;
+
+      const pidRaw = Array.isArray(line.product_id) ? line.product_id[0] : line.product_id;
+      const pid = pidRaw != null ? Number(pidRaw) : null;
+      if (pid == null || !Number.isFinite(pid)) return;
+
+      const qty = Number(line.product_uom_qty) || 0;
+      map[pid] = (map[pid] || 0) + qty;
+    });
+    return map;
+  }, [deliveredTodayOrders, todayOrderLines]);
 
   // const deliveredTodayOrders = todayOrders;
 
@@ -553,7 +576,8 @@ export default function DashboardScreen({ navigation }) {
       if (!byPartner[key]) byPartner[key] = { shopId: `S${partnerId}`, shopName: partnerName, delivered: 0, pending: 0 };
       const qty = Math.round(Number(chartLineTotalsByOrder[o.id]) || 0);
       //Check and Uncomment this if you want to use the chartPickingStateBySaleId to get the delivered today orders
-      const isDone = (chartPickingStateBySaleId[o.id] || '') === 'done';
+      const isDone = (chartPickingStateBySaleId[o.id] || '') === 'done'
+        || String(o?.invoice_status || '').toLowerCase() === 'invoiced';
       // const isDone = true;
       if (isDone) byPartner[key].delivered += qty;
       else byPartner[key].pending += qty;
@@ -905,7 +929,7 @@ export default function DashboardScreen({ navigation }) {
           </View>
           <View style={styles.headerButtons}>
             <View style={styles.lastSyncedRow}>
-              {/* {isSyncing && <SyncIndicator style={{ marginRight: SYNC_INDICATOR_GAP }} />} */}
+              {isSyncing && <SyncIndicator style={{ marginRight: SYNC_INDICATOR_GAP }} />}
               <View style={styles.lastSyncedBlock}>
                 <Text style={styles.lastSyncedLabel}>Last Synced</Text>
                 <Text style={styles.lastSyncTimeText} numberOfLines={1}>
@@ -991,7 +1015,9 @@ export default function DashboardScreen({ navigation }) {
                 const gasBlueColor = getGasTypeBlueColor(String(s.product_name || ''));
                 const statusColor = isOut ? '#dc2626' : gasBlueColor;
                 const productLabel = String(s.product_name || '').replace(/^\[[^\]]+\]\s*/, '');
-                const gasImageSource = getGasImageByProductName(productLabel);
+                const backendImageUri = s.product_id != null ? productIdToImageUri[s.product_id] : null;
+                const gasImageSource = backendImageUri ? { uri: backendImageUri } : getGasImageByProductName(productLabel);
+                const deliveredQty = Number(deliveredQtyByProductId[s.product_id]) || 0;
 
                 return (
                   <TouchableOpacity
@@ -1041,6 +1067,13 @@ export default function DashboardScreen({ navigation }) {
                     </Text>
                     <Text style={{ fontSize: 18, fontWeight: '900', color: isOut ? '#dc2626' : '#3b82f6', marginTop: 4 }}>
                       {s.total.toLocaleString('en-IN')}
+                    </Text>
+                    <View style={{ height: 6 }} />
+                    <Text style={{ fontSize: 12, color: colors.textSecondary, fontWeight: '800' }}>
+                      Delivered
+                    </Text>
+                    <Text style={{ fontSize: 18, fontWeight: '900', color: deliveredQty > 0 ? '#16a34a' : colors.textSecondary, marginTop: 4 }}>
+                      {deliveredQty.toLocaleString('en-IN')}
                     </Text>
                   </TouchableOpacity>
                 );

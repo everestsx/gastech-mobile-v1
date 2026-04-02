@@ -21,6 +21,7 @@ import * as stockMovesDb from '../database/stockMoves.js';
 import * as stockPickingsDb from '../database/stockPickings.js';
 import * as syncQueueDb from '../database/syncQueue.js';
 import * as vehicleInventoriesDb from '../database/vehicleInventories.js';
+import * as productsDb from '../database/products.js';
 import {
   buildProductIdToMoveLineIdMap,
   buildProductIdToMoveIdMap,
@@ -72,6 +73,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
   const [updating, setUpdating] = useState(false);
   const [updateError, setUpdateError] = useState(null);
   const [productIdToAvailable, setProductIdToAvailable] = useState({});
+  const [productIdToImageUri, setProductIdToImageUri] = useState({});
 
   const styles = useMemo(
     () =>
@@ -379,6 +381,8 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
           newQty: String(l.product_uom_qty ?? 0),
         }))
       );
+      const imageMap = await productsDb.getProductImageUriMap();
+      setProductIdToImageUri(imageMap || {});
       setQtyChanged(false);
       const { picking } = await getDeliveryDataFromDB(saleOrderId);
       const deliveryDone = ((picking?.state || '') + '').toLowerCase() === 'done';
@@ -424,6 +428,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
       setLines([]);
       setIsDelivered(false);
       setIsDeliveryDone(false);
+      setProductIdToImageUri({});
     } finally {
       setLoading(false);
     }
@@ -771,7 +776,8 @@ const handleProceedToPayment = useCallback(async () => {
     const availableStock = productId != null ? productIdToAvailable[productId] : undefined;
     const totalOrderedForProduct = productId != null ? (totalQtyByProductId[productId] ?? 0) : 0;
     const remainingAfterOrder = availableStock !== undefined ? availableStock - totalOrderedForProduct : undefined;
-    const imageSource = getProductImageSource(productName);
+    const backendImageUri = productId != null ? productIdToImageUri[productId] : null;
+    const imageSource = backendImageUri ? { uri: backendImageUri } : getProductImageSource(productName);
 
     return (
       <View style={[styles.lineCard]}>

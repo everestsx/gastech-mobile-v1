@@ -55,6 +55,7 @@ const KEYS = {
 
 const SYNC_INTERVAL_MAP = {
   '1min': 1 * 60 * 1000,
+  '5min': 5 * 60 * 1000,
   '10min': 10 * 60 * 1000,
   '30min': 30 * 60 * 1000,
   '1hour': 60 * 60 * 1000,
@@ -551,485 +552,510 @@ async function processSyncQueue() {
   }
   _processSyncQueuePromise = (async () => {
     try {
-    const pending = await syncQueueDb.getPending();
-    if (!pending.length) return;
-    log('queue', `processing ${pending.length} pending`);
-    const delivery = pending.filter((p) => p.action_type === syncQueueDb.ACTION_DELIVERY);
-    const payment = pending.filter((p) => p.action_type === syncQueueDb.ACTION_PAYMENT);
-    const inventoryUpdate = pending.filter((p) => p.action_type === syncQueueDb.ACTION_INVENTORY_UPDATE);
+      const pending = await syncQueueDb.getPending();
+      if (!pending.length) return;
+      log('queue', `processing ${pending.length} pending`);
+      const delivery = pending.filter((p) => p.action_type === syncQueueDb.ACTION_DELIVERY);
+      const payment = pending.filter((p) => p.action_type === syncQueueDb.ACTION_PAYMENT);
+      const inventoryUpdate = pending.filter((p) => p.action_type === syncQueueDb.ACTION_INVENTORY_UPDATE);
 
-    // Keep only the latest pending payment item per sale order to avoid duplicate chatter posts.
-    const latestPaymentItemBySaleOrder = new Map();
-    for (const item of payment) {
-      const p = item.payload || {};
-      const saleOrderId = p.saleOrderId ?? p.sale_id;
-      const soId = saleOrderId != null ? Number(saleOrderId) : NaN;
-      if (Number.isNaN(soId)) continue;
-      latestPaymentItemBySaleOrder.set(soId, item);
-    }
-    const dedupedPayment = [];
-    for (const item of payment) {
-      const p = item.payload || {};
-      const saleOrderId = p.saleOrderId ?? p.sale_id;
-      const soId = saleOrderId != null ? Number(saleOrderId) : NaN;
-      if (Number.isNaN(soId)) {
-        dedupedPayment.push(item);
-        continue;
-      }
-      const latest = latestPaymentItemBySaleOrder.get(soId);
-      if (latest && Number(latest.id) !== Number(item.id)) {
-        await syncQueueDb.markSynced(Number(item.id));
-        log('queue', `skip duplicate pending payment id=${item.id} (SO ${soId}); latest id=${latest.id}`);
-        continue;
-      }
-      dedupedPayment.push(item);
-    }
-    const {
-      updateSaleOrderLineQty,
-      confirmSaleOrder,
-    } = await import('./saleOrderLine.service');
-    const {
-      getPickingBySaleOrder,
-      getPickingState,
-      getStockMovesByPickingId,
-      getStockMoveLinesByMoveIds,
-      updateMoveLineQty,
-      updateStockMoveQty,
-      createMoveLine,
-      validatePickingWithContext,
-      createBackorderConfirmation,
-      processBackorderConfirmation,
-    } = await import('./delivery.service');
-    const {
-      getSaleOrderForPayment,
-      getSaleOrderInvoiceIds,
-      getInvoiceState,
-      getInvoiceIdAfterCreate,
-      firstInvoiceId,
-      createAdvancePaymentWizard,
-      createInvoicesFromWizard,
-      postInvoice,
-      getPaymentsByInvoiceIds,
-      createPaymentRegisterWizard,
-      executePaymentRegister,
-    } = await import('./invoice.service');
-
-    for (const item of delivery) {
-      try {
+      // Keep only the latest pending payment item per sale order to avoid duplicate chatter posts.
+      const latestPaymentItemBySaleOrder = new Map();
+      for (const item of payment) {
         const p = item.payload || {};
         const saleOrderId = p.saleOrderId ?? p.sale_id;
-        let pickingId = p.pickingId ?? p.picking_id;
-        const orderLineUpdates = p.orderLineUpdates || [];
-        const moveUpdates = p.moveUpdates || [];
-        const moveLineUpdates = p.moveLineUpdates || [];
-        const deliveryLines = p.deliveryLines || [];
-
-        // Step 1 — Resolve picking (by sale_order_id if not in payload)
-        if (pickingId == null && saleOrderId != null) {
-          const pickings = await getPickingBySaleOrder(saleOrderId);
-          const first = Array.isArray(pickings) ? pickings[0] : null;
-          if (first?.state === 'done') {
-            await syncQueueDb.markSynced(Number(item.id));
-            log('queue', `delivery already done (SO ${saleOrderId}), synced id=${item.id}`);
-            continue;
-          }
-          pickingId = first?.id ?? null;
-        }
-        if (pickingId == null) {
-          logWarn('queue delivery', new Error('No picking found for sale order ' + saleOrderId));
+        const soId = saleOrderId != null ? Number(saleOrderId) : NaN;
+        if (Number.isNaN(soId)) continue;
+        latestPaymentItemBySaleOrder.set(soId, item);
+      }
+      const dedupedPayment = [];
+      for (const item of payment) {
+        const p = item.payload || {};
+        const saleOrderId = p.saleOrderId ?? p.sale_id;
+        const soId = saleOrderId != null ? Number(saleOrderId) : NaN;
+        if (Number.isNaN(soId)) {
+          dedupedPayment.push(item);
           continue;
         }
-
-        // Check picking state (skip if already done)
-        try {
-          const stateRows = await getPickingState(pickingId);
-          const pick = Array.isArray(stateRows) ? stateRows[0] : stateRows;
-          if (pick?.state === 'done') {
-            await syncQueueDb.markSynced(Number(item.id));
-            log('queue', `delivery already done picking ${pickingId}, synced id=${item.id}`);
-            continue;
-          }
-        } catch (_) { }
-
-        try {
-          for (const u of orderLineUpdates) {
-            await updateSaleOrderLineQty(u.lineId, u.product_uom_qty);
-          }
-          for (const u of moveUpdates) {
-            await updateStockMoveQty(u.moveId, u.product_uom_qty);
-          }
-          // Avoid creating new stock.move.line records when we already have moveLine updates.
-          // Creating new move lines can duplicate delivered qty (especially on retries / partial payments).
-          const hasMoveLineUpdates = Array.isArray(moveLineUpdates) && moveLineUpdates.length > 0;
-          if (!hasMoveLineUpdates && deliveryLines.length > 0) {
-            // Step 2 & 3 — Create stock.move.line (qty_done) for each product (offline 4-step flow)
-            for (const line of deliveryLines) {
-              const moveId = line.moveId ?? line.move_id;
-              const productId = line.productId ?? line.product_id;
-              const qty = line.qty_done;
-              if (moveId != null && productId != null && qty != null) {
-                await createMoveLine(pickingId, moveId, productId, qty);
-              }
-            }
-          } else {
-            for (const u of moveLineUpdates) {
-              await updateMoveLineQty(u.moveLineId, u.qty_done);
-            }
-          }
-        } catch (updateErr) {
-          const msg = (updateErr?.message || String(updateErr)).toLowerCase();
-          const recordDeleted = msg.includes('does not exist or has been deleted') || msg.includes('has been deleted');
-          if (recordDeleted) {
-            log('queue', `delivery updates skipped (record deleted in Odoo — delivery may already be validated): ${msg.slice(0, 80)}`);
-          } else {
-            throw updateErr;
-          }
-        }
-
-        // Step 4 — Validate picking with skip_backorder
-        try {
-          await validatePickingWithContext(pickingId, { skip_backorder: true });
-          log('queue', `delivery validated picking ${pickingId} (skip_backorder)`);
-        } catch (validateErr) {
-          const vMsg = (validateErr?.message || String(validateErr)).toLowerCase();
-          if (vMsg.includes('does not exist or has been deleted') || vMsg.includes('has been deleted') || vMsg.includes('already')) {
-            log('queue', `delivery validate skipped (picking already done or deleted): ${vMsg.slice(0, 60)}`);
-          } else {
-            throw validateErr;
-          }
-        }
-        await syncQueueDb.markSynced(Number(item.id));
-        log('queue', `delivery synced id=${item.id}`);
-      } catch (e) {
-        logWarn('queue delivery', e);
-      }
-    }
-
-    // Inventory queue item purpose in current flow:
-    // local inventory is reduced immediately on device (is_locally_modified=1), then delivery sync updates Odoo.
-    // After delivery sync succeeds, clear local-modified flags so next inventory pull can overwrite with server truth.
-    for (const item of inventoryUpdate) {
-      try {
-        const p = item.payload || {};
-        const locationId = p.locationId != null ? Number(p.locationId) : null;
-        const updates = Array.isArray(p.updates) ? p.updates : [];
-
-        if (locationId == null || updates.length === 0) {
+        const latest = latestPaymentItemBySaleOrder.get(soId);
+        if (latest && Number(latest.id) !== Number(item.id)) {
           await syncQueueDb.markSynced(Number(item.id));
-          log('queue', `inventory synced id=${item.id} (no-op payload)`);
+          log('queue', `skip duplicate pending payment id=${item.id} (SO ${soId}); latest id=${latest.id}`);
           continue;
         }
-
-        for (const u of updates) {
-          const productId = u?.productId != null ? Number(u.productId) : null;
-          if (productId == null) continue;
-          await vehicleInventoriesDb.clearLocalModificationFlagByLocation(locationId, productId);
-        }
-
-        await syncQueueDb.markSynced(Number(item.id));
-        log('queue', `inventory synced id=${item.id} location=${locationId} items=${updates.length}`);
-      } catch (e) {
-        logWarn('queue inventory_update', e);
+        dedupedPayment.push(item);
       }
-    }
+      const {
+        updateSaleOrderLineQty,
+        confirmSaleOrder,
+      } = await import('./saleOrderLine.service');
+      const {
+        getPickingBySaleOrder,
+        getPickingState,
+        getStockMovesByPickingId,
+        getStockMoveLinesByMoveIds,
+        updateMoveLineQty,
+        updateStockMoveQty,
+        createMoveLine,
+        validatePickingWithContext,
+        createBackorderConfirmation,
+        processBackorderConfirmation,
+      } = await import('./delivery.service');
+      const {
+        getSaleOrderForPayment,
+        getSaleOrderInvoiceIds,
+        getInvoiceState,
+        getInvoiceIdAfterCreate,
+        firstInvoiceId,
+        createAdvancePaymentWizard,
+        createInvoicesFromWizard,
+        postInvoice,
+        getPaymentsByInvoiceIds,
+        createPaymentRegisterWizard,
+        executePaymentRegister,
+      } = await import('./invoice.service');
 
-    const alreadySyncedSaleOrderIds = await syncQueueDb.getSyncedPaymentSaleOrderIds();
-    const chatterPostedInThisRun = new Set();
+      for (const item of delivery) {
+        try {
+          const p = item.payload || {};
+          const saleOrderId = p.saleOrderId ?? p.sale_id;
+          let pickingId = p.pickingId ?? p.picking_id;
+          const orderLineUpdates = p.orderLineUpdates || [];
+          const moveUpdates = p.moveUpdates || [];
+          const moveLineUpdates = p.moveLineUpdates || [];
+          const deliveryLines = p.deliveryLines || [];
 
-    // Backend API sequence for each payment queue item (offline → sync):
-    // 1. sale.advance.payment.inv create { advance_payment_method: "delivered" } context active_model=sale.order, active_ids=[sale_order_id]
-    // 2. sale.advance.payment.inv create_invoices [[wizardId]] → result.res_id = invoice id (account.move)
-    // 3. account.move action_post [[res_id]]
-    // 4. Credit only: stop here (invoice posted, no payment register).
-    // 5. Cash/Cheque: account.payment.register create [{ amount, journal_id, payment_date }] context active_model=account.move, active_ids=[res_id] → wizard id
-    //    journal_id = vehicle cash_journal_id for cash, vehicle check_journal_id for cheque (from payload or fleet.vehicle by license_plate)
-    // 6. account.payment.register action_create_payments [[wizardId]]
-
-    for (const item of dedupedPayment) {
-      let invoiceBlockFailedNoItemsToInvoice = false;
-      try {
-        const p = item.payload || {};
-        const saleOrderId = p.saleOrderId ?? p.sale_id;
-        const soId = typeof saleOrderId === 'number' ? saleOrderId : parseInt(saleOrderId, 10);
-        if (saleOrderId == null || Number.isNaN(soId)) {
-          logWarn('queue payment', new Error('Invalid sale_order_id'));
-          continue;
-        }
-
-        const payments = p.payments || [];
-        const orderName = p.orderName ?? `Order ${saleOrderId}`;
-        const skipPaymentCreation = alreadySyncedSaleOrderIds.has(soId);
-
-        if (!skipPaymentCreation) {
-          try {
-            const orderInfo = await getSaleOrderForPayment(saleOrderId);
-            if (!orderInfo) {
-              logWarn('queue payment', new Error('Sale order not found — will retry on next sync'));
+          // Step 1 — Resolve picking (by sale_order_id if not in payload)
+          if (pickingId == null && saleOrderId != null) {
+            const pickings = await getPickingBySaleOrder(saleOrderId);
+            const first = Array.isArray(pickings) ? pickings[0] : null;
+            if (first?.state === 'done') {
+              await syncQueueDb.markSynced(Number(item.id));
+              log('queue', `delivery already done (SO ${saleOrderId}), synced id=${item.id}`);
               continue;
             }
-            const existingInvoiceIds = orderInfo.invoice_ids ?? [];
-            let resId = firstInvoiceId(existingInvoiceIds);
-            let invoiceAlreadyPosted = false;
-            if (resId != null) {
-              const invState = await getInvoiceState(resId).catch(() => ({}));
-              if (invState?.state === 'posted') {
-                invoiceAlreadyPosted = true;
-              } else if (invState?.state === 'draft') {
-                log('queue', `payment SO ${saleOrderId}: post existing draft invoice res_id=${resId}`);
-                await postInvoice(resId);
-                invoiceAlreadyPosted = true;
+            pickingId = first?.id ?? null;
+          }
+          if (pickingId == null) {
+            logWarn('queue delivery', new Error('No picking found for sale order ' + saleOrderId));
+            continue;
+          }
+
+          // Check picking state (skip if already done)
+          try {
+            const stateRows = await getPickingState(pickingId);
+            const pick = Array.isArray(stateRows) ? stateRows[0] : stateRows;
+            if (pick?.state === 'done') {
+              await syncQueueDb.markSynced(Number(item.id));
+              log('queue', `delivery already done picking ${pickingId}, synced id=${item.id}`);
+              continue;
+            }
+          } catch (_) { }
+
+          try {
+            for (const u of orderLineUpdates) {
+              await updateSaleOrderLineQty(u.lineId, u.product_uom_qty);
+            }
+            for (const u of moveUpdates) {
+              await updateStockMoveQty(u.moveId, u.product_uom_qty);
+            }
+            // Avoid creating new stock.move.line records when we already have moveLine updates.
+            // Creating new move lines can duplicate delivered qty (especially on retries / partial payments).
+            const hasMoveLineUpdates = Array.isArray(moveLineUpdates) && moveLineUpdates.length > 0;
+            if (!hasMoveLineUpdates && deliveryLines.length > 0) {
+              // Step 2 & 3 — Create stock.move.line (qty_done) for each product (offline 4-step flow)
+              for (const line of deliveryLines) {
+                const moveId = line.moveId ?? line.move_id;
+                const productId = line.productId ?? line.product_id;
+                const qty = line.qty_done;
+                if (moveId != null && productId != null && qty != null) {
+                  await createMoveLine(pickingId, moveId, productId, qty);
+                }
+              }
+            } else {
+              for (const u of moveLineUpdates) {
+                await updateMoveLineQty(u.moveLineId, u.qty_done);
               }
             }
+          } catch (updateErr) {
+            const msg = (updateErr?.message || String(updateErr)).toLowerCase();
+            const recordDeleted = msg.includes('does not exist or has been deleted') || msg.includes('has been deleted');
+            if (recordDeleted) {
+              log('queue', `delivery updates skipped (record deleted in Odoo — delivery may already be validated): ${msg.slice(0, 80)}`);
+            } else {
+              throw updateErr;
+            }
+          }
 
-            if (!invoiceAlreadyPosted) {
+          // Step 4 — Validate picking with skip_backorder
+          try {
+            await validatePickingWithContext(pickingId, { skip_backorder: true });
+            log('queue', `delivery validated picking ${pickingId} (skip_backorder)`);
+          } catch (validateErr) {
+            const vMsg = (validateErr?.message || String(validateErr)).toLowerCase();
+            if (vMsg.includes('does not exist or has been deleted') || vMsg.includes('has been deleted') || vMsg.includes('already')) {
+              log('queue', `delivery validate skipped (picking already done or deleted): ${vMsg.slice(0, 60)}`);
+            } else {
+              throw validateErr;
+            }
+          }
+          await syncQueueDb.markSynced(Number(item.id));
+          log('queue', `delivery synced id=${item.id}`);
+        } catch (e) {
+          logWarn('queue delivery', e);
+        }
+      }
+
+      // Inventory queue item purpose in current flow:
+      // local inventory is reduced immediately on device (is_locally_modified=1), then delivery sync updates Odoo.
+      // After delivery sync succeeds, clear local-modified flags so next inventory pull can overwrite with server truth.
+      for (const item of inventoryUpdate) {
+        try {
+          const p = item.payload || {};
+          const locationId = p.locationId != null ? Number(p.locationId) : null;
+          const updates = Array.isArray(p.updates) ? p.updates : [];
+
+          if (locationId == null || updates.length === 0) {
+            await syncQueueDb.markSynced(Number(item.id));
+            log('queue', `inventory synced id=${item.id} (no-op payload)`);
+            continue;
+          }
+
+          for (const u of updates) {
+            const productId = u?.productId != null ? Number(u.productId) : null;
+            if (productId == null) continue;
+            await vehicleInventoriesDb.clearLocalModificationFlagByLocation(locationId, productId);
+          }
+
+          await syncQueueDb.markSynced(Number(item.id));
+          log('queue', `inventory synced id=${item.id} location=${locationId} items=${updates.length}`);
+        } catch (e) {
+          logWarn('queue inventory_update', e);
+        }
+      }
+
+      const alreadySyncedSaleOrderIds = await syncQueueDb.getSyncedPaymentSaleOrderIds();
+      const chatterPostedInThisRun = new Set();
+
+      // Backend API sequence for each payment queue item (offline → sync):
+      // 1. sale.advance.payment.inv create { advance_payment_method: "delivered" } context active_model=sale.order, active_ids=[sale_order_id]
+      // 2. sale.advance.payment.inv create_invoices [[wizardId]] → result.res_id = invoice id (account.move)
+      // 3. account.move action_post [[res_id]]
+      // 4. Credit only: stop here (invoice posted, no payment register).
+      // 5. Cash/Cheque: account.payment.register create [{ amount, journal_id, payment_date }] context active_model=account.move, active_ids=[res_id] → wizard id
+      //    journal_id = vehicle cash_journal_id for cash, vehicle check_journal_id for cheque (from payload or fleet.vehicle by license_plate)
+      // 6. account.payment.register action_create_payments [[wizardId]]
+
+      for (const item of dedupedPayment) {
+        let invoiceBlockFailedNoItemsToInvoice = false;
+        try {
+          const p = item.payload || {};
+          const saleOrderId = p.saleOrderId ?? p.sale_id;
+          const soId = typeof saleOrderId === 'number' ? saleOrderId : parseInt(saleOrderId, 10);
+          if (saleOrderId == null || Number.isNaN(soId)) {
+            logWarn('queue payment', new Error('Invalid sale_order_id'));
+            continue;
+          }
+
+          const payments = p.payments || [];
+          const orderName = p.orderName ?? `Order ${saleOrderId}`;
+          const skipPaymentCreation = alreadySyncedSaleOrderIds.has(soId);
+
+          if (!skipPaymentCreation) {
+            try {
+              const orderInfo = await getSaleOrderForPayment(saleOrderId);
+              if (!orderInfo) {
+                logWarn('queue payment', new Error('Sale order not found — will retry on next sync'));
+                continue;
+              }
+              const existingInvoiceIds = orderInfo.invoice_ids ?? [];
+              let resId = firstInvoiceId(existingInvoiceIds);
+              let invoiceAlreadyPosted = false;
               if (resId != null) {
-                const invStateAgain = await getInvoiceState(resId).catch(() => ({}));
-                if ((invStateAgain?.state || '').toLowerCase() === 'posted') {
-                  log('queue', `payment SO ${saleOrderId}: invoice ${resId} already posted — skip post`);
+                const invState = await getInvoiceState(resId).catch(() => ({}));
+                if (invState?.state === 'posted') {
                   invoiceAlreadyPosted = true;
-                } else if ((invStateAgain?.state || '').toLowerCase() === 'draft') {
+                } else if (invState?.state === 'draft') {
                   log('queue', `payment SO ${saleOrderId}: post existing draft invoice res_id=${resId}`);
                   await postInvoice(resId);
                   invoiceAlreadyPosted = true;
                 }
-                if (!invoiceAlreadyPosted) {
-                  log('queue', `payment SO ${saleOrderId}: post existing invoice res_id=${resId}`);
-                  await postInvoice(resId);
-                  invoiceAlreadyPosted = true;
-                }
-              } else {
-                log('queue', `payment SO ${saleOrderId}: Step 1 — create advance payment wizard (context active_ids [${saleOrderId}])`);
-                const wizardId = await createAdvancePaymentWizard(saleOrderId);
-                if (wizardId == null) {
-                  logWarn('queue payment', new Error('Step 1 failed: advance payment wizard create returned null'));
-                } else {
-                  log('queue', `payment SO ${saleOrderId}: Step 2 — create_invoices [[${wizardId}]]`);
-                  const createResult = await createInvoicesFromWizard(wizardId);
-                  resId = getInvoiceIdAfterCreate(createResult) ?? firstInvoiceId(await getSaleOrderInvoiceIds(saleOrderId));
-                  if (resId == null) {
-                    logWarn('queue payment', new Error('Step 2 failed: no res_id in create_invoices result'));
-                  } else {
-                    log('queue', `payment SO ${saleOrderId}: Step 3 — action_post [[${resId}]]`);
+              }
+
+              if (!invoiceAlreadyPosted) {
+                if (resId != null) {
+                  const invStateAgain = await getInvoiceState(resId).catch(() => ({}));
+                  if ((invStateAgain?.state || '').toLowerCase() === 'posted') {
+                    log('queue', `payment SO ${saleOrderId}: invoice ${resId} already posted — skip post`);
+                    invoiceAlreadyPosted = true;
+                  } else if ((invStateAgain?.state || '').toLowerCase() === 'draft') {
+                    log('queue', `payment SO ${saleOrderId}: post existing draft invoice res_id=${resId}`);
                     await postInvoice(resId);
-                    log('queue', `payment SO ${saleOrderId}: invoice created and posted res_id=${resId}`);
+                    invoiceAlreadyPosted = true;
                   }
+                  if (!invoiceAlreadyPosted) {
+                    log('queue', `payment SO ${saleOrderId}: post existing invoice res_id=${resId}`);
+                    await postInvoice(resId);
+                    invoiceAlreadyPosted = true;
+                  }
+                } else {
+                  log('queue', `payment SO ${saleOrderId}: Step 1 — create advance payment wizard (context active_ids [${saleOrderId}])`);
+                  const wizardId = await createAdvancePaymentWizard(saleOrderId);
+                  if (wizardId == null) {
+                    logWarn('queue payment', new Error('Step 1 failed: advance payment wizard create returned null'));
+                  } else {
+                    log('queue', `payment SO ${saleOrderId}: Step 2 — create_invoices [[${wizardId}]]`);
+                    const createResult = await createInvoicesFromWizard(wizardId);
+                    resId = getInvoiceIdAfterCreate(createResult) ?? firstInvoiceId(await getSaleOrderInvoiceIds(saleOrderId));
+                    if (resId == null) {
+                      logWarn('queue payment', new Error('Step 2 failed: no res_id in create_invoices result'));
+                    } else {
+                      log('queue', `payment SO ${saleOrderId}: Step 3 — action_post [[${resId}]]`);
+                      await postInvoice(resId);
+                      log('queue', `payment SO ${saleOrderId}: invoice created and posted res_id=${resId}`);
+                    }
+                  }
+                }
+                const onlyCredit = payments.length > 0 && payments.every((pm) => pm.type === 'credit');
+                if (onlyCredit && resId != null) {
+                  log('queue', `payment SO ${saleOrderId}: credit only — invoice posted res_id=${resId}, no payment register`);
+                  alreadySyncedSaleOrderIds.add(soId);
                 }
               }
               const onlyCredit = payments.length > 0 && payments.every((pm) => pm.type === 'credit');
-              if (onlyCredit && resId != null) {
-                log('queue', `payment SO ${saleOrderId}: credit only — invoice posted res_id=${resId}, no payment register`);
+              if (onlyCredit && resId != null && !alreadySyncedSaleOrderIds.has(soId)) {
+                log('queue', `payment SO ${saleOrderId}: credit only (invoice already posted) — no payment register`);
+                await syncQueueDb.markSynced(Number(item.id));
                 alreadySyncedSaleOrderIds.add(soId);
               }
-            }
-            const onlyCredit = payments.length > 0 && payments.every((pm) => pm.type === 'credit');
-            if (onlyCredit && resId != null && !alreadySyncedSaleOrderIds.has(soId)) {
-              log('queue', `payment SO ${saleOrderId}: credit only (invoice already posted) — no payment register`);
-              await syncQueueDb.markSynced(Number(item.id));
-              alreadySyncedSaleOrderIds.add(soId);
-            }
 
-            const hasCashOrCheque = payments.some((pm) => pm.type === 'cash' || pm.type === 'check');
-            if (hasCashOrCheque && resId != null) {
-              const invStateForPayment = await getInvoiceState(resId).catch(() => ({}));
-              const alreadyPaid = (invStateForPayment?.payment_state || '').toLowerCase() === 'paid';
-              if (alreadyPaid) {
-                log('queue', `payment SO ${saleOrderId}: invoice ${resId} already paid — skip payment register`);
-                alreadySyncedSaleOrderIds.add(soId);
-                log('queue', `payment item ${item.id} invoice/payments completed (pending chatter + proof upload)`);
-              } else {
-                let resolvedCashId = null;
-                let resolvedChequeId = null;
-                try {
-                  const user = await getUserSession();
-                  const licensePlate = user?.licensePlate || user?.license_plate || '';
-                  const vehicleId = user?.vehicleId != null ? user.vehicleId : null;
-                  const { getVehicleJournalsByLicensePlate } = await import('./vehicle.service.js');
-                  const vehicleJournals = await getVehicleJournalsByLicensePlate(licensePlate, vehicleId);
-                  resolvedCashId = vehicleJournals.cashJournalId ?? null;
-                  resolvedChequeId = vehicleJournals.chequeJournalId ?? null;
-                  if (resolvedCashId == null && resolvedChequeId == null) {
-                    const { getCashTypeJournalIds } = await import('./journal.service.js');
-                    const ids = await getCashTypeJournalIds();
-                    resolvedCashId = ids.cashJournalId ?? null;
-                    resolvedChequeId = ids.chequeJournalId ?? null;
-                    log('queue', `payment SO ${saleOrderId}: journals fallback (no vehicle) cash=${resolvedCashId ?? '—'} cheque=${resolvedChequeId ?? '—'}`);
-                  } else {
-                    log('queue', `payment SO ${saleOrderId}: journals from logged-in vehicle (${licensePlate || vehicleId || '—'}) cash=${resolvedCashId ?? '—'} cheque=${resolvedChequeId ?? '—'}`);
-                  }
-                } catch (resolveErr) {
-                  logWarn('queue payment resolve journals', resolveErr);
-                }
-                // Idempotency for partial payments:
-                // When chatter upload fails, sync may retry and (for partial invoices) invoice.payment_state stays 'partial'.
-                // We must avoid registering the same cash/cheque payments again.
-                const round2 = (n) => Math.round(Number(n) * 100) / 100;
-                const existingPayments = await getPaymentsByInvoiceIds([resId]).catch(() => []);
-                const existingPaymentKeys = (existingPayments || []).map((ep) => ({
-                  journalId: Array.isArray(ep.journal_id) ? ep.journal_id[0] : ep.journal_id,
-                  amount: round2(ep.amount),
-                }));
-
-                const dateStr = p.paymentDate || new Date().toISOString().slice(0, 10);
-                for (const pm of payments) {
-                  if (pm.type === 'credit') continue;
-                  const amount = Number(pm.amount);
-                  const journalId = (pm.journalId != null && Number.isFinite(Number(pm.journalId)))
-                    ? Number(pm.journalId)
-                    : (pm.type === 'cash' ? resolvedCashId : pm.type === 'check' ? resolvedChequeId : null);
-                  const desiredAmount = round2(amount);
-                  if (!desiredAmount || journalId == null) {
-                    logWarn('queue payment', new Error(`${pm.type === 'cash' ? 'Cash' : 'Cheque'} journal id not found. Skipping amount ${amount}`));
-                    continue;
-                  }
-
-                  const alreadyHasPayment = existingPaymentKeys.some(
-                    (ep) => ep.journalId != null && ep.journalId === journalId && Math.abs(ep.amount - desiredAmount) <= 0.01
-                  );
-
-                  if (alreadyHasPayment) {
-                    log('queue', `payment SO ${saleOrderId}: ${pm.type === 'check' ? 'cheque' : 'cash'} already reconciled — skip register amount=${desiredAmount} journal_id=${journalId}`);
-                    continue;
-                  }
+              const hasCashOrCheque = payments.some((pm) => pm.type === 'cash' || pm.type === 'check');
+              if (hasCashOrCheque && resId != null) {
+                const invStateForPayment = await getInvoiceState(resId).catch(() => ({}));
+                const alreadyPaid = (invStateForPayment?.payment_state || '').toLowerCase() === 'paid';
+                if (alreadyPaid) {
+                  log('queue', `payment SO ${saleOrderId}: invoice ${resId} already paid — skip payment register`);
+                  alreadySyncedSaleOrderIds.add(soId);
+                  log('queue', `payment item ${item.id} invoice/payments completed (pending chatter + proof upload)`);
+                } else {
+                  let resolvedCashId = null;
+                  let resolvedChequeId = null;
                   try {
-                    log('queue', `payment SO ${saleOrderId}: Step 5 — payment register create amount=${desiredAmount} journal_id=${journalId} active_ids=[${resId}]`);
-                    const registerWizardId = await createPaymentRegisterWizard(resId, {
-                      amount: desiredAmount,
-                      journalId,
-                      paymentDate: dateStr,
-                    });
-                    if (registerWizardId != null) {
-                      log('queue', `payment SO ${saleOrderId}: Step 6 — action_create_payments [[${registerWizardId}]]`);
-                      await executePaymentRegister(registerWizardId);
-                      const methodLabel = pm.type === 'check' ? 'cheque' : 'cash';
-                      log('queue', `payment SO ${saleOrderId}: ${methodLabel} payment executed wizard=${registerWizardId} invoice res_id=${resId}`);
-                    }
-                  } catch (registerErr) {
-                    const msg = (registerErr?.message || String(registerErr)).toLowerCase();
-                    const skipAsAlreadyPaid =
-                      msg.includes('already') ||
-                      msg.includes('reconciled') ||
-                      msg.includes('nothing left to pay') ||
-                      msg.includes('no payment registration') ||
-                      msg.includes('nothing to pay') ||
-                      msg.includes('finances under control');
-                    if (skipAsAlreadyPaid) {
-                      log('queue', `payment register skipped (invoice already paid or nothing to pay) invoice ${resId}`);
+                    const user = await getUserSession();
+                    const licensePlate = user?.licensePlate || user?.license_plate || '';
+                    const vehicleId = user?.vehicleId != null ? user.vehicleId : null;
+                    const { getVehicleJournalsByLicensePlate } = await import('./vehicle.service.js');
+                    const vehicleJournals = await getVehicleJournalsByLicensePlate(licensePlate, vehicleId);
+                    resolvedCashId = vehicleJournals.cashJournalId ?? null;
+                    resolvedChequeId = vehicleJournals.chequeJournalId ?? null;
+                    if (resolvedCashId == null && resolvedChequeId == null) {
+                      const { getCashTypeJournalIds } = await import('./journal.service.js');
+                      const ids = await getCashTypeJournalIds();
+                      resolvedCashId = ids.cashJournalId ?? null;
+                      resolvedChequeId = ids.chequeJournalId ?? null;
+                      log('queue', `payment SO ${saleOrderId}: journals fallback (no vehicle) cash=${resolvedCashId ?? '—'} cheque=${resolvedChequeId ?? '—'}`);
                     } else {
-                      throw registerErr;
+                      log('queue', `payment SO ${saleOrderId}: journals from logged-in vehicle (${licensePlate || vehicleId || '—'}) cash=${resolvedCashId ?? '—'} cheque=${resolvedChequeId ?? '—'}`);
+                    }
+                  } catch (resolveErr) {
+                    logWarn('queue payment resolve journals', resolveErr);
+                  }
+                  // Idempotency for partial payments:
+                  // When chatter upload fails, sync may retry and (for partial invoices) invoice.payment_state stays 'partial'.
+                  // We must avoid registering the same cash/cheque payments again.
+                  const round2 = (n) => Math.round(Number(n) * 100) / 100;
+                  const existingPayments = await getPaymentsByInvoiceIds([resId]).catch(() => []);
+                  const existingPaymentKeys = (existingPayments || []).map((ep) => ({
+                    journalId: Array.isArray(ep.journal_id) ? ep.journal_id[0] : ep.journal_id,
+                    amount: round2(ep.amount),
+                  }));
+
+                  const dateStr = p.paymentDate || new Date().toISOString().slice(0, 10);
+                  for (const pm of payments) {
+                    if (pm.type === 'credit') continue;
+                    const amount = Number(pm.amount);
+                    const journalId = (pm.journalId != null && Number.isFinite(Number(pm.journalId)))
+                      ? Number(pm.journalId)
+                      : (pm.type === 'cash' ? resolvedCashId : pm.type === 'check' ? resolvedChequeId : null);
+                    const desiredAmount = round2(amount);
+                    if (!desiredAmount || journalId == null) {
+                      logWarn('queue payment', new Error(`${pm.type === 'cash' ? 'Cash' : 'Cheque'} journal id not found. Skipping amount ${amount}`));
+                      continue;
+                    }
+
+                    const alreadyHasPayment = existingPaymentKeys.some(
+                      (ep) => ep.journalId != null && ep.journalId === journalId && Math.abs(ep.amount - desiredAmount) <= 0.01
+                    );
+
+                    if (alreadyHasPayment) {
+                      log('queue', `payment SO ${saleOrderId}: ${pm.type === 'check' ? 'cheque' : 'cash'} already reconciled — skip register amount=${desiredAmount} journal_id=${journalId}`);
+                      continue;
+                    }
+                    try {
+                      log('queue', `payment SO ${saleOrderId}: Step 5 — payment register create amount=${desiredAmount} journal_id=${journalId} active_ids=[${resId}]`);
+                      const registerWizardId = await createPaymentRegisterWizard(resId, {
+                        amount: desiredAmount,
+                        journalId,
+                        paymentDate: dateStr,
+                      });
+                      if (registerWizardId != null) {
+                        log('queue', `payment SO ${saleOrderId}: Step 6 — action_create_payments [[${registerWizardId}]]`);
+                        await executePaymentRegister(registerWizardId);
+                        const methodLabel = pm.type === 'check' ? 'cheque' : 'cash';
+                        log('queue', `payment SO ${saleOrderId}: ${methodLabel} payment executed wizard=${registerWizardId} invoice res_id=${resId}`);
+                      }
+                    } catch (registerErr) {
+                      const msg = (registerErr?.message || String(registerErr)).toLowerCase();
+                      const skipAsAlreadyPaid =
+                        msg.includes('already') ||
+                        msg.includes('reconciled') ||
+                        msg.includes('nothing left to pay') ||
+                        msg.includes('no payment registration') ||
+                        msg.includes('nothing to pay') ||
+                        msg.includes('finances under control');
+                      if (skipAsAlreadyPaid) {
+                        log('queue', `payment register skipped (invoice already paid or nothing to pay) invoice ${resId}`);
+                      } else {
+                        throw registerErr;
+                      }
+                    }
+                  }
+                  alreadySyncedSaleOrderIds.add(soId);
+                  log('queue', `payment item ${item.id} invoice/payments completed (pending chatter + proof upload)`);
+                }
+              } else if (hasCashOrCheque && resId == null) {
+                logWarn('queue payment', new Error('No invoice res_id for cash/cheque — create invoice first'));
+              }
+            } catch (invoiceErr) {
+              const msg = (invoiceErr?.message || String(invoiceErr)).toLowerCase();
+              if (msg.includes('no items are available to invoice') || msg.includes('nothing to invoice')) {
+                invoiceBlockFailedNoItemsToInvoice = true;
+                logWarn('queue payment (invoice/payments)', new Error('Invoice creation failed: delivery not done or no quantities. Complete delivery in Odoo first, then sync again for cheque/credit.'));
+              } else if (msg.includes('must be in draft')) {
+                log('queue', `payment SO ${saleOrderId}: invoice already posted (must be in draft) — continue chatter/proof`);
+              } else {
+                logWarn('queue payment (invoice/payments)', invoiceErr);
+              }
+              // Continue to post chatter + proof images when possible
+            }
+          }
+
+          const {
+            buildPaymentProofMessageBody,
+            buildSinglePaymentMessageBody,
+            createProofAttachment,
+            postPaymentProofToChatterWithAttachmentIds,
+            imageFileToBase64String,
+          } = await import('./proofAttachment.service.js');
+          const hasCheck = payments.some((pm) => pm.type === 'check');
+          const hasCash = payments.some((pm) => pm.type === 'cash');
+          const hasCredit = payments.some((pm) => pm.type === 'credit');
+          const paymentMethod = hasCheck ? 'cheque' : hasCash ? 'cash' : hasCredit ? 'credit' : undefined;
+          const chequeBankName = p.chequeBankName || (hasCheck && (p.selectedBankName || '—'));
+          const chequeNumber = p.checkNumber || (payments.find((pm) => pm.type === 'check')?.checkNumber);
+          const paymentsForMessage = payments.map((pm) => ({
+            type: pm.type,
+            amount: Number(pm.amount) || 0,
+            checkNumber: pm.type === 'check' ? (pm.checkNumber || chequeNumber) : undefined,
+            bankName: pm.type === 'check' ? chequeBankName : undefined,
+          }));
+          const isPartialPayment = paymentsForMessage.length > 1;
+          const chatterBody = null; // built later with hasProof (after attachmentIds are computed)
+
+          if (invoiceBlockFailedNoItemsToInvoice) {
+            log('queue', `payment item ${item.id} NOT marked synced (invoice not created — deliver first, then sync again for cheque/credit)`);
+            continue;
+          }
+          if (chatterPostedInThisRun.has(soId)) {
+            await syncQueueDb.markSynced(Number(item.id));
+            alreadySyncedSaleOrderIds.add(soId);
+            log('queue', `payment synced id=${item.id} (chatter already posted for SO ${soId})`);
+            continue;
+          }
+
+          const offlineAttachmentsDb = await import('../database/offlineAttachments.js');
+          const pendingAttachments = await offlineAttachmentsDb.getPendingBySaleOrderId(soId);
+          const FileSystem = await import('expo-file-system');
+
+          const attachmentIds = [];
+          const syncedAttachmentIds = [];
+          const pendingCount = (pendingAttachments || []).length;
+
+          // Doc: read pending URIs from offline_attachments → base64 → ir.attachment.create → collect ids → message_post(attachment_ids).
+          log('queue', `payment proof (SO ${soId}): ${pendingCount} pending in offline_attachments — URI→base64→create→message_post`);
+
+          for (const att of pendingAttachments || []) {
+            if (!att.local_file_path || !att.file_name) continue;
+            try {
+              const file = new FileSystem.File(att.local_file_path);
+              if (!file.exists) {
+                await offlineAttachmentsDb.markFailed(Number(att.id), `File missing: ${att.local_file_path}`);
+                logWarn('queue payment proof', new Error('File missing'));
+                continue;
+              }
+              const normalized = await imageFileToBase64String(FileSystem, att.local_file_path);
+              if (!normalized) {
+                await offlineAttachmentsDb.markFailed(Number(att.id), 'Invalid or too short base64');
+                logWarn('queue payment proof', new Error('Invalid base64'));
+                continue;
+              }
+              const aid = await createProofAttachment(soId, normalized, att.file_name);
+              attachmentIds.push(aid);
+              syncedAttachmentIds.push(att.id);
+              log('queue', `ir.attachment.create SO ${soId} → attachment_id=${aid}`);
+            } catch (attErr) {
+              await offlineAttachmentsDb.incrementRetry(att.id, attErr?.message || 'Upload error');
+              logWarn('queue payment proof attachment', attErr);
+            }
+          }
+
+          if (pendingCount > 0 && attachmentIds.length === 0) {
+            logWarn(
+              'queue payment proof',
+              new Error(
+                'Pending proof photos could not be uploaded (missing file or API error). Posting chatter without attachments so invoice/payment still completes; attachments stay pending for retry.'
+              )
+            );
+            // Do not continue: previously this left the queue item unsynced forever even when Odoo already had the payment.
+          }
+
+          const hasProof = attachmentIds.length > 0;
+
+          // API 2: Post message(s) to sale order chatter. Partial payment = one message per payment type.
+          try {
+            if (isPartialPayment && paymentsForMessage.length > 0) {
+              log('queue', `message_post API (sale.order) SO ${soId} — ${paymentsForMessage.length} separate messages (Cash/Cheque/Credit)`);
+              for (let i = 0; i < paymentsForMessage.length; i++) {
+                const pm = paymentsForMessage[i];
+                const attachToThisMessage = i === 0 ? attachmentIds : [];
+                const body = buildSinglePaymentMessageBody(pm, { hasProof: attachToThisMessage.length > 0 });
+                await postPaymentProofToChatterWithAttachmentIds(soId, { body, attachmentIds: attachToThisMessage });
+                if (attachToThisMessage.length > 0) {
+                  const pendingById = new Map((pendingAttachments || []).map((a) => [Number(a.id), a]));
+                  for (const id of syncedAttachmentIds) {
+                    const idNum = Number(id);
+                    await offlineAttachmentsDb.markSynced(idNum);
+                    const att = pendingById.get(idNum);
+                    if (att?.local_file_path) {
+                      try {
+                        const fileToDelete = new FileSystem.File(att.local_file_path);
+                        if (fileToDelete.exists) fileToDelete.delete();
+                      } catch (_) { }
                     }
                   }
                 }
-                alreadySyncedSaleOrderIds.add(soId);
-                log('queue', `payment item ${item.id} invoice/payments completed (pending chatter + proof upload)`);
               }
-            } else if (hasCashOrCheque && resId == null) {
-              logWarn('queue payment', new Error('No invoice res_id for cash/cheque — create invoice first'));
-            }
-          } catch (invoiceErr) {
-            const msg = (invoiceErr?.message || String(invoiceErr)).toLowerCase();
-            if (msg.includes('no items are available to invoice') || msg.includes('nothing to invoice')) {
-              invoiceBlockFailedNoItemsToInvoice = true;
-              logWarn('queue payment (invoice/payments)', new Error('Invoice creation failed: delivery not done or no quantities. Complete delivery in Odoo first, then sync again for cheque/credit.'));
-            } else if (msg.includes('must be in draft')) {
-              log('queue', `payment SO ${saleOrderId}: invoice already posted (must be in draft) — continue chatter/proof`);
             } else {
-              logWarn('queue payment (invoice/payments)', invoiceErr);
-            }
-            // Continue to post chatter + proof images when possible
-          }
-        }
-
-        const {
-          buildPaymentProofMessageBody,
-          buildSinglePaymentMessageBody,
-          createProofAttachment,
-          postPaymentProofToChatterWithAttachmentIds,
-          imageFileToBase64String,
-        } = await import('./proofAttachment.service.js');
-        const hasCheck = payments.some((pm) => pm.type === 'check');
-        const hasCash = payments.some((pm) => pm.type === 'cash');
-        const hasCredit = payments.some((pm) => pm.type === 'credit');
-        const paymentMethod = hasCheck ? 'cheque' : hasCash ? 'cash' : hasCredit ? 'credit' : undefined;
-        const chequeBankName = p.chequeBankName || (hasCheck && (p.selectedBankName || '—'));
-        const chequeNumber = p.checkNumber || (payments.find((pm) => pm.type === 'check')?.checkNumber);
-        const paymentsForMessage = payments.map((pm) => ({
-          type: pm.type,
-          amount: Number(pm.amount) || 0,
-          checkNumber: pm.type === 'check' ? (pm.checkNumber || chequeNumber) : undefined,
-          bankName: pm.type === 'check' ? chequeBankName : undefined,
-        }));
-        const isPartialPayment = paymentsForMessage.length > 1;
-        const chatterBody = null; // built later with hasProof (after attachmentIds are computed)
-
-        if (invoiceBlockFailedNoItemsToInvoice) {
-          log('queue', `payment item ${item.id} NOT marked synced (invoice not created — deliver first, then sync again for cheque/credit)`);
-          continue;
-        }
-        if (chatterPostedInThisRun.has(soId)) {
-          await syncQueueDb.markSynced(Number(item.id));
-          alreadySyncedSaleOrderIds.add(soId);
-          log('queue', `payment synced id=${item.id} (chatter already posted for SO ${soId})`);
-          continue;
-        }
-
-        const offlineAttachmentsDb = await import('../database/offlineAttachments.js');
-        const pendingAttachments = await offlineAttachmentsDb.getPendingBySaleOrderId(soId);
-        const FileSystem = await import('expo-file-system');
-
-        const attachmentIds = [];
-        const syncedAttachmentIds = [];
-        const pendingCount = (pendingAttachments || []).length;
-
-        // Doc: read pending URIs from offline_attachments → base64 → ir.attachment.create → collect ids → message_post(attachment_ids).
-        log('queue', `payment proof (SO ${soId}): ${pendingCount} pending in offline_attachments — URI→base64→create→message_post`);
-
-        for (const att of pendingAttachments || []) {
-          if (!att.local_file_path || !att.file_name) continue;
-          try {
-            const file = new FileSystem.File(att.local_file_path);
-            if (!file.exists) {
-              await offlineAttachmentsDb.markFailed(Number(att.id), `File missing: ${att.local_file_path}`);
-              logWarn('queue payment proof', new Error('File missing'));
-              continue;
-            }
-            const normalized = await imageFileToBase64String(FileSystem, att.local_file_path);
-            if (!normalized) {
-              await offlineAttachmentsDb.markFailed(Number(att.id), 'Invalid or too short base64');
-              logWarn('queue payment proof', new Error('Invalid base64'));
-              continue;
-            }
-            const aid = await createProofAttachment(soId, normalized, att.file_name);
-            attachmentIds.push(aid);
-            syncedAttachmentIds.push(att.id);
-            log('queue', `ir.attachment.create SO ${soId} → attachment_id=${aid}`);
-          } catch (attErr) {
-            await offlineAttachmentsDb.incrementRetry(att.id, attErr?.message || 'Upload error');
-            logWarn('queue payment proof attachment', attErr);
-          }
-        }
-
-        if (pendingCount > 0 && attachmentIds.length === 0) {
-          logWarn(
-            'queue payment proof',
-            new Error(
-              'Pending proof photos could not be uploaded (missing file or API error). Posting chatter without attachments so invoice/payment still completes; attachments stay pending for retry.'
-            )
-          );
-          // Do not continue: previously this left the queue item unsynced forever even when Odoo already had the payment.
-        }
-
-        const hasProof = attachmentIds.length > 0;
-
-        // API 2: Post message(s) to sale order chatter. Partial payment = one message per payment type.
-        try {
-          if (isPartialPayment && paymentsForMessage.length > 0) {
-            log('queue', `message_post API (sale.order) SO ${soId} — ${paymentsForMessage.length} separate messages (Cash/Cheque/Credit)`);
-            for (let i = 0; i < paymentsForMessage.length; i++) {
-              const pm = paymentsForMessage[i];
-              const attachToThisMessage = i === 0 ? attachmentIds : [];
-              const body = buildSinglePaymentMessageBody(pm, { hasProof: attachToThisMessage.length > 0 });
-              await postPaymentProofToChatterWithAttachmentIds(soId, { body, attachmentIds: attachToThisMessage });
-              if (attachToThisMessage.length > 0) {
+              log('queue', `message_post API (sale.order) SO ${soId} attachment_ids=[${attachmentIds.join(', ')}]`);
+              const body = buildPaymentProofMessageBody({
+                paymentMethod,
+                chequeBankName: paymentMethod === 'cheque' ? chequeBankName : undefined,
+                checkNumber: paymentMethod === 'cheque' ? (chequeNumber || undefined) : undefined,
+                payments: paymentsForMessage,
+                hasProof,
+              });
+              await postPaymentProofToChatterWithAttachmentIds(soId, { body, attachmentIds });
+              if (attachmentIds.length > 0) {
                 const pendingById = new Map((pendingAttachments || []).map((a) => [Number(a.id), a]));
                 for (const id of syncedAttachmentIds) {
                   const idNum = Number(id);
@@ -1044,57 +1070,119 @@ async function processSyncQueue() {
                 }
               }
             }
-          } else {
-            log('queue', `message_post API (sale.order) SO ${soId} attachment_ids=[${attachmentIds.join(', ')}]`);
-            const body = buildPaymentProofMessageBody({
-              paymentMethod,
-              chequeBankName: paymentMethod === 'cheque' ? chequeBankName : undefined,
-              checkNumber: paymentMethod === 'cheque' ? (chequeNumber || undefined) : undefined,
-              payments: paymentsForMessage,
-              hasProof,
-            });
-            await postPaymentProofToChatterWithAttachmentIds(soId, { body, attachmentIds });
-            if (attachmentIds.length > 0) {
-              const pendingById = new Map((pendingAttachments || []).map((a) => [Number(a.id), a]));
-              for (const id of syncedAttachmentIds) {
-                const idNum = Number(id);
-                await offlineAttachmentsDb.markSynced(idNum);
-                const att = pendingById.get(idNum);
-                if (att?.local_file_path) {
-                  try {
-                    const fileToDelete = new FileSystem.File(att.local_file_path);
-                    if (fileToDelete.exists) fileToDelete.delete();
-                  } catch (_) { }
-                }
-              }
+            chatterPostedInThisRun.add(soId);
+            log('queue', `chatter posted to SO ${soId}${isPartialPayment ? ` (${paymentsForMessage.length} messages)` : ` (${attachmentIds.length} images)`}`);
+          } catch (chatterErr) {
+            for (const id of syncedAttachmentIds) {
+              await offlineAttachmentsDb.incrementRetry(Number(id), chatterErr?.message || 'API error');
             }
+            logWarn('queue payment chatter', chatterErr);
+            continue;
           }
-          chatterPostedInThisRun.add(soId);
-          log('queue', `chatter posted to SO ${soId}${isPartialPayment ? ` (${paymentsForMessage.length} messages)` : ` (${attachmentIds.length} images)`}`);
-        } catch (chatterErr) {
-          for (const id of syncedAttachmentIds) {
-            await offlineAttachmentsDb.incrementRetry(Number(id), chatterErr?.message || 'API error');
-          }
-          logWarn('queue payment chatter', chatterErr);
-          continue;
-        }
 
-        if (invoiceBlockFailedNoItemsToInvoice) {
-          log('queue', `payment item ${item.id} NOT marked synced (invoice not created — deliver first, then sync again for cheque/credit)`);
-          continue;
+          if (invoiceBlockFailedNoItemsToInvoice) {
+            log('queue', `payment item ${item.id} NOT marked synced (invoice not created — deliver first, then sync again for cheque/credit)`);
+            continue;
+          }
+          await syncQueueDb.markSynced(item.id);
+          alreadySyncedSaleOrderIds.add(soId);
+          log('queue', `payment synced id=${item.id}`);
+        } catch (e) {
+          logWarn('queue payment', e);
         }
-        await syncQueueDb.markSynced(item.id);
-        alreadySyncedSaleOrderIds.add(soId);
-        log('queue', `payment synced id=${item.id}`);
-      } catch (e) {
-        logWarn('queue payment', e);
       }
-    }
     } finally {
       _processSyncQueuePromise = null;
     }
   })();
   return _processSyncQueuePromise;
+}
+
+/**
+ * Upload standalone evidence photos that were saved locally after the payment queue item already synced.
+ * This keeps invoice evidence from getting stranded in offline_attachments when the user revisits the flow.
+ */
+async function processStandaloneOfflineAttachments() {
+  const offlineAttachmentsDb = await import('../database/offlineAttachments.js');
+  const pendingAttachments = await offlineAttachmentsDb.getAllPending();
+  if (!pendingAttachments.length) return;
+
+  const grouped = new Map();
+  for (const att of pendingAttachments) {
+    const saleOrderId = Number(att.sale_order_id);
+    if (!Number.isFinite(saleOrderId)) continue;
+    if (!grouped.has(saleOrderId)) grouped.set(saleOrderId, []);
+    grouped.get(saleOrderId).push(att);
+  }
+  if (!grouped.size) return;
+
+  const { getPendingPaymentItemBySaleOrderId } = syncQueueDb;
+  const FileSystem = await import('expo-file-system');
+  const {
+    createProofAttachment,
+    postPaymentProofToChatterWithAttachmentIds,
+    imageFileToBase64String,
+  } = await import('./proofAttachment.service.js');
+
+  for (const [saleOrderId, attachments] of grouped.entries()) {
+    // Keep queue-driven payment uploads authoritative. Standalone evidence is only pushed once
+    // there is no pending payment queue item left for the sale order.
+    const pendingPaymentItem = await getPendingPaymentItemBySaleOrderId(saleOrderId);
+    if (pendingPaymentItem) continue;
+
+    const attachmentIds = [];
+    const syncedAttachmentIds = [];
+    log('queue', `standalone evidence (SO ${saleOrderId}): ${attachments.length} pending`);
+
+    for (const att of attachments) {
+      if (!att.local_file_path || !att.file_name) continue;
+      try {
+        const file = new FileSystem.File(att.local_file_path);
+        if (!file.exists) {
+          await offlineAttachmentsDb.markFailed(Number(att.id), `File missing: ${att.local_file_path}`);
+          continue;
+        }
+        const normalized = await imageFileToBase64String(FileSystem, att.local_file_path);
+        if (!normalized) {
+          await offlineAttachmentsDb.markFailed(Number(att.id), 'Invalid or too short base64');
+          continue;
+        }
+        const aid = await createProofAttachment(saleOrderId, normalized, att.file_name);
+        attachmentIds.push(aid);
+        syncedAttachmentIds.push(att.id);
+      } catch (attErr) {
+        await offlineAttachmentsDb.incrementRetry(att.id, attErr?.message || 'Upload error');
+        logWarn('standalone evidence attachment', attErr);
+      }
+    }
+
+    if (!attachmentIds.length) continue;
+
+    try {
+      await postPaymentProofToChatterWithAttachmentIds(saleOrderId, {
+        body: 'Delivery evidence photo(s) uploaded.',
+        attachmentIds,
+      });
+      const pendingById = new Map(attachments.map((a) => [Number(a.id), a]));
+      for (const id of syncedAttachmentIds) {
+        const idNum = Number(id);
+        await offlineAttachmentsDb.markSynced(idNum);
+        const att = pendingById.get(idNum);
+        if (att?.local_file_path) {
+          try {
+            const fileToDelete = new FileSystem.File(att.local_file_path);
+            if (fileToDelete.exists) fileToDelete.delete();
+          } catch (_) { }
+        }
+      }
+      log('queue', `standalone evidence posted to SO ${saleOrderId} (${attachmentIds.length} images)`);
+    } catch (e) {
+      for (const id of syncedAttachmentIds) {
+        await offlineAttachmentsDb.incrementRetry(Number(id), e?.message || 'API error');
+      }
+      logWarn('standalone evidence chatter', e);
+    }
+  }
 }
 
 /**
@@ -1155,11 +1243,11 @@ export async function deleteLocalData(options = {}) {
   log('deleteLocalData', 'all synced data cleared');
 }
 
-export function getSyncIntervalMs(syncInterval = '10min') {
-  return SYNC_INTERVAL_MAP[syncInterval] ?? SYNC_INTERVAL_MAP['10min'];
+export function getSyncIntervalMs(syncInterval = '5min') {
+  return SYNC_INTERVAL_MAP[syncInterval] ?? SYNC_INTERVAL_MAP['5min'];
 }
 
-export function getSyncIntervalMinutes(syncInterval = '10min') {
+export function getSyncIntervalMinutes(syncInterval = '5min') {
   return getSyncIntervalMs(syncInterval) / 60000;
 }
 
@@ -1225,6 +1313,7 @@ export async function runSync() {
       return { error: 'No active session' };
     }
     await processSyncQueue();
+    await processStandaloneOfflineAttachments();
 
     const user = await getUserSession();
     // Vehicle-scoped sync: when user has vehicleId and is not admin, sync only that vehicle's data.
@@ -1471,14 +1560,21 @@ export async function runSync() {
           });
           log('fetch', `vehicle inventory location ${loc.id}  ${vehicleId}`);
           const quants = await getVehicleInventoryByLocation(loc.id).catch(() => []);
-          (quants || []).forEach((q) => {
-            allVehicleInventories.push({
-              ...q,
-              location_id: loc.id,
-              vehicle_id: vId,
-            });
-          });
-          await vehicleInventoriesDb.upsertVehicleInventories(allVehicleInventories);
+          const inventoryRowsForLocation = (quants || []).map((q) => ({
+            ...q,
+            location_id: loc.id,
+            vehicle_id: vId,
+          }));
+          allVehicleInventories.push(...inventoryRowsForLocation);
+          if (inventoryRowsForLocation.length > 0) {
+            await vehicleInventoriesDb.pruneInventoryForLocationToIds(
+              loc.id,
+              inventoryRowsForLocation.map((r) => r.id)
+            );
+            await vehicleInventoriesDb.upsertVehicleInventories(inventoryRowsForLocation);
+          } else {
+            log('sync', `vehicle inventory location ${loc.id}: empty response, keep existing local rows`);
+          }
         }
       } catch (e) {
         logWarn(`vehicle ${vId} warehouse/inventory`, e);
@@ -1490,10 +1586,7 @@ export async function runSync() {
       log('db', 'vehicle_warehouses');
       await vehicleWarehousesDb.upsertVehicleWarehouses(allVehicleWarehouses);
     }
-    if (allVehicleInventories.length > 0) {
-      log('db', 'vehicle_inventories');
-      await vehicleInventoriesDb.upsertVehicleInventories(allVehicleInventories);
-    }
+    if (allVehicleInventories.length > 0) log('db', 'vehicle_inventories');
     //TODO: count column should renamed to results
     await syncLogDb.appendLog({
       sync_at: syncAt,
