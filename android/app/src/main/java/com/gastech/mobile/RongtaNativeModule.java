@@ -5,6 +5,8 @@ import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
+import android.graphics.Color;
 import android.graphics.pdf.PdfRenderer;
 import android.net.Uri;
 import android.os.ParcelFileDescriptor;
@@ -242,16 +244,25 @@ public class RongtaNativeModule extends ReactContextBaseJavaModule {
                 BitmapSetting bitmapSetting = createThermalBitmapSetting(limitDots);
 
                 if (isPdf(payloadBytes)) {
-                    appendPdfPagesAsBitmaps(cmd, bitmapSetting, payloadBytes, rasterTargetWidthPx(limitDots));
+                    appendPdfPagesAsBitmaps(
+                            cmd, bitmapSetting, payloadBytes, limitDots, rasterTargetWidthPx(limitDots));
                 } else {
                     Bitmap bitmap = BitmapFactory.decodeByteArray(payloadBytes, 0, payloadBytes.length);
                     if (bitmap == null) {
                         throw new IllegalStateException("Failed to decode receipt image.");
                     }
-                    appendBitmapEsc(cmd, bitmapSetting, bitmap);
+                    Bitmap fitted = fitBitmapToThermalRasterWidth(bitmap, limitDots);
+                    try {
+                        appendBitmapEsc(cmd, bitmapSetting, fitted);
+                    } finally {
+                        if (fitted != bitmap) {
+                            bitmap.recycle();
+                        }
+                        fitted.recycle();
+                    }
                 }
 
-                cmd.append("\n\n".getBytes(StandardCharsets.UTF_8));
+                appendTailPaperFeedBeforeCut(cmd, limitDots);
                 cmd.append(cmd.getAllCutCmd());
 
                 rtPrinter.writeMsgAsync(cmd.getAppendCmds());
@@ -472,6 +483,83 @@ public class RongtaNativeModule extends ReactContextBaseJavaModule {
         return Math.min(MAX_PRINT_WIDTH_DOTS * 2, Math.max(limitDots * 2, 384));
     }
 
+    /** Matches JS invoice layout (104mm wide PDF). Used to convert mm tail margin to pixels. */
+    private static final float RECEIPT_PAPER_WIDTH_MM = 104f;
+    /** Extra white after last ink so the footer clears the tear bar before cut. */
+    private static final float BOTTOM_PRINT_MARGIN_MM = 20f;
+
+    /**
+     * Removes blank rows from the bottom of the receipt bitmap (tall PDF pages with little content
+     * would otherwise print a long white tail before cut).
+     */
+    private static Bitmap trimTrailingWhiteRows(Bitmap src) {
+        int w = src.getWidth();
+        int h = src.getHeight();
+        if (w <= 0 || h <= 0) {
+            return src;
+        }
+        final int threshold = 250;
+        int[] row = new int[w];
+        int bottom = h - 1;
+        outer:
+        for (; bottom >= 0; bottom--) {
+            src.getPixels(row, 0, w, 0, bottom, w, 1);
+            for (int x = 0; x < w; x++) {
+                int c = row[x];
+                int r = (c >> 16) & 0xff;
+                int g = (c >> 8) & 0xff;
+                int b = c & 0xff;
+                if (r < threshold || g < threshold || b < threshold) {
+                    break outer;
+                }
+            }
+        }
+        int newH = bottom + 1;
+        if (newH <= 0) {
+            return src;
+        }
+        if (newH >= h) {
+            return src;
+        }
+        Bitmap out = Bitmap.createBitmap(src, 0, 0, w, newH);
+        src.recycle();
+        return out;
+    }
+
+    /**
+     * Pure-white rows at the end of a raster are often skipped by thermal firmware (no physical
+     * feed). Use standard ESC/POS line feeds before the cut so the tear margin is real paper
+     * motion. {@code limitWidthDots} scales feed with paper width (104mm layout in JS).
+     */
+    private static void appendTailPaperFeedBeforeCut(Cmd cmd, int limitWidthDots) {
+        int targetDots =
+                Math.round(
+                        Math.max(MIN_PRINT_WIDTH_DOTS, limitWidthDots)
+                                * (BOTTOM_PRINT_MARGIN_MM / RECEIPT_PAPER_WIDTH_MM));
+        targetDots = Math.max(140, Math.min(360, targetDots));
+        // ESC d n — print data in buffer and feed paper by n lines (Epson-style; Rongta-compatible).
+        int escD = Math.max(18, Math.min(55, targetDots / 9));
+        cmd.append(new byte[]{0x1B, 0x64, (byte) escD});
+        int lfCount = Math.max(14, Math.min(42, targetDots / 10));
+        byte[] lfs = new byte[lfCount];
+        Arrays.fill(lfs, (byte) 0x0A);
+        cmd.append(lfs);
+    }
+
+    private static Bitmap fitBitmapToThermalRasterWidth(Bitmap src, int limitDots) {
+        int targetW = rasterTargetWidthPx(limitDots);
+        int w = src.getWidth();
+        int h = src.getHeight();
+        if (w <= 0 || h <= 0) {
+            return src;
+        }
+        if (w == targetW) {
+            return src;
+        }
+        int nh = Math.max(1, Math.round(h * (targetW / (float) w)));
+        return Bitmap.createScaledBitmap(src, targetW, nh, true);
+    }
+
     private void appendBitmapEsc(Cmd cmd, BitmapSetting bitmapSetting, Bitmap bitmap) {
         try {
             cmd.append(cmd.getBitmapCmd(bitmapSetting, bitmap));
@@ -485,7 +573,11 @@ public class RongtaNativeModule extends ReactContextBaseJavaModule {
      * multi-page receipts print in full without merging into one huge bitmap.
      */
     private void appendPdfPagesAsBitmaps(
-            Cmd cmd, BitmapSetting bitmapSetting, byte[] pdfBytes, int pdfRasterTargetWidth)
+            Cmd cmd,
+            BitmapSetting bitmapSetting,
+            byte[] pdfBytes,
+            int limitDots,
+            int pdfRasterTargetWidth)
             throws IOException {
         File temp = File.createTempFile("rongta_receipt", ".pdf", reactContext.getCacheDir());
         try {
@@ -502,13 +594,21 @@ public class RongtaNativeModule extends ReactContextBaseJavaModule {
                 for (int i = 0; i < pageCount; i++) {
                     try (PdfRenderer.Page page = renderer.openPage(i)) {
                         Bitmap bmp = renderPdfPageToBitmap(page, pdfRasterTargetWidth);
+                        Bitmap fitted = fitBitmapToThermalRasterWidth(bmp, limitDots);
+                        if (fitted != bmp) {
+                            bmp.recycle();
+                        }
+                        Bitmap trimmed = trimTrailingWhiteRows(fitted);
+                        if (trimmed != fitted) {
+                            fitted.recycle();
+                        }
                         try {
-                            appendBitmapEsc(cmd, bitmapSetting, bmp);
+                            appendBitmapEsc(cmd, bitmapSetting, trimmed);
                             if (i < pageCount - 1) {
                                 cmd.append("\n".getBytes(StandardCharsets.UTF_8));
                             }
                         } finally {
-                            bmp.recycle();
+                            trimmed.recycle();
                         }
                     }
                 }
@@ -529,10 +629,13 @@ public class RongtaNativeModule extends ReactContextBaseJavaModule {
             int scaledW = Math.max(1, Math.round(targetW * scale));
             int scaledH = maxH;
             Bitmap bmp = Bitmap.createBitmap(scaledW, scaledH, Bitmap.Config.ARGB_8888);
+            // Transparent PDF background can print as solid black on thermal heads.
+            new Canvas(bmp).drawColor(Color.WHITE);
             page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_PRINT);
             return bmp;
         }
         Bitmap bmp = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888);
+        new Canvas(bmp).drawColor(Color.WHITE);
         page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_PRINT);
         return bmp;
     }

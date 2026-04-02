@@ -4,7 +4,7 @@ import * as Print from 'expo-print';
 
 const STORAGE_KEY_LAST_BT_PRINTER = '@gastech/last_bluetooth_printer';
 
-/** Wider default for your Rongta setup (104mm). */
+/** Requested default for wider Rongta paper mode (104mm). */
 export const DEFAULT_THERMAL_WIDTH_DOTS = 832;
 export const PAPER_WIDTH_DOTS = {
   MM58: 384,
@@ -14,6 +14,7 @@ export const PAPER_WIDTH_DOTS = {
 
 function inferPaperWidthDots(printer) {
   const name = String(printer?.name || '').toLowerCase();
+  if (name.includes('rpp04') || name.includes('58')) return PAPER_WIDTH_DOTS.MM58;
   if (name.includes('58')) return PAPER_WIDTH_DOTS.MM58;
   if (name.includes('104') || name.includes('rp425') || name.includes('rp4')) return PAPER_WIDTH_DOTS.MM104;
   if (name.includes('80')) return PAPER_WIDTH_DOTS.MM80;
@@ -121,7 +122,7 @@ function printerPayload(printer) {
     address: printer.address,
     mac: printer.mac || printer.address,
     limitWidthDots: printer.limitWidthDots ?? inferred,
-    textAlign: printer.textAlign || 'left',
+    textAlign: printer.textAlign || 'center',
   };
 }
 

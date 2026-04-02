@@ -16,6 +16,8 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Print from 'expo-print';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system';
+import * as FileSystemLegacy from 'expo-file-system/legacy';
+import { Asset } from 'expo-asset';
 import { useTheme } from '../context/ThemeContext';
 import { useSync } from '../context/SyncContext';
 import { spacing, borderRadius } from '../constants/theme';
@@ -37,6 +39,13 @@ import {
   connectToRongtaPrinter,
   disconnectRongtaPrinter,
 } from '../services/printerService';
+
+/**
+ * Expo `printToFileAsync` defaults to US Letter width (612pt), so a 104mm-wide layout sits in a
+ * narrow column on the left. Match PDF page width to ~104mm at 72 PPI so the invoice fills the paper.
+ */
+const THERMAL_INVOICE_PDF_WIDTH_PT = Math.round((104 * 72) / 25.4);
+const THERMAL_INVOICE_PDF_HEIGHT_PT = 4096;
 
 /** Currency in invoice section: "Rs" (e.g. "Rs 944.00"). */
 function formatInvoiceCurrency(amount) {
@@ -68,7 +77,7 @@ function buildInvoiceHtml(
   paymentType,
   selectedBankName,
   paymentSplit,
-  logoUri,
+  logoDataUriForPrint,
   customerSignatureDataUrl,
   driverSignatureDataUrl,
   chequeBankName,
@@ -137,54 +146,64 @@ function buildInvoiceHtml(
           const lineSub = Number(l.price_subtotal) || 0;
           const lineTotal = Number(l.price_total) || 0;
           return `<tr>
-            <td style="padding:2px;border-bottom:1px solid #ccc;font-size:8px;font-weight:700">${i + 1}</td>
-            <td style="padding:2px;border-bottom:1px solid #ccc;font-size:8px;font-weight:700">${productName}</td>
-            <td style="padding:2px 4px 2px 2px;border-bottom:1px solid #ccc;text-align:right;font-size:8px;font-weight:700">${Number(l.product_uom_qty ?? 0)}</td>
-            <td style="padding:2px 2px 2px 4px;border-bottom:1px solid #ccc;text-align:right;font-size:8px;font-weight:700">${formatAmount(l.price_unit ?? 0)}</td>
-            <td style="padding:2px;border-bottom:1px solid #ccc;text-align:right;font-size:8px;font-weight:700">${formatAmount(lineSub)}</td>
-            <td style="padding:2px;border-bottom:1px solid #ccc;text-align:right;font-size:8px;font-weight:700">${formatAmount(lineTotal)}</td>
+            <td style="padding:2px;border-bottom:1px solid #ccc;font-size:9px;font-weight:700">${i + 1}</td>
+            <td style="padding:2px;border-bottom:1px solid #ccc;font-size:9px;font-weight:700">${productName}</td>
+            <td style="padding:2px 4px 2px 2px;border-bottom:1px solid #ccc;text-align:right;font-size:9px;font-weight:700">${Number(l.product_uom_qty ?? 0)}</td>
+            <td style="padding:2px 2px 2px 4px;border-bottom:1px solid #ccc;text-align:right;font-size:9px;font-weight:700">${formatAmount(l.price_unit ?? 0)}</td>
+            <td style="padding:2px;border-bottom:1px solid #ccc;text-align:right;font-size:9px;font-weight:700">${formatAmount(lineSub)}</td>
+            <td style="padding:2px;border-bottom:1px solid #ccc;text-align:right;font-size:9px;font-weight:700">${formatAmount(lineTotal)}</td>
           </tr>`;
         }
       )
-      .join('') || '<tr><td colspan="6" style="padding:4px;text-align:center;font-size:8px;font-weight:700">No line items</td></tr>';
+      .join('') || '<tr><td colspan="6" style="padding:4px;text-align:center;font-size:9px;font-weight:700">No line items</td></tr>';
 
   const amountUntaxed = (order?.amount_untaxed != null && order.amount_untaxed !== 0) ? order.amount_untaxed : computedUntaxed;
   const amountTax = (order?.amount_tax != null && order.amount_tax !== 0) ? order.amount_tax : computedTax;
   const amountTotal = order?.amount_total ?? (amountUntaxed + amountTax);
 
-  const logoImg = logoUri
-    ? `<img src="${logoUri}" alt="GasTech" style="max-width:40mm;height:auto;display:block;margin:0 auto 2px auto;" />`
-    : '<h1 style="margin:0 0 2px 0;font-size:12px;font-weight:700;color:#1e5aa8;text-align:center">GasTech</h1>';
+  const logoImg = logoDataUriForPrint
+    ? `<img src="${logoDataUriForPrint}" alt="GasTech" style="max-width:40mm;height:auto;display:block;margin:0 auto 2px auto;" />`
+    : '<h1 style="margin:0 0 2px 0;font-size:13px;font-weight:700;color:#1e5aa8;text-align:center">GasTech</h1>';
 
   return `
 <!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=80mm, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     * { box-sizing: border-box; }
-    @page { size: 80mm auto; margin: 3mm; }
+    @page { size: 104mm auto; margin: 2mm; }
     @media print {
-      body, .page { width: 80mm !important; max-width: 80mm !important; }
-      body { padding: 0 3mm !important; }
+      html, body, .page {
+        width: 100% !important;
+        max-width: 100% !important;
+        margin: 0 auto !important;
+      }
+      body { padding: 0 2mm !important; }
+      .page { padding-bottom: 20mm !important; }
     }
     body {
       font-family: system-ui, -apple-system, sans-serif;
-      font-size: 9px;
+      font-size: 10px;
       font-weight: 700;
       color: #000;
-      margin: 0;
-      padding: 4px 6px;
-      width: 80mm;
-      max-width: 80mm;
+      margin: 0 auto;
+      padding: 3px 4px;
+      width: 100%;
+      max-width: 100%;
       overflow-x: hidden;
       -webkit-print-color-adjust: exact;
       print-color-adjust: exact;
     }
-    .page { width: 74mm; max-width: 100%; margin: 0 auto; }
+    .page {
+      width: 100%;
+      max-width: 100%;
+      margin: 0 auto;
+      padding-bottom: 20mm;
+    }
     .title {
-      font-size: 11px;
+      font-size: 12px;
       font-weight: 700;
       text-align: center;
       margin: 2px 0 4px;
@@ -193,13 +212,13 @@ function buildInvoiceHtml(
     }
     .two-col { display: flex; gap: 6px; margin-bottom: 4px; line-height: 1.2; }
     .col { flex: 1; min-width: 0; overflow: hidden; }
-    .field { margin-bottom: 2px; font-size: 8px; font-weight: 700; word-break: break-word; }
+    .field { margin-bottom: 2px; font-size: 9px; font-weight: 700; word-break: break-word; }
     .label { font-weight: 700; color: #000; }
     table {
       width: 100%;
       border-collapse: collapse;
       margin: 4px 0;
-      font-size: 8px;
+      font-size: 9px;
       font-weight: 700;
       border: 1px solid #000;
       table-layout: fixed;
@@ -210,7 +229,7 @@ function buildInvoiceHtml(
       border-bottom: 1px solid #000;
       background: #e8e8e8;
       font-weight: 700;
-      font-size: 7px;
+      font-size: 8px;
     }
     th:nth-child(1) { width: 6%; text-align: center; }
     th:nth-child(2) { width: 27%; }
@@ -222,7 +241,7 @@ function buildInvoiceHtml(
     td {
       padding: 3px 2px;
       border-bottom: 1px solid #ccc;
-      font-size: 8px;
+      font-size: 9px;
       font-weight: 700;
       word-break: break-word;
     }
@@ -232,12 +251,12 @@ function buildInvoiceHtml(
     td:nth-child(4) { padding-left: 4px; }
     td:nth-child(3), td:nth-child(4), td:nth-child(5), td:nth-child(6), td:nth-child(7) { text-align: right; }
     tr:last-child td { border-bottom: none; }
-    .totals { margin-top: 3px; border-top: 1px solid #000; padding-top: 3px; font-size: 7px; font-weight: 700; }
+    .totals { margin-top: 3px; border-top: 1px solid #000; padding-top: 3px; font-size: 8px; font-weight: 700; }
     .row { display: flex; justify-content: space-between; margin: 1px 0; align-items: flex-start; gap: 4px; }
-    .total-row { font-weight: 700; font-size: 8px; margin-top: 1px; }
-    .payment { margin-top: 4px; padding: 4px; background: #e8e8e8; font-size: 8px; font-weight: 700; text-align: center; }
-    .footer { margin-top: 6px; font-size: 8px; font-weight: 700; color: #333; text-align: center; }
-    .powered { margin-top: 2px; font-size: 8px; font-weight: 700; font-style: italic; color: #111; text-align: center; }
+    .total-row { font-weight: 700; font-size: 9px; margin-top: 1px; }
+    .payment { margin-top: 4px; padding: 4px; background: #e8e8e8; font-size: 9px; font-weight: 700; text-align: center; }
+    .footer { margin-top: 6px; font-size: 9px; font-weight: 700; color: #333; text-align: center; }
+    .powered { margin-top: 2px; font-size: 9px; font-weight: 700; font-style: italic; color: #111; text-align: center; }
   </style>
 </head>
 <body>
@@ -287,16 +306,22 @@ function buildInvoiceHtml(
     ` : ''}
   </div>
   <div class="payment">Thank you for your business</div>
-  ${customerSignatureDataUrl ? `
+  ${(customerSignatureDataUrl || driverSignatureDataUrl) ? `
   <div class="signature-section" style="margin-top:4px;padding-top:4px;border-top:1px solid #000;">
-    <div class="label" style="font-size:8px;font-weight:700;color:#000;margin-bottom:2px;">Customer signature</div>
-    <img src="${customerSignatureDataUrl}" alt="Signature" style="max-width:45mm;height:auto;max-height:20mm;display:block;" />
-  </div>
-  ` : ''}
-  ${driverSignatureDataUrl ? `
-  <div class="signature-section" style="margin-top:4px;padding-top:4px;border-top:1px solid #000;">
-    <div class="label" style="font-size:8px;font-weight:700;color:#000;margin-bottom:2px;">Driver signature</div>
-    <img src="${driverSignatureDataUrl}" alt="Signature" style="max-width:45mm;height:auto;max-height:20mm;display:block;" />
+    <div style="display:flex;gap:6px;justify-content:space-between;align-items:flex-start;">
+      <div style="flex:1;min-width:0;">
+        <div class="label" style="font-size:9px;font-weight:700;color:#000;margin-bottom:2px;">Customer signature</div>
+        ${customerSignatureDataUrl
+          ? `<img src="${customerSignatureDataUrl}" alt="Customer Signature" style="max-width:34mm;height:auto;max-height:18mm;display:block;" />`
+          : `<div style="height:18mm;border:1px dashed #999;"></div>`}
+      </div>
+      <div style="flex:1;min-width:0;">
+        <div class="label" style="font-size:9px;font-weight:700;color:#000;margin-bottom:2px;">Driver signature</div>
+        ${driverSignatureDataUrl
+          ? `<img src="${driverSignatureDataUrl}" alt="Driver Signature" style="max-width:34mm;height:auto;max-height:18mm;display:block;" />`
+          : `<div style="height:18mm;border:1px dashed #999;"></div>`}
+      </div>
+    </div>
   </div>
   ` : ''}
   <div class="footer">GasTech – Your Trusted Business Partner</div>
@@ -477,19 +502,19 @@ function buildInvoicePlainText(
 
   parts.push(dashLine());
   parts.push(lineLR('Printed At', printedAt, w));
+  parts.push('Customer Sign: __________________');
+  parts.push('Driver Sign  : __________________');
   parts.push(centerPlainLine('Thank you for your business', w));
 
   return `${parts.filter(Boolean).join('\r\n')}\r\n\r\n`;
 }
 
-const LOGO_SOURCE = require('../../assets/images/AppLogo.png');
+/** Same file as app icon / splash — embedded as base64 for expo-print PDF (WebView cannot load packager URIs). */
+const INVOICE_LOGO_ASSET = require('../../assets/icon.png');
 
 export default function InvoiceScreen({ route, navigation }) {
   const { colors } = useTheme();
-  const logoUri = useMemo(
-    () => Image.resolveAssetSource(LOGO_SOURCE)?.uri ?? null,
-    []
-  );
+  const [invoiceLogoDataUri, setInvoiceLogoDataUri] = useState(null);
   const {
     saleOrderId,
     total,
@@ -842,6 +867,27 @@ export default function InvoiceScreen({ route, navigation }) {
     [colors]
   );
 
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const asset = Asset.fromModule(INVOICE_LOGO_ASSET);
+        await asset.downloadAsync();
+        const uri = asset.localUri || asset.uri;
+        if (!uri || cancelled) return;
+        const b64 = await FileSystemLegacy.readAsStringAsync(uri, { encoding: 'base64' });
+        if (!cancelled) {
+          setInvoiceLogoDataUri(`data:image/png;base64,${b64}`);
+        }
+      } catch (e) {
+        console.warn('[InvoiceScreen] Could not load logo for print', e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const loadInvoice = useCallback(async () => {
     if (!saleOrderId) {
       setLoading(false);
@@ -936,7 +982,7 @@ export default function InvoiceScreen({ route, navigation }) {
         setThermalPrinter({
           ...stored,
           limitWidthDots: stored.limitWidthDots || DEFAULT_THERMAL_WIDTH_DOTS,
-          textAlign: stored.textAlign || 'left',
+          textAlign: stored.textAlign || 'center',
         });
         setThermalConnected(false);
       }
@@ -1005,7 +1051,7 @@ export default function InvoiceScreen({ route, navigation }) {
         paymentType,
         selectedBankName,
         effectiveSplitForPrint,
-        logoUri,
+        invoiceLogoDataUri,
         customerSignatureDataUrl,
         driverSignatureDataUrl,
         resolvedChequeBankName,
@@ -1017,27 +1063,39 @@ export default function InvoiceScreen({ route, navigation }) {
       );
 
       if (rongtaReady && thermalConnected && thermalPrinter?.address) {
-        // Avoid PDF raster on Rongta; some units print full-black pages.
-        const plain = buildInvoicePlainText(
-          order,
-          lines,
-          paymentType,
-          selectedBankName,
-          effectiveSplitForPrint,
-          logoUri,
-          customerSignatureDataUrl,
-          driverSignatureDataUrl,
-          resolvedChequeBankName,
-          resolvedChequeNumber,
-          invoiceNumber,
-          supplierTin,
-          purchaserTin,
-          partyInfo
-        );
-        await printTextToRongta(plain, thermalPrinter);
-        setShowEvidenceModal(true);
-        setPrintResult(null);
-        return;
+        try {
+          const { uri } = await Print.printToFileAsync({
+            html,
+            width: THERMAL_INVOICE_PDF_WIDTH_PT,
+            height: THERMAL_INVOICE_PDF_HEIGHT_PT,
+          });
+          await printPdfFileToRongta(uri, thermalPrinter);
+          setShowEvidenceModal(true);
+          setPrintResult(null);
+          return;
+        } catch (thermalPdfErr) {
+          console.warn('[InvoiceScreen] thermal PDF print failed, fallback to text', thermalPdfErr?.message);
+          const plain = buildInvoicePlainText(
+            order,
+            lines,
+            paymentType,
+            selectedBankName,
+            effectiveSplitForPrint,
+            null,
+            customerSignatureDataUrl,
+            driverSignatureDataUrl,
+            resolvedChequeBankName,
+            resolvedChequeNumber,
+            invoiceNumber,
+            supplierTin,
+            purchaserTin,
+            partyInfo
+          );
+          await printTextToRongta(plain, thermalPrinter);
+          setShowEvidenceModal(true);
+          setPrintResult(null);
+          return;
+        }
       }
 
       await Print.printAsync({ html });
@@ -1061,7 +1119,7 @@ export default function InvoiceScreen({ route, navigation }) {
     selectedBankName,
     paymentSplit,
     localPaymentSplit,
-    logoUri,
+    invoiceLogoDataUri,
     customerSignatureDataUrl,
     driverSignatureDataUrl,
     chequeBankName,
@@ -1196,7 +1254,7 @@ export default function InvoiceScreen({ route, navigation }) {
     >
       {/* Invoice preview */}
       <View style={styles.previewCard}>
-        <Image source={LOGO_SOURCE} style={styles.logo} resizeMode="contain" />
+        <Image source={INVOICE_LOGO_ASSET} style={styles.logo} resizeMode="contain" />
         <Text style={styles.invoiceTitle}>Tax Invoice</Text>
         <View style={styles.metaRow}>
           <Text style={styles.metaLabel}>Invoice No.</Text>
@@ -1389,7 +1447,7 @@ export default function InvoiceScreen({ route, navigation }) {
                       address: item.address,
                       mac: item.mac || item.address,
                       limitWidthDots: DEFAULT_THERMAL_WIDTH_DOTS,
-                      textAlign: 'left',
+                      textAlign: 'center',
                     };
                     await disconnectRongtaPrinter();
                     setThermalPrinter(next);
