@@ -7,6 +7,9 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.ColorMatrix;
+import android.graphics.ColorMatrixColorFilter;
+import android.graphics.Paint;
 import android.graphics.pdf.PdfRenderer;
 import android.net.Uri;
 import android.os.ParcelFileDescriptor;
@@ -244,6 +247,12 @@ public class RongtaNativeModule extends ReactContextBaseJavaModule {
                 BitmapSetting bitmapSetting = createThermalBitmapSetting(limitDots);
 
                 if (isPdf(payloadBytes)) {
+                    // Init printer + default code page + alignment (same as printText) to avoid stray
+                    // characters before the bitmap and to center raster output where the firmware supports it.
+                    cmd.append(new byte[]{0x1B, 0x40});
+                    cmd.append(new byte[]{0x1B, 0x74, 0x00});
+                    cmd.append(new byte[]{0x1B, 0x61, (byte) resolveTextAlign(printer)});
+                    appendOptionalHeaderLogo(cmd, bitmapSetting, printer, limitDots);
                     appendPdfPagesAsBitmaps(
                             cmd, bitmapSetting, payloadBytes, limitDots, rasterTargetWidthPx(limitDots));
                 } else {
@@ -526,6 +535,38 @@ public class RongtaNativeModule extends ReactContextBaseJavaModule {
         return out;
     }
 
+    /** Removes blank rows from the top (first PDF page often has extra white from @page/body). */
+    private static Bitmap trimLeadingWhiteRows(Bitmap src) {
+        int w = src.getWidth();
+        int h = src.getHeight();
+        if (w <= 0 || h <= 0) {
+            return src;
+        }
+        final int threshold = 250;
+        int[] row = new int[w];
+        int top = 0;
+        outer:
+        for (; top < h; top++) {
+            src.getPixels(row, 0, w, 0, top, w, 1);
+            for (int x = 0; x < w; x++) {
+                int c = row[x];
+                int r = (c >> 16) & 0xff;
+                int g = (c >> 8) & 0xff;
+                int b = c & 0xff;
+                if (r < threshold || g < threshold || b < threshold) {
+                    break outer;
+                }
+            }
+        }
+        if (top <= 0 || top >= h) {
+            return src;
+        }
+        int newH = h - top;
+        Bitmap out = Bitmap.createBitmap(src, 0, top, w, newH);
+        src.recycle();
+        return out;
+    }
+
     /**
      * Physical feed before cut. Previously ESC d + many LFs were both sent; each stacks and one
      * “line” can be several mm, which produced ~8–10 cm of blank. Use a single small ESC d only.
@@ -537,6 +578,199 @@ public class RongtaNativeModule extends ReactContextBaseJavaModule {
         int n = Math.round(w * ratio / 25f);
         n = Math.max(3, Math.min(7, n));
         cmd.append(new byte[]{0x1B, 0x64, (byte) n});
+    }
+
+    private static Bitmap decodeOptionalHeaderLogoPng(ReadableMap printer) {
+        if (printer == null || !printer.hasKey("headerLogoBase64") || printer.isNull("headerLogoBase64")) {
+            return null;
+        }
+        String b64 = printer.getString("headerLogoBase64");
+        if (b64 == null) {
+            return null;
+        }
+        b64 = b64.trim();
+        if (b64.isEmpty()) {
+            return null;
+        }
+        try {
+            byte[] bytes = Base64.decode(b64, Base64.DEFAULT);
+            return BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+    }
+
+    /** Grayscale + stronger contrast/lightness so light taglines survive 1-bit thermal dither. */
+    private static Bitmap enhanceLogoForThermal(Bitmap src) {
+        if (src == null) {
+            return null;
+        }
+        int w = src.getWidth();
+        int h = src.getHeight();
+        if (w <= 0 || h <= 0) {
+            return src;
+        }
+        Bitmap out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(out);
+        ColorMatrix cm = new ColorMatrix();
+        cm.setSaturation(0f);
+        float contrast = 1.48f;
+        float translate = (-0.5f * contrast + 0.5f) * 255f;
+        ColorMatrix contrastMat = new ColorMatrix();
+        contrastMat.set(
+                new float[] {
+                    contrast, 0, 0, 0, translate,
+                    0, contrast, 0, 0, translate,
+                    0, 0, contrast, 0, translate,
+                    0, 0, 0, 1, 0
+                });
+        cm.postConcat(contrastMat);
+        ColorMatrix boost = new ColorMatrix();
+        boost.setScale(1.08f, 1.08f, 1.08f, 1f);
+        cm.postConcat(boost);
+        Paint paint = new Paint();
+        paint.setColorFilter(new ColorMatrixColorFilter(cm));
+        canvas.drawBitmap(src, 0, 0, paint);
+        src.recycle();
+        return out;
+    }
+
+    /** Pixels darker than this (luminance) count as logo ink for trimming/cropping. */
+    private static final int LOGO_CONTENT_LUMA_THRESHOLD = 248;
+
+    /**
+     * Crops empty margins so the actual mark + tagline can be scaled and padded to the paper center.
+     * If crop would remove almost nothing, returns the original bitmap.
+     */
+    private static Bitmap trimLogoContentBounds(Bitmap src) {
+        if (src == null) {
+            return null;
+        }
+        int w = src.getWidth();
+        int h = src.getHeight();
+        if (w <= 0 || h <= 0) {
+            return src;
+        }
+        int minX = w;
+        int maxX = -1;
+        int minY = h;
+        int maxY = -1;
+        int[] row = new int[w];
+        for (int y = 0; y < h; y++) {
+            src.getPixels(row, 0, w, 0, y, w, 1);
+            for (int x = 0; x < w; x++) {
+                int c = row[x];
+                int r = (c >> 16) & 0xff;
+                int g = (c >> 8) & 0xff;
+                int b = c & 0xff;
+                int luma = (r * 30 + g * 59 + b * 11) / 100;
+                if (luma < LOGO_CONTENT_LUMA_THRESHOLD) {
+                    if (x < minX) minX = x;
+                    if (x > maxX) maxX = x;
+                    if (y < minY) minY = y;
+                    if (y > maxY) maxY = y;
+                }
+            }
+        }
+        if (maxX < minX || maxY < minY) {
+            return src;
+        }
+        int pad = Math.max(2, Math.round(Math.min(w, h) * 0.01f));
+        minX = Math.max(0, minX - pad);
+        maxX = Math.min(w - 1, maxX + pad);
+        minY = Math.max(0, minY - pad);
+        maxY = Math.min(h - 1, maxY + pad);
+        int cw = maxX - minX + 1;
+        int ch = maxY - minY + 1;
+        if (cw <= 0 || ch <= 0) {
+            return src;
+        }
+        if (cw >= w * 0.92f && ch >= h * 0.92f) {
+            return src;
+        }
+        Bitmap out = Bitmap.createBitmap(src, minX, minY, cw, ch);
+        src.recycle();
+        return out;
+    }
+
+    /**
+     * Scales logo to fit within thermal width & max height, then centers it on a white strip of width
+     * {@code targetWxPx} so it prints centered (graphic was often left-heavy in the source asset).
+     */
+    private static Bitmap scaleAndCenterLogoOnWidth(Bitmap src, int targetWxPx, int maxH) {
+        if (src == null || targetWxPx <= 0) {
+            return src;
+        }
+        int w = src.getWidth();
+        int h = src.getHeight();
+        if (w <= 0 || h <= 0) {
+            return src;
+        }
+        int maxHeight = Math.max(32, maxH);
+        float scale = Math.min(1f, Math.min(targetWxPx / (float) w, maxHeight / (float) h));
+        int nw = Math.max(1, Math.round(w * scale));
+        int nh = Math.max(1, Math.round(h * scale));
+        Bitmap scaled = Bitmap.createScaledBitmap(src, nw, nh, true);
+        if (scaled != src) {
+            src.recycle();
+        }
+        if (nw >= targetWxPx) {
+            return scaled;
+        }
+        Bitmap canvasBmp = Bitmap.createBitmap(targetWxPx, nh, Bitmap.Config.ARGB_8888);
+        canvasBmp.eraseColor(Color.WHITE);
+        Canvas cvs = new Canvas(canvasBmp);
+        float left = (targetWxPx - nw) / 2f;
+        cvs.drawBitmap(scaled, left, 0, null);
+        scaled.recycle();
+        return canvasBmp;
+    }
+
+    private static Bitmap limitHeaderLogoHeight(Bitmap src, int maxH) {
+        if (src == null || maxH <= 0) {
+            return src;
+        }
+        int h = src.getHeight();
+        if (h <= maxH) {
+            return src;
+        }
+        int w = src.getWidth();
+        int nh = maxH;
+        int nw = Math.max(1, Math.round(w * (maxH / (float) h)));
+        Bitmap out = Bitmap.createScaledBitmap(src, nw, nh, true);
+        if (out != src) {
+            src.recycle();
+        }
+        return out;
+    }
+
+    private void appendOptionalHeaderLogo(Cmd cmd, BitmapSetting bitmapSetting, ReadableMap printer, int limitDots) {
+        boolean hasHeaderKey =
+                printer != null
+                        && printer.hasKey("headerLogoBase64")
+                        && !printer.isNull("headerLogoBase64")
+                        && printer.getString("headerLogoBase64") != null
+                        && !printer.getString("headerLogoBase64").trim().isEmpty();
+        Bitmap decoded = decodeOptionalHeaderLogoPng(printer);
+        if (decoded == null) {
+            if (hasHeaderKey) {
+                throw new IllegalArgumentException("Header logo decode failed: invalid base64 PNG.");
+            }
+            return;
+        }
+        Bitmap mono = enhanceLogoForThermal(decoded);
+        Bitmap trimmed = trimLogoContentBounds(mono);
+        int targetWx = rasterTargetWidthPx(limitDots);
+        int maxLogoH = Math.max(96, targetWx / 4);
+        Bitmap centered = scaleAndCenterLogoOnWidth(trimmed, targetWx, maxLogoH);
+        Bitmap sized = limitHeaderLogoHeight(centered, maxLogoH);
+        try {
+            appendBitmapEsc(cmd, bitmapSetting, sized);
+            // One LF: minimal gap between native logo and PDF raster (multiple LFs stack visibly).
+            cmd.append(new byte[]{0x0A});
+        } finally {
+            sized.recycle();
+        }
     }
 
     private static Bitmap fitBitmapToThermalRasterWidth(Bitmap src, int limitDots) {
@@ -591,9 +825,13 @@ public class RongtaNativeModule extends ReactContextBaseJavaModule {
                         if (fitted != bmp) {
                             bmp.recycle();
                         }
-                        Bitmap trimmed = trimTrailingWhiteRows(fitted);
-                        if (trimmed != fitted) {
+                        Bitmap noTopGap = i == 0 ? trimLeadingWhiteRows(fitted) : fitted;
+                        if (noTopGap != fitted) {
                             fitted.recycle();
+                        }
+                        Bitmap trimmed = trimTrailingWhiteRows(noTopGap);
+                        if (trimmed != noTopGap) {
+                            noTopGap.recycle();
                         }
                         try {
                             appendBitmapEsc(cmd, bitmapSetting, trimmed);

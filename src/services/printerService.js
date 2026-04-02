@@ -139,8 +139,9 @@ export async function printTextToRongta(text, printer) {
 
 /**
  * @param {string} fileUri — file:// URI from expo-print printToFileAsync
+ * @param {{ headerLogoBase64?: string }} [options] — raw PNG base64 (no data: prefix). Prepended via ESC bitmap before PDF raster (PDF WebView often drops huge data-URI images).
  */
-export async function printPdfFileToRongta(fileUri, printer) {
+export async function printPdfFileToRongta(fileUri, printer, options = {}) {
   if (!isRongtaNativeAvailable()) {
     throw new Error('Rongta native module is not available.');
   }
@@ -149,7 +150,11 @@ export async function printPdfFileToRongta(fileUri, printer) {
     throw new Error('Bluetooth permissions are required to print.');
   }
   const uri = fileUri.startsWith('file:') ? fileUri : `file://${fileUri}`;
-  await NativeModules.RongtaNativeModule.printImage(uri, printerPayload(printer));
+  const payload = printerPayload(printer);
+  if (options.headerLogoBase64 && String(options.headerLogoBase64).trim()) {
+    payload.headerLogoBase64 = String(options.headerLogoBase64).trim();
+  }
+  await NativeModules.RongtaNativeModule.printImage(uri, payload);
 }
 
 /**

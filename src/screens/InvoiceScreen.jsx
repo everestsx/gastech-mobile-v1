@@ -18,9 +18,11 @@ import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system';
 import * as FileSystemLegacy from 'expo-file-system/legacy';
 import { Asset } from 'expo-asset';
+import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import { useTheme } from '../context/ThemeContext';
 import { useSync } from '../context/SyncContext';
 import { spacing, borderRadius } from '../constants/theme';
+import { INVOICE_LOGO_PNG_BASE64 } from '../constants/invoiceLogoBase64';
 import { getSaleOrderDetailsFromDB, runSync } from '../services/sync.service';
 import { getOrAssignInvoiceNumber } from '../utils/invoiceNumber';
 import { getProductDisplayName } from '../utils/productDisplay';
@@ -35,7 +37,6 @@ import {
   getStoredBluetoothPrinter,
   setStoredBluetoothPrinter,
   findBluetoothPrinters,
-  printTextToRongta,
   printPdfFileToRongta,
   connectToRongtaPrinter,
   disconnectRongtaPrinter,
@@ -55,6 +56,69 @@ function paymentSplitHasLineItems(split) {
   const chq = Number(split.check ?? split.cheque) || 0;
   const cred = Number(split.credit) || 0;
   return cash > 0 || chq > 0 || cred > 0;
+}
+
+/** PNG/JPEG base64 payload only (for Rongta native header bitmap). */
+function extractRawBase64FromDataUri(dataUri) {
+  if (!dataUri || typeof dataUri !== 'string') return null;
+  const idx = dataUri.indexOf('base64,');
+  if (idx < 0) return null;
+  const raw = dataUri.slice(idx + 7).replace(/\s/g, '');
+  return raw || null;
+}
+
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  const chunk = 0x8000;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
+/**
+ * SDK 54: `readAsStringAsync` on `expo-file-system` throws — use legacy + new File API only.
+ */
+async function readBase64FromUri(uri) {
+  if (!uri || typeof uri !== 'string') return null;
+  const trimmed = uri.trim();
+  if (/^ph:\/\//i.test(trimmed)) return null;
+
+  const tryFileClass = async (fileUri) => {
+    try {
+      const disk = new FileSystem.File(fileUri);
+      if (!disk.exists) return null;
+      const buf = await disk.arrayBuffer();
+      return arrayBufferToBase64(buf);
+    } catch (_) {
+      return null;
+    }
+  };
+
+  const fromDisk = await tryFileClass(trimmed);
+  if (fromDisk) return fromDisk;
+
+  const normalizedUri =
+    /^file:\/\//i.test(trimmed) || /^content:\/\//i.test(trimmed) ? trimmed : `file://${trimmed}`;
+  try {
+    const b64 = await FileSystemLegacy.readAsStringAsync(normalizedUri, { encoding: 'base64' });
+    if (b64 && typeof b64 === 'string' && b64.trim()) return b64.trim();
+  } catch (_) {
+    /* fall through */
+  }
+
+  if (/^https?:\/\//i.test(trimmed)) {
+    try {
+      const res = await fetch(trimmed);
+      if (!res.ok) return null;
+      const buf = await res.arrayBuffer();
+      return arrayBufferToBase64(buf);
+    } catch (_) {
+      return null;
+    }
+  }
+  return null;
 }
 
 /** Currency in invoice section: "Rs" (e.g. "Rs 944.00"). */
@@ -95,8 +159,10 @@ function buildInvoiceHtml(
   invoiceNumber,
   supplierTin = '—',
   purchaserTin = '—',
-  partyInfo = {}
+  partyInfo = {},
+  printOptions = {}
 ) {
+  const omitLogoBlock = printOptions.omitLogoBlock === true;
   const orderDateRaw = order?.date_order || order?.create_date || order?.date;
   const orderDateParsed = orderDateRaw ? new Date(orderDateRaw) : null;
   const date = orderDateParsed && !Number.isNaN(orderDateParsed.getTime())
@@ -174,9 +240,13 @@ function buildInvoiceHtml(
   const amountTax = (order?.amount_tax != null && order.amount_tax !== 0) ? order.amount_tax : computedTax;
   const amountTotal = order?.amount_total ?? (amountUntaxed + amountTax);
 
-  const logoImg = logoDataUriForPrint
-    ? `<img src="${logoDataUriForPrint}" alt="GasTech" style="max-width:40mm;height:auto;display:block;margin:0 auto 2px auto;" />`
-    : '<h1 style="margin:0 0 2px 0;font-size:13px;font-weight:700;color:#1e5aa8;text-align:center">GasTech</h1>';
+  const logoImg = omitLogoBlock
+    ? ''
+    : logoDataUriForPrint
+      ? `<img src="${logoDataUriForPrint}" alt="" style="max-width:40mm;height:auto;display:block;margin:0 auto 2px auto;filter:grayscale(100%) contrast(200%) brightness(85%);" />`
+      : '<h1 style="margin:0 0 2px 0;font-size:13px;font-weight:700;color:#000;text-align:center">GasTech</h1>';
+
+  const pageMargin = omitLogoBlock ? '0.5mm 1.5mm 2mm 1.5mm' : '2mm';
 
   return `
 <!DOCTYPE html>
@@ -186,7 +256,7 @@ function buildInvoiceHtml(
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     * { box-sizing: border-box; }
-    @page { size: 104mm auto; margin: 2mm; }
+    @page { size: 104mm auto; margin: ${pageMargin}; }
     @media print {
       html, body, .page {
         width: 100% !important;
@@ -194,6 +264,7 @@ function buildInvoiceHtml(
         margin: 0 auto !important;
       }
       body { padding: 0 2mm !important; }
+      body.thermal-native-invoice { padding: 0 1.5mm !important; }
       .page { padding-bottom: 10mm !important; }
     }
     body {
@@ -208,6 +279,16 @@ function buildInvoiceHtml(
       overflow-x: hidden;
       -webkit-print-color-adjust: exact;
       print-color-adjust: exact;
+    }
+    body.thermal-native-invoice {
+      padding-top: 0;
+      padding-bottom: 2px;
+    }
+    body.thermal-native-invoice .page {
+      padding-top: 0;
+    }
+    body.thermal-native-invoice .title {
+      margin: 0 0 3px;
     }
     .page {
       width: 100%;
@@ -272,7 +353,7 @@ function buildInvoiceHtml(
     .powered { margin-top: 2px; font-size: 9px; font-weight: 700; font-style: italic; color: #111; text-align: center; }
   </style>
 </head>
-<body>
+<body class="${omitLogoBlock ? 'thermal-native-invoice' : ''}">
   <div class="page">
   ${logoImg}
   <div class="title">Tax Invoice</div>
@@ -525,6 +606,98 @@ function buildInvoicePlainText(
 
 /** Same file as app icon / splash — embedded as base64 for expo-print PDF (WebView cannot load packager URIs). */
 const INVOICE_LOGO_ASSET = require('../../assets/icon.png');
+
+function getInvoiceLogoCachePath() {
+  const base = FileSystemLegacy.cacheDirectory;
+  if (!base) return null;
+  return `${base}invoice-logo-print.png`;
+}
+
+async function resolveInvoiceLogoDataUriForPrint() {
+  /**
+   * Bundled base64 always works — no Asset.downloadAsync, no expo-file-system reads.
+   * Those paths often fail on release builds / SDK 54, which caused "logo could not be loaded".
+   */
+  const embedded =
+    typeof INVOICE_LOGO_PNG_BASE64 === 'string' && INVOICE_LOGO_PNG_BASE64.length > 64
+      ? `data:image/png;base64,${INVOICE_LOGO_PNG_BASE64}`
+      : null;
+
+  if (embedded) {
+    try {
+      const img = await manipulateAsync(embedded, [{ resize: { width: 680 } }], {
+        format: SaveFormat.PNG,
+        compress: 1,
+        base64: true,
+      });
+      const b64 = img?.base64?.trim();
+      if (b64) return `data:image/png;base64,${b64}`;
+    } catch (e) {
+      console.warn('[InvoiceScreen] Embedded logo resize failed, using full image', e?.message ?? e);
+    }
+    return embedded;
+  }
+
+  let a = null;
+  try {
+    const rows = await Asset.loadAsync(INVOICE_LOGO_ASSET);
+    a = Array.isArray(rows) ? rows[0] : null;
+  } catch (e) {
+    console.warn('[InvoiceScreen] Asset.loadAsync(logo) failed', e?.message ?? e);
+  }
+  if (!a) {
+    try {
+      a = Asset.fromModule(INVOICE_LOGO_ASSET);
+      await a.downloadAsync();
+    } catch (e2) {
+      console.warn('[InvoiceScreen] Asset.fromModule(logo).downloadAsync failed', e2?.message ?? e2);
+      return null;
+    }
+  } else if (!a.localUri) {
+    try {
+      await a.downloadAsync();
+    } catch (e3) {
+      console.warn('[InvoiceScreen] Asset.downloadAsync(logo) retry failed', e3?.message ?? e3);
+    }
+  }
+
+  const resolved = Image.resolveAssetSource(INVOICE_LOGO_ASSET);
+  const candidates = [a?.localUri, a?.uri, resolved?.uri].filter(Boolean);
+
+  const seen = new Set();
+  for (const originalUri of candidates) {
+    if (!originalUri || seen.has(originalUri)) continue;
+    seen.add(originalUri);
+    let sourceUri = originalUri;
+
+    if (/^https?:\/\//i.test(sourceUri)) {
+      const cachePath = getInvoiceLogoCachePath();
+      if (cachePath) {
+        try {
+          const dl = await FileSystemLegacy.downloadAsync(sourceUri, cachePath);
+          if (dl?.uri) sourceUri = dl.uri;
+        } catch (_) {
+          /* keep remote URI; fetch/readBase64 may still work */
+        }
+      }
+    }
+
+    try {
+      const img = await manipulateAsync(
+        sourceUri,
+        [{ resize: { width: 680 } }],
+        { format: SaveFormat.PNG, compress: 1, base64: true }
+      );
+      const b64 = img?.base64?.trim();
+      if (b64) return `data:image/png;base64,${b64}`;
+    } catch (_) {
+      /* direct read below */
+    }
+    const directB64 = await readBase64FromUri(sourceUri);
+    if (directB64) return `data:image/png;base64,${directB64}`;
+  }
+  return null;
+}
 
 export default function InvoiceScreen({ route, navigation }) {
   const { colors } = useTheme();
@@ -896,13 +1069,9 @@ export default function InvoiceScreen({ route, navigation }) {
     let cancelled = false;
     (async () => {
       try {
-        const asset = Asset.fromModule(INVOICE_LOGO_ASSET);
-        await asset.downloadAsync();
-        const uri = asset.localUri || asset.uri;
-        if (!uri || cancelled) return;
-        const b64 = await FileSystemLegacy.readAsStringAsync(uri, { encoding: 'base64' });
+        const dataUri = await resolveInvoiceLogoDataUriForPrint();
         if (!cancelled) {
-          setInvoiceLogoDataUri(`data:image/png;base64,${b64}`);
+          setInvoiceLogoDataUri(dataUri);
         }
       } catch (e) {
         console.warn('[InvoiceScreen] Could not load logo for print', e);
@@ -912,6 +1081,18 @@ export default function InvoiceScreen({ route, navigation }) {
       cancelled = true;
     };
   }, []);
+
+  const loadInvoiceLogoDataUriForPrint = useCallback(async () => {
+    if (invoiceLogoDataUri) return invoiceLogoDataUri;
+    try {
+      const dataUri = await resolveInvoiceLogoDataUriForPrint();
+      setInvoiceLogoDataUri(dataUri);
+      return dataUri;
+    } catch (e) {
+      console.warn('[InvoiceScreen] Could not load logo for print (on-demand)', e);
+      return null;
+    }
+  }, [invoiceLogoDataUri]);
 
   const loadInvoice = useCallback(async () => {
     if (!saleOrderId) {
@@ -1074,17 +1255,19 @@ export default function InvoiceScreen({ route, navigation }) {
     setPrintResult(null);
     setPrintError(null);
     try {
+      const logoForPrint = await loadInvoiceLogoDataUriForPrint();
       const effectiveSplitForPrint =
         paymentType === 'split' && paymentSplit ? paymentSplit : localPaymentSplit || paymentSplit;
       const resolvedChequeBankName = chequeBankName || selectedBankName || localChequeMeta.bankName || null;
       const resolvedChequeNumber = checkNumber || localChequeMeta.checkNumber || null;
-      const html = buildInvoiceHtml(
+      const logoB64ForNative = extractRawBase64FromDataUri(logoForPrint);
+      const htmlForThermal = buildInvoiceHtml(
         order,
         lines,
         paymentType,
         selectedBankName,
         effectiveSplitForPrint,
-        invoiceLogoDataUri,
+        logoForPrint,
         effectiveCustomerSignatureDataUrl,
         effectiveDriverSignatureDataUrl,
         resolvedChequeBankName,
@@ -1092,46 +1275,52 @@ export default function InvoiceScreen({ route, navigation }) {
         invoiceNumber,
         supplierTin,
         purchaserTin,
-        partyInfo
+        partyInfo,
+        { omitLogoBlock: true }
+      );
+      const htmlForSystem = buildInvoiceHtml(
+        order,
+        lines,
+        paymentType,
+        selectedBankName,
+        effectiveSplitForPrint,
+        logoForPrint,
+        effectiveCustomerSignatureDataUrl,
+        effectiveDriverSignatureDataUrl,
+        resolvedChequeBankName,
+        resolvedChequeNumber,
+        invoiceNumber,
+        supplierTin,
+        purchaserTin,
+        partyInfo,
+        {}
       );
 
       if (rongtaReady && thermalConnected && thermalPrinter?.address) {
         try {
+          if (!logoB64ForNative) {
+            throw new Error('Invoice logo could not be loaded. Please retry so logo prints correctly.');
+          }
           const { uri } = await Print.printToFileAsync({
-            html,
+            html: htmlForThermal,
             width: THERMAL_INVOICE_PDF_WIDTH_PT,
             height: THERMAL_INVOICE_PDF_HEIGHT_PT,
           });
-          await printPdfFileToRongta(uri, thermalPrinter);
+          await printPdfFileToRongta(
+            uri,
+            thermalPrinter,
+            { headerLogoBase64: logoB64ForNative }
+          );
           setShowEvidenceModal(true);
           setPrintResult(null);
           return;
         } catch (thermalPdfErr) {
-          console.warn('[InvoiceScreen] thermal PDF print failed, fallback to text', thermalPdfErr?.message);
-          const plain = buildInvoicePlainText(
-            order,
-            lines,
-            paymentType,
-            selectedBankName,
-            effectiveSplitForPrint,
-            null,
-            effectiveCustomerSignatureDataUrl,
-            effectiveDriverSignatureDataUrl,
-            resolvedChequeBankName,
-            resolvedChequeNumber,
-            invoiceNumber,
-            supplierTin,
-            purchaserTin,
-            partyInfo
-          );
-          await printTextToRongta(plain, thermalPrinter);
-          setShowEvidenceModal(true);
-          setPrintResult(null);
-          return;
+          console.warn('[InvoiceScreen] thermal print blocked/failure', thermalPdfErr?.message);
+          throw thermalPdfErr;
         }
       }
 
-      await Print.printAsync({ html });
+      await Print.printAsync({ html: htmlForSystem });
       setShowEvidenceModal(true);
       setPrintResult(null);
     } catch (err) {
@@ -1152,7 +1341,6 @@ export default function InvoiceScreen({ route, navigation }) {
     selectedBankName,
     paymentSplit,
     localPaymentSplit,
-    invoiceLogoDataUri,
     effectiveCustomerSignatureDataUrl,
     effectiveDriverSignatureDataUrl,
     chequeBankName,
@@ -1165,6 +1353,7 @@ export default function InvoiceScreen({ route, navigation }) {
     rongtaReady,
     thermalPrinter,
     thermalConnected,
+    loadInvoiceLogoDataUriForPrint,
   ]);
 
   const goToHome = useCallback(() => {
