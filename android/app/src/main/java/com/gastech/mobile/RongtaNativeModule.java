@@ -485,8 +485,8 @@ public class RongtaNativeModule extends ReactContextBaseJavaModule {
 
     /** Matches JS invoice layout (104mm wide PDF). Used to convert mm tail margin to pixels. */
     private static final float RECEIPT_PAPER_WIDTH_MM = 104f;
-    /** Extra white after last ink so the footer clears the tear bar before cut. */
-    private static final float BOTTOM_PRINT_MARGIN_MM = 20f;
+    /** Target tear margin (~10mm). Kept modest — ESC d “lines” are large on many heads. */
+    private static final float BOTTOM_PRINT_MARGIN_MM = 10f;
 
     /**
      * Removes blank rows from the bottom of the receipt bitmap (tall PDF pages with little content
@@ -527,23 +527,16 @@ public class RongtaNativeModule extends ReactContextBaseJavaModule {
     }
 
     /**
-     * Pure-white rows at the end of a raster are often skipped by thermal firmware (no physical
-     * feed). Use standard ESC/POS line feeds before the cut so the tear margin is real paper
-     * motion. {@code limitWidthDots} scales feed with paper width (104mm layout in JS).
+     * Physical feed before cut. Previously ESC d + many LFs were both sent; each stacks and one
+     * “line” can be several mm, which produced ~8–10 cm of blank. Use a single small ESC d only.
      */
     private static void appendTailPaperFeedBeforeCut(Cmd cmd, int limitWidthDots) {
-        int targetDots =
-                Math.round(
-                        Math.max(MIN_PRINT_WIDTH_DOTS, limitWidthDots)
-                                * (BOTTOM_PRINT_MARGIN_MM / RECEIPT_PAPER_WIDTH_MM));
-        targetDots = Math.max(140, Math.min(360, targetDots));
-        // ESC d n — print data in buffer and feed paper by n lines (Epson-style; Rongta-compatible).
-        int escD = Math.max(18, Math.min(55, targetDots / 9));
-        cmd.append(new byte[]{0x1B, 0x64, (byte) escD});
-        int lfCount = Math.max(14, Math.min(42, targetDots / 10));
-        byte[] lfs = new byte[lfCount];
-        Arrays.fill(lfs, (byte) 0x0A);
-        cmd.append(lfs);
+        int w = Math.max(MIN_PRINT_WIDTH_DOTS, limitWidthDots);
+        float ratio = BOTTOM_PRINT_MARGIN_MM / RECEIPT_PAPER_WIDTH_MM;
+        // ~25 dot-units per ESC line heuristic → n in a tight band (about 10–15 mm total feed).
+        int n = Math.round(w * ratio / 25f);
+        n = Math.max(3, Math.min(7, n));
+        cmd.append(new byte[]{0x1B, 0x64, (byte) n});
     }
 
     private static Bitmap fitBitmapToThermalRasterWidth(Bitmap src, int limitDots) {

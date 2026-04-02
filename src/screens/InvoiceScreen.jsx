@@ -181,7 +181,7 @@ function buildInvoiceHtml(
         margin: 0 auto !important;
       }
       body { padding: 0 2mm !important; }
-      .page { padding-bottom: 20mm !important; }
+      .page { padding-bottom: 10mm !important; }
     }
     body {
       font-family: system-ui, -apple-system, sans-serif;
@@ -200,7 +200,7 @@ function buildInvoiceHtml(
       width: 100%;
       max-width: 100%;
       margin: 0 auto;
-      padding-bottom: 20mm;
+      padding-bottom: 10mm;
     }
     .title {
       font-size: 12px;
