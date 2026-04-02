@@ -26,6 +26,7 @@ import { getOrAssignInvoiceNumber } from '../utils/invoiceNumber';
 import { getProductDisplayName } from '../utils/productDisplay';
 import { formatAmount } from '../utils/format';
 import * as localPaymentsDb from '../database/localPayments.js';
+import * as localInvoicesDb from '../database/localInvoices.js';
 import * as offlineAttachmentsDb from '../database/offlineAttachments.js';
 import { callOdoo } from '../services/index.service';
 import {
@@ -46,6 +47,15 @@ import {
  */
 const THERMAL_INVOICE_PDF_WIDTH_PT = Math.round((104 * 72) / 25.4);
 const THERMAL_INVOICE_PDF_HEIGHT_PT = 4096;
+
+/** True when local_payments-derived split has any non-zero line (re-print without route paymentType). */
+function paymentSplitHasLineItems(split) {
+  if (!split) return false;
+  const cash = Number(split.cash) || 0;
+  const chq = Number(split.check ?? split.cheque) || 0;
+  const cred = Number(split.credit) || 0;
+  return cash > 0 || chq > 0 || cred > 0;
+}
 
 /** Currency in invoice section: "Rs" (e.g. "Rs 944.00"). */
 function formatInvoiceCurrency(amount) {
@@ -117,18 +127,21 @@ function buildInvoiceHtml(
   const supplierAddress = safeDisplay(partyInfo?.supplierAddress || '—').replace(/</g, '&lt;');
   const chequeAmount = Number(paymentSplit?.check ?? paymentSplit?.cheque ?? 0);
   const invNo = invoiceNumber ?? order?.name ?? '—';
-  const paymentLabel =
-    paymentType === 'split' && paymentSplit
-      ? [
-          paymentSplit.cash > 0 && `Cash ${formatInvoiceCurrency(paymentSplit.cash)}`,
-          chequeAmount > 0 && `Check ${formatInvoiceCurrency(chequeAmount)}`,
-          paymentSplit.credit > 0 && `Amount Due ${formatInvoiceCurrency(paymentSplit.credit)}`,
-        ].filter(Boolean).join(' • ') || 'Payment'
-      : (paymentType === 'bank' || paymentType === 'check') && selectedBankName
-        ? `Check: ${selectedBankName}`
-        : paymentType === 'credit' && selectedBankName
-          ? `Credit: ${selectedBankName}`
-          : (!paymentType && !selectedBankName && !paymentSplit) ? 'Invoiced' : 'Cash';
+  const showSplitBreakdown =
+    (paymentType === 'split' && paymentSplit) || paymentSplitHasLineItems(paymentSplit);
+  const paymentLabel = showSplitBreakdown
+    ? [
+        (Number(paymentSplit.cash) || 0) > 0 && `Cash ${formatInvoiceCurrency(paymentSplit.cash)}`,
+        chequeAmount > 0 && `Check ${formatInvoiceCurrency(chequeAmount)}`,
+        (Number(paymentSplit.credit) || 0) > 0 && `Amount Due ${formatInvoiceCurrency(paymentSplit.credit)}`,
+      ].filter(Boolean).join(' • ') || 'Payment'
+    : (paymentType === 'bank' || paymentType === 'check') && selectedBankName
+      ? `Check: ${selectedBankName}`
+      : paymentType === 'credit' && selectedBankName
+        ? `Credit: ${selectedBankName}`
+        : !paymentType && !selectedBankName && !paymentSplitHasLineItems(paymentSplit)
+          ? 'Invoiced'
+          : 'Cash';
 
   const lineAmounts = (lines || []).map((l) => {
     const sub = Number(l.price_subtotal) || 0;
@@ -476,7 +489,8 @@ function buildInvoicePlainText(
   parts.push(dashLine());
 
   const split = paymentSplit;
-  if (paymentType === 'split' && split) {
+  const showPlainSplit = (paymentType === 'split' && split) || paymentSplitHasLineItems(split);
+  if (showPlainSplit) {
     const chq = Number(split.check ?? split.cheque ?? 0);
     parts.push(lineLR('Cash', thermalMoney(split.cash ?? 0), w));
     parts.push(lineLR('Cheque', thermalMoney(chq), w));
@@ -487,7 +501,7 @@ function buildInvoicePlainText(
         ? `Check: ${selectedBankName}`
         : paymentType === 'credit' && selectedBankName
           ? `Credit: ${selectedBankName}`
-          : !paymentType && !selectedBankName && !paymentSplit
+          : !paymentType && !selectedBankName && !paymentSplitHasLineItems(paymentSplit)
             ? 'Invoiced'
             : 'Cash';
     parts.push(lineLR('Mode', label.slice(0, 24), w));
@@ -539,6 +553,8 @@ export default function InvoiceScreen({ route, navigation }) {
   const [printError, setPrintError] = useState(null);
   const [localPaymentSplit, setLocalPaymentSplit] = useState(null);
   const [localChequeMeta, setLocalChequeMeta] = useState({ bankName: null, checkNumber: null });
+  const [localCustomerSig, setLocalCustomerSig] = useState(null);
+  const [localDriverSig, setLocalDriverSig] = useState(null);
   const [partyInfo, setPartyInfo] = useState({});
   const [showEvidenceModal, setShowEvidenceModal] = useState(false);
   const [deliveryPhotos, setDeliveryPhotos] = useState([]);
@@ -554,6 +570,15 @@ export default function InvoiceScreen({ route, navigation }) {
   const rongtaReady = Platform.OS === 'android' && isRongtaNativeAvailable();
   const rongtaPrintBlocked =
     rongtaReady && (!thermalPrinter?.address || !thermalConnected);
+
+  const effectiveCustomerSignatureDataUrl = useMemo(
+    () => customerSignatureDataUrl ?? localCustomerSig ?? null,
+    [customerSignatureDataUrl, localCustomerSig]
+  );
+  const effectiveDriverSignatureDataUrl = useMemo(
+    () => driverSignatureDataUrl ?? localDriverSig ?? null,
+    [driverSignatureDataUrl, localDriverSig]
+  );
 
   const styles = useMemo(
     () =>
@@ -890,6 +915,8 @@ export default function InvoiceScreen({ route, navigation }) {
 
   const loadInvoice = useCallback(async () => {
     if (!saleOrderId) {
+      setLocalCustomerSig(null);
+      setLocalDriverSig(null);
       setLoading(false);
       return;
     }
@@ -908,6 +935,10 @@ export default function InvoiceScreen({ route, navigation }) {
         bankName: chequeRow?.bank_name || null,
         checkNumber: chequeRow?.check_number || null,
       });
+
+      const localInv = await localInvoicesDb.getLocalInvoiceBySaleOrderId(saleOrderId);
+      setLocalCustomerSig(localInv?.customer_signature_data ?? null);
+      setLocalDriverSig(localInv?.driver_signature_data ?? null);
 
       // Fetch supplier(company) and customer details for printed invoice.
       let nextPartyInfo = {};
@@ -958,6 +989,8 @@ export default function InvoiceScreen({ route, navigation }) {
       setInvoiceNumber(null);
       setLocalPaymentSplit(null);
       setLocalChequeMeta({ bankName: null, checkNumber: null });
+      setLocalCustomerSig(null);
+      setLocalDriverSig(null);
       setPartyInfo({});
     } finally {
       setLoading(false);
@@ -1052,8 +1085,8 @@ export default function InvoiceScreen({ route, navigation }) {
         selectedBankName,
         effectiveSplitForPrint,
         invoiceLogoDataUri,
-        customerSignatureDataUrl,
-        driverSignatureDataUrl,
+        effectiveCustomerSignatureDataUrl,
+        effectiveDriverSignatureDataUrl,
         resolvedChequeBankName,
         resolvedChequeNumber,
         invoiceNumber,
@@ -1082,8 +1115,8 @@ export default function InvoiceScreen({ route, navigation }) {
             selectedBankName,
             effectiveSplitForPrint,
             null,
-            customerSignatureDataUrl,
-            driverSignatureDataUrl,
+            effectiveCustomerSignatureDataUrl,
+            effectiveDriverSignatureDataUrl,
             resolvedChequeBankName,
             resolvedChequeNumber,
             invoiceNumber,
@@ -1120,8 +1153,8 @@ export default function InvoiceScreen({ route, navigation }) {
     paymentSplit,
     localPaymentSplit,
     invoiceLogoDataUri,
-    customerSignatureDataUrl,
-    driverSignatureDataUrl,
+    effectiveCustomerSignatureDataUrl,
+    effectiveDriverSignatureDataUrl,
     chequeBankName,
     checkNumber,
     localChequeMeta.bankName,
@@ -1214,19 +1247,31 @@ export default function InvoiceScreen({ route, navigation }) {
     ? paymentSplit
     : localPaymentSplit;
 
-  const paymentLabel =
-    (paymentType === 'split' && effectivePaymentSplit)
-      ? [
-          effectivePaymentSplit.cash > 0 && `Cash ${formatInvoiceCurrency(effectivePaymentSplit.cash)}`,
-          (effectivePaymentSplit.check > 0 || effectivePaymentSplit.cheque > 0) &&
-            `Cheque ${formatInvoiceCurrency(effectivePaymentSplit.check || effectivePaymentSplit.cheque || 0)}`,
-          effectivePaymentSplit.credit > 0 && `Credit ${formatInvoiceCurrency(effectivePaymentSplit.credit)}`,
-        ].filter(Boolean).join(' • ') || 'Payment'
-      : (paymentType === 'bank' || paymentType === 'check') && selectedBankName
-        ? `Check: ${selectedBankName}`
-        : paymentType === 'credit' && selectedBankName
-          ? `Credit: ${selectedBankName}`
-          : (paymentType != null || selectedBankName != null || paymentSplit != null) ? 'Cash' : 'Invoiced';
+  const paymentLabel = (() => {
+    const split = effectivePaymentSplit;
+    if (paymentSplitHasLineItems(split)) {
+      const cash = Number(split.cash) || 0;
+      const chq = Number(split.check ?? split.cheque) || 0;
+      const cred = Number(split.credit) || 0;
+      return [
+        cash > 0 && `Cash ${formatInvoiceCurrency(cash)}`,
+        chq > 0 && `Cheque ${formatInvoiceCurrency(chq)}`,
+        cred > 0 && `Credit ${formatInvoiceCurrency(cred)}`,
+      ]
+        .filter(Boolean)
+        .join(' • ') || 'Payment';
+    }
+    if ((paymentType === 'bank' || paymentType === 'check') && selectedBankName) {
+      return `Check: ${selectedBankName}`;
+    }
+    if (paymentType === 'credit' && selectedBankName) {
+      return `Credit: ${selectedBankName}`;
+    }
+    if (paymentType != null || selectedBankName != null || paymentSplit != null) {
+      return 'Cash';
+    }
+    return 'Invoiced';
+  })();
 
   const hasCreditPayment = (effectivePaymentSplit?.credit ?? 0) > 0 || paymentType === 'credit';
 
@@ -1332,18 +1377,18 @@ export default function InvoiceScreen({ route, navigation }) {
         <View style={styles.paymentBadge}>
           <Text style={styles.paymentText}>Payment: {paymentLabel}</Text>
         </View>
-        {(customerSignatureDataUrl || driverSignatureDataUrl) ? (
+        {(effectiveCustomerSignatureDataUrl || effectiveDriverSignatureDataUrl) ? (
           <View style={{ marginTop: spacing.sm, paddingTop: spacing.sm, borderTopWidth: 1, borderTopColor: colors.border }}>
-            {customerSignatureDataUrl ? (
+            {effectiveCustomerSignatureDataUrl ? (
               <>
                 <Text style={[styles.totalsLabel, { marginBottom: 4 }]}>Customer signature</Text>
-                <Image source={{ uri: customerSignatureDataUrl }} style={{ width: '100%', maxWidth: 180, height: 70, resizeMode: 'contain' }} />
+                <Image source={{ uri: effectiveCustomerSignatureDataUrl }} style={{ width: '100%', maxWidth: 180, height: 70, resizeMode: 'contain' }} />
               </>
             ) : null}
-            {driverSignatureDataUrl ? (
+            {effectiveDriverSignatureDataUrl ? (
               <>
-                <Text style={[styles.totalsLabel, { marginTop: customerSignatureDataUrl ? spacing.sm : 0, marginBottom: 4 }]}>Driver signature</Text>
-                <Image source={{ uri: driverSignatureDataUrl }} style={{ width: '100%', maxWidth: 180, height: 70, resizeMode: 'contain' }} />
+                <Text style={[styles.totalsLabel, { marginTop: effectiveCustomerSignatureDataUrl ? spacing.sm : 0, marginBottom: 4 }]}>Driver signature</Text>
+                <Image source={{ uri: effectiveDriverSignatureDataUrl }} style={{ width: '100%', maxWidth: 180, height: 70, resizeMode: 'contain' }} />
               </>
             ) : null}
           </View>

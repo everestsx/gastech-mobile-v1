@@ -428,6 +428,23 @@ async function runMigrations(db) {
     }
     await db.runAsync('PRAGMA user_version = 16');
   }
+
+  // Migration 17: Persist invoice signatures for re-print / navigation without route params
+  if (current < 17) {
+    try {
+      const info = await db.getAllAsync('PRAGMA table_info(local_invoices)');
+      const names = new Set((info || []).map((c) => c.name));
+      if (!names.has('customer_signature_data')) {
+        await db.runAsync('ALTER TABLE local_invoices ADD COLUMN customer_signature_data TEXT');
+      }
+      if (!names.has('driver_signature_data')) {
+        await db.runAsync('ALTER TABLE local_invoices ADD COLUMN driver_signature_data TEXT');
+      }
+    } catch (e) {
+      console.warn('[Migration] local_invoices signature columns:', e);
+    }
+    await db.runAsync('PRAGMA user_version = 17');
+  }
 }
 
 /**

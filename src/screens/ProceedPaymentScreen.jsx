@@ -408,6 +408,8 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         amount_untaxed: amountUntaxed,
         amount_tax: amountTax,
         state: 'posted',
+        customer_signature_data: custSig,
+        driver_signature_data: drvSig,
       });
       const paymentRows = payments.map((p) => ({
         sale_order_id: soId,

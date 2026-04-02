@@ -19,6 +19,14 @@ export async function upsertLocalInvoice(row) {
   const amountUntaxed = numOrNull(row.amount_untaxed) ?? amountTotal;
   const amountTax = numOrNull(row.amount_tax) ?? 0;
   const state = empty(row.state) || 'posted';
+  const custSig =
+    row.customer_signature_data != null && String(row.customer_signature_data).trim()
+      ? String(row.customer_signature_data)
+      : null;
+  const drvSig =
+    row.driver_signature_data != null && String(row.driver_signature_data).trim()
+      ? String(row.driver_signature_data)
+      : null;
 
   const existing = await db.getFirstAsync(
     'SELECT id FROM local_invoices WHERE sale_order_id = ?',
@@ -26,16 +34,39 @@ export async function upsertLocalInvoice(row) {
   );
   if (existing?.id != null) {
     await db.runAsync(
-      `UPDATE local_invoices SET invoice_number = ?, amount_total = ?, amount_untaxed = ?, amount_tax = ?, state = ?, updated_at = ? WHERE sale_order_id = ?`,
-      [invoiceNumber, amountTotal, amountUntaxed, amountTax, state, now, saleOrderId]
+      `UPDATE local_invoices SET invoice_number = ?, amount_total = ?, amount_untaxed = ?, amount_tax = ?, state = ?, updated_at = ?,
+       customer_signature_data = COALESCE(?, customer_signature_data), driver_signature_data = COALESCE(?, driver_signature_data)
+       WHERE sale_order_id = ?`,
+      [
+        invoiceNumber,
+        amountTotal,
+        amountUntaxed,
+        amountTax,
+        state,
+        now,
+        custSig,
+        drvSig,
+        saleOrderId,
+      ]
     );
     return num(existing.id);
   }
   // Avoid using runAsync return value (can trigger "Cannot convert to Kotlin type" on Android APK)
   await db.runAsync(
-    `INSERT INTO local_invoices (sale_order_id, invoice_number, amount_total, amount_untaxed, amount_tax, state, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [saleOrderId, invoiceNumber, amountTotal, amountUntaxed, amountTax, state, now, now]
+    `INSERT INTO local_invoices (sale_order_id, invoice_number, amount_total, amount_untaxed, amount_tax, state, created_at, updated_at, customer_signature_data, driver_signature_data)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      saleOrderId,
+      invoiceNumber,
+      amountTotal,
+      amountUntaxed,
+      amountTax,
+      state,
+      now,
+      now,
+      custSig,
+      drvSig,
+    ]
   );
   const inserted = await db.getFirstAsync(
     'SELECT id FROM local_invoices WHERE sale_order_id = ? ORDER BY id DESC LIMIT 1',
@@ -98,5 +129,7 @@ function mapRow(row) {
     updated_at: row.updated_at,
     synced_at: row.synced_at,
     odoo_invoice_id: row.odoo_invoice_id != null ? row.odoo_invoice_id : null,
+    customer_signature_data: row.customer_signature_data ?? null,
+    driver_signature_data: row.driver_signature_data ?? null,
   };
 }
