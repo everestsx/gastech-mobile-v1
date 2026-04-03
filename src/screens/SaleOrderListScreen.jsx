@@ -25,6 +25,7 @@ import {
   getUserSession,
 } from '../services/sync.service';
 import OrderCard from '../components/OrderCard';
+import SyncHeaderBadge from '../components/SyncHeaderBadge';
 
 const TAB_TO_DELIVER = 'to_deliver';
 
@@ -382,7 +383,8 @@ export default function SaleOrderListScreen({ route, navigation }) {
             </TouchableOpacity>
           </View>
         </View>
-        <View style={styles.headerRight}>
+        <View style={[styles.headerRight, { flexWrap: 'wrap', justifyContent: 'flex-end', gap: 6 }]}>
+          <SyncHeaderBadge variant="surface" />
         <View style={styles.countPill}>
             <Text style={styles.countPillText}>
               {ordersFilteredBySearch.length}
@@ -491,7 +493,12 @@ export default function SaleOrderListScreen({ route, navigation }) {
           </View>
         }
         renderItem={({ item }) => (
-          <OrderCard order={item} onPress={onOrderPress} isDelivered={false} />
+          <OrderCard
+            order={item}
+            orderLines={item.orderLines}
+            onPress={onOrderPress}
+            isDelivered={false}
+          />
         )}
       />
     </View>

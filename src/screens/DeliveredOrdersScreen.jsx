@@ -24,6 +24,7 @@ import {
 } from '../services/sync.service';
 import * as localPaymentsDb from '../database/localPayments.js';
 import OrderCard from '../components/OrderCard';
+import SyncHeaderBadge from '../components/SyncHeaderBadge';
 
 const TAB_CASH = 'cash';
 const TAB_CHEQUE = 'cheque';
@@ -364,7 +365,8 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
             </TouchableOpacity>
           </View>
         </View>
-        <View style={styles.headerRight}>
+        <View style={[styles.headerRight, { flexWrap: 'wrap', justifyContent: 'flex-end', gap: 6 }]}>
+          <SyncHeaderBadge variant="surface" />
           <View style={styles.countPill}>
             <Text style={styles.countPillText}>
               {deliveredOrders.length}
@@ -471,7 +473,13 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
           </View>
         }
         renderItem={({ item }) => (
-          <OrderCard order={item} onPress={onOrderPress} isDelivered={true} paymentSplit={item.paymentSplit} />
+          <OrderCard
+            order={item}
+            orderLines={item.orderLines}
+            onPress={onOrderPress}
+            isDelivered={true}
+            paymentSplit={item.paymentSplit}
+          />
         )}
       />
     </View>

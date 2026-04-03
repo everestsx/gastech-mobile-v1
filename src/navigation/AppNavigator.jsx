@@ -27,6 +27,8 @@ import MyCommissionScreen from '../screens/MyCommissionScreen';
 import VehicleStockScreen from '../screens/VehicleStockScreen';
 import SyncHistoryScreen from '../screens/SyncHistoryScreen';
 import LocalInvoicesScreen from '../screens/LocalInvoicesScreen';
+import BluetoothPrinterScreen from '../screens/BluetoothPrinterScreen';
+import SyncHeaderBadge from '../components/SyncHeaderBadge';
 
 import { useTheme } from '../context/ThemeContext';
 import { runSync, getSyncIntervalMs } from '../services/sync.service';
@@ -127,6 +129,7 @@ function MainStackScreen() {
     headerTitleStyle: { fontWeight: '700', fontSize: 18 },
     headerBackTitle: 'Back',
     headerShadowVisible: true,
+    headerRight: () => <SyncHeaderBadge variant="header" />,
   };
   return (
     <MainStack.Navigator
@@ -174,6 +177,11 @@ function MainStackScreen() {
         name="Settings"
         component={SettingsScreen}
         options={{ ...headerScreenOptions, title: 'Settings' }}
+      />
+      <MainStack.Screen
+        name="BluetoothPrinter"
+        component={BluetoothPrinterScreen}
+        options={{ ...headerScreenOptions, title: 'Bluetooth printer' }}
       />
       <MainStack.Screen
         name="SaleOrderDetails"

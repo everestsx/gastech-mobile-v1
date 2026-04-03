@@ -21,6 +21,7 @@ import { Asset } from 'expo-asset';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import { useTheme } from '../context/ThemeContext';
 import { useSync } from '../context/SyncContext';
+import { usePrinterConnection } from '../context/PrinterConnectionContext';
 import { spacing, borderRadius } from '../constants/theme';
 import { INVOICE_LOGO_PNG_BASE64 } from '../constants/invoiceLogoBase64';
 import { getSaleOrderDetailsFromDB, runSync } from '../services/sync.service';
@@ -31,16 +32,7 @@ import * as localPaymentsDb from '../database/localPayments.js';
 import * as localInvoicesDb from '../database/localInvoices.js';
 import * as offlineAttachmentsDb from '../database/offlineAttachments.js';
 import { callOdoo } from '../services/index.service';
-import {
-  isRongtaNativeAvailable,
-  DEFAULT_THERMAL_WIDTH_DOTS,
-  getStoredBluetoothPrinter,
-  setStoredBluetoothPrinter,
-  findBluetoothPrinters,
-  printPdfFileToRongta,
-  connectToRongtaPrinter,
-  disconnectRongtaPrinter,
-} from '../services/printerService';
+import { findBluetoothPrinters, printPdfFileToRongta } from '../services/printerService';
 
 /**
  * Expo `printToFileAsync` defaults to US Letter width (612pt), so a 104mm-wide layout sits in a
@@ -701,6 +693,16 @@ async function resolveInvoiceLogoDataUriForPrint() {
 
 export default function InvoiceScreen({ route, navigation }) {
   const { colors } = useTheme();
+  const {
+    rongtaReady,
+    thermalPrinter,
+    thermalConnected,
+    connectingThermal,
+    connectThermalError,
+    selectPrinter,
+    clearPrinter,
+    connect,
+  } = usePrinterConnection();
   const [invoiceLogoDataUri, setInvoiceLogoDataUri] = useState(null);
   const {
     saleOrderId,
@@ -732,15 +734,10 @@ export default function InvoiceScreen({ route, navigation }) {
   const [showEvidenceModal, setShowEvidenceModal] = useState(false);
   const [deliveryPhotos, setDeliveryPhotos] = useState([]);
   const [savingEvidence, setSavingEvidence] = useState(false);
-  const [thermalPrinter, setThermalPrinter] = useState(null);
   const [printerModalVisible, setPrinterModalVisible] = useState(false);
   const [loadingPairedPrinters, setLoadingPairedPrinters] = useState(false);
   const [pairedPrinterRows, setPairedPrinterRows] = useState([]);
-  const [thermalConnected, setThermalConnected] = useState(false);
-  const [connectingThermal, setConnectingThermal] = useState(false);
-  const [connectThermalError, setConnectThermalError] = useState(null);
   const MAX_PHOTOS = 3;
-  const rongtaReady = Platform.OS === 'android' && isRongtaNativeAvailable();
   const rongtaPrintBlocked =
     rongtaReady && (!thermalPrinter?.address || !thermalConnected);
 
@@ -777,6 +774,33 @@ export default function InvoiceScreen({ route, navigation }) {
           shadowRadius: 4,
           alignSelf: 'stretch',
         },
+        invoicePrinterBannerOk: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 10,
+          paddingVertical: 10,
+          paddingHorizontal: spacing.sm,
+          marginBottom: spacing.sm,
+          backgroundColor: (colors.success ?? '#22c55e') + '14',
+          borderRadius: borderRadius.md,
+          borderWidth: 1,
+          borderColor: (colors.success ?? '#22c55e') + '40',
+        },
+        invoicePrinterBannerTitle: { fontSize: 13, fontWeight: '800', color: colors.success ?? '#15803d' },
+        invoicePrinterBannerSub: { fontSize: 12, fontWeight: '600', color: colors.text, marginTop: 2 },
+        invoicePrinterBannerSetup: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 8,
+          paddingVertical: 10,
+          paddingHorizontal: spacing.sm,
+          marginBottom: spacing.sm,
+          backgroundColor: colors.primarySurface || colors.background,
+          borderRadius: borderRadius.md,
+          borderWidth: 1,
+          borderColor: colors.border,
+        },
+        invoicePrinterBannerSetupText: { flex: 1, fontSize: 13, fontWeight: '600', color: colors.text },
         logo: { width: 80, height: 56, marginBottom: 6, alignSelf: 'flex-start' },
         invoiceTitle: { fontSize: 14, fontWeight: '700', color: colors.textSecondary, marginBottom: spacing.sm },
         metaRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 3, alignItems: 'flex-start' },
@@ -1200,52 +1224,18 @@ export default function InvoiceScreen({ route, navigation }) {
     return () => setHideSyncIndicator(false);
   }, [setHideSyncIndicator]);
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      if (!rongtaReady) return;
-      const stored = await getStoredBluetoothPrinter();
-      if (!cancelled && stored) {
-        setThermalPrinter({
-          ...stored,
-          limitWidthDots: stored.limitWidthDots || DEFAULT_THERMAL_WIDTH_DOTS,
-          textAlign: stored.textAlign || 'center',
-        });
-        setThermalConnected(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [rongtaReady]);
-
-  useEffect(() => {
-    return () => {
-      if (Platform.OS === 'android' && isRongtaNativeAvailable()) {
-        disconnectRongtaPrinter();
-      }
-    };
-  }, []);
-
   const handleConnectToRongta = useCallback(async () => {
     if (!thermalPrinter?.address) {
       Alert.alert('Printer', 'Choose a paired printer first.');
       return;
     }
-    setConnectingThermal(true);
-    setConnectThermalError(null);
     try {
-      await connectToRongtaPrinter(thermalPrinter);
-      setThermalConnected(true);
+      await connect();
     } catch (e) {
-      setThermalConnected(false);
       const msg = e?.message || 'Could not connect. Check Bluetooth is on and the printer is paired.';
-      setConnectThermalError(msg);
       Alert.alert('Bluetooth connection failed', msg);
-    } finally {
-      setConnectingThermal(false);
     }
-  }, [thermalPrinter]);
+  }, [thermalPrinter, connect]);
 
   const openThermalPrinterPicker = useCallback(async () => {
     if (!rongtaReady) return;
@@ -1501,6 +1491,33 @@ export default function InvoiceScreen({ route, navigation }) {
     >
       {/* Invoice preview */}
       <View style={styles.previewCard}>
+        {rongtaReady ? (
+          thermalPrinter && thermalConnected ? (
+            <View style={styles.invoicePrinterBannerOk}>
+              <Ionicons name="bluetooth" size={20} color={colors.success ?? '#16a34a'} />
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={styles.invoicePrinterBannerTitle}>Rongta printer connected</Text>
+                <Text style={styles.invoicePrinterBannerSub} numberOfLines={2}>
+                  {thermalPrinter.name}
+                </Text>
+              </View>
+            </View>
+          ) : (
+            <TouchableOpacity
+              style={styles.invoicePrinterBannerSetup}
+              onPress={() => navigation.navigate('BluetoothPrinter')}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="bluetooth-outline" size={20} color={colors.primary} />
+              <Text style={styles.invoicePrinterBannerSetupText}>
+                {thermalPrinter
+                  ? 'Tap to open Bluetooth printer settings and connect'
+                  : 'Set up Bluetooth Rongta printer (Menu → Bluetooth printer)'}
+              </Text>
+              <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
+            </TouchableOpacity>
+          )
+        ) : null}
         <Image source={INVOICE_LOGO_ASSET} style={styles.logo} resizeMode="contain" />
         <Text style={styles.invoiceTitle}>Tax Invoice</Text>
         <View style={styles.metaRow}>
@@ -1615,13 +1632,7 @@ export default function InvoiceScreen({ route, navigation }) {
             {thermalPrinter ? (
               <TouchableOpacity
                 style={[styles.thermalPrinterBtn, styles.thermalPrinterBtnDanger]}
-                onPress={async () => {
-                  await disconnectRongtaPrinter();
-                  setThermalPrinter(null);
-                  setThermalConnected(false);
-                  setConnectThermalError(null);
-                  await setStoredBluetoothPrinter(null);
-                }}
+                onPress={() => clearPrinter().catch(() => {})}
                 activeOpacity={0.8}
               >
                 <Text style={styles.thermalPrinterBtnTextMuted}>Clear</Text>
@@ -1689,18 +1700,7 @@ export default function InvoiceScreen({ route, navigation }) {
                 <TouchableOpacity
                   style={styles.printerPickRow}
                   onPress={async () => {
-                    const next = {
-                      name: item.name,
-                      address: item.address,
-                      mac: item.mac || item.address,
-                      limitWidthDots: DEFAULT_THERMAL_WIDTH_DOTS,
-                      textAlign: 'center',
-                    };
-                    await disconnectRongtaPrinter();
-                    setThermalPrinter(next);
-                    setThermalConnected(false);
-                    setConnectThermalError(null);
-                    await setStoredBluetoothPrinter(next);
+                    await selectPrinter(item);
                     setPrinterModalVisible(false);
                   }}
                 >

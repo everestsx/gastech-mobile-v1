@@ -1,6 +1,7 @@
 <resources>
-  <color name="splashscreen_background">#ED5D1A</color>
-  <color name="iconBackground">#ED5D1A</color>
-  <color name="colorPrimary">#023c69</color>
-  <color name="colorPrimaryDark">#ffffff</color>
+  <!-- GasTech theme: indigo / violet (matches app theme.js primary) -->
+  <color name="splashscreen_background">#312e81</color>
+  <color name="iconBackground">#6366f1</color>
+  <color name="colorPrimary">#6366f1</color>
+  <color name="colorPrimaryDark">#312e81</color>
 </resources>

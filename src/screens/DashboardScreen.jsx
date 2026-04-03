@@ -42,7 +42,7 @@ import {
 } from '../services/commission.service';
 import * as productsDb from '../database/products.js';
 import DeliveryProgressBarChart from '../components/DeliveryProgressBarChart';
-import SyncIndicator from '../components/SyncIndicator';
+import SyncHeaderBadge from '../components/SyncHeaderBadge';
 import { useSync } from '../context/SyncContext';
 
 // const SHOPS_TARGET = 60;
@@ -97,7 +97,7 @@ function getGasImageByProductName(productName) {
 
 export default function DashboardScreen({ navigation }) {
   const insets = useSafeAreaInsets();
-  const { isSyncing, syncCompleteTimestamp } = useSync();
+  const { syncCompleteTimestamp } = useSync();
   const { colors, showCreateSalesOrder: userShowCreate, showReturnOrder: userShowReturn, syncDateField } = useTheme();
   // Visibility from config file; user preference (theme/settings) can further hide when config allows
   const showCreateSalesOrder = dashboardConfig.showCreateSalesOrder && userShowCreate;
@@ -929,7 +929,9 @@ export default function DashboardScreen({ navigation }) {
           </View>
           <View style={styles.headerButtons}>
             <View style={styles.lastSyncedRow}>
-              {isSyncing && <SyncIndicator style={{ marginRight: SYNC_INDICATOR_GAP }} />}
+              <View style={{ marginRight: SYNC_INDICATOR_GAP }}>
+                <SyncHeaderBadge variant="dashboard" />
+              </View>
               <View style={styles.lastSyncedBlock}>
                 <Text style={styles.lastSyncedLabel}>Last Synced</Text>
                 <Text style={styles.lastSyncTimeText} numberOfLines={1}>

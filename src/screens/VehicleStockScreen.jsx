@@ -15,28 +15,12 @@ import { useTheme } from '../context/ThemeContext';
 import { useSync } from '../context/SyncContext';
 import { spacing, borderRadius } from '../constants/theme';
 import { getUserSession, getCachedVehicleInventoryByLocation, getVehicleLocationId, getCachedOrders, getPickingsBySaleIdsFromDB, getOrderLinesByOrderIdsFromDB } from '../services/sync.service';
-import { getGasTypeBlueColor } from '../utils/productDisplay';
+import { getGasTypeBlueColor, parseKgFromProductName } from '../utils/productDisplay';
+import { getProductImageSource } from '../utils/gasImage';
 import * as productsDb from '../database/products.js';
 
 const CARD_MIN_WIDTH = 160;
 const CARD_GAP = spacing.md;
-
-const PRODUCT_LOGO_MAP = {
-  37.5: require('../../assets/Gas_Image/37.5kg.png'),
-  12.5: require('../../assets/Gas_Image/gas12.5k.png'),
-  2.3: require('../../assets/Gas_Image/2.3kg.png'),
-  5: require('../../assets/Gas_Image/5kg.png'),
-};
-
-/** Resolve product logo from item (product_name or product_id). Returns require() source or null. */
-function getProductLogo(item) {
-  const raw = (item.product_name || '').toLowerCase();
-  if (/37\.5|37\.5\s*kg/.test(raw)) return PRODUCT_LOGO_MAP[37.5];
-  if (/12\.5|12\.5\s*kg/.test(raw)) return PRODUCT_LOGO_MAP[12.5];
-  if (/2\.3|2\.3\s*kg/.test(raw)) return PRODUCT_LOGO_MAP[2.3];
-  if (/\b5\s*kg|\b5kg|\[gas5\]/.test(raw)) return PRODUCT_LOGO_MAP[5];
-  return null;
-}
 
 /**
  * Strips the product code prefix (e.g., "[GAS5] ") from product names.
@@ -77,18 +61,19 @@ function StockCard({ item, colors, cardWidth, isLeft, productImageUri, delivered
   const ordered = Math.max(0, onHand - extra);
   const delivered = Math.max(0, Number(deliveredQty) || 0);
   const lowStock = onHand <= 0;
-  const logoSource = productImageUri ? { uri: productImageUri } : getProductLogo(item);
-  const gasBlueColor = getGasTypeBlueColor(rawName);
+  const logoSource = productImageUri ? { uri: productImageUri } : getProductImageSource(rawName);
+  const isGasCylinder = parseKgFromProductName(rawName) != null;
+  const accentColor = isGasCylinder ? getGasTypeBlueColor(rawName) : (colors.primary ?? '#6366f1');
 
   return (
     <View
       style={[
         styles.card,
-        { backgroundColor: colors.surface, borderColor: lowStock ? colors.error : gasBlueColor, borderWidth: lowStock ? 2 : 2.5, width: cardWidth },
+        { backgroundColor: colors.surface, borderColor: lowStock ? colors.error : accentColor, borderWidth: lowStock ? 2 : 2.5, width: cardWidth },
         isLeft && { marginRight: CARD_GAP },
       ]}
     >
-      <View style={[styles.cardAccent, { backgroundColor: lowStock ? colors.error : gasBlueColor }]} />
+      <View style={[styles.cardAccent, { backgroundColor: lowStock ? colors.error : accentColor }]} />
       <View style={styles.cardContent}>
         <View style={styles.cardIconWrap}>
           {logoSource ? (
@@ -97,7 +82,7 @@ function StockCard({ item, colors, cardWidth, isLeft, productImageUri, delivered
             <Ionicons
               name="cube-outline"
               size={28}
-              color={lowStock ? colors.error : gasBlueColor}
+              color={lowStock ? colors.error : accentColor}
             />
           )}
         </View>
@@ -122,8 +107,8 @@ function StockCard({ item, colors, cardWidth, isLeft, productImageUri, delivered
             <Text style={[styles.stockRowValue, { color: delivered > 0 ? '#16a34a' : colors.textSecondary }]}>{delivered}</Text>
           </View>
         </View>
-        <View style={[styles.badge, { backgroundColor: lowStock ? colors.error + '20' : gasBlueColor + '20' }]}>
-          <Text style={[styles.badgeText, { color: lowStock ? colors.error : '#3b82f6' }]}>
+        <View style={[styles.badge, { backgroundColor: lowStock ? colors.error + '20' : accentColor + '20' }]}>
+          <Text style={[styles.badgeText, { color: lowStock ? colors.error : accentColor }]}>
             {lowStock ? 'Out of stock' : 'In stock'}
           </Text>
         </View>
@@ -401,7 +386,7 @@ useEffect(() => {
       </View>
       {!hasData && (
         <Text style={screenStyles.notSyncedText}>
-          Data not synced with server. Sync from the dashboard to load stock.
+          No stock rows on this device yet. Sync once while online (Menu → Sync or Home); data stays available offline. Pull to refresh after sync.
         </Text>
       )}
       <View style={screenStyles.grid}>

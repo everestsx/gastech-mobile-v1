@@ -20,8 +20,11 @@ import {
   deleteLocalData, clearAllTables,setIsLoggingOut
 } from '../services/sync.service';
 import CustomAlert from '../components/CustomAlert';
+import { usePrinterConnection } from '../context/PrinterConnectionContext';
+
 export default function MenuScreen({ navigation }) {
   const { colors } = useTheme();
+  const { clearPrinter } = usePrinterConnection();
   const [syncing, setSyncing] = useState(false);
   const [lastSync, setLastSync] = useState(null);
   const [user, setUser] = useState(null);
@@ -129,8 +132,8 @@ export default function MenuScreen({ navigation }) {
         style: 'destructive',
         onPress: async () => {
           try {
-
             setIsLoggingOut(true);
+            await clearPrinter().catch(() => {});
             await logout();
             hideAlert();
             clearAllTables().then(() => {
@@ -217,6 +220,16 @@ export default function MenuScreen({ navigation }) {
       >
         <Ionicons name="cube-outline" size={24} color={colors.primary} />
         <Text style={[styles.menuItemText, { color: colors.text }]}>My Stocks</Text>
+        <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={[styles.menuItem, { backgroundColor: colors.surface, borderColor: colors.border }]}
+        onPress={() => navigation.navigate('BluetoothPrinter')}
+        activeOpacity={0.8}
+      >
+        <Ionicons name="bluetooth-outline" size={24} color={colors.primary} />
+        <Text style={[styles.menuItemText, { color: colors.text }]}>Bluetooth printer</Text>
         <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
       </TouchableOpacity>
 

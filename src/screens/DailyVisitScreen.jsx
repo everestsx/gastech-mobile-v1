@@ -15,10 +15,12 @@ import { spacing, borderRadius } from '../constants/theme';
 import {
   getCachedOrders,
   getOrderLineTotalsFromDB,
+  getOrderLinesByOrderIdsFromDB,
   getPickingsBySaleIdsFromDB,
   getUserSession,
 } from '../services/sync.service';
 import OrderCard from '../components/OrderCard';
+import SyncHeaderBadge from '../components/SyncHeaderBadge';
 
 function formatDate(d) {
   return d.toISOString().split('T')[0];
@@ -41,6 +43,8 @@ export default function DailyVisitScreen({ route, navigation }) {
           flexDirection: 'row',
           alignItems: 'center',
           justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          gap: spacing.sm,
           padding: spacing.md,
           backgroundColor: colors.surface,
           borderBottomWidth: 1,
@@ -101,9 +105,11 @@ export default function DailyVisitScreen({ route, navigation }) {
         setOrders([]);
         return;
       }
-      const [totals, pickings] = await Promise.all([
+      const orderIds = filtered.map((o) => o.id);
+      const [totals, pickings, allLines] = await Promise.all([
         getOrderLineTotalsFromDB(filtered),
-        getPickingsBySaleIdsFromDB(filtered.map((o) => o.id)),
+        getPickingsBySaleIdsFromDB(orderIds),
+        getOrderLinesByOrderIdsFromDB(orderIds),
       ]);
       const saleIdToPickingState = {};
       (pickings || []).forEach((p) => {
@@ -113,11 +119,20 @@ export default function DailyVisitScreen({ route, navigation }) {
           else if (saleIdToPickingState[saleId] !== 'done') saleIdToPickingState[saleId] = p.state;
         }
       });
+      const linesByOrderId = {};
+      (allLines || []).forEach((line) => {
+        const oid = Array.isArray(line.order_id) ? line.order_id[0] : line.order_id;
+        if (oid != null) {
+          if (!linesByOrderId[oid]) linesByOrderId[oid] = [];
+          linesByOrderId[oid].push(line);
+        }
+      });
       setOrders(
         filtered.map((o) => ({
           ...o,
           totalQty: totals[o.id] != null ? totals[o.id] : null,
           isDelivered: saleIdToPickingState[o.id] === 'done',
+          orderLines: linesByOrderId[o.id] || [],
         }))
       );
     } catch (_) {
@@ -157,7 +172,12 @@ export default function DailyVisitScreen({ route, navigation }) {
   };
 
   const renderItem = ({ item }) => (
-    <OrderCard order={item} onPress={onOrderPress} isDelivered={item.isDelivered} />
+    <OrderCard
+      order={item}
+      orderLines={item.orderLines}
+      onPress={onOrderPress}
+      isDelivered={item.isDelivered}
+    />
   );
 
   return (
@@ -172,6 +192,7 @@ export default function DailyVisitScreen({ route, navigation }) {
           <Text style={styles.dateText}>{formatDate(selectedDate)}</Text>
           <Ionicons name="chevron-down" size={20} color={colors.primary} />
         </TouchableOpacity>
+        <SyncHeaderBadge variant="surface" />
         <TouchableOpacity
           onPress={openQRScan}
           style={styles.qrBtnHeader}

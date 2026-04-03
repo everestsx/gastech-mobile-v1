@@ -26,6 +26,7 @@
     "expo-file-system": "~19.0.21",
     "expo-image-manipulator": "~14.0.8",
     "expo-image-picker": "~17.0.10",
+    "expo-linear-gradient": "~15.0.8",
     "expo-media-library": "^18.2.1",
     "expo-print": "~15.0.8",
     "expo-sqlite": "~15.0.0",

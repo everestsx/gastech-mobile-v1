@@ -28,7 +28,7 @@ import {
 } from '../services/delivery.service';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
-import { getProductDisplayName } from '../utils/productDisplay';
+import { getProductDisplayName, getGasSizeFromProductName } from '../utils/productDisplay';
 import { getProductImageSource } from '../utils/gasImage';
 
 function formatCurrency(amount) {
@@ -58,6 +58,17 @@ function formatWithComma(amount) {
 export default function SaleOrderDetailsScreen({ route, navigation }) {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
+
+  const GAS_SIZE_COLORS = useMemo(
+    () => ({
+      small: colors.success ?? '#059669',
+      medium: colors.primary ?? '#4f46e5',
+      large: colors.warning ?? '#d97706',
+      big: colors.secondary ?? '#4338ca',
+    }),
+    [colors]
+  );
+  const FALLBACK_ACCENT = colors.primaryLight ?? colors.primary ?? '#818cf8';
   const { saleOrderId } = route.params;
 
   const [order, setOrder] = useState(null);
@@ -188,6 +199,8 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
           alignItems: 'center',
         },
         lineProductName: { fontSize: 14, fontWeight: '700', color: colors.primary, marginBottom: 6 },
+        lineGasSwatch: { width: 10, height: 10, borderRadius: 2, flexShrink: 0 },
+        lineQtyValue: { fontSize: 14, fontWeight: '700', color: colors.text },
         lineNameQtyRow: {
           flexDirection: 'row',
           alignItems: 'center',
@@ -772,6 +785,9 @@ const handleProceedToPayment = useCallback(async () => {
       ? unitPrice * (Number.isNaN(qtyNum) ? 0 : qtyNum)
       : (lineSubtotal > 0 ? lineSubtotal : unitPrice * (Number.isNaN(qtyNum) ? 0 : qtyNum));
     const productName = item.product_id?.[1] ?? item.name ?? '';
+    const gasSize = getGasSizeFromProductName(productName);
+    const gasAccent =
+      gasSize && GAS_SIZE_COLORS[gasSize.size] ? GAS_SIZE_COLORS[gasSize.size] : FALLBACK_ACCENT;
     const productId = item.product_id != null && Array.isArray(item.product_id) ? item.product_id[0] : item.product_id;
     const availableStock = productId != null ? productIdToAvailable[productId] : undefined;
     const totalOrderedForProduct = productId != null ? (totalQtyByProductId[productId] ?? 0) : 0;
@@ -793,9 +809,28 @@ const handleProceedToPayment = useCallback(async () => {
             {!isDelivered && modifyEnabled ? (
               <>
                 <View style={styles.lineNameQtyRow}>
-                  <Text style={styles.lineProductName} numberOfLines={1}>
-                    {getProductDisplayName(productName) || 'Unknown'} ×
-                  </Text>
+                  <View
+                    style={{
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 6,
+                      flex: 1,
+                      minWidth: 0,
+                    }}
+                  >
+                    {gasSize ? (
+                      <>
+                        <View style={[styles.lineGasSwatch, { backgroundColor: gasAccent }]} />
+                        <Text style={styles.lineProductName} numberOfLines={1}>
+                          {gasSize.kg} kg ×
+                        </Text>
+                      </>
+                    ) : (
+                      <Text style={styles.lineProductName} numberOfLines={1}>
+                        {getProductDisplayName(productName) || 'Unknown'} ×
+                      </Text>
+                    )}
+                  </View>
                   <View style={styles.qtyControls}>
                     <TouchableOpacity
                       style={styles.qtyIconBtn}
@@ -845,10 +880,24 @@ const handleProceedToPayment = useCallback(async () => {
                 )}
               </>
             ) : (
-              <Text style={styles.lineProductName} numberOfLines={2}>
-                {getProductDisplayName(productName) || 'Unknown'} × 
-                <Text style={styles.lineQtyValue}> {item.newQty} units</Text>
-              </Text>
+              <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginBottom: 6 }}>
+                {gasSize ? (
+                  <View style={[styles.lineGasSwatch, { backgroundColor: gasAccent, marginTop: 4 }]} />
+                ) : null}
+                <Text style={styles.lineProductName} numberOfLines={2}>
+                  {gasSize ? (
+                    <>
+                      {gasSize.kg} kg ×{' '}
+                      <Text style={styles.lineQtyValue}>{item.newQty} units</Text>
+                    </>
+                  ) : (
+                    <>
+                      {getProductDisplayName(productName) || 'Unknown'} ×{' '}
+                      <Text style={styles.lineQtyValue}>{item.newQty} units</Text>
+                    </>
+                  )}
+                </Text>
+              </View>
             )}
 
             <View style={styles.lineUnitPriceRow}>

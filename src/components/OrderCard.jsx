@@ -3,7 +3,12 @@ import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
-import { getProductDisplayName, getGasSizeFromProductName } from '../utils/productDisplay';
+import {
+  getProductDisplayName,
+  getGasSizeFromProductName,
+  getOrderLineDisplayLabel,
+  resolveOrderLinesForCard,
+} from '../utils/productDisplay';
 import { formatCurrency } from '../utils/format';
 
 /** Format date_order (ISO or date string) for display. */
@@ -29,9 +34,9 @@ export function getOrderTotalQty(order) {
   }
   const lines = order?.orderLines || order?.order_line;
   if (Array.isArray(lines) && lines.length > 0) {
-    if (lines[0] && typeof lines[0].product_uom_qty === 'number') {
-      return lines.reduce((s, l) => s + (Number(l.product_uom_qty) || 0), 0);
-    }
+    const sum = lines.reduce((s, l) => s + (Number(l.product_uom_qty) || 0), 0);
+    const anyQty = lines.some((l) => l && l.product_uom_qty != null && String(l.product_uom_qty).trim() !== '');
+    if (anyQty || sum > 0) return sum;
     return lines.length;
   }
   return '—';
@@ -167,9 +172,7 @@ export default function OrderCard({ order, onPress, isDelivered, orderLines = []
 
   const state = order.state || 'draft';
   const displayDate = syncDateField === 'delivery_date' ? order.commitment_date : order.date_order;
-  const lines = Array.isArray(orderLines) && orderLines.length > 0
-    ? orderLines
-    : (order.orderLines || []);
+  const lines = resolveOrderLinesForCard(order, orderLines);
 
   return (
     <TouchableOpacity
@@ -250,14 +253,14 @@ export default function OrderCard({ order, onPress, isDelivered, orderLines = []
         <View style={styles.qtyBadgesRow}>
           {lines.map((line, index) => {
             const qty = Number(line.product_uom_qty) || 0;
-            const rawLabel = line.product_id?.[1] || line.name || 'Item';
-            const displayName = getProductDisplayName(rawLabel) || 'Item';
+            const rawLabel = getOrderLineDisplayLabel(line);
+            const displayName = getProductDisplayName(rawLabel) || rawLabel || '—';
             const gasSize = getGasSizeFromProductName(rawLabel);
             const accent = gasSize && GAS_SIZE_COLORS[gasSize.size]
               ? GAS_SIZE_COLORS[gasSize.size]
               : FALLBACK_ACCENT;
             return (
-              <View key={line.id || index} style={[styles.qtyBadge, { borderColor: accent }]}>
+              <View key={line.id ?? line.line_id ?? index} style={[styles.qtyBadge, { borderColor: accent }]}>
                 <View style={[styles.qtyBadgeSquare, { backgroundColor: accent }]} />
                 <Text style={styles.qtyBadgeText} numberOfLines={1}>
                   {gasSize ? (
