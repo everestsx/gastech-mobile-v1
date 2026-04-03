@@ -130,6 +130,32 @@ export const callOdoo = async (model, method, domain = [], options = {}) => {
 };
 
 /**
+ * Odoo JSON 2 API (Bearer), same style as /json/2/.../search_read used by commission.
+ * Uses current env/session API key from getOdooConfig().
+ */
+export const callOdooJson2 = async (model, method, params = {}) => {
+  const { url, apiKey } = getOdooConfig();
+  const baseUrl = url.replace(/\/jsonrpc\/?$/i, "").replace(/\/$/, "");
+  const path = `${baseUrl}/json/2/${model}/${method}`;
+
+  const response = await fetchWithTimeout(path, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(params),
+  });
+
+  const json = await response.json();
+  if (json.error) {
+    const msg = json.error.data?.message || json.error.message || "Odoo JSON 2 error";
+    throw new Error(msg);
+  }
+  return json.result ?? json;
+};
+
+/**
  * Call Odoo with explicit positional args (e.g. create(vals), process([id])).
  * positionalArgs = array of positional arguments for the method.
  */

@@ -44,6 +44,7 @@ import * as productsDb from '../database/products.js';
 import DeliveryProgressBarChart from '../components/DeliveryProgressBarChart';
 import SyncHeaderBadge from '../components/SyncHeaderBadge';
 import { useSync } from '../context/SyncContext';
+import { odooImageToUri } from '../services/employee.service';
 
 // const SHOPS_TARGET = 60;
 // const GAS_TARGET = 6000;
@@ -509,6 +510,9 @@ export default function DashboardScreen({ navigation }) {
   const routeFromOrder = todayOrders[0]?.route_id?.[1];
   const routeName = routeFromOrder || (routes[0]?.name) || '—';
   const vehicleName = user?.licensePlate || user?.vehicleName || 'Vehicle';
+  const driverName = user?.driverName;
+  const driverHeaderUri = user?.driverImageBase64 ? odooImageToUri(user.driverImageBase64) : null;
+  const crewPorters = Array.isArray(user?.selectedPorters) ? user.selectedPorters : [];
 
 
   // Use commission rate from API, default to Rs. 1 per item if not available
@@ -625,6 +629,53 @@ export default function DashboardScreen({ navigation }) {
           gap: 6,
         },
         routePillText: { fontSize: 13, fontWeight: '600', color: 'rgba(255,255,255,0.95)' },
+        driverHeaderRow: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 10,
+          marginBottom: 8,
+        },
+        driverHeaderAvatar: {
+          width: 46,
+          height: 46,
+          borderRadius: 23,
+          borderWidth: 2,
+          borderColor: 'rgba(255,255,255,0.45)',
+          backgroundColor: 'rgba(255,255,255,0.12)',
+          overflow: 'hidden',
+        },
+        driverHeaderAvatarPh: {
+          flex: 1,
+          alignItems: 'center',
+          justifyContent: 'center',
+        },
+        crewLabel: {
+          fontSize: 10,
+          fontWeight: '800',
+          color: 'rgba(255,255,255,0.72)',
+          letterSpacing: 1.2,
+          marginBottom: 6,
+          marginTop: 4,
+        },
+        crewScroll: { flexGrow: 0 },
+        crewChip: { alignItems: 'center', width: 58, marginRight: 10 },
+        crewAvatar: {
+          width: 40,
+          height: 40,
+          borderRadius: 20,
+          borderWidth: 2,
+          borderColor: 'rgba(255,255,255,0.35)',
+          overflow: 'hidden',
+          backgroundColor: 'rgba(255,255,255,0.1)',
+        },
+        crewName: {
+          fontSize: 10,
+          fontWeight: '600',
+          color: 'rgba(255,255,255,0.92)',
+          marginTop: 4,
+          textAlign: 'center',
+          maxWidth: 58,
+        },
         headerButtons: {
           flexDirection: 'row',
           alignItems: 'flex-end',
@@ -915,9 +966,59 @@ export default function DashboardScreen({ navigation }) {
       <View style={[styles.topBar, { paddingTop: spacing.lg + insets.top }]}>
         <View style={[styles.topBarRow, styles.topBarRowWithMargin]}>
           <View style={styles.topBarLeft}>
-            <Text style={styles.vehicleName} numberOfLines={1}>
-              {vehicleName}
-            </Text>
+            <View style={styles.driverHeaderRow}>
+              {driverHeaderUri ? (
+                <Image source={{ uri: driverHeaderUri }} style={styles.driverHeaderAvatar} resizeMode="cover" />
+              ) : (
+                <View style={[styles.driverHeaderAvatar, styles.driverHeaderAvatarPh]}>
+                  <Ionicons name="person" size={24} color="rgba(255,255,255,0.95)" />
+                </View>
+              )}
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={styles.vehicleName} numberOfLines={1}>
+                  {driverName || vehicleName}
+                </Text>
+                {driverName ? (
+                  <Text
+                    style={{ fontSize: 13, fontWeight: '600', color: 'rgba(255,255,255,0.88)', marginTop: 2 }}
+                    numberOfLines={1}
+                  >
+                    {vehicleName}
+                  </Text>
+                ) : null}
+              </View>
+            </View>
+            {crewPorters.length > 0 ? (
+              <View style={{ marginBottom: 8 }}>
+                <Text style={styles.crewLabel}>TODAY'S CREW</Text>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  style={styles.crewScroll}
+                  contentContainerStyle={{ flexDirection: 'row', alignItems: 'flex-start', paddingRight: 8 }}
+                >
+                  {crewPorters.map((p) => {
+                    const uri = p?.imageBase64 ? odooImageToUri(p.imageBase64) : null;
+                    return (
+                      <View key={String(p.id)} style={styles.crewChip}>
+                        <View style={styles.crewAvatar}>
+                          {uri ? (
+                            <Image source={{ uri }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+                          ) : (
+                            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+                              <Ionicons name="people-outline" size={18} color="rgba(255,255,255,0.85)" />
+                            </View>
+                          )}
+                        </View>
+                        <Text style={styles.crewName} numberOfLines={2}>
+                          {p.name}
+                        </Text>
+                      </View>
+                    );
+                  })}
+                </ScrollView>
+              </View>
+            ) : null}
             <View style={styles.dateRow}>
               <Ionicons name="calendar-outline" size={18} color="rgba(255,255,255,0.95)" />
               <Text style={styles.dateText}>{todayDateStr}</Text>

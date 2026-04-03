@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing, borderRadius } from '../constants/theme';
 import { runSync, getLastSyncTime, getUserSession, logout, getSyncIntervalMinutes } from '../services/sync.service';
@@ -20,6 +21,12 @@ export default function DrawerContent({ navigation }) {
       await refreshLastSync();
     })();
   }, []);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      getUserSession().then(setUser);
+    }, [])
+  );
 
   const handleSync = async () => {
     setSyncing(true);
@@ -61,9 +68,19 @@ export default function DrawerContent({ navigation }) {
     <View style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>Gas Cylinder Delivery</Text>
-        {user?.username && (
+        {user?.driverName ? (
+          <Text style={styles.user} numberOfLines={1}>
+            Driver: {user.driverName}
+          </Text>
+        ) : null}
+        {user?.username ? (
           <Text style={styles.user}>@{user.username}</Text>
-        )}
+        ) : null}
+        {!user?.driverName && !user?.username && user?.licensePlate ? (
+          <Text style={styles.user} numberOfLines={1}>
+            {user.licensePlate}
+          </Text>
+        ) : null}
       </View>
 
       <TouchableOpacity

@@ -11,7 +11,10 @@ import {
   TextInput,
   KeyboardAvoidingView,
   Platform,
-  Modal, Keyboard,
+  Modal,
+  Keyboard,
+  Image,
+  ScrollView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import AppLogo from '../components/AppLogo';
@@ -19,7 +22,8 @@ import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
 import { getCachedVehicles, getLastVehicleId, runSync, saveUserSession, saveLastVehicleId, syncVehiclesOnly } from '../services/sync.service';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { authenticateVehicleOnline, fetchAndStoreVehicleJournals } from '../services/vehicle.service';
+import { fetchAndStoreVehicleJournals } from '../services/vehicle.service';
+import { getDriverByBarcode, getPortersEmployees, odooImageToUri } from '../services/employee.service';
 
 
 
@@ -77,46 +81,122 @@ export default function LoginScreen({ navigation }) {
       setTimeout(() => setSyncing(false), 500);
     }
   }, [loadVehicles]);
+  /** Driver code / password (matched in Odoo on Driving employees; value is not shown from server). */
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+
+  /** credentials → driverReview (confirm face/name) → porterPick → Main */
+  const [loginPhase, setLoginPhase] = useState('credentials');
+  const [matchedDriver, setMatchedDriver] = useState(null);
+  const [portersList, setPortersList] = useState([]);
+  const [portersLoading, setPortersLoading] = useState(false);
+  const [selectedPorterIds, setSelectedPorterIds] = useState([]);
+
+  const resetLoginFlow = useCallback(() => {
+    setLoginPhase('credentials');
+    setMatchedDriver(null);
+    setPortersList([]);
+    setSelectedPorterIds([]);
+  }, []);
 
   useEffect(() => {
     initData();
   }, [initData]);
 
+  const togglePorter = useCallback((id) => {
+    setSelectedPorterIds((prev) => {
+      const n = Number(id);
+      if (prev.includes(n)) return prev.filter((x) => x !== n);
+      return [...prev, n];
+    });
+  }, []);
+
   const handleLogin = async () => {
     Keyboard.dismiss();
     if (!selected) return showAlert('Required', 'Please select a vehicle.');
-    if (!password) return showAlert('Required', 'Please enter your password');
+    if (!password.trim()) return showAlert('Required', 'Please enter your driver code.');
 
     setLoading(true);
     try {
-      const isAuthorized = await authenticateVehicleOnline(selected.id, password);
-
-      if (!isAuthorized) {
-        throw new Error('Invalid password. Please verify with Admin.');
+      const driver = await getDriverByBarcode(password);
+      if (!driver) {
+        throw new Error('Unknown driver code. Use the code set on your Driving employee in Odoo.');
       }
+      setMatchedDriver(driver);
+      setLoginPhase('driverReview');
+    } catch (err) {
+      showAlert('Login Failed', err.message || 'Could not verify driver.', [{ text: 'Try Again', onPress: hideAlert }]);
+    } finally {
+      setLoading(false);
+    }
+  };
 
+  const openPorterSelection = async () => {
+    Keyboard.dismiss();
+    setPortersLoading(true);
+    setLoginPhase('porterPick');
+    setSelectedPorterIds([]);
+    try {
+      const list = await getPortersEmployees();
+      setPortersList(Array.isArray(list) ? list : []);
+      if (!list?.length) {
+        showAlert(
+          'No porters',
+          'No employees found in the Porters department. Ask an admin to check Odoo.',
+          [{ text: 'OK', onPress: hideAlert }]
+        );
+      }
+    } catch (e) {
+      showAlert('Could not load porters', e?.message || 'Check your connection and try again.', [
+        { text: 'Back', onPress: () => { hideAlert(); setLoginPhase('driverReview'); } },
+      ]);
+      setPortersList([]);
+    } finally {
+      setPortersLoading(false);
+    }
+  };
+
+  const finishLoginWithPorters = async () => {
+    if (!selected || !matchedDriver) return;
+    if (selectedPorterIds.length === 0) {
+      return showAlert('Select porters', 'Choose at least one porter for this shift.', [{ text: 'OK', onPress: hideAlert }]);
+    }
+
+    const selectedPorters = portersList
+      .filter((p) => selectedPorterIds.includes(Number(p.id)))
+      .map((p) => ({
+        id: p.id,
+        name: p.name,
+        barcode: p.barcode,
+        imageBase64: p.imageBase64,
+      }));
+
+    setLoading(true);
+    try {
       await saveUserSession({
         isAdmin: false,
         vehicleId: selected.id,
         vehicleName: selected.name,
         licensePlate: selected.license_plate || '',
+        driverId: matchedDriver.id,
+        driverName: matchedDriver.name,
+        driverBarcode: matchedDriver.barcode,
+        driverImageBase64: matchedDriver.imageBase64,
+        selectedPorters,
         loggedInAt: new Date().toISOString(),
       });
 
       saveLastVehicleId(selected.id);
-      // Store vehicle cash_journal_id and check_journal_id locally so Cash/Cheque payments work offline
       const licensePlate = (selected.license_plate || selected.name || '').trim();
       if (licensePlate) {
         await fetchAndStoreVehicleJournals(licensePlate);
       }
-      runSync().catch(() => {}); // run sync automatically in background; do not block navigation
+      runSync().catch(() => {});
+      resetLoginFlow();
+      setPassword('');
       navigation.replace('Main');
     } catch (err) {
-      showAlert('Login Failed', err.message, [
-        { text: 'Try Again', onPress: hideAlert }
-      ]);
+      showAlert('Login Failed', err.message || 'Could not save session.', [{ text: 'Try Again', onPress: hideAlert }]);
     } finally {
       setLoading(false);
     }
@@ -252,6 +332,115 @@ export default function LoginScreen({ navigation }) {
       fontWeight: '700',
       color: '#fff'
     },
+    modalOverlay: {
+      flex: 1,
+      backgroundColor: 'rgba(15, 23, 42, 0.55)',
+      justifyContent: 'center',
+      paddingHorizontal: spacing.lg,
+    },
+    modalCard: {
+      backgroundColor: colors.surface,
+      borderRadius: borderRadius.xl,
+      padding: spacing.lg,
+      maxHeight: '88%',
+      borderWidth: 1,
+      borderColor: colors.border,
+      shadowColor: colors.primary,
+      shadowOffset: { width: 0, height: 12 },
+      shadowOpacity: 0.2,
+      shadowRadius: 24,
+      elevation: 12,
+    },
+    modalTitle: {
+      fontSize: 20,
+      fontWeight: '800',
+      color: colors.text,
+      textAlign: 'center',
+      marginBottom: spacing.sm,
+    },
+    modalSubtitle: {
+      fontSize: 14,
+      color: colors.textSecondary,
+      textAlign: 'center',
+      marginBottom: spacing.lg,
+    },
+    driverAvatarWrap: {
+      alignSelf: 'center',
+      width: 112,
+      height: 112,
+      borderRadius: 56,
+      overflow: 'hidden',
+      borderWidth: 3,
+      borderColor: colors.primary,
+      marginBottom: spacing.md,
+      backgroundColor: colors.background,
+    },
+    driverAvatarImg: { width: '100%', height: '100%' },
+    driverNameText: {
+      fontSize: 22,
+      fontWeight: '800',
+      color: colors.text,
+      textAlign: 'center',
+    },
+    driverVehicleHint: {
+      fontSize: 14,
+      color: colors.textSecondary,
+      textAlign: 'center',
+      marginTop: 6,
+    },
+    modalBtnRow: {
+      flexDirection: 'row',
+      gap: spacing.sm,
+      marginTop: spacing.lg,
+    },
+    modalBtnSecondary: {
+      flex: 1,
+      height: 50,
+      borderRadius: borderRadius.lg,
+      borderWidth: 1.5,
+      borderColor: colors.border,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: colors.background,
+    },
+    modalBtnSecondaryText: { fontSize: 16, fontWeight: '700', color: colors.text },
+    modalBtnPrimary: {
+      flex: 1,
+      height: 50,
+      borderRadius: borderRadius.lg,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: colors.primary,
+    },
+    modalBtnPrimaryText: { fontSize: 16, fontWeight: '700', color: '#fff' },
+    porterRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingVertical: 12,
+      paddingHorizontal: 4,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.border,
+      gap: 12,
+    },
+    porterAvatar: {
+      width: 48,
+      height: 48,
+      borderRadius: 24,
+      backgroundColor: colors.background,
+      overflow: 'hidden',
+      borderWidth: 2,
+      borderColor: colors.primary + '40',
+    },
+    porterCheck: {
+      width: 26,
+      height: 26,
+      borderRadius: 13,
+      borderWidth: 2,
+      borderColor: colors.primary,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    porterCheckOn: { backgroundColor: colors.primary },
 
   }), [colors]);
 
@@ -352,12 +541,12 @@ export default function LoginScreen({ navigation }) {
                   </TouchableOpacity>
                 </Modal>
               </View>
-              <Text style={styles.inputLabel}>Password</Text>
+              <Text style={styles.inputLabel}>Driver code</Text>
               <View style={styles.inputGroup}>
-                <Ionicons name="lock-closed-outline" size={20} color={colors.primary} style={{ marginRight: 12 }} />
+                <Ionicons name="key-outline" size={20} color={colors.primary} style={{ marginRight: 12 }} />
                 <TextInput
                     style={{ flex: 1, fontSize: 16, color: colors.text }}
-                    placeholder="••••••••"
+                    placeholder="Your driver code (e.g. D1)"
                     placeholderTextColor={colors.textSecondary}
                     secureTextEntry={!showPassword}
                     value={password}
@@ -375,7 +564,7 @@ export default function LoginScreen({ navigation }) {
               <TouchableOpacity
                   style={styles.loginBtn}
                   onPress={handleLogin}
-                  disabled={loading || syncing}
+                  disabled={loading || syncing || loginPhase !== 'credentials'}
                   activeOpacity={0.8}
               >
                 {loading || syncing ? (
@@ -391,6 +580,115 @@ export default function LoginScreen({ navigation }) {
 
           </View>
         </KeyboardAvoidingView>
+
+        <Modal visible={loginPhase === 'driverReview'} transparent animationType="fade">
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalCard}>
+              <Text style={styles.modalTitle}>Signed in as driver</Text>
+              <Text style={styles.modalSubtitle}>Confirm your profile, then choose your porters for this vehicle.</Text>
+              <View style={styles.driverAvatarWrap}>
+                {matchedDriver && odooImageToUri(matchedDriver.imageBase64) ? (
+                  <Image
+                    source={{ uri: odooImageToUri(matchedDriver.imageBase64) }}
+                    style={styles.driverAvatarImg}
+                    resizeMode="cover"
+                  />
+                ) : (
+                  <View style={[styles.driverAvatarImg, { alignItems: 'center', justifyContent: 'center' }]}>
+                    <Ionicons name="person" size={48} color={colors.primary} />
+                  </View>
+                )}
+              </View>
+              <Text style={styles.driverNameText}>{matchedDriver?.name || '—'}</Text>
+              <Text style={styles.driverVehicleHint}>
+                Vehicle: {selected ? (selected.license_plate || selected.name) : '—'}
+              </Text>
+              <View style={styles.modalBtnRow}>
+                <TouchableOpacity
+                  style={styles.modalBtnSecondary}
+                  onPress={() => {
+                    resetLoginFlow();
+                    setPassword('');
+                  }}
+                  activeOpacity={0.85}
+                >
+                  <Text style={styles.modalBtnSecondaryText}>Back</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.modalBtnPrimary} onPress={openPorterSelection} activeOpacity={0.85}>
+                  <Text style={styles.modalBtnPrimaryText}>Continue</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </Modal>
+
+        <Modal visible={loginPhase === 'porterPick'} transparent animationType="slide">
+          <View style={styles.modalOverlay}>
+            <View style={[styles.modalCard, { paddingBottom: spacing.md }]}>
+              <Text style={styles.modalTitle}>Select porters</Text>
+              <Text style={styles.modalSubtitle}>Tap one or more team members on this shift.</Text>
+              {portersLoading ? (
+                <ActivityIndicator size="large" color={colors.primary} style={{ marginVertical: spacing.xl }} />
+              ) : (
+                <ScrollView style={{ maxHeight: 360 }} keyboardShouldPersistTaps="handled">
+                  {portersList.map((p) => {
+                    const id = Number(p.id);
+                    const on = selectedPorterIds.includes(id);
+                    const uri = odooImageToUri(p.imageBase64);
+                    return (
+                      <TouchableOpacity
+                        key={p.id}
+                        style={styles.porterRow}
+                        onPress={() => togglePorter(id)}
+                        activeOpacity={0.75}
+                      >
+                        <View style={styles.porterAvatar}>
+                          {uri ? (
+                            <Image source={{ uri }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+                          ) : (
+                            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+                              <Ionicons name="person-outline" size={22} color={colors.textSecondary} />
+                            </View>
+                          )}
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={{ fontSize: 16, fontWeight: '700', color: colors.text }}>{p.name}</Text>
+                          {p.barcode ? (
+                            <Text style={{ fontSize: 12, color: colors.textSecondary, marginTop: 2 }}>{p.barcode}</Text>
+                          ) : null}
+                        </View>
+                        <View style={[styles.porterCheck, on && styles.porterCheckOn]}>
+                          {on ? <Ionicons name="checkmark" size={18} color="#fff" /> : null}
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+              )}
+              <View style={styles.modalBtnRow}>
+                <TouchableOpacity
+                  style={styles.modalBtnSecondary}
+                  onPress={() => setLoginPhase('driverReview')}
+                  activeOpacity={0.85}
+                >
+                  <Text style={styles.modalBtnSecondaryText}>Back</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.modalBtnPrimary, loading && { opacity: 0.7 }]}
+                  onPress={finishLoginWithPorters}
+                  disabled={loading || portersLoading}
+                  activeOpacity={0.85}
+                >
+                  {loading ? (
+                    <ActivityIndicator color="#fff" />
+                  ) : (
+                    <Text style={styles.modalBtnPrimaryText}>Go to dashboard</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </Modal>
 
         <CustomAlert
             visible={alertConfig.visible}

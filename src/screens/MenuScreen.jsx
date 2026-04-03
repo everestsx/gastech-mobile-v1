@@ -7,6 +7,7 @@ import {
   ActivityIndicator,
   Alert,
   ScrollView,
+  Image,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
@@ -21,6 +22,8 @@ import {
 } from '../services/sync.service';
 import CustomAlert from '../components/CustomAlert';
 import { usePrinterConnection } from '../context/PrinterConnectionContext';
+import { useFocusEffect } from '@react-navigation/native';
+import { odooImageToUri } from '../services/employee.service';
 
 export default function MenuScreen({ navigation }) {
   const { colors } = useTheme();
@@ -52,6 +55,12 @@ export default function MenuScreen({ navigation }) {
       await refreshLastSync();
     })();
   }, []);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      getUserSession().then(setUser);
+    }, [])
+  );
 
   const handleSync = async () => {
     setSyncing(true);
@@ -159,6 +168,16 @@ export default function MenuScreen({ navigation }) {
 
   const intervalMin = getSyncIntervalMinutes();
 
+  const plateOrVehicle = user?.isAdmin ? '' : user?.licensePlate || user?.vehicleName || 'Vehicle';
+  const profileTitle = user?.isAdmin ? 'Admin' : user?.driverName || plateOrVehicle;
+  const profileSubtitle = user?.isAdmin
+    ? 'Tap to open Settings'
+    : user?.driverName
+      ? `${plateOrVehicle} · Tap for settings`
+      : 'Tap to open Settings';
+  const profileAvatarUri = !user?.isAdmin && user?.driverImageBase64 ? odooImageToUri(user.driverImageBase64) : null;
+  const profileInitial = (profileTitle || 'V').trim().charAt(0).toUpperCase();
+
   return (
     <ScrollView
       style={[styles.container, { backgroundColor: colors.background }]}
@@ -171,17 +190,19 @@ export default function MenuScreen({ navigation }) {
         onPress={() => navigation.navigate('Settings')}
         activeOpacity={0.8}
       >
-        <View style={[styles.avatar, { backgroundColor: colors.primary }]}>
-          <Text style={styles.avatarText}>
-            {(user?.isAdmin ? 'Admin' : user?.licensePlate || user?.vehicleName || 'V').charAt(0).toUpperCase()}
-          </Text>
+        <View style={[styles.avatar, { backgroundColor: colors.primary, overflow: 'hidden' }]}>
+          {profileAvatarUri ? (
+            <Image source={{ uri: profileAvatarUri }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+          ) : (
+            <Text style={styles.avatarText}>{profileInitial}</Text>
+          )}
         </View>
         <View style={styles.profileInfo}>
           <Text style={[styles.profileName, { color: colors.text }]} numberOfLines={1}>
-            {user?.isAdmin ? 'Admin' : (user?.licensePlate || user?.vehicleName || 'Vehicle')}
+            {profileTitle}
           </Text>
-          <Text style={[styles.profileHint, { color: colors.textSecondary }]}>
-            Tap to open Settings
+          <Text style={[styles.profileHint, { color: colors.textSecondary }]} numberOfLines={2}>
+            {profileSubtitle}
           </Text>
         </View>
         <Ionicons name="chevron-forward" size={22} color={colors.textSecondary} />

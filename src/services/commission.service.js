@@ -1,30 +1,4 @@
-import { ODOO_URL, ODOO_API_KEY } from '@env';
-
-const callOdooJson2 = async (model, method, params = {}) => {
-  const baseUrl = ODOO_URL?.replace('/jsonrpc', '').replace(/\/$/, '');
-  const url = `${baseUrl}/json/2/${model}/${method}`;
-  console.log('[Odoo JSON2] URL:', url);
-  console.log('[Odoo JSON2] API Key:', ODOO_API_KEY ? 'Present' : 'Missing');
-  console.log('[Odoo JSON2] Params:', JSON.stringify(params));
-
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${ODOO_API_KEY}`,
-    },
-    body: JSON.stringify(params),
-  });
-
-  const json = await response.json();
-
-  if (json.error) {
-    const msg = json.error.data?.message || json.error.message || 'Odoo JSON 2 error';
-    throw new Error(msg);
-  }
-
-  return json.result ?? json;
-};
+import { callOdooJson2 } from './index.service';
 
 /**
  * Get commission achievement rates by product for a specific team
