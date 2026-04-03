@@ -706,7 +706,9 @@ export default function InvoiceScreen({ route, navigation }) {
   const [invoiceLogoDataUri, setInvoiceLogoDataUri] = useState(null);
   const {
     saleOrderId,
-    total,
+    total: routeTotalParam,
+    subtotal: routeSubtotalParam,
+    tax: routeTaxParam,
     paymentType,
     selectedBankName,
     chequeBankName,
@@ -716,11 +718,38 @@ export default function InvoiceScreen({ route, navigation }) {
     driverSignatureDataUrl,
     supplierTin,
     purchaserTin,
+    previewBeforePayment,
+    invoiceLineQtys,
+    deliveryPayload,
+    deliveryDone: routeDeliveryDone,
   } = route.params ?? {};
 
   const { setHideSyncIndicator } = useSync();
   const [order, setOrder] = useState(null);
   const [lines, setLines] = useState([]);
+
+  const qtyByLineId = useMemo(() => {
+    const m = {};
+    for (const row of invoiceLineQtys || []) {
+      if (row?.lineId != null) m[row.lineId] = Number(row.qty) || 0;
+    }
+    return m;
+  }, [invoiceLineQtys]);
+
+  /** Preview before payment: show invoiced qtys/amounts from delivery, without changing loaded SO line records. */
+  const displayLines = useMemo(() => {
+    if (!previewBeforePayment || !invoiceLineQtys?.length) return lines;
+    return lines.map((l) => {
+      const q = qtyByLineId[l.id];
+      if (q === undefined) return { ...l };
+      const origQ = Number(l.product_uom_qty) || 1;
+      const scale = origQ > 0 ? q / origQ : 0;
+      const price_subtotal = (Number(l.price_subtotal) || 0) * scale;
+      const price_total = (Number(l.price_total) || 0) * scale;
+      return { ...l, product_uom_qty: q, price_subtotal, price_total };
+    });
+  }, [lines, previewBeforePayment, invoiceLineQtys, qtyByLineId]);
+
   const [invoiceNumber, setInvoiceNumber] = useState(null);
   const [loading, setLoading] = useState(true);
   const [printing, setPrinting] = useState(false);
@@ -1258,6 +1287,16 @@ export default function InvoiceScreen({ route, navigation }) {
     setPrintResult(null);
     setPrintError(null);
     try {
+      const orderForPrint = previewBeforePayment
+        ? (() => {
+            const sub = displayLines.reduce((s, l) => s + (Number(l.price_subtotal) || 0), 0);
+            const tax = displayLines.reduce(
+              (s, l) => s + ((Number(l.price_total) || 0) - (Number(l.price_subtotal) || 0)),
+              0
+            );
+            return { ...order, amount_untaxed: sub, amount_tax: tax, amount_total: sub + tax };
+          })()
+        : order;
       const logoForPrint = await loadInvoiceLogoDataUriForPrint();
       const effectiveSplitForPrint =
         paymentType === 'split' && paymentSplit ? paymentSplit : localPaymentSplit || paymentSplit;
@@ -1265,8 +1304,8 @@ export default function InvoiceScreen({ route, navigation }) {
       const resolvedChequeNumber = checkNumber || localChequeMeta.checkNumber || null;
       const logoB64ForNative = extractRawBase64FromDataUri(logoForPrint);
       const htmlForThermal = buildInvoiceHtml(
-        order,
-        lines,
+        orderForPrint,
+        displayLines,
         paymentType,
         selectedBankName,
         effectiveSplitForPrint,
@@ -1282,8 +1321,8 @@ export default function InvoiceScreen({ route, navigation }) {
         { omitLogoBlock: true }
       );
       const htmlForSystem = buildInvoiceHtml(
-        order,
-        lines,
+        orderForPrint,
+        displayLines,
         paymentType,
         selectedBankName,
         effectiveSplitForPrint,
@@ -1338,7 +1377,8 @@ export default function InvoiceScreen({ route, navigation }) {
     }
   }, [
     order,
-    lines,
+    previewBeforePayment,
+    displayLines,
     invoiceNumber,
     paymentType,
     selectedBankName,
@@ -1364,9 +1404,23 @@ export default function InvoiceScreen({ route, navigation }) {
   }, [navigation]);
 
   const handleSaveEvidence = useCallback(async () => {
+    const goNextAfterEvidence = () => {
+      if (previewBeforePayment) {
+        navigation.navigate('ProceedPayment', {
+          saleOrderId,
+          total: routeTotalParam,
+          subtotal: routeSubtotalParam,
+          tax: routeTaxParam,
+          deliveryDone: routeDeliveryDone,
+          deliveryPayload,
+        });
+      } else {
+        goToHome();
+      }
+    };
     if (deliveryPhotos.length === 0) {
       runSync().catch((e) => console.warn('[InvoiceScreen] sync after evidence skip', e?.message ?? e));
-      goToHome();
+      goNextAfterEvidence();
       return;
     }
 
@@ -1403,43 +1457,87 @@ export default function InvoiceScreen({ route, navigation }) {
       setShowEvidenceModal(false);
       setDeliveryPhotos([]);
       runSync().catch((e) => console.warn('[InvoiceScreen] sync after evidence save', e?.message ?? e));
-      goToHome();
+      goNextAfterEvidence();
     } catch (err) {
       console.error('[InvoiceScreen] save evidence failed', err);
       Alert.alert('Error', 'Failed to save evidence photos. Please try again.');
     } finally {
       setSavingEvidence(false);
     }
-  }, [deliveryPhotos, saleOrderId, goToHome]);
+  }, [
+    deliveryPhotos,
+    saleOrderId,
+    goToHome,
+    navigation,
+    previewBeforePayment,
+    routeTotalParam,
+    routeSubtotalParam,
+    routeTaxParam,
+    routeDeliveryDone,
+    deliveryPayload,
+  ]);
 
-  /** Subtotal from lines: sum of price_subtotal */
+  /** Subtotal from display lines (preview uses scaled delivered qtys). */
   const computedSubtotal = useMemo(() => {
-    if (!lines?.length) return 0;
-    return lines.reduce((sum, l) => sum + (Number(l.price_subtotal) || 0), 0);
-  }, [lines]);
+    if (!displayLines?.length) return 0;
+    return displayLines.reduce((sum, l) => sum + (Number(l.price_subtotal) || 0), 0);
+  }, [displayLines]);
 
-  /** Tax from lines: sum of (price_total - price_subtotal) per line */
   const computedTax = useMemo(() => {
-    if (!lines?.length) return 0;
-    return lines.reduce(
+    if (!displayLines?.length) return 0;
+    return displayLines.reduce(
       (sum, l) => sum + ((Number(l.price_total) || 0) - (Number(l.price_subtotal) || 0)),
       0
     );
-  }, [lines]);
+  }, [displayLines]);
 
-  const displaySubtotal = (order?.amount_untaxed != null && order.amount_untaxed !== 0)
-    ? order.amount_untaxed
-    : computedSubtotal;
-  const displayTax = (order?.amount_tax != null && order.amount_tax !== 0)
-    ? order.amount_tax
-    : computedTax;
-  const displayTotal = order?.amount_total ?? total ?? (displaySubtotal + displayTax);
+  const displaySubtotal = useMemo(() => {
+    if (previewBeforePayment && routeSubtotalParam != null) {
+      const n = Number(routeSubtotalParam);
+      if (Number.isFinite(n)) return n;
+    }
+    return (order?.amount_untaxed != null && order.amount_untaxed !== 0)
+      ? order.amount_untaxed
+      : computedSubtotal;
+  }, [previewBeforePayment, routeSubtotalParam, order?.amount_untaxed, computedSubtotal]);
+
+  const displayTax = useMemo(() => {
+    if (previewBeforePayment && routeTaxParam != null) {
+      const n = Number(routeTaxParam);
+      if (Number.isFinite(n)) return n;
+    }
+    return (order?.amount_tax != null && order.amount_tax !== 0)
+      ? order.amount_tax
+      : computedTax;
+  }, [previewBeforePayment, routeTaxParam, order?.amount_tax, computedTax]);
+
+  const displayTotal = useMemo(() => {
+    if (previewBeforePayment && routeTotalParam != null) {
+      const n = Number(routeTotalParam);
+      if (Number.isFinite(n)) return n;
+    }
+    return order?.amount_total ?? routeTotalParam ?? (displaySubtotal + displayTax);
+  }, [previewBeforePayment, routeTotalParam, order?.amount_total, displaySubtotal, displayTax]);
+
+  const navigateToProceedPayment = useCallback(() => {
+    navigation.navigate('ProceedPayment', {
+      saleOrderId,
+      total: displayTotal,
+      subtotal: displaySubtotal,
+      tax: displayTax,
+      deliveryDone: routeDeliveryDone,
+      deliveryPayload,
+    });
+  }, [navigation, saleOrderId, displayTotal, displaySubtotal, displayTax, routeDeliveryDone, deliveryPayload]);
 
   const effectivePaymentSplit = (paymentType === 'split' && paymentSplit)
     ? paymentSplit
     : localPaymentSplit;
 
   const paymentLabel = (() => {
+    if (previewBeforePayment) {
+      return 'Pending — complete payment on the next screen';
+    }
     const split = effectivePaymentSplit;
     if (paymentSplitHasLineItems(split)) {
       const cash = Number(split.cash) || 0;
@@ -1551,13 +1649,13 @@ export default function InvoiceScreen({ route, navigation }) {
             <Text style={[styles.th, styles.thTax]}>Unit Price</Text>
             <Text style={[styles.th, styles.thTotal]}>Total</Text>
           </View>
-          {(lines || []).map((line, index) => {
+          {(displayLines || []).map((line, index) => {
             const lineTotal = Number(line.price_total) || 0;
             const lineUnitPrice = Number(line.price_unit) || 0;
             return (
               <View
                 key={line.id}
-                style={[styles.tableRow, index === (lines?.length ?? 0) - 1 && styles.tableRowLast]}
+                style={[styles.tableRow, index === (displayLines?.length ?? 0) - 1 && styles.tableRowLast]}
               >
                 <Text style={[styles.td, styles.tdNo]}>{index + 1}</Text>
                 <Text style={[styles.td, styles.tdProduct]} numberOfLines={2}>
@@ -1596,6 +1694,16 @@ export default function InvoiceScreen({ route, navigation }) {
         <View style={styles.paymentBadge}>
           <Text style={styles.paymentText}>Payment: {paymentLabel}</Text>
         </View>
+        {previewBeforePayment ? (
+          <TouchableOpacity
+            style={[styles.printBtn, { marginTop: spacing.md }]}
+            onPress={navigateToProceedPayment}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="card-outline" size={22} color="#fff" />
+            <Text style={styles.printBtnText}>Proceed to payment</Text>
+          </TouchableOpacity>
+        ) : null}
         {(effectiveCustomerSignatureDataUrl || effectiveDriverSignatureDataUrl) ? (
           <View style={{ marginTop: spacing.sm, paddingTop: spacing.sm, borderTopWidth: 1, borderTopColor: colors.border }}>
             {effectiveCustomerSignatureDataUrl ? (
@@ -1748,12 +1856,20 @@ export default function InvoiceScreen({ route, navigation }) {
       {printResult == null && (
         <TouchableOpacity
           style={styles.skipPrintBtn}
-          onPress={() => setShowEvidenceModal(true)}
+          onPress={() => {
+            if (previewBeforePayment) {
+              navigateToProceedPayment();
+              return;
+            }
+            setShowEvidenceModal(true);
+          }}
           disabled={printing}
           activeOpacity={0.8}
         >
           <Ionicons name="play-forward-outline" size={22} color={colors.textSecondary} />
-          <Text style={styles.skipPrintBtnText}>Skip invoice printing</Text>
+          <Text style={styles.skipPrintBtnText}>
+            {previewBeforePayment ? 'Skip print, go to payment' : 'Skip invoice printing'}
+          </Text>
         </TouchableOpacity>
       )}
 
@@ -1825,7 +1941,18 @@ export default function InvoiceScreen({ route, navigation }) {
           setShowEvidenceModal(false);
           setDeliveryPhotos([]);
           runSync().catch((e) => console.warn('[InvoiceScreen] sync after evidence close', e?.message ?? e));
-          goToHome();
+          if (previewBeforePayment) {
+            navigation.navigate('ProceedPayment', {
+              saleOrderId,
+              total: routeTotalParam,
+              subtotal: routeSubtotalParam,
+              tax: routeTaxParam,
+              deliveryDone: routeDeliveryDone,
+              deliveryPayload,
+            });
+          } else {
+            goToHome();
+          }
         }}
       >
         <View style={styles.evidenceModalOverlay}>
@@ -1927,7 +2054,18 @@ export default function InvoiceScreen({ route, navigation }) {
                   setShowEvidenceModal(false);
                   setDeliveryPhotos([]);
                   runSync().catch((e) => console.warn('[InvoiceScreen] sync after evidence skip', e?.message ?? e));
-                  goToHome();
+                  if (previewBeforePayment) {
+                    navigation.navigate('ProceedPayment', {
+                      saleOrderId,
+                      total: routeTotalParam,
+                      subtotal: routeSubtotalParam,
+                      tax: routeTaxParam,
+                      deliveryDone: routeDeliveryDone,
+                      deliveryPayload,
+                    });
+                  } else {
+                    goToHome();
+                  }
                 }}
                 disabled={savingEvidence}
                 activeOpacity={0.8}

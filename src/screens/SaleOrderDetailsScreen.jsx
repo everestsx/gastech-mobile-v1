@@ -388,16 +388,32 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
         return;
       }
       setOrder(data.order);
+      const { picking, moves, moveLines } = await getDeliveryDataFromDB(saleOrderId);
+      const moveIdToProductId = {};
+      (moves || []).forEach((m) => {
+        const pid = Array.isArray(m.product_id) ? m.product_id[0] : m.product_id;
+        if (pid != null) moveIdToProductId[m.id] = pid;
+      });
+      const qtyDoneByProductId = {};
+      (moveLines || []).forEach((ml) => {
+        const mid = Array.isArray(ml.move_id) ? ml.move_id[0] : ml.move_id;
+        const pid = moveIdToProductId[mid];
+        if (pid == null) return;
+        qtyDoneByProductId[pid] = (qtyDoneByProductId[pid] || 0) + (Number(ml.qty_done) || 0);
+      });
       setLines(
-        (data.lines || []).map((l) => ({
-          ...l,
-          newQty: String(l.product_uom_qty ?? 0),
-        }))
+        (data.lines || []).map((l) => {
+          const pid = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
+          const savedDone = pid != null ? qtyDoneByProductId[pid] : null;
+          const demand = Number(l.product_uom_qty ?? 0) || 0;
+          const initial =
+            savedDone != null && savedDone > 0 ? savedDone : demand;
+          return { ...l, newQty: String(initial) };
+        })
       );
       const imageMap = await productsDb.getProductImageUriMap();
       setProductIdToImageUri(imageMap || {});
       setQtyChanged(false);
-      const { picking } = await getDeliveryDataFromDB(saleOrderId);
       const deliveryDone = ((picking?.state || '') + '').toLowerCase() === 'done';
       setIsDeliveryDone(deliveryDone);
       setIsDelivered(data.order?.invoice_status === 'invoiced');
@@ -572,67 +588,142 @@ const validateQuantities = useCallback(() => {
         : `Product ${productId}`;
 
       const extraRequested = requestedTotal - baseTotal;
-      return `Insufficient stock for "${productName}". Available extra: ${availableExtra}, Requested extra: ${extraRequested}`;
+      const stockHint = Number(onHandTotal) || 0;
+      return `Insufficient stock for "${productName}". Available (lorry): ${stockHint}, requested over order base: ${extraRequested}`;
     }
   }
 
   return null;
 }, [lines, productIdToAvailable, isDeliveryDone]);
-  /** Apply qty updates locally (offline DB). When markDeliveryDone is true, also enqueue delivery and set picking done. When false, only update lines/moves (for "Proceed to Payment") — delivery is enqueued only after payment success. Returns delivery payload for passing to ProceedPayment. */
+  /**
+   * Apply qty updates locally (offline DB) and build sync payload.
+   * - `demandEdit: false` (proceed to payment): do not push SO demand; only delivery (qty_done / stock.move when needed).
+   * - `demandEdit: true` (Modify → Save): push every line whose qty differs from SO demand + stock.move both ways; cap qty_done if demand drops.
+   * - Uses all open pickings (backorders), not only the first DB row — fixes “only one product updated” when Odoo split transfers.
+   */
   const applyQtyDoneAndValidate = useCallback(
-    async (effectiveQtys, markDeliveryDone = false) => {
-      const { picking, moves, moveLines } = await getDeliveryDataFromDB(order.id);
-      if (!picking?.id) throw new Error('No delivery order found for this sale order. Confirm the order first.');
-      const productIdToMoveLineId = buildProductIdToMoveLineIdMap(moves, moveLines);
-      const productIdToMoveId = buildProductIdToMoveIdMap(moves);
+    async (effectiveQtys, markDeliveryDone = false, options = {}) => {
+      const demandEdit = options.demandEdit === true;
+      if (!order?.id) throw new Error('No order');
+
+      const pickings = await stockPickingsDb.getStockPickingsBySaleId(order.id);
+      if (!pickings?.length) {
+        throw new Error('No delivery order found for this sale order. Confirm the order first.');
+      }
+      const openPickings = pickings.filter((p) => String(p.state || '').toLowerCase() !== 'done');
+      const targets = openPickings.length > 0 ? openPickings : [];
 
       const orderLineUpdates = [];
-      const moveUpdates = [];
-      const moveLineUpdates = [];
-      /** Per-product qty_done for sync 4-step flow (get picking → get moves → create move lines → validate). */
-      const deliveryLines = [];
-
-      for (let i = 0; i < lines.length; i++) {
-        const l = lines[i];
-        const newVal = effectiveQtys[i] != null ? Number(effectiveQtys[i]) : Number(l.newQty);
-        const productId = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
-        const orderQty = Number(l.product_uom_qty) ?? 0;
-        if (productId == null) continue;
-
-        await saleOrderLinesDb.updateSaleOrderLineQtyLocal(l.id, newVal);
-        orderLineUpdates.push({ lineId: l.id, product_uom_qty: newVal });
-
-        if (newVal > orderQty) {
-          const moveId = productIdToMoveId[productId];
-          if (moveId != null) {
-            await stockMovesDb.updateStockMoveQtyLocal(moveId, newVal);
-            moveUpdates.push({ moveId, product_uom_qty: newVal });
+      if (demandEdit) {
+        for (let i = 0; i < lines.length; i++) {
+          const l = lines[i];
+          const newVal = effectiveQtys[i] != null ? Number(effectiveQtys[i]) : Number(l.newQty);
+          const oldDem = Number(l.product_uom_qty) || 0;
+          if (newVal !== oldDem) {
+            orderLineUpdates.push({ lineId: l.id, product_uom_qty: newVal });
+            await saleOrderLinesDb.updateSaleOrderLineQtyLocal(l.id, newVal);
           }
         }
-        const moveId = productIdToMoveId[productId];
-        if (moveId != null) {
-          deliveryLines.push({ moveId, productId, qty_done: newVal });
-        }
-        const moveLineId = productIdToMoveLineId[productId];
-        if (moveLineId != null) {
-          await stockMoveLinesDb.updateMoveLineQtyLocal(moveLineId, newVal);
-          moveLineUpdates.push({ moveLineId, qty_done: newVal });
+        if (orderLineUpdates.length > 0) {
+          await saleOrdersDb.updateSaleOrderAmountsFromLines(order.id);
         }
       }
 
-      await saleOrdersDb.updateSaleOrderAmountsFromLines(order.id);
+      const pickingsOut = [];
+
+      for (const picking of targets) {
+        const moveIds = picking.move_ids?.length ? picking.move_ids : null;
+        const moves = await stockMovesDb.getStockMovesByPickingId(picking.id);
+        if (!moves?.length) continue;
+
+        const idsForLines = moveIds || moves.map((m) => m.id);
+        const moveLines = await stockMoveLinesDb.getStockMoveLinesByMoveIds(idsForLines);
+        const productIdToMoveLineId = buildProductIdToMoveLineIdMap(moves, moveLines);
+        const productIdToMoveId = buildProductIdToMoveIdMap(moves);
+        const moveByProductId = {};
+        (moves || []).forEach((m) => {
+          const pid = Array.isArray(m.product_id) ? m.product_id[0] : m.product_id;
+          if (pid != null) moveByProductId[pid] = m;
+        });
+        const qtyDoneByMoveLineId = {};
+        (moveLines || []).forEach((ml) => {
+          qtyDoneByMoveLineId[ml.id] = Number(ml.qty_done) || 0;
+        });
+
+        const moveUpdates = [];
+        const moveLineUpdates = [];
+        const deliveryLines = [];
+
+        for (let i = 0; i < lines.length; i++) {
+          const l = lines[i];
+          const newVal = effectiveQtys[i] != null ? Number(effectiveQtys[i]) : Number(l.newQty);
+          const productId = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
+          if (productId == null) continue;
+
+          const moveId = productIdToMoveId[productId];
+          if (moveId == null) continue;
+
+          const moveRow = moveByProductId[productId];
+          const currentMoveDemand = Number(moveRow?.product_uom_qty) || 0;
+
+          if (demandEdit) {
+            if (newVal !== currentMoveDemand) {
+              await stockMovesDb.updateStockMoveQtyLocal(moveId, newVal);
+              moveUpdates.push({ moveId, product_uom_qty: newVal });
+            }
+          } else if (newVal > currentMoveDemand) {
+            await stockMovesDb.updateStockMoveQtyLocal(moveId, newVal);
+            moveUpdates.push({ moveId, product_uom_qty: newVal });
+          }
+
+          if (!demandEdit) {
+            deliveryLines.push({ moveId, productId, qty_done: newVal });
+          }
+
+          const moveLineId = productIdToMoveLineId[productId];
+          if (moveLineId != null) {
+            const prevDone = qtyDoneByMoveLineId[moveLineId] ?? 0;
+            let nextDone;
+            if (demandEdit) {
+              nextDone = Math.min(prevDone, newVal);
+            } else {
+              nextDone = newVal;
+            }
+            if (nextDone !== prevDone) {
+              await stockMoveLinesDb.updateMoveLineQtyLocal(moveLineId, nextDone);
+              moveLineUpdates.push({ moveLineId, qty_done: nextDone });
+              qtyDoneByMoveLineId[moveLineId] = nextDone;
+            }
+          }
+        }
+
+        const hasWork =
+          moveUpdates.length > 0 || moveLineUpdates.length > 0 || (!demandEdit && deliveryLines.length > 0);
+        if (hasWork) {
+          pickingsOut.push({
+            pickingId: picking.id,
+            moveUpdates,
+            moveLineUpdates,
+            deliveryLines: demandEdit ? [] : deliveryLines,
+          });
+        }
+      }
 
       const payload = {
         saleOrderId: order.id,
-        pickingId: picking?.id,
         orderLineUpdates,
-        moveUpdates,
-        moveLineUpdates,
-        deliveryLines,
+        pickings: pickingsOut,
       };
+      if (pickingsOut[0]?.pickingId != null) {
+        payload.pickingId = pickingsOut[0].pickingId;
+      }
 
-      if (markDeliveryDone && picking?.id) {
-        await stockPickingsDb.updatePickingStateLocal(picking.id, 'done');
+      if (markDeliveryDone && pickingsOut.length > 0) {
+        for (const b of pickingsOut) {
+          if (b.pickingId != null) {
+            await stockPickingsDb.updatePickingStateLocal(b.pickingId, 'done');
+          }
+        }
         await syncQueueDb.enqueue(syncQueueDb.ACTION_DELIVERY, payload);
       }
 
@@ -665,7 +756,25 @@ const getStockWarning = useCallback((lineId) => {
     setUpdateError(null);
     setUpdating(true);
     try {
-      await applyQtyDoneAndValidate(lines.map((l) => l.newQty), false);
+      const payload = await applyQtyDoneAndValidate(lines.map((l) => l.newQty), false, {
+        demandEdit: true,
+      });
+      const needsDeliveryQueue =
+        (payload.orderLineUpdates?.length > 0) ||
+        (payload.pickings || []).some(
+          (b) =>
+            (b.moveUpdates?.length > 0) ||
+            (b.moveLineUpdates?.length > 0) ||
+            (b.deliveryLines?.length > 0)
+        );
+      if (needsDeliveryQueue) {
+        const existing = await syncQueueDb.getPendingDeliveryItemBySaleOrderId(order.id);
+        if (existing) {
+          await syncQueueDb.updateQueueItemPayload(existing.id, payload);
+        } else {
+          await syncQueueDb.enqueue(syncQueueDb.ACTION_DELIVERY, payload);
+        }
+      }
       await loadDetails();
       setModifyEnabled(false);
       setQtyChanged(false);
@@ -689,13 +798,12 @@ const handleProceedToPayment = useCallback(async () => {
   setUpdateError(null);
   setUpdating(true);
   try {
-    const effectiveQtys = noChanges
-      ? lines.map((l) => Number(l.product_uom_qty) ?? 0)
-      : lines.map((l) => l.newQty);
+    /** Use line `newQty` (includes saved qty_done from delivery), not SO demand (`product_uom_qty`). */
+    const effectiveQtys = lines.map((l) => Number(l.newQty) || 0);
 
     // Update line/move quantities locally only; do NOT enqueue delivery or mark picking done yet.
     // Delivery is enqueued and marked done only after payment is completed on ProceedPaymentScreen.
-    const deliveryPayload = await applyQtyDoneAndValidate(effectiveQtys, false);
+    const deliveryPayload = await applyQtyDoneAndValidate(effectiveQtys, false, { demandEdit: false });
 
     // Update vehicle inventory only if delivery isn't already done locally.
     // This avoids double-deducting lorry stock for "delivered but not invoiced yet" flows.
@@ -717,13 +825,20 @@ const handleProceedToPayment = useCallback(async () => {
           }, 0);
     const total = subtotal + tax;
 
-    navigation.navigate('ProceedPayment', {
+    const invoiceLineQtys = lines.map((l, i) => ({
+      lineId: l.id,
+      qty: Number(effectiveQtys[i] != null ? effectiveQtys[i] : l.newQty) || 0,
+    }));
+
+    navigation.navigate('InvoiceScreen', {
       saleOrderId: order.id,
       total: total ?? order.amount_total,
       subtotal,
       tax,
       deliveryDone: true,
       deliveryPayload,
+      previewBeforePayment: true,
+      invoiceLineQtys,
     });
   } catch (err) {
     setUpdateError(err?.message ?? 'Delivery update failed. Please try again.');
@@ -1073,12 +1188,18 @@ const handleProceedToPayment = useCallback(async () => {
           onPress={() => {
             if (!canPay) return;
             if (isDelivered) {
-              navigation.navigate('ProceedPayment', {
+              const invoiceLineQtys = lines.map((l) => ({
+                lineId: l.id,
+                qty: Number(l.newQty) || 0,
+              }));
+              navigation.navigate('InvoiceScreen', {
                 saleOrderId: order.id,
                 total: computedTotal,
                 subtotal: computedSubtotal,
                 tax: computedTax,
                 deliveryDone: true,
+                previewBeforePayment: true,
+                invoiceLineQtys,
               });
             } else {
               handleProceedToPayment();

@@ -219,11 +219,13 @@ export async function getSaleOrderDetailsFromDB(saleOrderId) {
   }
 }
 
-/** Delivery data from local DB: picking, moves, moveLines for a sale order. */
+/** Delivery data from local DB: picking, moves, moveLines for a sale order. Prefers first picking not yet done (avoids using an old completed transfer when a backorder exists). */
 export async function getDeliveryDataFromDB(saleOrderId) {
   try {
     const pickings = await stockPickingsDb.getStockPickingsBySaleId(Number(saleOrderId));
-    const picking = pickings[0] ?? null;
+    const list = pickings || [];
+    const open = list.filter((p) => String(p.state || '').toLowerCase() !== 'done');
+    const picking = open[0] ?? list[0] ?? null;
     if (!picking?.move_ids?.length) return { picking, moves: [], moveLines: [] };
     const moveIds = picking.move_ids;
     const [moves, moveLines] = await Promise.all([
@@ -615,92 +617,127 @@ async function processSyncQueue() {
         executePaymentRegister,
       } = await import('./invoice.service');
 
+      /** Normalize delivery payload: multi-picking `pickings[]` or legacy single `pickingId`. */
+      const pickingsBlocksFromPayload = (payload) => {
+        const p = payload || {};
+        if (Array.isArray(p.pickings) && p.pickings.length > 0) {
+          return p.pickings.map((b) => ({
+            pickingId: b.pickingId ?? b.picking_id,
+            moveUpdates: b.moveUpdates || [],
+            moveLineUpdates: b.moveLineUpdates || [],
+            deliveryLines: b.deliveryLines || [],
+          }));
+        }
+        const pid = p.pickingId ?? p.picking_id;
+        if (pid != null) {
+          return [
+            {
+              pickingId: pid,
+              moveUpdates: p.moveUpdates || [],
+              moveLineUpdates: p.moveLineUpdates || [],
+              deliveryLines: p.deliveryLines || [],
+            },
+          ];
+        }
+        return [];
+      };
+
       for (const item of delivery) {
         try {
           const p = item.payload || {};
           const saleOrderId = p.saleOrderId ?? p.sale_id;
-          let pickingId = p.pickingId ?? p.picking_id;
           const orderLineUpdates = p.orderLineUpdates || [];
-          const moveUpdates = p.moveUpdates || [];
-          const moveLineUpdates = p.moveLineUpdates || [];
-          const deliveryLines = p.deliveryLines || [];
-
-          // Step 1 — Resolve picking (by sale_order_id if not in payload)
-          if (pickingId == null && saleOrderId != null) {
-            const pickings = await getPickingBySaleOrder(saleOrderId);
-            const first = Array.isArray(pickings) ? pickings[0] : null;
-            if (first?.state === 'done') {
-              await syncQueueDb.markSynced(Number(item.id));
-              log('queue', `delivery already done (SO ${saleOrderId}), synced id=${item.id}`);
-              continue;
-            }
-            pickingId = first?.id ?? null;
-          }
-          if (pickingId == null) {
-            logWarn('queue delivery', new Error('No picking found for sale order ' + saleOrderId));
-            continue;
-          }
-
-          // Check picking state (skip if already done)
-          try {
-            const stateRows = await getPickingState(pickingId);
-            const pick = Array.isArray(stateRows) ? stateRows[0] : stateRows;
-            if (pick?.state === 'done') {
-              await syncQueueDb.markSynced(Number(item.id));
-              log('queue', `delivery already done picking ${pickingId}, synced id=${item.id}`);
-              continue;
-            }
-          } catch (_) { }
+          const blocks = pickingsBlocksFromPayload(p);
 
           try {
             for (const u of orderLineUpdates) {
               await updateSaleOrderLineQty(u.lineId, u.product_uom_qty);
             }
-            for (const u of moveUpdates) {
-              await updateStockMoveQty(u.moveId, u.product_uom_qty);
+          } catch (soLineErr) {
+            logWarn('queue delivery (sale order lines)', soLineErr);
+            throw soLineErr;
+          }
+
+          if (blocks.length === 0) {
+            await syncQueueDb.markSynced(Number(item.id));
+            log('queue', `delivery SO ${saleOrderId} — order lines only (no pickings), synced id=${item.id}`);
+            continue;
+          }
+
+          for (const block of blocks) {
+            let pickingId = block.pickingId;
+            if (pickingId == null && saleOrderId != null) {
+              const pickings = await getPickingBySaleOrder(saleOrderId);
+              const first = Array.isArray(pickings) ? pickings[0] : null;
+              if (first?.state === 'done') {
+                log('queue', `delivery block skipped — SO ${saleOrderId} first picking already done`);
+                pickingId = null;
+              } else {
+                pickingId = first?.id ?? null;
+              }
             }
-            // Avoid creating new stock.move.line records when we already have moveLine updates.
-            // Creating new move lines can duplicate delivered qty (especially on retries / partial payments).
-            const hasMoveLineUpdates = Array.isArray(moveLineUpdates) && moveLineUpdates.length > 0;
-            if (!hasMoveLineUpdates && deliveryLines.length > 0) {
-              // Step 2 & 3 — Create stock.move.line (qty_done) for each product (offline 4-step flow)
-              for (const line of deliveryLines) {
-                const moveId = line.moveId ?? line.move_id;
-                const productId = line.productId ?? line.product_id;
-                const qty = line.qty_done;
-                if (moveId != null && productId != null && qty != null) {
-                  await createMoveLine(pickingId, moveId, productId, qty);
+            if (pickingId == null) {
+              logWarn('queue delivery', new Error('No picking id for block (SO ' + saleOrderId + ')'));
+              continue;
+            }
+
+            try {
+              const stateRows = await getPickingState(pickingId);
+              const pick = Array.isArray(stateRows) ? stateRows[0] : stateRows;
+              if (pick?.state === 'done') {
+                log('queue', `delivery picking ${pickingId} already done — skip block`);
+                continue;
+              }
+            } catch (_) { }
+
+            const moveUpdates = block.moveUpdates || [];
+            const moveLineUpdates = block.moveLineUpdates || [];
+            const deliveryLines = block.deliveryLines || [];
+
+            try {
+              for (const u of moveUpdates) {
+                await updateStockMoveQty(u.moveId, u.product_uom_qty);
+              }
+              const hasMoveLineUpdates = Array.isArray(moveLineUpdates) && moveLineUpdates.length > 0;
+              if (!hasMoveLineUpdates && deliveryLines.length > 0) {
+                for (const line of deliveryLines) {
+                  const moveId = line.moveId ?? line.move_id;
+                  const productId = line.productId ?? line.product_id;
+                  const qty = line.qty_done;
+                  if (moveId != null && productId != null && qty != null) {
+                    await createMoveLine(pickingId, moveId, productId, qty);
+                  }
+                }
+              } else {
+                for (const u of moveLineUpdates) {
+                  await updateMoveLineQty(u.moveLineId, u.qty_done);
                 }
               }
-            } else {
-              for (const u of moveLineUpdates) {
-                await updateMoveLineQty(u.moveLineId, u.qty_done);
+            } catch (updateErr) {
+              const msg = (updateErr?.message || String(updateErr)).toLowerCase();
+              const recordDeleted = msg.includes('does not exist or has been deleted') || msg.includes('has been deleted');
+              if (recordDeleted) {
+                log('queue', `delivery updates skipped (record deleted): ${msg.slice(0, 80)}`);
+              } else {
+                throw updateErr;
               }
             }
-          } catch (updateErr) {
-            const msg = (updateErr?.message || String(updateErr)).toLowerCase();
-            const recordDeleted = msg.includes('does not exist or has been deleted') || msg.includes('has been deleted');
-            if (recordDeleted) {
-              log('queue', `delivery updates skipped (record deleted in Odoo — delivery may already be validated): ${msg.slice(0, 80)}`);
-            } else {
-              throw updateErr;
+
+            try {
+              await validatePickingWithContext(pickingId, { skip_backorder: true });
+              log('queue', `delivery validated picking ${pickingId} (skip_backorder)`);
+            } catch (validateErr) {
+              const vMsg = (validateErr?.message || String(validateErr)).toLowerCase();
+              if (vMsg.includes('does not exist or has been deleted') || vMsg.includes('has been deleted') || vMsg.includes('already')) {
+                log('queue', `delivery validate skipped (picking already done or deleted): ${vMsg.slice(0, 60)}`);
+              } else {
+                throw validateErr;
+              }
             }
           }
 
-          // Step 4 — Validate picking with skip_backorder
-          try {
-            await validatePickingWithContext(pickingId, { skip_backorder: true });
-            log('queue', `delivery validated picking ${pickingId} (skip_backorder)`);
-          } catch (validateErr) {
-            const vMsg = (validateErr?.message || String(validateErr)).toLowerCase();
-            if (vMsg.includes('does not exist or has been deleted') || vMsg.includes('has been deleted') || vMsg.includes('already')) {
-              log('queue', `delivery validate skipped (picking already done or deleted): ${vMsg.slice(0, 60)}`);
-            } else {
-              throw validateErr;
-            }
-          }
           await syncQueueDb.markSynced(Number(item.id));
-          log('queue', `delivery synced id=${item.id}`);
+          log('queue', `delivery synced id=${item.id} (${blocks.length} picking block(s))`);
         } catch (e) {
           logWarn('queue delivery', e);
         }
@@ -924,7 +961,13 @@ async function processSyncQueue() {
                   log('queue', `payment item ${item.id} invoice/payments completed (pending chatter + proof upload)`);
                 }
               } else if (hasCashOrCheque && resId == null) {
-                logWarn('queue payment', new Error('No invoice res_id for cash/cheque — create invoice first'));
+                invoiceBlockFailedNoItemsToInvoice = true;
+                logWarn(
+                  'queue payment',
+                  new Error(
+                    'No invoice for cash/cheque — skipping payment register and chatter until invoice exists (complete delivery sync first).'
+                  )
+                );
               }
             } catch (invoiceErr) {
               const msg = (invoiceErr?.message || String(invoiceErr)).toLowerCase();

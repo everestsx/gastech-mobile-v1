@@ -323,14 +323,26 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       const soId = Number(saleOrderId);
 
       // Enqueue delivery and mark picking done only after payment is completed (not when user only tapped "Proceed to Payment").
-      if (deliveryPayload && deliveryPayload.saleOrderId != null) {
+      const hasPickingsToSync =
+        deliveryPayload &&
+        deliveryPayload.saleOrderId != null &&
+        ((Array.isArray(deliveryPayload.pickings) && deliveryPayload.pickings.length > 0) ||
+          deliveryPayload.pickingId != null);
+
+      if (hasPickingsToSync) {
         const existingDelivery = await syncQueueDb.getPendingDeliveryItemBySaleOrderId(soId);
         if (existingDelivery) {
           await syncQueueDb.updateQueueItemPayload(existingDelivery.id, deliveryPayload);
         } else {
           await syncQueueDb.enqueue(syncQueueDb.ACTION_DELIVERY, deliveryPayload);
         }
-        if (deliveryPayload.pickingId != null) {
+        if (Array.isArray(deliveryPayload.pickings) && deliveryPayload.pickings.length > 0) {
+          for (const b of deliveryPayload.pickings) {
+            if (b?.pickingId != null) {
+              await stockPickingsDb.updatePickingStateLocal(Number(b.pickingId), 'done');
+            }
+          }
+        } else if (deliveryPayload.pickingId != null) {
           await stockPickingsDb.updatePickingStateLocal(Number(deliveryPayload.pickingId), 'done');
         }
       } else if (deliveryDone) {
