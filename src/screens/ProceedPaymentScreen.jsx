@@ -66,6 +66,9 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   const [showSignatureModal, setShowSignatureModal] = useState(false);
   const [customerSignatureData, setCustomerSignatureData] = useState(null);
   const [driverSignatureData, setDriverSignatureData] = useState(null);
+  const [customerSignatureSaved, setCustomerSignatureSaved] = useState(false);
+  const [driverSignatureSaved, setDriverSignatureSaved] = useState(false);
+  const [signatureModalScrollEnabled, setSignatureModalScrollEnabled] = useState(true);
   const [editingField, setEditingField] = useState(null);
 
   // Use only vehicle-specific journals for Cash and Cheque (cash_journal_id / check_journal_id from fleet.vehicle).
@@ -753,9 +756,17 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           padding: spacing.md,
         },
         signatureModalContent: {
+          width: '100%',
           borderRadius: borderRadius.lg,
-          padding: spacing.md,
           maxHeight: '92%',
+          overflow: 'hidden',
+        },
+        signatureModalScroll: {
+          width: '100%',
+        },
+        signatureModalScrollContent: {
+          padding: spacing.md,
+          paddingBottom: spacing.md + insets.bottom,
         },
         signatureModalTitle: {
           fontSize: 18,
@@ -789,13 +800,19 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           flex: 1,
           paddingVertical: 12,
           alignItems: 'center',
+          justifyContent: 'center',
           borderRadius: borderRadius.md,
         },
         signatureClearBtn: {
           borderWidth: 1,
         },
-        signatureConfirmBtn: {},
-        signatureActionBtnText: { fontSize: 15, fontWeight: '600' },
+        signatureConfirmBtn: {
+          backgroundColor: colors.primary,
+        },
+        signatureConfirmBtnSaved: {
+          backgroundColor: '#2e7d32',
+        },
+        signatureActionBtnText: { fontSize: 15, fontWeight: '600', textAlign: 'center' },
         signatureSection: {
           marginBottom: spacing.lg,
           gap: spacing.sm,
@@ -1103,116 +1120,169 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       >
         <View style={styles.signatureModalOverlay}>
           <View style={[styles.signatureModalContent, { backgroundColor: colors.surface }]}> 
-            <Text style={[styles.signatureModalTitle, { color: colors.text }]}>Confirm signatures</Text>
-            <Text style={[styles.signatureModalHint, { color: colors.textSecondary }]}>Customer and driver sign in the two boxes below, then tap Confirm Payment.</Text>
-
-            <View style={styles.signatureSection}>
-              <Text style={styles.signatureSectionHeader}>Customer signature</Text>
-              <Text style={styles.signatureSectionHint}>Sign here first.</Text>
-              <View style={styles.signatureCanvasWrap}>
-                <SignatureCanvas
-                  ref={customerSignatureRef}
-                  onOK={(dataUrl) => setCustomerSignatureData(dataUrl)}
-                  onEmpty={() => Alert.alert('Signature required', 'Please sign the customer signature area first.')}
-                  descriptionText=""
-                  clearText=""
-                  confirmText=""
-                  penColor="#000000"
-                  backgroundColor="rgba(255,255,255,1)"
-                  style={styles.signatureCanvas}
-                  autoClear={false}
-                  webStyle={`.m-signature-pad--footer { display: none !important; }`}
-                />
-              </View>
-              <View style={styles.signatureBtnRow}>
-                <TouchableOpacity
-                  style={[styles.signatureActionBtn, styles.signatureClearBtn, { borderColor: colors.border }]}
-                  onPress={() => {
-                    customerSignatureRef.current?.clearSignature();
-                    setCustomerSignatureData(null);
-                  }}
-                  activeOpacity={0.8}
-                >
-                  <Text style={[styles.signatureActionBtnText, { color: colors.textSecondary }]}>Clear</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.signatureActionBtn, styles.signatureConfirmBtn, { backgroundColor: colors.primary }]}
-                  onPress={() => customerSignatureRef.current?.readSignature()}
-                  activeOpacity={0.8}
-                >
-                  <Text style={[styles.signatureActionBtnText, { color: '#fff' }]}>Save customer</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-
-            <View style={styles.signatureSection}>
-              <Text style={styles.signatureSectionHeader}>Driver signature</Text>
-              <Text style={styles.signatureSectionHint}>Sign here next.</Text>
-              <View style={styles.signatureCanvasWrap}>
-                <SignatureCanvas
-                  ref={driverSignatureRef}
-                  onOK={(dataUrl) => setDriverSignatureData(dataUrl)}
-                  onEmpty={() => Alert.alert('Signature required', 'Please sign the driver signature area first.')}
-                  descriptionText=""
-                  clearText=""
-                  confirmText=""
-                  penColor="#000000"
-                  backgroundColor="rgba(255,255,255,1)"
-                  style={styles.signatureCanvas}
-                  autoClear={false}
-                  webStyle={`.m-signature-pad--footer { display: none !important; }`}
-                />
-              </View>
-              <View style={styles.signatureBtnRow}>
-                <TouchableOpacity
-                  style={[styles.signatureActionBtn, styles.signatureClearBtn, { borderColor: colors.border }]}
-                  onPress={() => {
-                    driverSignatureRef.current?.clearSignature();
-                    setDriverSignatureData(null);
-                  }}
-                  activeOpacity={0.8}
-                >
-                  <Text style={[styles.signatureActionBtnText, { color: colors.textSecondary }]}>Clear</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.signatureActionBtn, styles.signatureConfirmBtn, { backgroundColor: colors.primary }]}
-                  onPress={() => driverSignatureRef.current?.readSignature()}
-                  activeOpacity={0.8}
-                >
-                  <Text style={[styles.signatureActionBtnText, { color: '#fff' }]}>Save driver</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-
-            <TouchableOpacity
-              style={[styles.payBtn, { marginTop: spacing.xs }]}
-              onPress={() => {
-                if (!customerSignatureData || !driverSignatureData) {
-                  Alert.alert('Signatures required', 'Please save both customer and driver signatures before confirming.');
-                  return;
-                }
-                setShowSignatureModal(false);
-                handleProceed(customerSignatureData, driverSignatureData);
-              }}
-              activeOpacity={0.8}
+            <ScrollView
+              style={styles.signatureModalScroll}
+              contentContainerStyle={styles.signatureModalScrollContent}
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+              nestedScrollEnabled
+              scrollEnabled={signatureModalScrollEnabled}
             >
-              <Ionicons name="checkmark-done-outline" size={22} color="#fff" />
-              <Text style={styles.btnText}>Confirm Payment</Text>
-            </TouchableOpacity>
+              <Text style={[styles.signatureModalTitle, { color: colors.text }]}>Confirm signatures</Text>
+              <Text style={[styles.signatureModalHint, { color: colors.textSecondary }]}>Customer and driver sign in the two boxes below, then tap Confirm Payment.</Text>
 
-            <TouchableOpacity
-              style={[styles.signatureCancelBtn, { borderColor: colors.border, marginTop: spacing.sm }]}
-              onPress={() => {
-                setShowSignatureModal(false);
-                setCustomerSignatureData(null);
-                setDriverSignatureData(null);
-                customerSignatureRef.current?.clearSignature();
-                driverSignatureRef.current?.clearSignature();
-              }}
-              activeOpacity={0.8}
-            >
-              <Text style={[styles.signatureCancelBtnText, { color: colors.textSecondary }]}>Cancel</Text>
-            </TouchableOpacity>
+              <View style={styles.signatureSection}>
+                <Text style={styles.signatureSectionHeader}>Customer signature</Text>
+                <Text style={styles.signatureSectionHint}>Sign here first.</Text>
+                <View
+                  style={styles.signatureCanvasWrap}
+                  onTouchStart={() => setSignatureModalScrollEnabled(false)}
+                  onTouchEnd={() => setSignatureModalScrollEnabled(true)}
+                  onTouchCancel={() => setSignatureModalScrollEnabled(true)}
+                >
+                  <SignatureCanvas
+                    ref={customerSignatureRef}
+                    onOK={(dataUrl) => {
+                      setCustomerSignatureData(dataUrl);
+                      setCustomerSignatureSaved(true);
+                      setSignatureModalScrollEnabled(true);
+                    }}
+                    onEmpty={() => {
+                      setSignatureModalScrollEnabled(true);
+                      Alert.alert('Signature required', 'Please sign the customer signature area first.');
+                    }}
+                    descriptionText=""
+                    clearText=""
+                    confirmText=""
+                    penColor="#000000"
+                    backgroundColor="rgba(255,255,255,1)"
+                    style={styles.signatureCanvas}
+                    autoClear={false}
+                    webStyle={`.m-signature-pad--footer { display: none !important; }`}
+                  />
+                </View>
+                <View style={styles.signatureBtnRow}>
+                  <TouchableOpacity
+                    style={[styles.signatureActionBtn, styles.signatureClearBtn, { borderColor: colors.border }]}
+                    onPress={() => {
+                      customerSignatureRef.current?.clearSignature();
+                      setCustomerSignatureData(null);
+                      setCustomerSignatureSaved(false);
+                    }}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={[styles.signatureActionBtnText, { color: colors.textSecondary }]}>Clear</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.signatureActionBtn,
+                      styles.signatureConfirmBtn,
+                      customerSignatureSaved && styles.signatureConfirmBtnSaved,
+                    ]}
+                    onPress={() => {
+                      setSignatureModalScrollEnabled(true);
+                      customerSignatureRef.current?.readSignature();
+                    }}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={[styles.signatureActionBtnText, { color: '#fff' }]}>{customerSignatureSaved ? 'Saved' : 'Save customer'}</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              <View style={styles.signatureSection}>
+                <Text style={styles.signatureSectionHeader}>Driver signature</Text>
+                <Text style={styles.signatureSectionHint}>Sign here next.</Text>
+                <View
+                  style={styles.signatureCanvasWrap}
+                  onTouchStart={() => setSignatureModalScrollEnabled(false)}
+                  onTouchEnd={() => setSignatureModalScrollEnabled(true)}
+                  onTouchCancel={() => setSignatureModalScrollEnabled(true)}
+                >
+                  <SignatureCanvas
+                    ref={driverSignatureRef}
+                    onOK={(dataUrl) => {
+                      setDriverSignatureData(dataUrl);
+                      setDriverSignatureSaved(true);
+                      setSignatureModalScrollEnabled(true);
+                    }}
+                    onEmpty={() => {
+                      setSignatureModalScrollEnabled(true);
+                      Alert.alert('Signature required', 'Please sign the driver signature area first.');
+                    }}
+                    descriptionText=""
+                    clearText=""
+                    confirmText=""
+                    penColor="#000000"
+                    backgroundColor="rgba(255,255,255,1)"
+                    style={styles.signatureCanvas}
+                    autoClear={false}
+                    webStyle={`.m-signature-pad--footer { display: none !important; }`}
+                  />
+                </View>
+                <View style={styles.signatureBtnRow}>
+                  <TouchableOpacity
+                    style={[styles.signatureActionBtn, styles.signatureClearBtn, { borderColor: colors.border }]}
+                    onPress={() => {
+                      driverSignatureRef.current?.clearSignature();
+                      setDriverSignatureData(null);
+                      setDriverSignatureSaved(false);
+                    }}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={[styles.signatureActionBtnText, { color: colors.textSecondary }]}>Clear</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.signatureActionBtn,
+                      styles.signatureConfirmBtn,
+                      driverSignatureSaved && styles.signatureConfirmBtnSaved,
+                    ]}
+                    onPress={() => {
+                      setSignatureModalScrollEnabled(true);
+                      driverSignatureRef.current?.readSignature();
+                    }}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={[styles.signatureActionBtnText, { color: '#fff' }]}>{driverSignatureSaved ? 'Saved' : 'Save driver'}</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              <TouchableOpacity
+                style={[styles.payBtn, { marginTop: spacing.xs }]}
+                onPress={() => {
+                  if (!customerSignatureData || !driverSignatureData) {
+                    Alert.alert('Signatures required', 'Please save both customer and driver signatures before confirming.');
+                    return;
+                  }
+                  setSignatureModalScrollEnabled(true);
+                  setShowSignatureModal(false);
+                  handleProceed(customerSignatureData, driverSignatureData);
+                }}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="checkmark-done-outline" size={22} color="#fff" />
+                <Text style={styles.btnText}>Confirm Payment</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.signatureCancelBtn, { borderColor: colors.border, marginTop: spacing.sm }]}
+                onPress={() => {
+                  setShowSignatureModal(false);
+                  setCustomerSignatureData(null);
+                  setDriverSignatureData(null);
+                  setCustomerSignatureSaved(false);
+                  setDriverSignatureSaved(false);
+                  setSignatureModalScrollEnabled(true);
+                  customerSignatureRef.current?.clearSignature();
+                  driverSignatureRef.current?.clearSignature();
+                }}
+                activeOpacity={0.8}
+              >
+                <Text style={[styles.signatureCancelBtnText, { color: colors.textSecondary }]}>Cancel</Text>
+              </TouchableOpacity>
+            </ScrollView>
           </View>
         </View>
       </Modal>
