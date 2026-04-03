@@ -632,11 +632,11 @@ const validateQuantities = useCallback(() => {
       const pickingsOut = [];
 
       for (const picking of targets) {
-        const moveIds = picking.move_ids?.length ? picking.move_ids : null;
         const moves = await stockMovesDb.getStockMovesByPickingId(picking.id);
         if (!moves?.length) continue;
 
-        const idsForLines = moveIds || moves.map((m) => m.id);
+        /** Use real stock.move ids from this picking only — not picking.move_ids (can be wrong or Many2one tuples in DB). */
+        const idsForLines = moves.map((m) => m.id).filter((id) => id != null);
         const moveLines = await stockMoveLinesDb.getStockMoveLinesByMoveIds(idsForLines);
         const productIdToMoveLineId = buildProductIdToMoveLineIdMap(moves, moveLines);
         const productIdToMoveId = buildProductIdToMoveIdMap(moves);

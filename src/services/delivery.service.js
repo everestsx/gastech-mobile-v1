@@ -62,6 +62,13 @@ export const updateMoveLineQty = (lineId, qty) =>
 export const updateStockMoveQty = (moveId, qty) =>
   callOdoo("stock.move", "write", [[moveId], { product_uom_qty: qty }]);
 
+/**
+ * Set done qty on stock.move — Odoo propagates to move lines (recommended after qty_done writes or when lines were missing).
+ * Field name matches Odoo 16+; if write fails (readonly on some DBs), sync still relies on stock.move.line.
+ */
+export const updateStockMoveQuantityDone = (moveId, qtyDone) =>
+  callOdoo("stock.move", "write", [[moveId], { quantity_done: Number(qtyDone) }]);
+
 /** Validate delivery order (picking). Returns true or backorder wizard info */
 export const validatePicking = (pickingId) =>
   callOdooArgs("stock.picking", "button_validate", [[pickingId]]);
@@ -111,14 +118,13 @@ export const getPickingState = (pickingId) =>
 export const getDeliveryDataForSaleOrder = async (saleOrderId) => {
   const pickings = await getPickingBySaleOrder(saleOrderId);
   const picking = pickings?.[0] ?? null;
-  if (!picking?.move_ids?.length) {
+  if (!picking?.id) {
     return { picking, moves: [], moveLines: [] };
   }
-  const moveIds = picking.move_ids;
-  const [moves, moveLines] = await Promise.all([
-    getStockMovesByPickingId(picking.id),
-    getStockMoveLinesByMoveIds(moveIds),
-  ]);
+  const moves = await getStockMovesByPickingId(picking.id);
+  const moveIdsFromMoves = (moves || []).map((m) => m.id).filter((id) => id != null);
+  const moveLines =
+    moveIdsFromMoves.length > 0 ? await getStockMoveLinesByMoveIds(moveIdsFromMoves) : [];
   return { picking, moves: moves ?? [], moveLines: moveLines ?? [] };
 };
 

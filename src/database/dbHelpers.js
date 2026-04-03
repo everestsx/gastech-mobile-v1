@@ -35,3 +35,22 @@ export function jsonArr(v) {
   if (typeof v === 'object') return Array.isArray(v) ? JSON.stringify(v) : '[]';
   return typeof v === 'string' ? v : '[]';
 }
+
+/**
+ * Odoo Many2one / x2m payloads: [id, name] or plain id. Returns numeric ids only (e.g. stock.picking.move_ids).
+ */
+export function normalizeOdooRelationIds(v) {
+  if (v == null) return [];
+  if (!Array.isArray(v)) return [];
+  const out = [];
+  for (const item of v) {
+    if (Array.isArray(item) && item.length > 0) {
+      const n = Number(item[0]);
+      if (Number.isFinite(n) && n > 0) out.push(n);
+    } else {
+      const n = Number(item);
+      if (Number.isFinite(n) && n > 0) out.push(n);
+    }
+  }
+  return out;
+}

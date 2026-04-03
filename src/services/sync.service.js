@@ -226,12 +226,14 @@ export async function getDeliveryDataFromDB(saleOrderId) {
     const list = pickings || [];
     const open = list.filter((p) => String(p.state || '').toLowerCase() !== 'done');
     const picking = open[0] ?? list[0] ?? null;
-    if (!picking?.move_ids?.length) return { picking, moves: [], moveLines: [] };
-    const moveIds = picking.move_ids;
-    const [moves, moveLines] = await Promise.all([
-      stockMovesDb.getStockMovesByPickingId(picking.id),
-      stockMoveLinesDb.getStockMoveLinesByMoveIds(moveIds),
-    ]);
+    if (!picking?.id) return { picking: null, moves: [], moveLines: [] };
+    /** Always resolve move IDs from `stock_moves` for this picking — never trust `picking.move_ids` alone (wrong ids break move_line lookup). */
+    const moves = await stockMovesDb.getStockMovesByPickingId(picking.id);
+    const moveIdsFromMoves = (moves || []).map((m) => m.id).filter((id) => id != null);
+    const moveLines =
+      moveIdsFromMoves.length > 0
+        ? await stockMoveLinesDb.getStockMoveLinesByMoveIds(moveIdsFromMoves)
+        : [];
     return { picking, moves: moves || [], moveLines: moveLines || [] };
   } catch (e) {
     console.warn('getDeliveryDataFromDB', e);
@@ -598,6 +600,7 @@ async function processSyncQueue() {
         getStockMoveLinesByMoveIds,
         updateMoveLineQty,
         updateStockMoveQty,
+        updateStockMoveQuantityDone,
         createMoveLine,
         validatePickingWithContext,
         createBackorderConfirmation,
@@ -711,6 +714,23 @@ async function processSyncQueue() {
               } else {
                 for (const u of moveLineUpdates) {
                   await updateMoveLineQty(u.moveLineId, u.qty_done);
+                }
+              }
+              /** Ensure stock.move.quantity_done matches payload (avoids validating a "zero" transfer when move_line ids were wrong locally). */
+              const qtyDoneByMoveId = new Map();
+              for (const line of deliveryLines) {
+                const mid = line.moveId ?? line.move_id;
+                if (mid == null) continue;
+                qtyDoneByMoveId.set(Number(mid), Number(line.qty_done));
+              }
+              for (const [moveId, qty] of qtyDoneByMoveId) {
+                try {
+                  await updateStockMoveQuantityDone(moveId, qty);
+                } catch (qErr) {
+                  log(
+                    'queue',
+                    `delivery quantity_done on move ${moveId} skipped: ${String(qErr?.message || qErr).slice(0, 100)}`
+                  );
                 }
               }
             } catch (updateErr) {
@@ -1487,12 +1507,10 @@ export async function runSync() {
       log('fetch', `pickings=${result.pickings}`);
 
       for (const p of allPickings) {
-        const moveIds = p.move_ids || (Array.isArray(p.move_ids) ? p.move_ids : []);
-        if (moveIds.length === 0) continue;
-        const [moves, moveLines] = await Promise.all([
-          getStockMovesByPickingId(p.id),
-          getStockMoveLinesByMoveIds(moveIds),
-        ]);
+        const moves = await getStockMovesByPickingId(p.id);
+        const moveIdsFromMoves = (moves || []).map((m) => m.id).filter((id) => id != null);
+        if (!moveIdsFromMoves.length) continue;
+        const moveLines = await getStockMoveLinesByMoveIds(moveIdsFromMoves);
         (moves || []).forEach((m) => {
           allMoves.push({ ...m, picking_id: m.picking_id ?? p.id });
           const pid = Array.isArray(m.product_id) ? m.product_id[0] : m.product_id;

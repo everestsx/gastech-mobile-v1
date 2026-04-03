@@ -3,7 +3,7 @@
  */
 
 import { getDb } from './db.js';
-import { empty, num, numOrNull, iso, jsonArr } from './dbHelpers.js';
+import { empty, num, numOrNull, iso, jsonArr, normalizeOdooRelationIds } from './dbHelpers.js';
 
 const LOG = '[stockPickings]';
 
@@ -54,8 +54,8 @@ export async function upsertStockPickings(rows, options = {}) {
           empty(r.name) || null,
           sid,
           stateVal,
-          jsonArr(r.move_ids),
-          jsonArr(r.backorder_ids),
+          jsonArr(normalizeOdooRelationIds(r.move_ids)),
+          jsonArr(normalizeOdooRelationIds(r.backorder_ids)),
           now,
         ]
       );
