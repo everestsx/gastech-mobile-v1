@@ -30,25 +30,39 @@ function isAccessLikeError(err) {
 }
 
 /**
- * search_read hr.employee — JSON-RPC then JSON 2. Optionally drops barcode/pin from fields if Odoo denies read.
+ * search_read hr.employee — same endpoint as Postman: `/json/2/hr.employee/search_read` (Bearer) first.
+ * JSON-RPC often returns [] for the same API user (record rules) without throwing, so we never reached JSON 2 before.
  */
 async function employeeSearchRead(domain, { limit = 500, fields } = {}) {
   const flds = fields?.length ? fields : FIELDS_MINIMAL;
 
+  const json2Params = (fieldList) => ({
+    domain,
+    fields: fieldList,
+    limit,
+    context: CONTEXT,
+  });
+
   const attempt = async (fieldList) => {
+    const params = json2Params(fieldList);
+    try {
+      const result = await callOdooJson2("hr.employee", "search_read", params);
+      const arr = Array.isArray(result) ? result : [];
+      return arr;
+    } catch (j2Err) {
+      if (__DEV__) {
+        console.warn("[employee] JSON2 search_read failed, trying JSON-RPC:", j2Err?.message || j2Err);
+      }
+    }
     const opts = { fields: fieldList, limit, context: CONTEXT };
     try {
       const rows = await callOdoo("hr.employee", "search_read", [domain], opts);
       return Array.isArray(rows) ? rows : [];
-    } catch (e) {
-      if (!isAccessLikeError(e)) throw e;
+    } catch (rpcErr) {
+      if (!isAccessLikeError(rpcErr)) throw rpcErr;
+      const result = await callOdooJson2("hr.employee", "search_read", params);
+      return Array.isArray(result) ? result : [];
     }
-    const result = await callOdooJson2("hr.employee", "search_read", {
-      domain,
-      fields: fieldList,
-      limit,
-    });
-    return Array.isArray(result) ? result : [];
   };
 
   try {
