@@ -8,10 +8,12 @@ import {
   Switch,
   Alert,
   Modal,
+  Image,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { getUserSession } from '../services/sync.service';
+import { odooImageToUri } from '../services/employee.service';
 import { spacing, borderRadius } from '../constants/theme';
 
 export default function SettingsScreen({ navigation }) {
@@ -61,17 +63,27 @@ export default function SettingsScreen({ navigation }) {
     >
       {/* Profile */}
       <View style={[styles.profileCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-        <View style={[styles.avatar, { backgroundColor: colors.primary }]}>
-          <Text style={styles.avatarText}>
-            {(user?.username || 'U').charAt(0).toUpperCase()}
-          </Text>
+        <View style={[styles.avatar, { backgroundColor: colors.primary, overflow: 'hidden' }]}>
+          {user?.driverImageBase64 ? (
+            <Image
+              source={{ uri: odooImageToUri(user.driverImageBase64) }}
+              style={{ width: '100%', height: '100%' }}
+              resizeMode="cover"
+            />
+          ) : (
+            <Text style={styles.avatarText}>
+              {(user?.driverName || user?.username || user?.licensePlate || 'U').charAt(0).toUpperCase()}
+            </Text>
+          )}
         </View>
         <View style={styles.profileInfo}>
           <Text style={[styles.profileName, { color: colors.text }]} numberOfLines={1}>
-            {user?.username || 'User'}
+            {user?.driverName || user?.username || user?.licensePlate || 'User'}
           </Text>
-          <Text style={[styles.profileEmail, { color: colors.textSecondary }]} numberOfLines={1}>
-            {user?.email || user?.username ? `@${user.username}` : '—'}
+          <Text style={[styles.profileEmail, { color: colors.textSecondary }]} numberOfLines={2}>
+            {user?.driverName
+              ? [user?.licensePlate || user?.vehicleName, user?.driverBarcode].filter(Boolean).join(' · ')
+              : user?.email || (user?.username ? `@${user.username}` : '—')}
           </Text>
         </View>
         <Ionicons name="chevron-forward" size={22} color={colors.textSecondary} />
