@@ -23,7 +23,7 @@ import { spacing, borderRadius } from '../constants/theme';
 import { getCachedVehicles, getLastVehicleId, runSync, saveUserSession, saveLastVehicleId, syncVehiclesOnly } from '../services/sync.service';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { fetchAndStoreVehicleJournals } from '../services/vehicle.service';
-import { getDriverByBarcode, getPortersEmployees, odooImageToUri } from '../services/employee.service';
+import { getDriverByBarcode, getPortersEmployees, odooImageToUri, DriverLookupError } from '../services/employee.service';
 
 
 
@@ -94,7 +94,7 @@ export default function LoginScreen({ navigation }) {
       }, 500);
     }
   }, [loadVehicles]);
-  /** Driver code / password (matched in Odoo on Driving employees; value is not shown from server). */
+  /** Driver barcode (Odoo hr.employee.barcode, same as Postman search_read). */
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
 
@@ -135,7 +135,7 @@ export default function LoginScreen({ navigation }) {
   const handleLogin = async () => {
     Keyboard.dismiss();
     if (!selected) return showAlert('Required', 'Please select a vehicle.');
-    if (!password.trim()) return showAlert('Required', 'Please enter your driver code.');
+    if (!password.trim()) return showAlert('Required', 'Please enter your driver barcode.');
 
     setLoading(true);
     try {
@@ -143,13 +143,17 @@ export default function LoginScreen({ navigation }) {
       if (!mountedRef.current) return;
       if (!driver) {
         throw new Error(
-          'Unknown driver code. In Odoo, set this on the employee under Driving: HR PIN (Attendance), or Barcode / Badge, and ensure the department name contains "Driving".'
+          'Wrong password. The driver barcode is incorrect or that employee is not in the Driving department.'
         );
       }
       setMatchedDriver(driver);
       setLoginPhase('driverReview');
     } catch (err) {
-      showAlert('Login Failed', err.message || 'Could not verify driver.', [{ text: 'Try Again', onPress: hideAlert }]);
+      const message =
+        err instanceof DriverLookupError
+          ? err.message
+          : err?.message || 'Could not verify driver. Check your connection and try again.';
+      showAlert('Login Failed', message, [{ text: 'Try Again', onPress: hideAlert }]);
     } finally {
       if (mountedRef.current) setLoading(false);
     }
@@ -567,12 +571,12 @@ export default function LoginScreen({ navigation }) {
                   </TouchableOpacity>
                 </Modal>
               </View>
-              <Text style={styles.inputLabel}>Driver code</Text>
+              <Text style={styles.inputLabel}>Driver barcode</Text>
               <View style={styles.inputGroup}>
-                <Ionicons name="key-outline" size={20} color={colors.primary} style={{ marginRight: 12 }} />
+                <Ionicons name="barcode-outline" size={20} color={colors.primary} style={{ marginRight: 12 }} />
                 <TextInput
                     style={{ flex: 1, fontSize: 16, color: colors.text }}
-                    placeholder="Your driver code (e.g. D1)"
+                    placeholder="Barcode (e.g. D1)"
                     placeholderTextColor={colors.textSecondary}
                     secureTextEntry={!showPassword}
                     value={password}

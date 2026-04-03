@@ -1,9 +1,21 @@
-// services/employee.service.js — hr.employee (Driving / Porters); read only id, name, image (no barcode/pin in response).
+// services/employee.service.js — hr.employee: same shape as Odoo search_read (barcode + department_id, etc.)
 import { callOdoo, callOdooJson2 } from "./index.service";
 
-const EMPLOYEE_READ_FIELDS = ["id", "name", "image_1920"];
+/** Matches Postman / Odoo: driver row with barcode, pin, image, department. */
+const FIELDS_DRIVER_API = ["id", "name", "barcode", "pin", "image_1920", "department_id"];
+
+const FIELDS_MINIMAL = ["id", "name", "image_1920"];
 
 const CONTEXT = { lang: "en_US" };
+
+export class DriverLookupError extends Error {
+  /** @param {'not_driving'} kind */
+  constructor(kind, message) {
+    super(message);
+    this.name = "DriverLookupError";
+    this.kind = kind;
+  }
+}
 
 function isAccessLikeError(err) {
   const m = String(err?.message || err || "").toLowerCase();
@@ -18,28 +30,45 @@ function isAccessLikeError(err) {
 }
 
 /**
- * search_read on hr.employee: try JSON-RPC execute_kw, then JSON 2 (same pattern as commission).
+ * search_read hr.employee — JSON-RPC then JSON 2. Optionally drops barcode/pin from fields if Odoo denies read.
  */
-async function employeeSearchRead(domain, { limit = 500 } = {}) {
-  const opts = { fields: EMPLOYEE_READ_FIELDS, limit, context: CONTEXT };
-  try {
-    const rows = await callOdoo("hr.employee", "search_read", [domain], opts);
-    return Array.isArray(rows) ? rows : [];
-  } catch (e) {
-    if (!isAccessLikeError(e)) throw e;
+async function employeeSearchRead(domain, { limit = 500, fields } = {}) {
+  const flds = fields?.length ? fields : FIELDS_MINIMAL;
+
+  const attempt = async (fieldList) => {
+    const opts = { fields: fieldList, limit, context: CONTEXT };
+    try {
+      const rows = await callOdoo("hr.employee", "search_read", [domain], opts);
+      return Array.isArray(rows) ? rows : [];
+    } catch (e) {
+      if (!isAccessLikeError(e)) throw e;
+    }
     const result = await callOdooJson2("hr.employee", "search_read", {
       domain,
-      fields: EMPLOYEE_READ_FIELDS,
+      fields: fieldList,
       limit,
     });
     return Array.isArray(result) ? result : [];
+  };
+
+  try {
+    return await attempt(flds);
+  } catch (e) {
+    const stripped = flds.filter((f) => f !== "barcode" && f !== "pin");
+    if (stripped.length && stripped.length < flds.length) {
+      try {
+        return await attempt(stripped);
+      } catch {
+        return [];
+      }
+    }
+    throw e;
   }
 }
 
-/** One strategy must not break the whole login if a field (e.g. pin) is missing on older Odoo. */
-async function trySearch(domain, limit) {
+async function trySearch(domain, limit, fields = FIELDS_MINIMAL) {
   try {
-    const rows = await employeeSearchRead(domain, { limit });
+    const rows = await employeeSearchRead(domain, { limit, fields });
     return Array.isArray(rows) ? rows : [];
   } catch (e) {
     if (__DEV__) {
@@ -49,9 +78,16 @@ async function trySearch(domain, limit) {
   }
 }
 
-/** Department = exact "Driving" or name containing "Driving" (handles "Fleet / Driving", etc.). */
-const DEPT_EXACT = ["department_id.name", "=", "Driving"];
-const DEPT_FUZZY = ["department_id.name", "ilike", "%Driving%"];
+function departmentName(row) {
+  const d = row?.department_id;
+  if (d == null || d === false) return "";
+  return Array.isArray(d) ? String(d[1] ?? "").trim() : String(d).trim();
+}
+
+function isDrivingDepartment(row) {
+  const n = departmentName(row).toLowerCase();
+  return n === "driving" || n.includes("driving");
+}
 
 /**
  * Odoo `image_1920` is base64; returns a data URI suitable for React Native `Image` `source={{ uri }}`.
@@ -65,19 +101,25 @@ export function odooImageToUri(imageField) {
 }
 
 /**
- * @param {object} row — Odoo record
- * @param {string} [enteredDriverCode] — value the driver typed (stored for session / settings)
+ * @param {object} row
+ * @param {string} [enteredDriverCode] — fallback if server omits barcode (ACL-safe read)
  */
 export function normalizeEmployee(row, enteredDriverCode = "") {
   if (!row || row.id == null) return null;
   const entered = String(enteredDriverCode || "").trim();
+  const fromServer = row.barcode != null && row.barcode !== false ? String(row.barcode).trim() : "";
   return {
     id: row.id,
     name: row.name || "",
-    barcode: entered,
+    barcode: fromServer || entered,
     imageBase64: row.image_1920 != null && row.image_1920 !== false ? String(row.image_1920) : null,
   };
 }
+
+const DEPT_EXACT = ["department_id.name", "=", "Driving"];
+const DEPT_FUZZY = ["department_id.name", "ilike", "%Driving%"];
+const PORTERS_EXACT = ["department_id.name", "=", "Porters"];
+const PORTERS_FUZZY = ["department_id.name", "ilike", "%Porters%"];
 
 function pickUnique(rows, trimmed) {
   if (!rows?.length) return null;
@@ -86,12 +128,25 @@ function pickUnique(rows, trimmed) {
 }
 
 /**
- * Match driver login code against Odoo without reading protected fields.
- * Order: PIN (Attendance / HR kiosk) → barcode → identification_id, with strict then fuzzy department, then global unique PIN/barcode.
+ * Primary path (Postman parity): domain [["barcode", "=", code]], then keep only Driving employees using `department_id`.
+ * Fallbacks: PIN / barcode with department in domain, identification_id, global unique pin/barcode.
  */
 export const getDriverByBarcode = async (driverCode) => {
   const trimmed = typeof driverCode === "string" ? driverCode.trim() : String(driverCode ?? "").trim();
   if (!trimmed) return null;
+
+  // 1) Exact API you use in Postman: barcode only, full fields
+  const byBarcode = await trySearch([["barcode", "=", trimmed]], 10, FIELDS_DRIVER_API);
+  const drivingFromBarcode = byBarcode.filter(isDrivingDepartment);
+  if (drivingFromBarcode.length >= 1) {
+    return normalizeEmployee(drivingFromBarcode[0], trimmed);
+  }
+  if (byBarcode.length >= 1) {
+    throw new DriverLookupError(
+      "not_driving",
+      "This barcode is not assigned to a Driving employee. Ask your administrator."
+    );
+  }
 
   const pinEq = ["pin", "=", trimmed];
   const pinIlike = ["pin", "ilike", trimmed];
@@ -101,35 +156,34 @@ export const getDriverByBarcode = async (driverCode) => {
   const identIlike = ["identification_id", "ilike", trimmed];
 
   const attempts = [
-    // PIN + department (most likely for a short code like D1)
-    [[DEPT_EXACT, pinEq], 1, "pin+dept"],
-    [[DEPT_EXACT, pinIlike], 1, "pin+dept-ilike"],
-    [[DEPT_FUZZY, pinEq], 1, "pin+fuzzy-dept"],
-    [[DEPT_FUZZY, pinIlike], 1, "pin+fuzzy-dept-ilike"],
-    // Barcode + department
-    [[DEPT_EXACT, barcodeEq], 1, "barcode+dept"],
-    [[DEPT_EXACT, barcodeIlike], 1, "barcode+dept-ilike"],
-    [[DEPT_FUZZY, barcodeEq], 1, "barcode+fuzzy-dept"],
-    [[DEPT_FUZZY, barcodeIlike], 1, "barcode+fuzzy-dept-ilike"],
-    // Employee ID / badge number text
-    [[DEPT_EXACT, identEq], 1, "ident+dept"],
-    [[DEPT_EXACT, identIlike], 1, "ident+dept-ilike"],
-    [[DEPT_FUZZY, identEq], 1, "ident+fuzzy-dept"],
-    [[DEPT_FUZZY, identIlike], 1, "ident+fuzzy-dept-ilike"],
+    [[DEPT_EXACT, pinEq], 1],
+    [[DEPT_EXACT, pinIlike], 1],
+    [[DEPT_FUZZY, pinEq], 1],
+    [[DEPT_FUZZY, pinIlike], 1],
+    [[DEPT_EXACT, barcodeEq], 1],
+    [[DEPT_EXACT, barcodeIlike], 1],
+    [[DEPT_FUZZY, barcodeEq], 1],
+    [[DEPT_FUZZY, barcodeIlike], 1],
+    [[DEPT_EXACT, identEq], 1],
+    [[DEPT_EXACT, identIlike], 1],
+    [[DEPT_FUZZY, identEq], 1],
+    [[DEPT_FUZZY, identIlike], 1],
   ];
 
   for (const [domain, limit] of attempts) {
-    const rows = await trySearch(domain, limit);
+    const rows = await trySearch(domain, limit, FIELDS_MINIMAL);
     const one = pickUnique(rows, trimmed);
     if (one) return one;
   }
 
-  // Last resort: code unique company-wide on pin or barcode (no department filter)
-  const pinGlobal = await trySearch([pinEq], 2);
+  const pinGlobal = await trySearch([pinEq], 2, FIELDS_MINIMAL);
   const pinPick = pickUnique(pinGlobal, trimmed);
   if (pinPick) return pinPick;
 
-  const barcodeGlobal = await trySearch([barcodeEq], 2);
+  const barcodeGlobal = await trySearch([barcodeEq], 2, FIELDS_DRIVER_API);
+  const drivingGlobal = barcodeGlobal.filter(isDrivingDepartment);
+  if (drivingGlobal.length === 1) return normalizeEmployee(drivingGlobal[0], trimmed);
+
   const barcodePick = pickUnique(barcodeGlobal, trimmed);
   if (barcodePick) return barcodePick;
 
@@ -138,14 +192,14 @@ export const getDriverByBarcode = async (driverCode) => {
 
 /** All employees in the Driving department (exact or fuzzy name). */
 export const getDrivingEmployees = async () => {
-  let rows = await trySearch([DEPT_EXACT], 500);
-  if (!rows.length) rows = await trySearch([DEPT_FUZZY], 500);
+  let rows = await trySearch([DEPT_EXACT], 500, FIELDS_MINIMAL);
+  if (!rows.length) rows = await trySearch([DEPT_FUZZY], 500, FIELDS_MINIMAL);
   return rows.map((r) => normalizeEmployee(r)).filter(Boolean);
 };
 
-/** All employees in the Porters department. */
+/** Porters: same field set as your Odoo search_read (domain on Porters department). */
 export const getPortersEmployees = async () => {
-  let rows = await trySearch([["department_id.name", "=", "Porters"]], 500);
-  if (!rows.length) rows = await trySearch([["department_id.name", "ilike", "%Porters%"]], 500);
+  let rows = await trySearch([PORTERS_EXACT], 500, FIELDS_DRIVER_API);
+  if (!rows.length) rows = await trySearch([PORTERS_FUZZY], 500, FIELDS_DRIVER_API);
   return rows.map((r) => normalizeEmployee(r)).filter(Boolean);
 };
