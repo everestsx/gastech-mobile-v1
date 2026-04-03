@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 
 import CustomAlert from '../components/CustomAlert';
 import {
@@ -29,6 +29,9 @@ import { getDriverByBarcode, getPortersEmployees, odooImageToUri } from '../serv
 
 export default function LoginScreen({ navigation }) {
   const { colors } = useTheme();
+  /** Avoid setState after unmount / after replace() — prevents RN "JS function on dead thread" crashes. */
+  const mountedRef = useRef(true);
+  const syncingHideTimeoutRef = useRef(null);
   const [vehicles, setVehicles] = useState([]);
   const [selected, setSelected] = useState(null);
   const [dropdownVisible, setDropdownVisible] = useState(false);
@@ -52,10 +55,12 @@ export default function LoginScreen({ navigation }) {
   const loadVehicles = useCallback(async () => {
     try {
       const list = await getCachedVehicles();
+      if (!mountedRef.current) return [];
       console.log("Vehicles loaded from DB:", list.length);
       const vehicleList = Array.isArray(list) ? list : [];
       setVehicles(vehicleList);
       const lastId = await getLastVehicleId();
+      if (!mountedRef.current) return vehicleList;
       if (lastId && vehicleList.length > 0) {
         const match = vehicleList.find((v) => String(v.id) === String(lastId));
         if (match) setSelected(match);
@@ -63,22 +68,30 @@ export default function LoginScreen({ navigation }) {
       return vehicleList;
     } catch (e) {
       console.error("loadVehicles error:", e);
-      setVehicles([]);
+      if (mountedRef.current) setVehicles([]);
       return [];
     }
   }, []);
 
   /** On login screen load: always fetch fleet.vehicle from Odoo (search_read), then refresh local list. */
   const initData = useCallback(async () => {
+    if (syncingHideTimeoutRef.current) {
+      clearTimeout(syncingHideTimeoutRef.current);
+      syncingHideTimeoutRef.current = null;
+    }
     await loadVehicles();
+    if (!mountedRef.current) return;
     setSyncing(true);
     try {
       const success = await syncVehiclesOnly();
-      if (success) await loadVehicles();
+      if (success && mountedRef.current) await loadVehicles();
     } catch (e) {
       console.log("Vehicle fetch failed", e);
     } finally {
-      setTimeout(() => setSyncing(false), 500);
+      syncingHideTimeoutRef.current = setTimeout(() => {
+        syncingHideTimeoutRef.current = null;
+        if (mountedRef.current) setSyncing(false);
+      }, 500);
     }
   }, [loadVehicles]);
   /** Driver code / password (matched in Odoo on Driving employees; value is not shown from server). */
@@ -100,7 +113,15 @@ export default function LoginScreen({ navigation }) {
   }, []);
 
   useEffect(() => {
+    mountedRef.current = true;
     initData();
+    return () => {
+      mountedRef.current = false;
+      if (syncingHideTimeoutRef.current) {
+        clearTimeout(syncingHideTimeoutRef.current);
+        syncingHideTimeoutRef.current = null;
+      }
+    };
   }, [initData]);
 
   const togglePorter = useCallback((id) => {
@@ -119,6 +140,7 @@ export default function LoginScreen({ navigation }) {
     setLoading(true);
     try {
       const driver = await getDriverByBarcode(password);
+      if (!mountedRef.current) return;
       if (!driver) {
         throw new Error(
           'Unknown driver code. In Odoo, set this on the employee under Driving: HR PIN (Attendance), or Barcode / Badge, and ensure the department name contains "Driving".'
@@ -129,7 +151,7 @@ export default function LoginScreen({ navigation }) {
     } catch (err) {
       showAlert('Login Failed', err.message || 'Could not verify driver.', [{ text: 'Try Again', onPress: hideAlert }]);
     } finally {
-      setLoading(false);
+      if (mountedRef.current) setLoading(false);
     }
   };
 
@@ -140,6 +162,7 @@ export default function LoginScreen({ navigation }) {
     setSelectedPorterIds([]);
     try {
       const list = await getPortersEmployees();
+      if (!mountedRef.current) return;
       setPortersList(Array.isArray(list) ? list : []);
       if (!list?.length) {
         showAlert(
@@ -152,9 +175,9 @@ export default function LoginScreen({ navigation }) {
       showAlert('Could not load porters', e?.message || 'Check your connection and try again.', [
         { text: 'Back', onPress: () => { hideAlert(); setLoginPhase('driverReview'); } },
       ]);
-      setPortersList([]);
+      if (mountedRef.current) setPortersList([]);
     } finally {
-      setPortersLoading(false);
+      if (mountedRef.current) setPortersLoading(false);
     }
   };
 
@@ -174,6 +197,7 @@ export default function LoginScreen({ navigation }) {
       }));
 
     setLoading(true);
+    let didReplaceMain = false;
     try {
       await saveUserSession({
         isAdmin: false,
@@ -194,13 +218,12 @@ export default function LoginScreen({ navigation }) {
         await fetchAndStoreVehicleJournals(licensePlate);
       }
       runSync().catch(() => {});
-      resetLoginFlow();
-      setPassword('');
+      didReplaceMain = true;
       navigation.replace('Main');
     } catch (err) {
       showAlert('Login Failed', err.message || 'Could not save session.', [{ text: 'Try Again', onPress: hideAlert }]);
     } finally {
-      setLoading(false);
+      if (!didReplaceMain && mountedRef.current) setLoading(false);
     }
   };
 
@@ -214,6 +237,7 @@ export default function LoginScreen({ navigation }) {
     if (dropdownRef.current) {
       // measureInWindow is more accurate for absolute Modal positioning
       dropdownRef.current.measureInWindow((x, y, width, height) => {
+        if (!mountedRef.current) return;
         setDropdownPos({
           top: y + height - 2,
           left: x,
