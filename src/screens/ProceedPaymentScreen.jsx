@@ -346,19 +346,16 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           await stockPickingsDb.updatePickingStateLocal(Number(deliveryPayload.pickingId), 'done');
         }
       } else if (deliveryDone) {
-        // Fallback: no deliveryPayload (e.g. older flow); ensure delivery is queued and picking marked done.
-        const existingDelivery = await syncQueueDb.getPendingDeliveryItemBySaleOrderId(soId);
-        const { picking } = existingDelivery ? { picking: null } : await getDeliveryDataFromDB(saleOrderId);
-        if (picking?.id != null) {
-          await stockPickingsDb.updatePickingStateLocal(Number(picking.id), 'done');
-          await syncQueueDb.enqueue(syncQueueDb.ACTION_DELIVERY, {
-            saleOrderId: soId,
-            pickingId: picking.id,
-            orderLineUpdates: [],
-            moveUpdates: [],
-            moveLineUpdates: [],
-            deliveryLines: [],
-          });
+        /** Avoid enqueuing an empty delivery payload — Odoo cannot validate zero-qty moves and invoice stays blocked. */
+        const pending = await syncQueueDb.getPendingDeliveryItemBySaleOrderId(soId);
+        if (!pending) {
+          const { picking } = await getDeliveryDataFromDB(saleOrderId);
+          if (picking?.id != null) {
+            await stockPickingsDb.updatePickingStateLocal(Number(picking.id), 'done');
+          }
+          console.warn(
+            '[ProceedPayment] deliveryDone but no deliveryPayload with move/qty data — sync delivery from the sale order screen before paying, or pull to refresh and retry.'
+          );
         }
       }
 

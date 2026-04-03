@@ -602,6 +602,7 @@ async function processSyncQueue() {
         updateStockMoveQty,
         updateStockMoveQuantityDone,
         createMoveLine,
+        actionAssignPicking,
         validatePickingWithContext,
         createBackorderConfirmation,
         processBackorderConfirmation,
@@ -612,6 +613,9 @@ async function processSyncQueue() {
         getInvoiceState,
         getInvoiceIdAfterCreate,
         firstInvoiceId,
+        resolveInitialInvoiceIdForPaymentSync,
+        loadPostedUnpaidInvoicesForSaleOrder,
+        pickInvoiceIdForPaymentAmount,
         createAdvancePaymentWizard,
         createInvoicesFromWizard,
         postInvoice,
@@ -743,12 +747,69 @@ async function processSyncQueue() {
               }
             }
 
-            try {
+            const tryValidateOne = async () => {
               await validatePickingWithContext(pickingId, { skip_backorder: true });
-              log('queue', `delivery validated picking ${pickingId} (skip_backorder)`);
+            };
+            const validateMsgOkToSkip = (msg) => {
+              const v = (msg || '').toLowerCase();
+              return (
+                v.includes('does not exist') ||
+                v.includes('has been deleted') ||
+                v.includes('already') ||
+                v.includes('nothing to') ||
+                (v.includes('done') && v.includes('picking'))
+              );
+            };
+            const mightBeStockReservation = (msg) => {
+              const v = (msg || '').toLowerCase();
+              return (
+                v.includes('availability') ||
+                v.includes('available') ||
+                v.includes('not available') ||
+                v.includes('reserved') ||
+                v.includes('reservation') ||
+                v.includes('quantity') ||
+                v.includes('assigned') ||
+                v.includes('waiting') ||
+                v.includes('move line') ||
+                v.includes('need to supply')
+              );
+            };
+
+            try {
+              try {
+                await actionAssignPicking(pickingId);
+                log('queue', `delivery action_assign picking ${pickingId}`);
+              } catch (assignErr) {
+                log(
+                  'queue',
+                  `delivery action_assign picking ${pickingId} (non-fatal): ${String(assignErr?.message || assignErr).slice(0, 120)}`
+                );
+              }
+              try {
+                await tryValidateOne();
+                log('queue', `delivery validated picking ${pickingId} (skip_backorder)`);
+              } catch (validateErr) {
+                const vMsgRaw = String(validateErr?.message || validateErr);
+                const vMsg = vMsgRaw.toLowerCase();
+                if (validateMsgOkToSkip(vMsg)) {
+                  log('queue', `delivery validate skipped (picking ${pickingId}): ${vMsg.slice(0, 80)}`);
+                } else if (mightBeStockReservation(vMsg)) {
+                  log('queue', `delivery validate failed (stock?) picking ${pickingId} — retry after action_assign`);
+                  try {
+                    await actionAssignPicking(pickingId);
+                  } catch (_) {
+                    /* second assign optional */
+                  }
+                  await tryValidateOne();
+                  log('queue', `delivery validated picking ${pickingId} after assign retry`);
+                } else {
+                  throw validateErr;
+                }
+              }
             } catch (validateErr) {
-              const vMsg = (validateErr?.message || String(validateErr)).toLowerCase();
-              if (vMsg.includes('does not exist or has been deleted') || vMsg.includes('has been deleted') || vMsg.includes('already')) {
+              const vMsg = String(validateErr?.message || validateErr).toLowerCase();
+              if (validateMsgOkToSkip(vMsg)) {
                 log('queue', `delivery validate skipped (picking already done or deleted): ${vMsg.slice(0, 60)}`);
               } else {
                 throw validateErr;
@@ -825,9 +886,22 @@ async function processSyncQueue() {
                 logWarn('queue payment', new Error('Sale order not found — will retry on next sync'));
                 continue;
               }
-              const existingInvoiceIds = orderInfo.invoice_ids ?? [];
-              let resId = firstInvoiceId(existingInvoiceIds);
-              let invoiceAlreadyPosted = false;
+              const paymentSumRound2 = payments
+                .filter((pm) => pm.type === 'cash' || pm.type === 'check')
+                .reduce((s, pm) => s + Math.round(Number(pm.amount || 0) * 100) / 100, 0);
+              const payloadTotalRound2 =
+                p.total != null && Number.isFinite(Number(p.total))
+                  ? Math.round(Number(p.total) * 100) / 100
+                  : null;
+              const expectedPaymentTotal =
+                paymentSumRound2 > 0 ? paymentSumRound2 : payloadTotalRound2;
+
+              const initialTarget = await resolveInitialInvoiceIdForPaymentSync(soId, {
+                expectedPaymentTotal,
+                orderInfo,
+              });
+              let resId = initialTarget.resId;
+              let invoiceAlreadyPosted = initialTarget.invoiceAlreadyPosted;
               if (resId != null) {
                 const invState = await getInvoiceState(resId).catch(() => ({}));
                 if (invState?.state === 'posted') {
@@ -887,13 +961,55 @@ async function processSyncQueue() {
               }
 
               const hasCashOrCheque = payments.some((pm) => pm.type === 'cash' || pm.type === 'check');
-              if (hasCashOrCheque && resId != null) {
-                const invStateForPayment = await getInvoiceState(resId).catch(() => ({}));
-                const alreadyPaid = (invStateForPayment?.payment_state || '').toLowerCase() === 'paid';
-                if (alreadyPaid) {
-                  log('queue', `payment SO ${saleOrderId}: invoice ${resId} already paid — skip payment register`);
-                  alreadySyncedSaleOrderIds.add(soId);
-                  log('queue', `payment item ${item.id} invoice/payments completed (pending chatter + proof upload)`);
+              if (hasCashOrCheque) {
+                const round2 = (n) => Math.round(Number(n) * 100) / 100;
+                let openInvoices = await loadPostedUnpaidInvoicesForSaleOrder(soId);
+                if (!openInvoices.length && resId != null) {
+                  const bootstrap = await getInvoiceState(resId).catch(() => ({}));
+                  if ((bootstrap?.state || '').toLowerCase() === 'posted') {
+                    const ps = (bootstrap?.payment_state || '').toLowerCase();
+                    if (ps === 'not_paid' || ps === 'partial' || ps === 'in_payment') {
+                      const ar = round2(Number(bootstrap.amount_residual) || 0);
+                      if (ar > 0.02) {
+                        openInvoices = [
+                          {
+                            id: resId,
+                            amount_residual: ar,
+                            payment_state: bootstrap.payment_state,
+                          },
+                        ];
+                      }
+                    }
+                  }
+                }
+
+                if (!openInvoices.length) {
+                  if (resId == null) {
+                    invoiceBlockFailedNoItemsToInvoice = true;
+                    logWarn(
+                      'queue payment',
+                      new Error(
+                        'No invoice for cash/cheque — skipping payment register until invoice exists (complete delivery sync first).'
+                      )
+                    );
+                  } else {
+                    const paidCheck = await getInvoiceState(resId).catch(() => ({}));
+                    if ((paidCheck?.payment_state || '').toLowerCase() === 'paid') {
+                      alreadySyncedSaleOrderIds.add(soId);
+                      log(
+                        'queue',
+                        `payment SO ${saleOrderId}: no open balance — invoice ${resId} paid (skip register, continue chatter)`
+                      );
+                    } else {
+                      invoiceBlockFailedNoItemsToInvoice = true;
+                      logWarn(
+                        'queue payment',
+                        new Error(
+                          `No posted unpaid invoice for SO ${saleOrderId} — cannot register cash/cheque (invoice ${resId} state unexpected).`
+                        )
+                      );
+                    }
+                  }
                 } else {
                   let resolvedCashId = null;
                   let resolvedChequeId = null;
@@ -917,15 +1033,6 @@ async function processSyncQueue() {
                   } catch (resolveErr) {
                     logWarn('queue payment resolve journals', resolveErr);
                   }
-                  // Idempotency for partial payments:
-                  // When chatter upload fails, sync may retry and (for partial invoices) invoice.payment_state stays 'partial'.
-                  // We must avoid registering the same cash/cheque payments again.
-                  const round2 = (n) => Math.round(Number(n) * 100) / 100;
-                  const existingPayments = await getPaymentsByInvoiceIds([resId]).catch(() => []);
-                  const existingPaymentKeys = (existingPayments || []).map((ep) => ({
-                    journalId: Array.isArray(ep.journal_id) ? ep.journal_id[0] : ep.journal_id,
-                    amount: round2(ep.amount),
-                  }));
 
                   const dateStr = p.paymentDate || new Date().toISOString().slice(0, 10);
                   for (const pm of payments) {
@@ -940,17 +1047,35 @@ async function processSyncQueue() {
                       continue;
                     }
 
+                    openInvoices = await loadPostedUnpaidInvoicesForSaleOrder(soId);
+                    const targetResId = pickInvoiceIdForPaymentAmount(openInvoices, desiredAmount);
+                    if (targetResId == null) {
+                      logWarn(
+                        'queue payment',
+                        new Error(
+                          `No invoice with open balance for ${pm.type} amount=${desiredAmount} (SO ${saleOrderId}).`
+                        )
+                      );
+                      continue;
+                    }
+
+                    const existingPayments = await getPaymentsByInvoiceIds([targetResId]).catch(() => []);
+                    const existingPaymentKeys = (existingPayments || []).map((ep) => ({
+                      journalId: Array.isArray(ep.journal_id) ? ep.journal_id[0] : ep.journal_id,
+                      amount: round2(ep.amount),
+                    }));
+
                     const alreadyHasPayment = existingPaymentKeys.some(
                       (ep) => ep.journalId != null && ep.journalId === journalId && Math.abs(ep.amount - desiredAmount) <= 0.01
                     );
 
                     if (alreadyHasPayment) {
-                      log('queue', `payment SO ${saleOrderId}: ${pm.type === 'check' ? 'cheque' : 'cash'} already reconciled — skip register amount=${desiredAmount} journal_id=${journalId}`);
+                      log('queue', `payment SO ${saleOrderId}: ${pm.type === 'check' ? 'cheque' : 'cash'} already reconciled — skip register amount=${desiredAmount} journal_id=${journalId} invoice=${targetResId}`);
                       continue;
                     }
                     try {
-                      log('queue', `payment SO ${saleOrderId}: Step 5 — payment register create amount=${desiredAmount} journal_id=${journalId} active_ids=[${resId}]`);
-                      const registerWizardId = await createPaymentRegisterWizard(resId, {
+                      log('queue', `payment SO ${saleOrderId}: Step 5 — payment register create amount=${desiredAmount} journal_id=${journalId} active_ids=[${targetResId}]`);
+                      const registerWizardId = await createPaymentRegisterWizard(targetResId, {
                         amount: desiredAmount,
                         journalId,
                         paymentDate: dateStr,
@@ -959,7 +1084,7 @@ async function processSyncQueue() {
                         log('queue', `payment SO ${saleOrderId}: Step 6 — action_create_payments [[${registerWizardId}]]`);
                         await executePaymentRegister(registerWizardId);
                         const methodLabel = pm.type === 'check' ? 'cheque' : 'cash';
-                        log('queue', `payment SO ${saleOrderId}: ${methodLabel} payment executed wizard=${registerWizardId} invoice res_id=${resId}`);
+                        log('queue', `payment SO ${saleOrderId}: ${methodLabel} payment executed wizard=${registerWizardId} invoice res_id=${targetResId}`);
                       }
                     } catch (registerErr) {
                       const msg = (registerErr?.message || String(registerErr)).toLowerCase();
@@ -971,7 +1096,7 @@ async function processSyncQueue() {
                         msg.includes('nothing to pay') ||
                         msg.includes('finances under control');
                       if (skipAsAlreadyPaid) {
-                        log('queue', `payment register skipped (invoice already paid or nothing to pay) invoice ${resId}`);
+                        log('queue', `payment register skipped (invoice already paid or nothing to pay) invoice ${targetResId}`);
                       } else {
                         throw registerErr;
                       }
@@ -980,14 +1105,6 @@ async function processSyncQueue() {
                   alreadySyncedSaleOrderIds.add(soId);
                   log('queue', `payment item ${item.id} invoice/payments completed (pending chatter + proof upload)`);
                 }
-              } else if (hasCashOrCheque && resId == null) {
-                invoiceBlockFailedNoItemsToInvoice = true;
-                logWarn(
-                  'queue payment',
-                  new Error(
-                    'No invoice for cash/cheque — skipping payment register and chatter until invoice exists (complete delivery sync first).'
-                  )
-                );
               }
             } catch (invoiceErr) {
               const msg = (invoiceErr?.message || String(invoiceErr)).toLowerCase();

@@ -1,6 +1,7 @@
 import { callOdoo, callOdooArgs, callOdooArgsKwargs } from "./index.service";
 
 /** Get picking(s) for a sale order with move_ids and backorder_ids for delivery flow */
+/** Outgoing transfers for a sale order, oldest first (parent delivery before backorders). */
 export const getPickingBySaleOrder = (saleOrderId) =>
   callOdoo(
     "stock.picking",
@@ -9,6 +10,7 @@ export const getPickingBySaleOrder = (saleOrderId) =>
     {
       fields: ["id", "name", "state", "move_ids", "backorder_ids"],
       limit: 20,
+      order: "id asc",
     }
   );
 
@@ -109,6 +111,13 @@ export const getPickingState = (pickingId) =>
     [[["id", "=", pickingId]]],
     { fields: ["id", "state"] }
   );
+
+/**
+ * Try to reserve stock for the transfer (Odoo "Check availability").
+ * Required when the picking is Waiting / Not Available; otherwise Validate often fails.
+ */
+export const actionAssignPicking = (pickingId) =>
+  callOdooArgs("stock.picking", "action_assign", [[pickingId]]);
 
 /**
  * Get full delivery data for a sale order: picking, moves, move lines.

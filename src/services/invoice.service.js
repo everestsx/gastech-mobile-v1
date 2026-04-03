@@ -66,11 +66,154 @@ export const getSaleOrderForPayment = (saleOrderId) =>
     fields: ["id", "name", "partner_id", "amount_total", "invoice_status", "invoice_ids"],
   }).then((rows) => (Array.isArray(rows) ? rows[0] : rows));
 
-/** Read invoice state (draft/posted) and payment_state (for sync: skip payment register when already paid). */
+/** Read invoice state (draft/posted), payment_state, and residual (for sync / payment targeting). */
 export const getInvoiceState = (invoiceId) =>
   callOdoo("account.move", "read", [[invoiceId]], {
-    fields: ["id", "name", "state", "payment_state"],
+    fields: ["id", "name", "state", "payment_state", "amount_residual", "move_type"],
   }).then((rows) => (Array.isArray(rows) ? rows[0] : rows));
+
+const round2 = (n) => Math.round(Number(n) * 100) / 100;
+
+/** Normalize sale.order invoice_ids to numeric ids. */
+export const normalizeSaleOrderInvoiceIds = (invoiceIds) => {
+  if (!Array.isArray(invoiceIds)) return [];
+  return invoiceIds
+    .map((x) => (Array.isArray(x) ? x[0] : x))
+    .map((n) => Number(n))
+    .filter((n) => n > 0 && !Number.isNaN(n));
+};
+
+const isPostedUnpaidCustomerInvoice = (m) => {
+  if (!m || (m.move_type || "") !== "out_invoice") return false;
+  const st = (m.state || "").toLowerCase();
+  if (st !== "posted") return false;
+  const ps = (m.payment_state || "").toLowerCase();
+  return ps === "not_paid" || ps === "partial" || ps === "in_payment";
+};
+
+/**
+ * Pick which posted (unpaid) invoice should receive a single cash/cheque line.
+ * Prefers the smallest residual that still covers the amount; otherwise the largest unpaid residual.
+ */
+export const pickInvoiceIdForPaymentAmount = (postedUnpaidInvoices, amount) => {
+  const amt = round2(amount);
+  const tol = 0.02;
+  const list = (postedUnpaidInvoices || []).filter(
+    (i) => round2(Number(i.amount_residual) || 0) > tol
+  );
+  if (!list.length) return null;
+  const fits = list.filter((i) => round2(Number(i.amount_residual) || 0) >= amt - tol);
+  const pool = fits.length ? fits : list;
+  if (fits.length) {
+    pool.sort((a, b) => round2(a.amount_residual) - round2(b.amount_residual));
+  } else {
+    pool.sort((a, b) => round2(b.amount_residual) - round2(a.amount_residual));
+  }
+  return pool[0]?.id ?? null;
+};
+
+/** Load customer invoices for SO that are posted and still have a receivable balance. */
+export const loadPostedUnpaidInvoicesForSaleOrder = async (saleOrderId) => {
+  const ids = normalizeSaleOrderInvoiceIds(await getSaleOrderInvoiceIds(saleOrderId));
+  if (!ids.length) return [];
+  const rows = await callOdoo("account.move", "read", [ids], {
+    fields: ["id", "name", "state", "payment_state", "amount_residual", "move_type"],
+  });
+  const list = Array.isArray(rows) ? rows : [];
+  return list.filter(
+    (m) => isPostedUnpaidCustomerInvoice(m) && round2(Number(m.amount_residual) || 0) > 0.02
+  );
+};
+
+/**
+ * Choose invoice id for payment sync: never prefer a fully paid posted invoice when unpaid ones exist.
+ * - Posted + unpaid: best match on amount_residual vs expectedPaymentTotal, else largest residual.
+ * - Else newest draft (highest id).
+ * - Else null → caller runs advance-payment wizard when SO can still invoice.
+ */
+export const resolveInitialInvoiceIdForPaymentSync = async (
+  saleOrderId,
+  { expectedPaymentTotal, orderInfo: orderInfoArg } = {}
+) => {
+  const soNum = Number(saleOrderId);
+  if (!soNum) return { resId: null, invoiceAlreadyPosted: false };
+
+  const orderInfo =
+    orderInfoArg ||
+    (await callOdoo("sale.order", "read", [[soNum]], {
+      fields: ["id", "invoice_ids", "invoice_status", "amount_total"],
+    }).then((rows) => (Array.isArray(rows) ? rows[0] : rows)));
+
+  const idList = normalizeSaleOrderInvoiceIds(orderInfo?.invoice_ids);
+  const expected =
+    expectedPaymentTotal != null && Number.isFinite(Number(expectedPaymentTotal))
+      ? round2(Number(expectedPaymentTotal))
+      : null;
+
+  if (!idList.length) {
+    return { resId: null, invoiceAlreadyPosted: false };
+  }
+
+  const moves = await callOdoo("account.move", "read", [idList], {
+    fields: ["id", "state", "payment_state", "amount_total", "amount_residual", "move_type"],
+  });
+  const all = Array.isArray(moves) ? moves : [];
+  const outInv = all.filter((m) => (m.move_type || "") === "out_invoice");
+
+  const postedUnpaid = outInv.filter((m) => isPostedUnpaidCustomerInvoice(m));
+  const drafts = outInv.filter((m) => (m.state || "").toLowerCase() === "draft");
+  drafts.sort((a, b) => Number(b.id) - Number(a.id));
+
+  if (postedUnpaid.length) {
+    let chosen = postedUnpaid[0];
+    if (expected != null && expected > 0) {
+      let best = null;
+      let bestDiff = Infinity;
+      for (const m of postedUnpaid) {
+        const res = round2(Number(m.amount_residual) || 0);
+        const diff = Math.abs(res - expected);
+        if (diff < bestDiff) {
+          bestDiff = diff;
+          best = m;
+        }
+      }
+      const tol = Math.max(2, expected * 0.02);
+      if (best != null && (bestDiff <= tol || postedUnpaid.length === 1)) {
+        chosen = best;
+      } else {
+        postedUnpaid.sort(
+          (a, b) => round2(Number(b.amount_residual) || 0) - round2(Number(a.amount_residual) || 0)
+        );
+        chosen = postedUnpaid[0];
+      }
+    } else {
+      postedUnpaid.sort(
+        (a, b) => round2(Number(b.amount_residual) || 0) - round2(Number(a.amount_residual) || 0)
+      );
+      chosen = postedUnpaid[0];
+    }
+    return { resId: chosen.id, invoiceAlreadyPosted: true };
+  }
+
+  if (drafts.length) {
+    return { resId: drafts[0].id, invoiceAlreadyPosted: false };
+  }
+
+  const invStatus = (orderInfo?.invoice_status || "").toLowerCase();
+  const onlyPaidPosted =
+    outInv.length > 0 &&
+    outInv.every((m) => {
+      const st = (m.state || "").toLowerCase();
+      const ps = (m.payment_state || "").toLowerCase();
+      return st === "posted" && (ps === "paid" || ps === "reversed");
+    });
+
+  if (onlyPaidPosted && (invStatus === "to invoice" || invStatus === "upselling")) {
+    return { resId: null, invoiceAlreadyPosted: false };
+  }
+
+  return { resId: null, invoiceAlreadyPosted: false };
+};
 
 /** Create account.payment (inbound customer payment). Returns the created payment id. Payment is created in Draft. */
 export const createPayment = ({
