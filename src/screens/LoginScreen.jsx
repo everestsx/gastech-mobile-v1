@@ -120,7 +120,9 @@ export default function LoginScreen({ navigation }) {
     try {
       const driver = await getDriverByBarcode(password);
       if (!driver) {
-        throw new Error('Unknown driver code. Use the code set on your Driving employee in Odoo.');
+        throw new Error(
+          'Unknown driver code. In Odoo, set this on the employee under Driving: HR PIN (Attendance), or Barcode / Badge, and ensure the department name contains "Driving".'
+        );
       }
       setMatchedDriver(driver);
       setLoginPhase('driverReview');
