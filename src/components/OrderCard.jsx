@@ -155,18 +155,20 @@ export default function OrderCard({ order, onPress, isDelivered, orderLines = []
   }
 
   function getOrderStatusLabel() {
+    if (String(order?.state) === 'cancel') return 'Cancelled';
     if (isDelivered) return 'Delivered';
     if (String(order?.invoice_status) === 'invoiced') return 'Invoiced';
     return 'To Deliver';
   }
 
   function getOrderStatusBadgeStyle() {
+    if (String(order?.state) === 'cancel') return styles.badgeCancel;
     if (isDelivered) return styles.badgeStatusDelivered;
     if (String(order?.invoice_status) === 'invoiced') return styles.badgeStatusInvoiced;
     return styles.badgeStatusToDeliver;
   }
 
-  const isStatusDarkText = String(order?.invoice_status) === 'invoiced';
+  const isStatusDarkText = String(order?.state) === 'cancel' ? false : String(order?.invoice_status) === 'invoiced';
 
   if (!order) return null;
 

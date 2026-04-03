@@ -1,4 +1,4 @@
-import { callOdoo } from "./index.service";
+import { callOdoo, callOdooArgs } from "./index.service";
 
 /**
  * Fields requested from sale.order search_read.
@@ -25,6 +25,15 @@ const SALE_ORDER_FIELDS = [
   // "amount_credit",
   // "payment_type",
   // "x_payment_type",
+];
+
+const CANCEL_REASON_FALLBACKS = [
+  { value: 'shop_closed', label: 'Shop closed' },
+  { value: 'customer_not_available', label: 'Customer not available' },
+  { value: 'customer_cancelled', label: 'Customer cancelled' },
+  { value: 'wrong_order', label: 'Wrong order' },
+  { value: 'duplicate_order', label: 'Duplicate order' },
+  { value: 'other', label: 'Other' },
 ];
 
 function resolveDateField(syncDateField) {
@@ -57,6 +66,36 @@ export const getAllSaleOrders = (dateFrom, syncDateField = 'creation_date') => {
   );
 };
 
+/** Load backend cancellation reasons from the wizard selection field, with sensible fallback values. */
+export const getCancellationReasonOptions = async () => {
+  try {
+    const fields = await callOdoo(
+      'sale.order.cancel.reason.wizard',
+      'fields_get',
+      [],
+      {
+        allfields: ['reason'],
+        attributes: ['string', 'type', 'required', 'selection'],
+      }
+    );
+    const selection = fields?.reason?.selection;
+    if (Array.isArray(selection) && selection.length > 0) {
+      return selection
+        .map((item) => {
+          if (!Array.isArray(item) || item.length < 1) return null;
+          const [value, label] = item;
+          return { value: String(value), label: String(label || value) };
+        })
+        .filter(Boolean);
+    }
+  } catch (error) {
+    console.warn('[saleOrder.service] getCancellationReasonOptions failed', error?.message ?? error);
+  }
+  return CANCEL_REASON_FALLBACKS;
+};
+/** Cancel a sale order with the selected reason code. */
+export const cancelSaleOrderWithReason = (orderId, reason) =>
+  callOdooArgs('sale.order', 'action_cancel_with_reason', [[Number(orderId)], String(reason || '')]);
 /**
  * Get sale orders for a specific vehicle only (for vehicle-scoped sync).
  * @param {number} vehicleId - The vehicle ID to filter by

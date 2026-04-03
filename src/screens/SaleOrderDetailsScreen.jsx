@@ -10,6 +10,8 @@ import {
   KeyboardAvoidingView,
   Platform,
   Image,
+  Modal,
+  Alert,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -26,6 +28,10 @@ import {
   buildProductIdToMoveLineIdMap,
   buildProductIdToMoveIdMap,
 } from '../services/delivery.service';
+import {
+  cancelSaleOrderWithReason,
+  getCancellationReasonOptions,
+} from '../services/saleOrder.service';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
 import { getProductDisplayName, getGasSizeFromProductName } from '../utils/productDisplay';
@@ -82,9 +88,15 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
   const [qtyChanged, setQtyChanged] = useState(false);
   const [loading, setLoading] = useState(true);
   const [updating, setUpdating] = useState(false);
+  const [canceling, setCanceling] = useState(false);
   const [updateError, setUpdateError] = useState(null);
   const [productIdToAvailable, setProductIdToAvailable] = useState({});
   const [productIdToImageUri, setProductIdToImageUri] = useState({});
+  const [showCancelModal, setShowCancelModal] = useState(false);
+  const [cancelReasons, setCancelReasons] = useState([]);
+  const [cancelReason, setCancelReason] = useState('');
+  const [cancelReasonsLoading, setCancelReasonsLoading] = useState(false);
+  const [cancelError, setCancelError] = useState(null);
 
   const styles = useMemo(
     () =>
@@ -288,6 +300,129 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
         },
         payBtnDisabled: { backgroundColor: colors.textSecondary, opacity: 0.8 },
         payBtnText: { fontSize: 16, fontWeight: '700', color: '#fff' },
+        bottomActions: {
+          gap: spacing.sm,
+        },
+        cancelBtn: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 8,
+          paddingVertical: 14,
+          borderRadius: borderRadius.md,
+          borderWidth: 1,
+          borderColor: colors.error || '#c00',
+          backgroundColor: 'transparent',
+        },
+        cancelBtnDisabled: { opacity: 0.5 },
+        cancelBtnText: { fontSize: 15, fontWeight: '700', color: colors.error || '#c00' },
+        cancelBanner: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: spacing.sm,
+          backgroundColor: (colors.error || '#c00') + '18',
+          borderLeftWidth: 4,
+          borderLeftColor: colors.error || '#c00',
+          paddingVertical: 10,
+          paddingHorizontal: spacing.md,
+          borderRadius: borderRadius.md,
+          marginBottom: spacing.md,
+        },
+        cancelBannerText: { flex: 1, fontSize: 13, fontWeight: '700', color: colors.error || '#c00' },
+        cancelModalOverlay: {
+          flex: 1,
+          backgroundColor: 'rgba(0,0,0,0.5)',
+          justifyContent: 'center',
+          padding: spacing.md,
+        },
+        cancelModalContent: {
+          backgroundColor: colors.surface,
+          borderRadius: borderRadius.lg,
+          padding: spacing.md,
+          maxHeight: '88%',
+        },
+        cancelModalTitle: {
+          fontSize: 18,
+          fontWeight: '800',
+          color: colors.text,
+          textAlign: 'center',
+        },
+        cancelModalHint: {
+          marginTop: 6,
+          fontSize: 13,
+          color: colors.textSecondary,
+          textAlign: 'center',
+        },
+        cancelModalBody: {
+          marginTop: spacing.sm,
+        },
+        cancelReasonList: {
+          gap: 8,
+        },
+        cancelReasonItem: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 10,
+          paddingVertical: 12,
+          paddingHorizontal: spacing.md,
+          borderRadius: borderRadius.md,
+          borderWidth: 1,
+          borderColor: colors.border,
+          backgroundColor: colors.background,
+        },
+        cancelReasonItemSelected: {
+          borderColor: colors.error || '#c00',
+          backgroundColor: (colors.error || '#c00') + '12',
+        },
+        cancelReasonRadio: {
+          width: 18,
+          height: 18,
+          borderRadius: 9,
+          borderWidth: 2,
+          borderColor: colors.border,
+          alignItems: 'center',
+          justifyContent: 'center',
+        },
+        cancelReasonRadioSelected: {
+          borderColor: colors.error || '#c00',
+        },
+        cancelReasonRadioInner: {
+          width: 8,
+          height: 8,
+          borderRadius: 4,
+          backgroundColor: colors.error || '#c00',
+        },
+        cancelReasonText: { flex: 1, fontSize: 14, fontWeight: '600', color: colors.text },
+        cancelModalActions: {
+          flexDirection: 'row',
+          gap: spacing.sm,
+          marginTop: spacing.md,
+        },
+        cancelModalBtn: {
+          flex: 1,
+          paddingVertical: 12,
+          alignItems: 'center',
+          justifyContent: 'center',
+          borderRadius: borderRadius.md,
+        },
+        cancelModalBtnSecondary: {
+          borderWidth: 1,
+          borderColor: colors.border,
+          backgroundColor: colors.background,
+        },
+        cancelModalBtnPrimary: {
+          backgroundColor: colors.error || '#c00',
+        },
+        cancelModalBtnTextSecondary: {
+          fontSize: 15,
+          fontWeight: '700',
+          color: colors.textSecondary,
+        },
+        cancelModalBtnTextPrimary: {
+          fontSize: 15,
+          fontWeight: '700',
+          color: '#fff',
+        },
 
           customerLeft: {
               flexDirection: 'row',
@@ -468,11 +603,45 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
   }, [loadDetails]);
 
   useEffect(() => {
+    let active = true;
+    const loadReasons = async () => {
+      setCancelReasonsLoading(true);
+      try {
+        const reasons = await getCancellationReasonOptions();
+        if (!active) return;
+        const normalized = Array.isArray(reasons) ? reasons : [];
+        setCancelReasons(normalized);
+        setCancelReason((prev) => prev || normalized[0]?.value || '');
+      } catch (_) {
+        if (!active) return;
+        setCancelReasons([]);
+      } finally {
+        if (active) setCancelReasonsLoading(false);
+      }
+    };
+    loadReasons();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
     if (order?.name != null || order?.id != null) {
       const orderLabel = order.name ?? `#${order.id}`;
       navigation.setOptions({ title: `Order Details (${orderLabel})` });
     }
   }, [navigation, order?.name, order?.id]);
+
+  const effectiveCancelReasons = cancelReasons.length > 0
+    ? cancelReasons
+    : [
+        { value: 'shop_closed', label: 'Shop closed' },
+        { value: 'customer_not_available', label: 'Customer not available' },
+        { value: 'customer_cancelled', label: 'Customer cancelled' },
+        { value: 'wrong_order', label: 'Wrong order' },
+        { value: 'duplicate_order', label: 'Duplicate order' },
+        { value: 'other', label: 'Other' },
+      ];
 
     const setLineQty = useCallback((lineId, value) => {
       setUpdateError(null);
@@ -786,6 +955,45 @@ const getStockWarning = useCallback((lineId) => {
     }
   };
 
+  const handleOpenCancelFlow = useCallback(() => {
+    if (String(order?.state || '') === 'cancel') return;
+    Alert.alert(
+      'Cancel this order?',
+      'This will cancel the sale order in Odoo and remove it from the active delivery flow. The action cannot be undone.',
+      [
+        { text: 'Keep order', style: 'cancel' },
+        { text: 'Continue', style: 'destructive', onPress: () => setShowCancelModal(true) },
+      ]
+    );
+  }, [order?.state]);
+
+  const handleCancelOrder = useCallback(async () => {
+    if (!order?.id || canceling || String(order?.state || '') === 'cancel') return;
+    if (!cancelReason) {
+      Alert.alert('Select a reason', 'Please choose a cancellation reason before continuing.');
+      return;
+    }
+
+    setCancelError(null);
+    setCanceling(true);
+    try {
+      await cancelSaleOrderWithReason(order.id, cancelReason);
+      await saleOrdersDb.updateSaleOrderStateLocal(order.id, 'cancel');
+
+      const pickings = await stockPickingsDb.getStockPickingsBySaleId(order.id);
+      await Promise.all((pickings || []).map((p) => stockPickingsDb.updatePickingStateLocal(p.id, 'cancel')));
+
+      await syncQueueDb.deletePendingItemsBySaleOrderId(order.id);
+
+      setShowCancelModal(false);
+      navigation.goBack();
+    } catch (err) {
+      setCancelError(err?.message ?? 'Cancel failed. Please try again.');
+    } finally {
+      setCanceling(false);
+    }
+  }, [cancelReason, canceling, navigation, order?.id, order?.state]);
+
 const handleProceedToPayment = useCallback(async () => {
   const noChanges = !hasQtyChanges();
   if (!noChanges) {
@@ -1048,7 +1256,9 @@ const handleProceedToPayment = useCallback(async () => {
     );
   }
 
-  const canPay = !updating;
+  const orderIsCancelled = String(order?.state || '') === 'cancel';
+  const canPay = !updating && !orderIsCancelled;
+  const canCancel = !updating && !canceling && !orderIsCancelled && String(order?.invoice_status || '') !== 'invoiced';
 
   return (
     <KeyboardAvoidingView
@@ -1062,6 +1272,13 @@ const handleProceedToPayment = useCallback(async () => {
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
+        {orderIsCancelled && (
+          <View style={styles.cancelBanner}>
+            <Ionicons name="close-circle-outline" size={18} color={colors.error || '#c00'} />
+            <Text style={styles.cancelBannerText}>This order has been cancelled.</Text>
+          </View>
+        )}
+
         {/* Order ID + Customer */}
           <View style={styles.customerRow}>
               <View style={styles.customerLeft}>
@@ -1181,37 +1398,132 @@ const handleProceedToPayment = useCallback(async () => {
         <View style={styles.bottomSpacer} />
       </ScrollView>
 
-      {/* Bottom bar: only Proceed to payment */}
+      {/* Bottom bar: proceed + cancel */}
       <View style={styles.bottomBar}>
-        <TouchableOpacity
-          style={[styles.payBtn, (!canPay || modifyEnabled || updating) && styles.payBtnDisabled]}
-          onPress={() => {
-            if (!canPay) return;
-            if (isDelivered) {
-              const invoiceLineQtys = lines.map((l) => ({
-                lineId: l.id,
-                qty: Number(l.newQty) || 0,
-              }));
-              navigation.navigate('InvoiceScreen', {
-                saleOrderId: order.id,
-                total: computedTotal,
-                subtotal: computedSubtotal,
-                tax: computedTax,
-                deliveryDone: true,
-                previewBeforePayment: true,
-                invoiceLineQtys,
-              });
-            } else {
-              handleProceedToPayment();
-            }
-          }}
-          disabled={modifyEnabled || updating}
-          activeOpacity={0.8}
-        >
-          <Ionicons name="card-outline" size={22} color="#fff" />
-          <Text style={styles.payBtnText}>Proceed to payment</Text>
-        </TouchableOpacity>
+        <View style={styles.bottomActions}>
+          <TouchableOpacity
+            style={[styles.payBtn, (!canPay || modifyEnabled || updating || orderIsCancelled) && styles.payBtnDisabled]}
+            onPress={() => {
+              if (!canPay || orderIsCancelled) return;
+              if (isDelivered) {
+                const invoiceLineQtys = lines.map((l) => ({
+                  lineId: l.id,
+                  qty: Number(l.newQty) || 0,
+                }));
+                navigation.navigate('InvoiceScreen', {
+                  saleOrderId: order.id,
+                  total: computedTotal,
+                  subtotal: computedSubtotal,
+                  tax: computedTax,
+                  deliveryDone: true,
+                  previewBeforePayment: true,
+                  invoiceLineQtys,
+                });
+              } else {
+                handleProceedToPayment();
+              }
+            }}
+            disabled={modifyEnabled || updating || orderIsCancelled}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="card-outline" size={22} color="#fff" />
+            <Text style={styles.payBtnText}>Proceed to payment</Text>
+          </TouchableOpacity>
+
+          {!orderIsCancelled && (
+            <TouchableOpacity
+              style={[styles.cancelBtn, !canCancel && styles.cancelBtnDisabled]}
+              onPress={handleOpenCancelFlow}
+              disabled={!canCancel}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="close-circle-outline" size={20} color={colors.error || '#c00'} />
+              <Text style={styles.cancelBtnText}>Cancel order</Text>
+            </TouchableOpacity>
+          )}
+        </View>
       </View>
+
+      <Modal
+        visible={showCancelModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowCancelModal(false)}
+      >
+        <View style={styles.cancelModalOverlay}>
+          <View style={styles.cancelModalContent}>
+            <Text style={styles.cancelModalTitle}>Cancel order</Text>
+            <Text style={styles.cancelModalHint}>
+              Choose a reason for this cancellation. The order will be cancelled in Odoo and removed from the active flow.
+            </Text>
+
+            <View style={styles.cancelModalBody}>
+              {cancelReasonsLoading ? (
+                <View style={{ paddingVertical: spacing.md, alignItems: 'center' }}>
+                  <ActivityIndicator size="small" color={colors.primary} />
+                  <Text style={{ marginTop: 8, color: colors.textSecondary }}>Loading reasons…</Text>
+                </View>
+              ) : (
+                <ScrollView
+                  style={{ maxHeight: 300 }}
+                  showsVerticalScrollIndicator={false}
+                  keyboardShouldPersistTaps="handled"
+                >
+                  <View style={styles.cancelReasonList}>
+                    {effectiveCancelReasons.map((item) => (
+                      <TouchableOpacity
+                        key={item.value}
+                        style={[
+                          styles.cancelReasonItem,
+                          cancelReason === item.value && styles.cancelReasonItemSelected,
+                        ]}
+                        onPress={() => setCancelReason(item.value)}
+                        activeOpacity={0.8}
+                      >
+                        <View style={[
+                          styles.cancelReasonRadio,
+                          cancelReason === item.value && styles.cancelReasonRadioSelected,
+                        ]}>
+                          {cancelReason === item.value && <View style={styles.cancelReasonRadioInner} />}
+                        </View>
+                        <Text style={styles.cancelReasonText}>{item.label}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </ScrollView>
+              )}
+
+              {cancelError && (
+                <Text style={{ marginTop: spacing.sm, color: colors.error || '#c00', fontSize: 13 }}>
+                  {cancelError}
+                </Text>
+              )}
+            </View>
+
+            <View style={styles.cancelModalActions}>
+              <TouchableOpacity
+                style={[styles.cancelModalBtn, styles.cancelModalBtnSecondary]}
+                onPress={() => setShowCancelModal(false)}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.cancelModalBtnTextSecondary}>Keep order</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.cancelModalBtn, styles.cancelModalBtnPrimary]}
+                onPress={handleCancelOrder}
+                disabled={canceling}
+                activeOpacity={0.8}
+              >
+                {canceling ? (
+                  <ActivityIndicator color="#fff" size="small" />
+                ) : (
+                  <Text style={styles.cancelModalBtnTextPrimary}>Cancel order</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </KeyboardAvoidingView>
   );
 }

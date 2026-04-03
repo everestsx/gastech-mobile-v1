@@ -63,7 +63,7 @@ export default function SaleOrderListScreen({ route, navigation }) {
   const [showFieldDropdown, setShowFieldDropdown] = useState(false);
   // Orders tab: not delivered, or delivered but not yet invoiced (so we can collect payment)
   const filteredOrders = useMemo(
-    () => orders.filter((o) => !o.isDelivered || String(o.invoice_status) !== 'invoiced'),
+    () => orders.filter((o) => String(o.state || '') !== 'cancel' && (!o.isDelivered || String(o.invoice_status) !== 'invoiced')),
     [orders]
   );
   const searchFieldLabels = { customer: 'Customer', orderId: 'Order ID' };

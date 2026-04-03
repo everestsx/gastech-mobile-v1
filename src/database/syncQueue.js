@@ -119,6 +119,29 @@ export async function updateQueueItemPayload(id, payload) {
   await db.runAsync('UPDATE sync_queue SET payload = ? WHERE id = ?', [payloadStr, num(id)]);
 }
 
+/** Delete pending queue items for a sale order so a cancelled order does not keep old work queued. */
+export async function deletePendingItemsBySaleOrderId(saleOrderId, actionTypes = [ACTION_DELIVERY, ACTION_PAYMENT, ACTION_INVENTORY_UPDATE]) {
+  if (saleOrderId == null) return 0;
+  const db = await getDb();
+  const rows = await db.getAllAsync(
+    `SELECT id, payload, action_type FROM sync_queue WHERE COALESCE(is_uploaded, 0) = 0 AND synced_at IS NULL`,
+    []
+  );
+  const soId = Number(saleOrderId);
+  const allowed = new Set((Array.isArray(actionTypes) ? actionTypes : [actionTypes]).filter(Boolean));
+  const idsToDelete = [];
+  for (const row of rows || []) {
+    if (allowed.size > 0 && !allowed.has(row.action_type)) continue;
+    const payload = safeParseJson(row.payload, {});
+    const id = payload.saleOrderId ?? payload.sale_order_id ?? payload.orderId ?? payload.order_id;
+    if (id != null && Number(id) === soId) idsToDelete.push(row.id);
+  }
+  if (idsToDelete.length === 0) return 0;
+  const placeholders = idsToDelete.map(() => '?').join(',');
+  await db.runAsync(`DELETE FROM sync_queue WHERE id IN (${placeholders})`, idsToDelete);
+  return idsToDelete.length;
+}
+
 /** Get synced_at for payment queue item by sale order id. Returns null if not synced or no payment queued. */
 export async function getPaymentSyncedAtForSaleOrder(saleOrderId) {
   if (saleOrderId == null) return null;

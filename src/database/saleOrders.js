@@ -275,6 +275,24 @@ export async function updateSaleOrderInvoiceStatusLocal(orderId, invoiceStatus) 
   }
 }
 
+/** Update sale order state locally (offline). e.g. 'cancel'. */
+export async function updateSaleOrderStateLocal(orderId, state) {
+  const op = 'updateSaleOrderStateLocal';
+  logQuery(op, `orderId=${orderId} state=${state}`);
+  const db = await getDb();
+  const params = [empty(state) || 'cancel', iso(), num(orderId)];
+  try {
+    await db.runAsync(
+      `UPDATE sale_orders SET state = ?, updated_at = ? WHERE id = ?`,
+      params
+    );
+    logQuery(op, `done orderId=${orderId}`);
+  } catch (err) {
+    logError(op, `orderId=${orderId} params=${JSON.stringify(params)}`, err);
+    throw err;
+  }
+}
+
 /**
  * Update sale order payment_type (and optional amount_credit) locally when user completes payment.
  * Values: 'cash' | 'cheque' | 'credit'. amountCredit: optional number for credit portion (split payments).
