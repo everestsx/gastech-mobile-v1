@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, ActivityIndicator, Dimensions } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
+import Svg, { Defs, LinearGradient, Stop, Rect } from 'react-native-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AppLogo from '../components/AppLogo';
 import { getUserSession } from '../services/sync.service';
@@ -14,8 +14,34 @@ const SPLASH = {
   frostBorder: 'rgba(255,255,255,0.28)',
 };
 
-/** Gradient stops aligned with Android `ic_launcher_background` + GasTech theme (indigo). */
-const GRADIENT_COLORS = ['#6366f1', '#4f46e5', '#312e81', '#1e1b4b'];
+/** Same indigo stops as before (no expo-linear-gradient — uses react-native-svg only). */
+const GRADIENT_STOPS = [
+  { offset: '0', color: '#6366f1' },
+  { offset: '0.32', color: '#4f46e5' },
+  { offset: '0.72', color: '#312e81' },
+  { offset: '1', color: '#1e1b4b' },
+];
+
+function SplashGradientBg() {
+  const { width, height } = Dimensions.get('window');
+  return (
+    <Svg
+      width={width}
+      height={height}
+      style={StyleSheet.absoluteFill}
+      pointerEvents="none"
+    >
+      <Defs>
+        <LinearGradient id="splashGrad" x1="5%" y1="0%" x2="95%" y2="100%">
+          {GRADIENT_STOPS.map((s) => (
+            <Stop key={s.offset} offset={s.offset} stopColor={s.color} />
+          ))}
+        </LinearGradient>
+      </Defs>
+      <Rect x="0" y="0" width={width} height={height} fill="url(#splashGrad)" />
+    </Svg>
+  );
+}
 
 export default function SplashScreenComponent({ navigation }) {
   const [ready, setReady] = useState(false);
@@ -40,13 +66,8 @@ export default function SplashScreenComponent({ navigation }) {
 
   if (!ready) {
     return (
-      <LinearGradient
-        colors={GRADIENT_COLORS}
-        locations={[0, 0.32, 0.72, 1]}
-        start={{ x: 0.05, y: 0 }}
-        end={{ x: 0.95, y: 1 }}
-        style={styles.gradient}
-      >
+      <View style={styles.root}>
+        <SplashGradientBg />
         <View
           pointerEvents="none"
           style={[
@@ -69,15 +90,16 @@ export default function SplashScreenComponent({ navigation }) {
           <Text style={styles.tagline}>Smart cylinder delivery</Text>
           <ActivityIndicator size="large" color={SPLASH.glow} style={styles.spinner} />
         </View>
-      </LinearGradient>
+      </View>
     );
   }
   return null;
 }
 
 const styles = StyleSheet.create({
-  gradient: {
+  root: {
     flex: 1,
+    backgroundColor: '#1e1b4b',
   },
   lightOrb: {
     position: 'absolute',
