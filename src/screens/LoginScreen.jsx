@@ -121,7 +121,7 @@ export default function LoginScreen({ navigation }) {
     try {
       const driver = await getDriverByBarcode(password);
       if (!driver) {
-        throw new Error('Unknown driver code. Use the code set on your Driving employee in Odoo.');
+        throw new Error('Unknown driver code. Use the code set on your Driving employee in GasTech.');
       }
       setMatchedDriver(driver);
       setLoginPhase('driverReview');
