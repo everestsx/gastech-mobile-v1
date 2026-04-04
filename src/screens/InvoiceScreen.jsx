@@ -402,15 +402,15 @@ function buildInvoiceHtml(
   <div class="signature-section" style="margin-top:4px;padding-top:4px;border-top:1px solid #000;width:100%;box-sizing:border-box;">
     <div style="display:flex;flex-direction:row;width:100%;justify-content:space-between;align-items:flex-start;box-sizing:border-box;">
       <div style="flex:0 1 48%;min-width:0;text-align:left;">
-        <div style="font-size:9px;font-weight:700;color:#000;margin-bottom:2px;text-align:left;">Customer signature</div>
-        ${customerSignatureDataUrl
-          ? `<img src="${customerSignatureDataUrl}" alt="" style="max-width:34mm;width:auto;height:auto;max-height:18mm;display:block;margin:0;" />`
+        <div style="font-size:9px;font-weight:700;color:#000;margin-bottom:2px;text-align:left;">Driver signature</div>
+        ${driverSignatureDataUrl
+          ? `<img src="${driverSignatureDataUrl}" alt="" style="max-width:34mm;width:auto;height:auto;max-height:18mm;display:block;margin:0;" />`
           : `<div style="height:18mm;max-width:34mm;border:1px dashed #999;box-sizing:border-box;"></div>`}
       </div>
       <div style="flex:0 1 48%;min-width:0;display:flex;flex-direction:column;align-items:flex-end;text-align:right;">
-        <div style="font-size:9px;font-weight:700;color:#000;margin-bottom:2px;width:100%;text-align:right;">Driver signature</div>
-        ${driverSignatureDataUrl
-          ? `<img src="${driverSignatureDataUrl}" alt="" style="max-width:34mm;width:auto;height:auto;max-height:18mm;display:block;margin:0;margin-left:auto;" />`
+        <div style="font-size:9px;font-weight:700;color:#000;margin-bottom:2px;width:100%;text-align:right;">Customer signature</div>
+        ${customerSignatureDataUrl
+          ? `<img src="${customerSignatureDataUrl}" alt="" style="max-width:34mm;width:auto;height:auto;max-height:18mm;display:block;margin:0;margin-left:auto;" />`
           : `<div style="height:18mm;max-width:34mm;border:1px dashed #999;box-sizing:border-box;margin-left:auto;"></div>`}
       </div>
     </div>
@@ -597,8 +597,8 @@ function buildInvoicePlainText(
 
   parts.push(dashLine());
   parts.push(lineLR('Printed At', printedAt, w));
-  parts.push('Customer Sign: __________________');
   parts.push('Driver Sign  : __________________');
+  parts.push('Customer Sign: __________________');
   parts.push(centerPlainLine('Thank you for your business', w));
 
   return `${parts.filter(Boolean).join('\r\n')}\r\n\r\n`;
@@ -1720,11 +1720,11 @@ export default function InvoiceScreen({ route, navigation }) {
             >
               <View style={{ flex: 1, maxWidth: '48%', alignItems: 'flex-start', paddingRight: 4 }}>
                 <Text style={[styles.totalsLabel, { marginBottom: 4, alignSelf: 'stretch', textAlign: 'left' }]}>
-                  Customer signature
+                  Driver signature
                 </Text>
-                {effectiveCustomerSignatureDataUrl ? (
+                {effectiveDriverSignatureDataUrl ? (
                   <Image
-                    source={{ uri: effectiveCustomerSignatureDataUrl }}
+                    source={{ uri: effectiveDriverSignatureDataUrl }}
                     style={{ width: 140, height: 70, resizeMode: 'contain', alignSelf: 'flex-start' }}
                   />
                 ) : (
@@ -1741,11 +1741,11 @@ export default function InvoiceScreen({ route, navigation }) {
               </View>
               <View style={{ flex: 1, maxWidth: '48%', alignItems: 'flex-end', paddingLeft: 4 }}>
                 <Text style={[styles.totalsLabel, { marginBottom: 4, alignSelf: 'stretch', textAlign: 'right' }]}>
-                  Driver signature
+                  Customer signature
                 </Text>
-                {effectiveDriverSignatureDataUrl ? (
+                {effectiveCustomerSignatureDataUrl ? (
                   <Image
-                    source={{ uri: effectiveDriverSignatureDataUrl }}
+                    source={{ uri: effectiveCustomerSignatureDataUrl }}
                     style={{ width: 140, height: 70, resizeMode: 'contain', alignSelf: 'flex-end' }}
                   />
                 ) : (

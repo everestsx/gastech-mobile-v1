@@ -668,13 +668,7 @@ export default function DashboardScreen({ navigation }) {
           fontWeight: '800',
           color: colors.text,
           letterSpacing: 0.2,
-        },
-        crewSectionHint: {
-          fontSize: 12,
-          color: colors.textSecondary,
-          marginTop: 4,
-          marginBottom: 12,
-          lineHeight: 17,
+          marginBottom: 10,
         },
         crewRowScroll: { flexGrow: 0, paddingVertical: 4 },
         crewChipSurface: { alignItems: 'center', width: 76, marginRight: 10 },
@@ -1368,9 +1362,6 @@ export default function DashboardScreen({ navigation }) {
       {crewPorters.length > 0 && (
           <View style={styles.crewSectionWrap}>
             <Text style={styles.crewSectionLabel}>Porters on shift</Text>
-            <Text style={styles.crewSectionHint}>
-              Driver ({driverName || '—'}) is shown in the header — only loading staff are listed here.
-            </Text>
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
@@ -1400,7 +1391,7 @@ export default function DashboardScreen({ navigation }) {
           </View>
         )}
       {/* Commission section (separate card below Delivery Progress) */}
-      <View style={{ paddingHorizontal: spacing.md }}>
+      {/* <View style={{ paddingHorizontal: spacing.md }}>
         <TouchableOpacity
           style={styles.commissionCard}
           activeOpacity={0.86}
@@ -1418,7 +1409,7 @@ export default function DashboardScreen({ navigation }) {
             {commissionLoading && ' (loading...)'}
           </Text>
         </TouchableOpacity>
-      </View>
+      </View> */}
 
         {/* 6. Configurable: Create Sales Order & Return */}
         {(showCreateSalesOrder || showReturnOrder) && (
