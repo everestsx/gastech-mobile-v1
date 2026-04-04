@@ -1428,6 +1428,7 @@ export default function InvoiceScreen({ route, navigation }) {
   }, [navigation]);
 
   const handleSaveEvidence = useCallback(async () => {
+    const isCreditFlow = !previewBeforePayment && (((effectivePaymentSplit?.credit ?? 0) > 0) || paymentType === 'credit');
     const goNextAfterEvidence = () => {
       if (previewBeforePayment) {
         navigation.navigate('ProceedPayment', {
@@ -1442,6 +1443,11 @@ export default function InvoiceScreen({ route, navigation }) {
         goToHome();
       }
     };
+    if (isCreditFlow && deliveryPhotos.length === 0) {
+      Alert.alert('Evidence required', 'Evidence photo is required when payment includes credit.');
+      return;
+    }
+
     if (deliveryPhotos.length === 0) {
       runSync().catch((e) => console.warn('[InvoiceScreen] sync after evidence skip', e?.message ?? e));
       goNextAfterEvidence();
@@ -1499,6 +1505,8 @@ export default function InvoiceScreen({ route, navigation }) {
     routeTaxParam,
     routeDeliveryDone,
     deliveryPayload,
+    effectivePaymentSplit,
+    paymentType,
   ]);
 
   /** Subtotal from display lines (preview uses scaled delivered qtys). */
@@ -1588,6 +1596,7 @@ export default function InvoiceScreen({ route, navigation }) {
   })();
 
   const hasCreditPayment = (effectivePaymentSplit?.credit ?? 0) > 0 || paymentType === 'credit';
+  const evidenceRequired = !previewBeforePayment && hasCreditPayment;
 
   if (loading) {
     return (
@@ -1934,6 +1943,10 @@ export default function InvoiceScreen({ route, navigation }) {
         animationType="slide"
         transparent
         onRequestClose={() => {
+          if (evidenceRequired && deliveryPhotos.length === 0 && !savingEvidence) {
+            Alert.alert('Evidence required', 'You must upload at least one evidence photo for credit payment.');
+            return;
+          }
           setShowEvidenceModal(false);
           setDeliveryPhotos([]);
           runSync().catch((e) => console.warn('[InvoiceScreen] sync after evidence close', e?.message ?? e));
@@ -1954,7 +1967,11 @@ export default function InvoiceScreen({ route, navigation }) {
         <View style={styles.evidenceModalOverlay}>
           <ScrollView style={styles.evidenceModalContent} nestedScrollEnabled showsVerticalScrollIndicator={false}>
             <Text style={styles.evidenceModalTitle}>Delivery Evidence Photos</Text>
-            <Text style={styles.evidenceModalHint}>Optionally attach photos as evidence of delivery</Text>
+            <Text style={styles.evidenceModalHint}>
+              {evidenceRequired
+                ? 'At least one evidence photo is required for credit payments.'
+                : 'Optionally attach photos as evidence of delivery'}
+            </Text>
 
             {deliveryPhotos.length < MAX_PHOTOS && (
               <View style={styles.evidencePhotoButtonsRow}>
@@ -2028,9 +2045,12 @@ export default function InvoiceScreen({ route, navigation }) {
             )}
 
             <TouchableOpacity
-              style={styles.evidenceSaveBtn}
+              style={[
+                styles.evidenceSaveBtn,
+                evidenceRequired && deliveryPhotos.length === 0 && { opacity: 0.5 },
+              ]}
               onPress={handleSaveEvidence}
-              disabled={savingEvidence}
+              disabled={savingEvidence || (evidenceRequired && deliveryPhotos.length === 0)}
               activeOpacity={0.8}
             >
               {savingEvidence ? (
@@ -2038,12 +2058,12 @@ export default function InvoiceScreen({ route, navigation }) {
               ) : (
                 <>
                   <Ionicons name="checkmark-done-outline" size={22} color="#fff" />
-                  <Text style={styles.evidenceSaveBtnText}>{deliveryPhotos.length > 0 ? 'Save & Continue' : 'Skip'}</Text>
+                  <Text style={styles.evidenceSaveBtnText}>{deliveryPhotos.length > 0 || evidenceRequired ? 'Save & Continue' : 'Skip'}</Text>
                 </>
               )}
             </TouchableOpacity>
 
-            {deliveryPhotos.length > 0 && (
+            {deliveryPhotos.length > 0 && !evidenceRequired && (
               <TouchableOpacity
                 style={styles.evidenceSkipBtn}
                 onPress={() => {
