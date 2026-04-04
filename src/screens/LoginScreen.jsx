@@ -14,7 +14,6 @@ import {
   Modal,
   Keyboard,
   Image,
-  ScrollView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import AppLogo from '../components/AppLogo';
@@ -91,12 +90,14 @@ export default function LoginScreen({ navigation }) {
   const [portersList, setPortersList] = useState([]);
   const [portersLoading, setPortersLoading] = useState(false);
   const [selectedPorterIds, setSelectedPorterIds] = useState([]);
+  const [porterSearchQuery, setPorterSearchQuery] = useState('');
 
   const resetLoginFlow = useCallback(() => {
     setLoginPhase('credentials');
     setMatchedDriver(null);
     setPortersList([]);
     setSelectedPorterIds([]);
+    setPorterSearchQuery('');
   }, []);
 
   useEffect(() => {
@@ -136,6 +137,7 @@ export default function LoginScreen({ navigation }) {
     setPortersLoading(true);
     setLoginPhase('porterPick');
     setSelectedPorterIds([]);
+    setPorterSearchQuery('');
     try {
       const list = await getPortersEmployees();
       setPortersList(Array.isArray(list) ? list : []);
@@ -441,10 +443,49 @@ export default function LoginScreen({ navigation }) {
       justifyContent: 'center',
     },
     porterCheckOn: { backgroundColor: colors.primary },
+    porterSearchWrap: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      marginTop: spacing.md,
+      marginBottom: spacing.sm,
+      paddingHorizontal: spacing.sm,
+      paddingVertical: 10,
+      borderRadius: borderRadius.lg,
+      backgroundColor: colors.background,
+      borderWidth: 1,
+      borderColor: colors.border,
+      gap: 10,
+    },
+    porterSearchInput: {
+      flex: 1,
+      fontSize: 16,
+      color: colors.text,
+      paddingVertical: 0,
+    },
+    porterListHint: {
+      fontSize: 12,
+      color: colors.textSecondary,
+      marginBottom: spacing.sm,
+    },
+    porterEmptySearch: {
+      paddingVertical: spacing.xl,
+      alignItems: 'center',
+      paddingHorizontal: spacing.md,
+    },
 
   }), [colors]);
 
   const options = useMemo(() => vehicles, [vehicles]);
+
+  const filteredPortersList = useMemo(() => {
+    const q = porterSearchQuery.trim().toLowerCase();
+    if (!q) return portersList;
+    return portersList.filter((p) => {
+      const name = String(p?.name || '').toLowerCase();
+      const code = String(p?.barcode || '').toLowerCase();
+      return name.includes(q) || code.includes(q);
+    });
+  }, [portersList, porterSearchQuery]);
 
   const displayLabel = selected
       ? (selected?.license_plate || selected?.name)
@@ -546,7 +587,7 @@ export default function LoginScreen({ navigation }) {
                 <Ionicons name="key-outline" size={20} color={colors.primary} style={{ marginRight: 12 }} />
                 <TextInput
                     style={{ flex: 1, fontSize: 16, color: colors.text }}
-                    placeholder="Your driver code (e.g. D1)"
+                    placeholder="Your driver code"
                     placeholderTextColor={colors.textSecondary}
                     secureTextEntry={!showPassword}
                     value={password}
@@ -623,47 +664,93 @@ export default function LoginScreen({ navigation }) {
         </Modal>
 
         <Modal visible={loginPhase === 'porterPick'} transparent animationType="slide">
-          <View style={styles.modalOverlay}>
+          <KeyboardAvoidingView
+            style={styles.modalOverlay}
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          >
             <View style={[styles.modalCard, { paddingBottom: spacing.md }]}>
               <Text style={styles.modalTitle}>Select porters</Text>
-              <Text style={styles.modalSubtitle}>Tap one or more team members on this shift.</Text>
+              <Text style={styles.modalSubtitle}>Search by name, then tap everyone on this shift.</Text>
+              {!portersLoading ? (
+                <View style={styles.porterSearchWrap}>
+                  <Ionicons name="search" size={22} color={colors.primary} />
+                  <TextInput
+                    style={styles.porterSearchInput}
+                    placeholder="Search porters…"
+                    placeholderTextColor={colors.textSecondary}
+                    value={porterSearchQuery}
+                    onChangeText={setPorterSearchQuery}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    returnKeyType="search"
+                  />
+                  {porterSearchQuery.length > 0 ? (
+                    <TouchableOpacity onPress={() => setPorterSearchQuery('')} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
+                      <Ionicons name="close-circle" size={22} color={colors.textSecondary} />
+                    </TouchableOpacity>
+                  ) : null}
+                </View>
+              ) : null}
               {portersLoading ? (
                 <ActivityIndicator size="large" color={colors.primary} style={{ marginVertical: spacing.xl }} />
               ) : (
-                <ScrollView style={{ maxHeight: 360 }} keyboardShouldPersistTaps="handled">
-                  {portersList.map((p) => {
-                    const id = Number(p.id);
-                    const on = selectedPorterIds.includes(id);
-                    const uri = odooImageToUri(p.imageBase64);
-                    return (
-                      <TouchableOpacity
-                        key={p.id}
-                        style={styles.porterRow}
-                        onPress={() => togglePorter(id)}
-                        activeOpacity={0.75}
-                      >
-                        <View style={styles.porterAvatar}>
-                          {uri ? (
-                            <Image source={{ uri }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
-                          ) : (
-                            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-                              <Ionicons name="person-outline" size={22} color={colors.textSecondary} />
-                            </View>
-                          )}
-                        </View>
-                        <View style={{ flex: 1 }}>
-                          <Text style={{ fontSize: 16, fontWeight: '700', color: colors.text }}>{p.name}</Text>
-                          {p.barcode ? (
-                            <Text style={{ fontSize: 12, color: colors.textSecondary, marginTop: 2 }}>{p.barcode}</Text>
-                          ) : null}
-                        </View>
-                        <View style={[styles.porterCheck, on && styles.porterCheckOn]}>
-                          {on ? <Ionicons name="checkmark" size={18} color="#fff" /> : null}
-                        </View>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </ScrollView>
+                <>
+                  <Text style={styles.porterListHint}>
+                    {filteredPortersList.length} of {portersList.length} shown
+                    {selectedPorterIds.length > 0 ? ` · ${selectedPorterIds.length} selected` : ''}
+                  </Text>
+                  <FlatList
+                    data={filteredPortersList}
+                    keyExtractor={(item) => String(item.id)}
+                    style={{ maxHeight: 320 }}
+                    keyboardShouldPersistTaps="handled"
+                    keyboardDismissMode="on-drag"
+                    ListEmptyComponent={
+                      <View style={styles.porterEmptySearch}>
+                        <Ionicons name="people-outline" size={40} color={colors.textSecondary} style={{ marginBottom: 8 }} />
+                        <Text style={{ fontSize: 15, fontWeight: '600', color: colors.text, textAlign: 'center' }}>
+                          {portersList.length === 0 ? 'No porters loaded' : 'No matches'}
+                        </Text>
+                        <Text style={{ fontSize: 13, color: colors.textSecondary, textAlign: 'center', marginTop: 4 }}>
+                          {portersList.length === 0
+                            ? 'Try again or contact your admin.'
+                            : 'Try a different search term.'}
+                        </Text>
+                      </View>
+                    }
+                    renderItem={({ item: p }) => {
+                      const id = Number(p.id);
+                      const on = selectedPorterIds.includes(id);
+                      const uri = odooImageToUri(p.imageBase64);
+                      return (
+                        <TouchableOpacity
+                          style={styles.porterRow}
+                          onPress={() => togglePorter(id)}
+                          activeOpacity={0.75}
+                        >
+                          <View style={styles.porterAvatar}>
+                            {uri ? (
+                              <Image source={{ uri }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+                            ) : (
+                              <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+                                <Ionicons name="person-outline" size={22} color={colors.textSecondary} />
+                              </View>
+                            )}
+                          </View>
+                          <View style={{ flex: 1 }}>
+                            <Text style={{ fontSize: 16, fontWeight: '700', color: colors.text }}>{p.name}</Text>
+                            {p.barcode ? (
+                              <Text style={{ fontSize: 12, color: colors.textSecondary, marginTop: 2 }}>{p.barcode}</Text>
+                            ) : null}
+                          </View>
+                          <View style={[styles.porterCheck, on && styles.porterCheckOn]}>
+                            {on ? <Ionicons name="checkmark" size={18} color="#fff" /> : null}
+                          </View>
+                        </TouchableOpacity>
+                      );
+                    }}
+                  />
+                </>
               )}
               <View style={styles.modalBtnRow}>
                 <TouchableOpacity
@@ -687,7 +774,7 @@ export default function LoginScreen({ navigation }) {
                 </TouchableOpacity>
               </View>
             </View>
-          </View>
+          </KeyboardAvoidingView>
         </Modal>
 
         <CustomAlert

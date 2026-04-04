@@ -16,6 +16,109 @@ export function num(v) {
   return !Number.isNaN(n) ? n : 0;
 }
 
+/**
+ * Integer primary key from an Odoo record (never pass arrays/objects through to num() blindly).
+ */
+export function odooRecordId(v) {
+  if (v == null || v === false) return 0;
+  if (Array.isArray(v) && v.length > 0) return num(v[0]);
+  if (typeof v === 'object') return 0;
+  return num(v);
+}
+
+/**
+ * Odoo char/text (and custom translated fields) for SQLite binds on Android: never return a plain object.
+ * Handles false, translation maps { lang: text }, accidental many2one-shaped [id, display_name].
+ * @param {unknown} v
+ * @param {number} [depth] guard nested / cyclic structures
+ */
+export function odooTextOrNull(v, depth = 0) {
+  if (depth > 10) return null;
+  if (v == null || v === false) return null;
+  const t = typeof v;
+  if (t === 'string' || t === 'number' || t === 'bigint') {
+    const s = String(v).trim();
+    if (s === '' || s.toLowerCase() === 'false') return null;
+    return s;
+  }
+  if (t === 'boolean') {
+    return v ? 'true' : null;
+  }
+  if (t !== 'object') return null;
+  if (Array.isArray(v)) {
+    if (v.length >= 2 && v[1] != null && typeof v[1] !== 'object') {
+      const s = String(v[1]).trim();
+      if (s === '' || s.toLowerCase() === 'false') return null;
+      return s;
+    }
+    if (v.length >= 1 && v[0] != null && typeof v[0] !== 'object') {
+      const s = String(v[0]).trim();
+      if (s === '' || s.toLowerCase() === 'false') return null;
+      return s;
+    }
+    return null;
+  }
+  for (const key of ['value', 'name', 'display_name']) {
+    if (v[key] != null) {
+      const inner = odooTextOrNull(v[key], depth + 1);
+      if (inner) return inner;
+    }
+  }
+  for (const x of Object.values(v)) {
+    if (x != null && typeof x !== 'object') {
+      const s = String(x).trim();
+      if (s !== '' && s.toLowerCase() !== 'false') return s;
+    }
+  }
+  for (const x of Object.values(v)) {
+    if (x != null && typeof x === 'object') {
+      const inner = odooTextOrNull(x, depth + 1);
+      if (inner) return inner;
+    }
+  }
+  return null;
+}
+
+/** NOT NULL TEXT columns: always a string (Kotlin-safe). */
+export function odooTextRequired(v) {
+  return odooTextOrNull(v) ?? '';
+}
+
+/**
+ * expo-sqlite Android: bind map must convert cleanly to Kotlin Map<String, Any>.
+ * Avoid null/undefined/object/boolean edge cases — use string or number only.
+ * @param {unknown[]} params
+ * @returns {(string|number)[]}
+ */
+export function coerceSqliteBindArray(params) {
+  return (params || []).map((v, index) => {
+    if (v === undefined || v === null) {
+      return index === 0 ? 0 : '';
+    }
+    const t = typeof v;
+    if (t === 'object') {
+      return index === 0 ? 0 : '';
+    }
+    if (t === 'boolean') {
+      return v ? 1 : 0;
+    }
+    if (t === 'number') {
+      if (!Number.isFinite(v)) return index === 0 ? 0 : '';
+      return v;
+    }
+    if (t === 'bigint') {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : index === 0 ? 0 : '';
+    }
+    if (t === 'string') {
+      return v;
+    }
+    const s = String(v);
+    if (s === '[object Object]') return index === 0 ? 0 : '';
+    return s;
+  });
+}
+
 /** Optional number: returns number or null. Never pass object. */
 export function numOrNull(v) {
   if (v == null || typeof v === 'object') return null;

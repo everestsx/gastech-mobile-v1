@@ -17,9 +17,10 @@ import * as localInvoicesDb from '../database/localInvoices.js';
 import * as localPaymentsDb from '../database/localPayments.js';
 import * as saleOrdersDb from '../database/saleOrders.js';
 import * as syncQueueDb from '../database/syncQueue.js';
+import { getLocalizedCustomerNameFromOrder } from '../utils/customerDisplayName';
 
 export default function LocalInvoicesScreen({ navigation }) {
-  const { colors } = useTheme();
+  const { colors, appLanguage } = useTheme();
   const [invoices, setInvoices] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -34,8 +35,9 @@ export default function LocalInvoicesScreen({ navigation }) {
         (list || []).map(async (inv) => {
           const order = await saleOrdersDb.getSaleOrderById(inv.sale_order_id);
           const split = await localPaymentsDb.getPaymentSplitBySaleOrderId(inv.sale_order_id);
-          const partnerName =
-            order?.partner_id?.[1] ?? order?.partner_name ?? '—';
+          const partnerName = order
+            ? getLocalizedCustomerNameFromOrder(order, appLanguage)
+            : '—';
           const orderName = order?.name ?? `Order ${inv.sale_order_id}`;
           const dateOrder = order?.date_order ?? inv.created_at;
           const syncedAt = await syncQueueDb.getPaymentSyncedAtForSaleOrder(
@@ -70,7 +72,7 @@ export default function LocalInvoicesScreen({ navigation }) {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [appLanguage]);
 
   useEffect(() => {
     loadInvoices();

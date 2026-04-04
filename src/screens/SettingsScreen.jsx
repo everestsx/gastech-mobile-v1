@@ -31,11 +31,14 @@ export default function SettingsScreen({ navigation }) {
     setSyncDateField,
     syncInterval,
     setSyncInterval,
+    appLanguage,
+    setAppLanguage,
   } = useTheme();
   const [user, setUser] = useState(null);
   const [showSyncPeriodModal, setShowSyncPeriodModal] = useState(false);
   const [showSyncDateFieldModal, setShowSyncDateFieldModal] = useState(false);
   const [showSyncIntervalModal, setShowSyncIntervalModal] = useState(false);
+  const [showLanguageModal, setShowLanguageModal] = useState(false);
 
   useEffect(() => {
     getUserSession().then(setUser);
@@ -107,6 +110,24 @@ export default function SettingsScreen({ navigation }) {
           thumbColor={theme === 'dark' ? colors.primary : colors.surface}
         />
       </View>
+
+      {sectionTitle('Language')}
+      <TouchableOpacity
+        style={[styles.row, { backgroundColor: colors.surface, borderColor: colors.border }]}
+        onPress={() => setShowLanguageModal(true)}
+        activeOpacity={0.8}
+      >
+        <View style={styles.rowLeft}>
+          <Ionicons name="language-outline" size={22} color={colors.primary} />
+          <Text style={[styles.rowLabel, { color: colors.text }]}>App language</Text>
+        </View>
+        <View style={styles.rowRight}>
+          <Text style={[styles.syncPeriodValue, { color: colors.textSecondary }]}>
+            {appLanguage === 'ta' ? 'Tamil' : appLanguage === 'si' ? 'Sinhala' : 'English'}
+          </Text>
+          <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} style={{ marginLeft: 8 }} />
+        </View>
+      </TouchableOpacity>
 
       {/* Dashboard cards */}
       {sectionTitle('Dashboard')}
@@ -279,6 +300,46 @@ export default function SettingsScreen({ navigation }) {
             <TouchableOpacity
               style={[styles.modalCloseBtn, { backgroundColor: colors.primaryLight }]}
               onPress={() => setShowSyncIntervalModal(false)}
+              activeOpacity={0.7}
+            >
+              <Text style={[styles.modalCloseBtnText, { color: colors.primary }]}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={showLanguageModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowLanguageModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { backgroundColor: colors.surface }]}>
+            <Text style={[styles.modalTitle, { color: colors.text }]}>App language</Text>
+            {[
+              { label: 'English', value: 'en' },
+              { label: 'Tamil', value: 'ta' },
+              { label: 'Sinhala', value: 'si' },
+            ].map((option) => (
+              <TouchableOpacity
+                key={option.value}
+                style={[styles.modalOption, { borderBottomColor: colors.border }]}
+                onPress={async () => {
+                  await setAppLanguage(option.value);
+                  setShowLanguageModal(false);
+                }}
+                activeOpacity={0.6}
+              >
+                <Text style={[styles.modalOptionText, { color: colors.text }]}>{option.label}</Text>
+                {appLanguage === option.value && (
+                  <Ionicons name="checkmark-circle" size={20} color={colors.primary} />
+                )}
+              </TouchableOpacity>
+            ))}
+            <TouchableOpacity
+              style={[styles.modalCloseBtn, { backgroundColor: colors.primaryLight }]}
+              onPress={() => setShowLanguageModal(false)}
               activeOpacity={0.7}
             >
               <Text style={[styles.modalCloseBtnText, { color: colors.primary }]}>Close</Text>

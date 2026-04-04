@@ -9,6 +9,7 @@ const STORAGE_KEYS = {
   SYNC_PERIOD: '@gastech_sync_period',
   SYNC_DATE_FIELD: '@gastech_sync_date_field',
   SYNC_INTERVAL: '@gastech_sync_interval',
+  APP_LANGUAGE: '@gastech_app_language',
 };
 
 const ThemeContext = createContext(null);
@@ -28,6 +29,7 @@ export function ThemeProvider({ children }) {
   const [syncPeriod, setSyncPeriodState] = useState('7days');
   const [syncDateField, setSyncDateFieldState] = useState('delivery_date');
   const [syncInterval, setSyncIntervalState] = useState('5min');
+  const [appLanguage, setAppLanguageState] = useState('en');
   const [ready, setReady] = useState(false);
 
   const colors = getThemeColors(theme);
@@ -35,13 +37,15 @@ export function ThemeProvider({ children }) {
 
   const loadSettings = useCallback(async () => {
     try {
-      const [savedTheme, createOrder, returnOrder, savedSyncPeriod, savedSyncDateField, savedSyncInterval] = await Promise.all([
+      const [savedTheme, createOrder, returnOrder, savedSyncPeriod, savedSyncDateField, savedSyncInterval, savedLang] =
+        await Promise.all([
         AsyncStorage.getItem(STORAGE_KEYS.THEME),
         AsyncStorage.getItem(STORAGE_KEYS.SHOW_CREATE_SALES_ORDER),
         AsyncStorage.getItem(STORAGE_KEYS.SHOW_RETURN_ORDER),
         AsyncStorage.getItem(STORAGE_KEYS.SYNC_PERIOD),
         AsyncStorage.getItem(STORAGE_KEYS.SYNC_DATE_FIELD),
         AsyncStorage.getItem(STORAGE_KEYS.SYNC_INTERVAL),
+        AsyncStorage.getItem(STORAGE_KEYS.APP_LANGUAGE),
       ]);
       if (savedTheme === 'dark' || savedTheme === 'light') setThemeState(savedTheme);
       if (createOrder !== null) setShowCreateSalesOrderState(createOrder === 'true');
@@ -52,6 +56,9 @@ export function ThemeProvider({ children }) {
       }
       if (savedSyncInterval && ['1min', '5min', '10min', '30min', '1hour', '2hour'].includes(savedSyncInterval)) {
         setSyncIntervalState(savedSyncInterval);
+      }
+      if (savedLang && ['en', 'ta', 'si'].includes(savedLang)) {
+        setAppLanguageState(savedLang);
       }
     } catch (_) {}
     setReady(true);
@@ -106,6 +113,14 @@ export function ThemeProvider({ children }) {
     } catch (_) {}
   }, []);
 
+  const setAppLanguage = useCallback(async (value) => {
+    const next = ['en', 'ta', 'si'].includes(value) ? value : 'en';
+    setAppLanguageState(next);
+    try {
+      await AsyncStorage.setItem(STORAGE_KEYS.APP_LANGUAGE, next);
+    } catch (_) {}
+  }, []);
+
   const value = {
     theme,
     setTheme,
@@ -121,6 +136,8 @@ export function ThemeProvider({ children }) {
     setSyncDateField,
     syncInterval,
     setSyncInterval,
+    appLanguage,
+    setAppLanguage,
     ready,
   };
 

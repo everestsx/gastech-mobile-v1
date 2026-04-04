@@ -123,8 +123,14 @@ export async function getAllSaleOrders(vehicleId = null, sortField = 'date_order
   const db = await getDb();
   const sql =
     vehicleId != null
-      ? `SELECT * FROM sale_orders WHERE vehicle_id = ? ORDER BY ${orderColumn} DESC, id DESC LIMIT 500`
-      : `SELECT * FROM sale_orders ORDER BY ${orderColumn} DESC, id DESC LIMIT 500`;
+      ? `SELECT so.*, p.name_tamil AS partner_name_tamil, p.name_sinhala AS partner_name_sinhala
+         FROM sale_orders so
+         LEFT JOIN partners p ON so.partner_id = p.id
+         WHERE so.vehicle_id = ? ORDER BY so.${orderColumn} DESC, so.id DESC LIMIT 500`
+      : `SELECT so.*, p.name_tamil AS partner_name_tamil, p.name_sinhala AS partner_name_sinhala
+         FROM sale_orders so
+         LEFT JOIN partners p ON so.partner_id = p.id
+         ORDER BY so.${orderColumn} DESC, so.id DESC LIMIT 500`;
   const args = vehicleId != null ? [vehicleId] : [];
   try {
     const rows = await db.getAllAsync(sql, args);
@@ -132,6 +138,8 @@ export async function getAllSaleOrders(vehicleId = null, sortField = 'date_order
       id: row.id,
       name: row.name,
       partner_id: row.partner_id != null ? [row.partner_id, row.partner_name ?? ''] : null,
+      partner_name_tamil: row.partner_name_tamil ?? null,
+      partner_name_sinhala: row.partner_name_sinhala ?? null,
       state: row.state,
       date_order: row.date_order,
       commitment_date: row.commitment_date,
@@ -161,7 +169,8 @@ export async function getSaleOrderById(id) {
   const db = await getDb();
   try {
     const row = await db.getFirstAsync(`
-      SELECT so.*, p.city as partner_city, p.phone as partner_phone
+      SELECT so.*, p.city as partner_city, p.phone as partner_phone,
+        p.name_tamil as partner_name_tamil, p.name_sinhala as partner_name_sinhala
       FROM sale_orders so
       LEFT JOIN partners p ON so.partner_id = p.id
       WHERE so.id = ?
@@ -173,6 +182,8 @@ export async function getSaleOrderById(id) {
       ...row,
       city: row.partner_city || '',
       partner_phone: row.partner_phone ?? '',
+      partner_name_tamil: row.partner_name_tamil ?? null,
+      partner_name_sinhala: row.partner_name_sinhala ?? null,
       partner_id: row.partner_id != null ? [row.partner_id, row.partner_name ?? ''] : null,
       order_line: safeParseJson(row.order_line, []),
     };
@@ -180,7 +191,14 @@ export async function getSaleOrderById(id) {
     logError(op, `id=${id} (with JOIN)`, e);
     try {
       const row = await db.getFirstAsync('SELECT * FROM sale_orders WHERE id = ?', [id]);
-      return row ? { ...row, order_line: safeParseJson(row.order_line, []) } : null;
+      return row
+        ? {
+            ...row,
+            partner_name_tamil: null,
+            partner_name_sinhala: null,
+            order_line: safeParseJson(row.order_line, []),
+          }
+        : null;
     } catch (fallbackErr) {
       logError(op, `id=${id} fallback SELECT`, fallbackErr);
       throw fallbackErr;

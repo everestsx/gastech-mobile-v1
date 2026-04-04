@@ -2,24 +2,49 @@
  * Local CRUD for partners (customers). Used for offline customer list.
  */
 import { getDb } from './db.js';
-import { empty, num, iso } from './dbHelpers.js';
+import {
+  coerceSqliteBindArray,
+  iso,
+  odooRecordId,
+  odooTextOrNull,
+  odooTextRequired,
+} from './dbHelpers.js';
 
-/** String or null for optional TEXT; never pass object to SQLite. */
-function strOrNull(v) {
-  if (v == null || typeof v === 'object') return null;
-  const s = String(v).trim();
-  return s === '' ? null : s;
-}
+const LOG = '[partners]';
 
 export async function upsertPartners(rows) {
   if (!rows?.length) return;
   const db = await getDb();
   await db.withTransactionAsync(async (tx) => {
-    for (const r of rows) {
-      await tx.runAsync(
-        `INSERT OR REPLACE INTO partners (id, name, phone, city, updated_at) VALUES (?, ?, ?, ?, ?)`,
-        [num(r.id), empty(r.name), strOrNull(r.phone),strOrNull(r.city), iso()]
-      );
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      if (r == null || typeof r !== 'object' || Array.isArray(r)) {
+        console.warn(`${LOG} skip row ${i}: not a plain object`);
+        continue;
+      }
+      const id = odooRecordId(r.id);
+      if (!Number.isFinite(id) || id <= 0) {
+        console.warn(`${LOG} skip row ${i}: invalid id`, r?.id);
+        continue;
+      }
+      const rawParams = [
+        id,
+        odooTextRequired(r.name),
+        odooTextOrNull(r.phone) ?? '',
+        odooTextOrNull(r.city) ?? '',
+        odooTextOrNull(r.name_tamil) ?? '',
+        odooTextOrNull(r.name_sinhala) ?? '',
+        iso(),
+      ];
+      const params = coerceSqliteBindArray(rawParams);
+      try {
+        await tx.runAsync(
+          `INSERT OR REPLACE INTO partners (id, name, phone, city, name_tamil, name_sinhala, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          params
+        );
+      } catch (e) {
+        console.warn(`${LOG} upsert row ${i} id=${id} failed`, e?.message ?? e);
+      }
     }
   });
 }
@@ -27,13 +52,15 @@ export async function upsertPartners(rows) {
 export async function getAllPartners() {
   const db = await getDb();
   const rows = await db.getAllAsync(
-    `SELECT id, name, phone,city FROM partners ORDER BY name ASC`
+    `SELECT id, name, phone, city, name_tamil, name_sinhala FROM partners ORDER BY name ASC`
   );
   return (rows || []).map((row) => ({
     id: row.id,
     name: row.name,
     phone: row.phone,
     city: row.city,
+    name_tamil: row.name_tamil ?? null,
+    name_sinhala: row.name_sinhala ?? null,
   }));
 }
 /**
@@ -80,7 +107,9 @@ export async function getCustomersByVehicleRoute(vehicleId, dateStr = null) {
         p.id, 
         p.name, 
         p.phone, 
-        p.city, 
+        p.city,
+        p.name_tamil,
+        p.name_sinhala,
         SUM(CASE WHEN s.date_order LIKE ? THEN 1 ELSE 0 END) as total_orders
       FROM partners p
       INNER JOIN sale_orders s ON p.id = s.partner_id AND s.vehicle_id = ?
@@ -94,7 +123,9 @@ export async function getCustomersByVehicleRoute(vehicleId, dateStr = null) {
         p.id, 
         p.name, 
         p.phone, 
-        p.city, 
+        p.city,
+        p.name_tamil,
+        p.name_sinhala,
         COUNT(s.id) as total_orders
       FROM partners p
       INNER JOIN sale_orders s ON p.id = s.partner_id

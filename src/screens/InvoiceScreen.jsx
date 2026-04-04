@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useEffect, useLayoutEffect, useState, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -33,6 +33,8 @@ import * as localInvoicesDb from '../database/localInvoices.js';
 import * as offlineAttachmentsDb from '../database/offlineAttachments.js';
 import { callOdoo } from '../services/index.service';
 import { findBluetoothPrinters, printPdfFileToRongta } from '../services/printerService';
+import SyncHeaderBadge from '../components/SyncHeaderBadge';
+import { resolveInvoiceCustomerDisplayName, odooLocalizedText } from '../utils/customerDisplayName';
 
 /**
  * Expo `printToFileAsync` defaults to US Letter width (612pt), so a 104mm-wide layout sits in a
@@ -155,6 +157,7 @@ function buildInvoiceHtml(
   printOptions = {}
 ) {
   const omitLogoBlock = printOptions.omitLogoBlock === true;
+  const appLanguage = printOptions.appLanguage || 'en';
   const orderDateRaw = order?.date_order || order?.create_date || order?.date;
   const orderDateParsed = orderDateRaw ? new Date(orderDateRaw) : null;
   const date = orderDateParsed && !Number.isNaN(orderDateParsed.getTime())
@@ -165,7 +168,10 @@ function buildInvoiceHtml(
       })
     : new Date().toLocaleDateString('en-LK');
   const printedAt = formatPrintedDateTime();
-  const customerName = safeDisplay(partyInfo?.customerName || order?.partner_id?.[1]).replace(/</g, '&lt;');
+  const customerName = safeDisplay(resolveInvoiceCustomerDisplayName(order, partyInfo, appLanguage)).replace(
+    /</g,
+    '&lt;'
+  );
   const streetPart = safeDisplay(order?.street || order?.partner_street || order?.partner_address);
   const cityPart = safeDisplay(partyInfo?.customerCity || order?.city);
   const phonePart = safeDisplay(partyInfo?.customerPhone || order?.partner_phone);
@@ -393,19 +399,19 @@ function buildInvoiceHtml(
   </div>
   <div class="payment">Thank you for your business</div>
   ${(customerSignatureDataUrl || driverSignatureDataUrl) ? `
-  <div class="signature-section" style="margin-top:4px;padding-top:4px;border-top:1px solid #000;">
-    <div style="display:flex;gap:6px;justify-content:space-between;align-items:flex-start;">
-      <div style="flex:1;min-width:0;">
-        <div class="label" style="font-size:9px;font-weight:700;color:#000;margin-bottom:2px;">Customer signature</div>
+  <div class="signature-section" style="margin-top:4px;padding-top:4px;border-top:1px solid #000;width:100%;box-sizing:border-box;">
+    <div style="display:flex;flex-direction:row;width:100%;justify-content:space-between;align-items:flex-start;box-sizing:border-box;">
+      <div style="flex:0 1 48%;min-width:0;text-align:left;">
+        <div style="font-size:9px;font-weight:700;color:#000;margin-bottom:2px;text-align:left;">Customer signature</div>
         ${customerSignatureDataUrl
-          ? `<img src="${customerSignatureDataUrl}" alt="Customer Signature" style="max-width:34mm;height:auto;max-height:18mm;display:block;" />`
-          : `<div style="height:18mm;border:1px dashed #999;"></div>`}
+          ? `<img src="${customerSignatureDataUrl}" alt="" style="max-width:34mm;width:auto;height:auto;max-height:18mm;display:block;margin:0;" />`
+          : `<div style="height:18mm;max-width:34mm;border:1px dashed #999;box-sizing:border-box;"></div>`}
       </div>
-      <div style="flex:1;min-width:0;">
-        <div class="label" style="font-size:9px;font-weight:700;color:#000;margin-bottom:2px;">Driver signature</div>
+      <div style="flex:0 1 48%;min-width:0;display:flex;flex-direction:column;align-items:flex-end;text-align:right;">
+        <div style="font-size:9px;font-weight:700;color:#000;margin-bottom:2px;width:100%;text-align:right;">Driver signature</div>
         ${driverSignatureDataUrl
-          ? `<img src="${driverSignatureDataUrl}" alt="Driver Signature" style="max-width:34mm;height:auto;max-height:18mm;display:block;" />`
-          : `<div style="height:18mm;border:1px dashed #999;"></div>`}
+          ? `<img src="${driverSignatureDataUrl}" alt="" style="max-width:34mm;width:auto;height:auto;max-height:18mm;display:block;margin:0;margin-left:auto;" />`
+          : `<div style="height:18mm;max-width:34mm;border:1px dashed #999;box-sizing:border-box;margin-left:auto;"></div>`}
       </div>
     </div>
   </div>
@@ -482,11 +488,13 @@ function buildInvoicePlainText(
   invoiceNumber,
   supplierTin = '—',
   purchaserTin = '—',
-  partyInfo = {}
+  partyInfo = {},
+  printOptions = {}
 ) {
+  const appLanguage = printOptions.appLanguage || 'en';
   const isoDate = formatPlainISODate(order);
   const printedAt = formatPrintedDateTime();
-  const customerName = safeDisplay(partyInfo?.customerName || order?.partner_id?.[1]);
+  const customerName = safeDisplay(resolveInvoiceCustomerDisplayName(order, partyInfo, appLanguage));
   const streetPart = safeDisplay(order?.street || order?.partner_street || order?.partner_address);
   const cityPart = safeDisplay(partyInfo?.customerCity || order?.city);
   const phonePart = safeDisplay(partyInfo?.customerPhone || order?.partner_phone);
@@ -692,15 +700,12 @@ async function resolveInvoiceLogoDataUriForPrint() {
 }
 
 export default function InvoiceScreen({ route, navigation }) {
-  const { colors } = useTheme();
+  const { colors, appLanguage } = useTheme();
   const {
     rongtaReady,
     thermalPrinter,
     thermalConnected,
-    connectingThermal,
-    connectThermalError,
     selectPrinter,
-    clearPrinter,
     connect,
   } = usePrinterConnection();
   const [invoiceLogoDataUri, setInvoiceLogoDataUri] = useState(null);
@@ -803,33 +808,6 @@ export default function InvoiceScreen({ route, navigation }) {
           shadowRadius: 4,
           alignSelf: 'stretch',
         },
-        invoicePrinterBannerOk: {
-          flexDirection: 'row',
-          alignItems: 'center',
-          gap: 10,
-          paddingVertical: 10,
-          paddingHorizontal: spacing.sm,
-          marginBottom: spacing.sm,
-          backgroundColor: (colors.success ?? '#22c55e') + '14',
-          borderRadius: borderRadius.md,
-          borderWidth: 1,
-          borderColor: (colors.success ?? '#22c55e') + '40',
-        },
-        invoicePrinterBannerTitle: { fontSize: 13, fontWeight: '800', color: colors.success ?? '#15803d' },
-        invoicePrinterBannerSub: { fontSize: 12, fontWeight: '600', color: colors.text, marginTop: 2 },
-        invoicePrinterBannerSetup: {
-          flexDirection: 'row',
-          alignItems: 'center',
-          gap: 8,
-          paddingVertical: 10,
-          paddingHorizontal: spacing.sm,
-          marginBottom: spacing.sm,
-          backgroundColor: colors.primarySurface || colors.background,
-          borderRadius: borderRadius.md,
-          borderWidth: 1,
-          borderColor: colors.border,
-        },
-        invoicePrinterBannerSetupText: { flex: 1, fontSize: 13, fontWeight: '600', color: colors.text },
         logo: { width: 80, height: 56, marginBottom: 6, alignSelf: 'flex-start' },
         invoiceTitle: { fontSize: 14, fontWeight: '700', color: colors.textSecondary, marginBottom: spacing.sm },
         metaRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 3, alignItems: 'flex-start' },
@@ -923,31 +901,6 @@ export default function InvoiceScreen({ route, navigation }) {
           lineHeight: 20,
           paddingHorizontal: spacing.sm,
         },
-        thermalConnectBtn: {
-          flexDirection: 'row',
-          alignItems: 'center',
-          justifyContent: 'center',
-          gap: 8,
-          backgroundColor: colors.primary,
-          paddingVertical: 14,
-          paddingHorizontal: 16,
-          borderRadius: borderRadius.lg,
-          marginTop: spacing.sm,
-        },
-        thermalConnectBtnText: { fontSize: 16, fontWeight: '700', color: '#fff' },
-        thermalStatusOk: { fontSize: 13, fontWeight: '600', color: '#16a34a', marginTop: 8 },
-        thermalStatusErr: { fontSize: 13, color: '#dc2626', marginTop: 8 },
-        thermalPrinterCard: {
-          backgroundColor: colors.surface,
-          borderRadius: borderRadius.lg,
-          padding: spacing.md,
-          marginBottom: spacing.md,
-          borderWidth: 1,
-          borderColor: colors.border,
-        },
-        thermalPrinterTitle: { fontSize: 14, fontWeight: '700', color: colors.text, marginBottom: 6 },
-        thermalPrinterSub: { fontSize: 13, color: colors.textSecondary, marginBottom: spacing.sm },
-        thermalPrinterActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
         thermalPrinterBtn: {
           flexDirection: 'row',
           alignItems: 'center',
@@ -1210,7 +1163,7 @@ export default function InvoiceScreen({ route, navigation }) {
         let customerRows = [];
         if (customerPartnerId != null) {
           customerRows = await callOdoo('res.partner', 'read', [[customerPartnerId]], {
-            fields: ['name', 'phone', 'street', 'street2', 'city', 'vat'],
+            fields: ['name', 'phone', 'street', 'street2', 'city', 'vat', 'name_tamil', 'name_sinhala'],
           });
         }
         const customer = Array.isArray(customerRows) ? customerRows[0] : null;
@@ -1221,6 +1174,8 @@ export default function InvoiceScreen({ route, navigation }) {
           supplierTin: company?.vat || null,
           supplierAddress: [companyStreet, companyCity].filter(Boolean).join(', ') || null,
           customerName: customer?.name || null,
+          customerNameTamil: odooLocalizedText(customer?.name_tamil),
+          customerNameSinhala: odooLocalizedText(customer?.name_sinhala),
           customerPhone: customer?.phone || null,
           customerTin: customer?.vat || null,
           customerStreet: [customer?.street, customer?.street2].filter(Boolean).join(', ') || null,
@@ -1281,6 +1236,73 @@ export default function InvoiceScreen({ route, navigation }) {
     }
   }, [rongtaReady]);
 
+  const onInvoicePrinterHeaderPress = useCallback(() => {
+    if (!rongtaReady) return;
+    const statusLine =
+      thermalConnected && thermalPrinter?.name
+        ? `Connected to ${thermalPrinter.name}.`
+        : thermalPrinter?.name
+          ? `${thermalPrinter.name} is selected — tap Connect to link, or pick another device.`
+          : 'No printer selected. Pair your Rongta printer in Android settings first.';
+    Alert.alert('Bluetooth printer', statusLine, [
+      { text: 'Cancel', style: 'cancel' },
+      ...(thermalPrinter?.address && !thermalConnected
+        ? [{ text: 'Connect', onPress: () => void handleConnectToRongta() }]
+        : []),
+      { text: 'Choose device', onPress: () => void openThermalPrinterPicker() },
+      { text: 'Full settings', onPress: () => navigation.navigate('BluetoothPrinter') },
+    ]);
+  }, [
+    rongtaReady,
+    thermalConnected,
+    thermalPrinter,
+    handleConnectToRongta,
+    openThermalPrinterPicker,
+    navigation,
+  ]);
+
+  useLayoutEffect(() => {
+    navigation.setOptions({
+      headerRight: () => (
+        <View style={{ flexDirection: 'row', alignItems: 'center', paddingRight: 2 }}>
+          {rongtaReady ? (
+            <TouchableOpacity
+              onPress={onInvoicePrinterHeaderPress}
+              activeOpacity={0.85}
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                marginRight: 6,
+                paddingVertical: 4,
+                paddingHorizontal: 4,
+                maxWidth: 130,
+              }}
+            >
+              <Ionicons
+                name="bluetooth"
+                size={18}
+                color={thermalConnected ? '#bbf7d0' : 'rgba(255,255,255,0.92)'}
+              />
+              <Text
+                numberOfLines={1}
+                style={{
+                  color: '#fff',
+                  fontSize: 11,
+                  fontWeight: '700',
+                  marginLeft: 5,
+                  flexShrink: 1,
+                }}
+              >
+                {thermalConnected ? 'Connected' : 'Not connected'}
+              </Text>
+            </TouchableOpacity>
+          ) : null}
+          <SyncHeaderBadge variant="header" />
+        </View>
+      ),
+    });
+  }, [navigation, rongtaReady, thermalConnected, onInvoicePrinterHeaderPress]);
+
   const handlePrint = useCallback(async () => {
     if (!order) return;
     setPrinting(true);
@@ -1318,7 +1340,7 @@ export default function InvoiceScreen({ route, navigation }) {
         supplierTin,
         purchaserTin,
         partyInfo,
-        { omitLogoBlock: true }
+        { omitLogoBlock: true, appLanguage }
       );
       const htmlForSystem = buildInvoiceHtml(
         orderForPrint,
@@ -1335,7 +1357,7 @@ export default function InvoiceScreen({ route, navigation }) {
         supplierTin,
         purchaserTin,
         partyInfo,
-        {}
+        { appLanguage }
       );
 
       if (rongtaReady && thermalConnected && thermalPrinter?.address) {
@@ -1369,7 +1391,8 @@ export default function InvoiceScreen({ route, navigation }) {
       console.error(err);
       setPrintResult('failed');
       setPrintError(
-        err?.message || 'Could not print. Pair a Bluetooth printer below or use the system print dialog.'
+        err?.message ||
+          'Could not print. Use the header Bluetooth menu to pair and connect, or use the system print dialog.'
       );
     } finally {
       setPrinting(false);
@@ -1393,6 +1416,7 @@ export default function InvoiceScreen({ route, navigation }) {
     supplierTin,
     purchaserTin,
     partyInfo,
+    appLanguage,
     rongtaReady,
     thermalPrinter,
     thermalConnected,
@@ -1589,33 +1613,6 @@ export default function InvoiceScreen({ route, navigation }) {
     >
       {/* Invoice preview */}
       <View style={styles.previewCard}>
-        {rongtaReady ? (
-          thermalPrinter && thermalConnected ? (
-            <View style={styles.invoicePrinterBannerOk}>
-              <Ionicons name="bluetooth" size={20} color={colors.success ?? '#16a34a'} />
-              <View style={{ flex: 1, minWidth: 0 }}>
-                <Text style={styles.invoicePrinterBannerTitle}>Rongta printer connected</Text>
-                <Text style={styles.invoicePrinterBannerSub} numberOfLines={2}>
-                  {thermalPrinter.name}
-                </Text>
-              </View>
-            </View>
-          ) : (
-            <TouchableOpacity
-              style={styles.invoicePrinterBannerSetup}
-              onPress={() => navigation.navigate('BluetoothPrinter')}
-              activeOpacity={0.85}
-            >
-              <Ionicons name="bluetooth-outline" size={20} color={colors.primary} />
-              <Text style={styles.invoicePrinterBannerSetupText}>
-                {thermalPrinter
-                  ? 'Tap to open Bluetooth printer settings and connect'
-                  : 'Set up Bluetooth Rongta printer (Menu → Bluetooth printer)'}
-              </Text>
-              <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
-            </TouchableOpacity>
-          )
-        ) : null}
         <Image source={INVOICE_LOGO_ASSET} style={styles.logo} resizeMode="contain" />
         <Text style={styles.invoiceTitle}>Tax Invoice</Text>
         <View style={styles.metaRow}>
@@ -1629,7 +1626,7 @@ export default function InvoiceScreen({ route, navigation }) {
         <View style={styles.metaRow}>
           <Text style={styles.metaLabel}>Customer</Text>
           <Text style={styles.metaValue} numberOfLines={2}>
-            {order?.partner_id?.[1] ?? '—'}
+            {resolveInvoiceCustomerDisplayName(order, partyInfo, appLanguage)}
           </Text>
         </View>
         {(safeDisplay(order?.city) !== '—' || safeDisplay(order?.partner_phone) !== '—') ? (
@@ -1705,71 +1702,69 @@ export default function InvoiceScreen({ route, navigation }) {
           </TouchableOpacity>
         ) : null}
         {(effectiveCustomerSignatureDataUrl || effectiveDriverSignatureDataUrl) ? (
-          <View style={{ marginTop: spacing.sm, paddingTop: spacing.sm, borderTopWidth: 1, borderTopColor: colors.border }}>
-            {effectiveCustomerSignatureDataUrl ? (
-              <>
-                <Text style={[styles.totalsLabel, { marginBottom: 4 }]}>Customer signature</Text>
-                <Image source={{ uri: effectiveCustomerSignatureDataUrl }} style={{ width: '100%', maxWidth: 180, height: 70, resizeMode: 'contain' }} />
-              </>
-            ) : null}
-            {effectiveDriverSignatureDataUrl ? (
-              <>
-                <Text style={[styles.totalsLabel, { marginTop: effectiveCustomerSignatureDataUrl ? spacing.sm : 0, marginBottom: 4 }]}>Driver signature</Text>
-                <Image source={{ uri: effectiveDriverSignatureDataUrl }} style={{ width: '100%', maxWidth: 180, height: 70, resizeMode: 'contain' }} />
-              </>
-            ) : null}
+          <View
+            style={{
+              marginTop: spacing.sm,
+              paddingTop: spacing.sm,
+              borderTopWidth: 1,
+              borderTopColor: colors.border,
+            }}
+          >
+            <View
+              style={{
+                flexDirection: 'row',
+                justifyContent: 'space-between',
+                alignItems: 'flex-start',
+                width: '100%',
+              }}
+            >
+              <View style={{ flex: 1, maxWidth: '48%', alignItems: 'flex-start', paddingRight: 4 }}>
+                <Text style={[styles.totalsLabel, { marginBottom: 4, alignSelf: 'stretch', textAlign: 'left' }]}>
+                  Customer signature
+                </Text>
+                {effectiveCustomerSignatureDataUrl ? (
+                  <Image
+                    source={{ uri: effectiveCustomerSignatureDataUrl }}
+                    style={{ width: 140, height: 70, resizeMode: 'contain', alignSelf: 'flex-start' }}
+                  />
+                ) : (
+                  <View
+                    style={{
+                      width: 140,
+                      height: 70,
+                      borderWidth: 1,
+                      borderStyle: 'dashed',
+                      borderColor: colors.border,
+                    }}
+                  />
+                )}
+              </View>
+              <View style={{ flex: 1, maxWidth: '48%', alignItems: 'flex-end', paddingLeft: 4 }}>
+                <Text style={[styles.totalsLabel, { marginBottom: 4, alignSelf: 'stretch', textAlign: 'right' }]}>
+                  Driver signature
+                </Text>
+                {effectiveDriverSignatureDataUrl ? (
+                  <Image
+                    source={{ uri: effectiveDriverSignatureDataUrl }}
+                    style={{ width: 140, height: 70, resizeMode: 'contain', alignSelf: 'flex-end' }}
+                  />
+                ) : (
+                  <View
+                    style={{
+                      width: 140,
+                      height: 70,
+                      borderWidth: 1,
+                      borderStyle: 'dashed',
+                      borderColor: colors.border,
+                      alignSelf: 'flex-end',
+                    }}
+                  />
+                )}
+              </View>
+            </View>
           </View>
         ) : null}
       </View>
-
-      {rongtaReady ? (
-        <View style={styles.thermalPrinterCard}>
-          <Text style={styles.thermalPrinterTitle}>Bluetooth Rongta printer</Text>
-          <Text style={styles.thermalPrinterSub}>
-            {thermalPrinter
-              ? `${thermalPrinter.name}\n${thermalPrinter.address}`
-              : 'Step 1: Pair the printer in Android Settings → Bluetooth. Step 2: Choose it here.'}
-          </Text>
-          <View style={styles.thermalPrinterActions}>
-            <TouchableOpacity style={styles.thermalPrinterBtn} onPress={openThermalPrinterPicker} activeOpacity={0.8}>
-              <Ionicons name="bluetooth" size={20} color={colors.primary} />
-              <Text style={styles.thermalPrinterBtnText}>
-                {thermalPrinter ? 'Change printer' : 'Choose printer'}
-              </Text>
-            </TouchableOpacity>
-            {thermalPrinter ? (
-              <TouchableOpacity
-                style={[styles.thermalPrinterBtn, styles.thermalPrinterBtnDanger]}
-                onPress={() => clearPrinter().catch(() => {})}
-                activeOpacity={0.8}
-              >
-                <Text style={styles.thermalPrinterBtnTextMuted}>Clear</Text>
-              </TouchableOpacity>
-            ) : null}
-          </View>
-          <TouchableOpacity
-            style={[styles.thermalConnectBtn, (!thermalPrinter?.address || connectingThermal) && { opacity: 0.5 }]}
-            onPress={handleConnectToRongta}
-            disabled={!thermalPrinter?.address || connectingThermal}
-            activeOpacity={0.85}
-          >
-            {connectingThermal ? (
-              <ActivityIndicator size="small" color="#fff" />
-            ) : (
-              <Ionicons name="link" size={22} color="#fff" />
-            )}
-            <Text style={styles.thermalConnectBtnText}>
-              {connectingThermal ? 'Connecting…' : 'Connect to Bluetooth Rongta printer'}
-            </Text>
-          </TouchableOpacity>
-          {thermalConnected ? (
-            <Text style={styles.thermalStatusOk}>Connected — you can print the invoice.</Text>
-          ) : null}
-          {connectThermalError && !thermalConnected ? (
-            <Text style={styles.thermalStatusErr}>{connectThermalError}</Text>
-          ) : null}
-        </View>
-      ) : null}
 
       <Modal
         visible={printerModalVisible}
@@ -1830,7 +1825,8 @@ export default function InvoiceScreen({ route, navigation }) {
 
       {rongtaPrintBlocked ? (
         <Text style={styles.printBlockedHint}>
-          Choose a paired printer, tap &quot;Connect to Bluetooth Rongta printer&quot;, then Print invoice unlocks.
+          Tap the Bluetooth status in the header (Not connected), choose a paired device, then Connect — then Print
+          invoice unlocks.
         </Text>
       ) : null}
 

@@ -386,6 +386,15 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       if (payments.length === 0) return;
 
       const paymentDateStr = new Date().toISOString().slice(0, 10);
+      const session = await getUserSession();
+      const porterEmployeeIds = Array.isArray(session?.selectedPorters)
+        ? session.selectedPorters.map((x) => Number(x.id)).filter((id) => Number.isFinite(id))
+        : [];
+      const driverEmployeeId =
+        session?.driverId != null && Number.isFinite(Number(session.driverId))
+          ? Number(session.driverId)
+          : null;
+
       const queuePayload = {
         saleOrderId: soId,
         partnerId,
@@ -396,6 +405,8 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         paymentDate: paymentDateStr,
         chequeBankName: needsCheck ? selectedLocalBank?.name : undefined,
         checkNumber: needsCheck ? (checkNumberTrimmed || undefined) : undefined,
+        driverEmployeeId,
+        porterEmployeeIds,
       };
       const existingPending = await syncQueueDb.getPendingPaymentItemBySaleOrderId(soId);
       if (existingPending) {

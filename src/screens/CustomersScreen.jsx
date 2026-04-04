@@ -12,10 +12,11 @@ import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
 import {getCachedCustomers, getFilteredCustomers, getUserSession} from '../services/sync.service';
-import {getCustomersByVehicleRoute} from "@/src/database/partners";
+import { getCustomersByVehicleRoute } from '@/src/database/partners';
+import { getLocalizedCustomerName } from '../utils/customerDisplayName';
 
 export default function CustomersScreen({ navigation }) {
-  const { colors } = useTheme();
+  const { colors, appLanguage } = useTheme();
   const [customers, setCustomers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -93,9 +94,10 @@ export default function CustomersScreen({ navigation }) {
   };
 
   const onCustomerPress = (customer) => {
+    const displayName = getLocalizedCustomerName(customer, appLanguage);
     navigation.navigate('MainTabs', {
       screen: 'Orders',
-      params: { customerId: customer.id, customerName: customer.name },
+      params: { customerId: customer.id, customerName: displayName },
     });
   };
 
@@ -111,7 +113,7 @@ export default function CustomersScreen({ navigation }) {
 
             <View style={styles.itemContent}>
                 <Text style={styles.itemName} numberOfLines={1}>
-                    {item.name || '—'}
+                    {getLocalizedCustomerName(item, appLanguage) || '—'}
                 </Text>
                 {item.city ? (
                     <Text style={{ color: colors.textSecondary, fontSize: 13 }} numberOfLines={1}>

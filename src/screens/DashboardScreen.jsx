@@ -23,6 +23,7 @@ import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
 import { dashboardConfig } from '../constants/dashboardConfig';
 import { getGasTypeBlueColor } from '../utils/productDisplay';
+import { getLocalizedCustomerNameFromOrder } from '../utils/customerDisplayName';
 import {
   getCachedOrders,
   getCachedRoutes,
@@ -77,8 +78,6 @@ function formatLocalYyyyMmDd(d) {
   return `${year}-${month}-${day}`;
 }
 
-const SYNC_INDICATOR_GAP = 12;
-
 const GAS_IMAGE_BY_KEYWORD = [
   { keys: ['37.5', '37_5', '37-5', '375kg', '37.5kg'], image: require('../../assets/Gas_Image/37.5kg.png') },
   { keys: ['12.5', '12_5', '12-5', '125kg', '12.5kg'], image: require('../../assets/Gas_Image/gas12.5k.png') },
@@ -99,7 +98,13 @@ function getGasImageByProductName(productName) {
 export default function DashboardScreen({ navigation }) {
   const insets = useSafeAreaInsets();
   const { syncCompleteTimestamp } = useSync();
-  const { colors, showCreateSalesOrder: userShowCreate, showReturnOrder: userShowReturn, syncDateField } = useTheme();
+  const {
+    colors,
+    showCreateSalesOrder: userShowCreate,
+    showReturnOrder: userShowReturn,
+    syncDateField,
+    appLanguage,
+  } = useTheme();
   // Visibility from config file; user preference (theme/settings) can further hide when config allows
   const showCreateSalesOrder = dashboardConfig.showCreateSalesOrder && userShowCreate;
   const showReturnOrder = dashboardConfig.showReturnOrder && userShowReturn;
@@ -575,7 +580,7 @@ export default function DashboardScreen({ navigation }) {
     const byPartner = {};
     chartDateOrders.forEach((o) => {
       const partnerId = o.partner_id?.[0] ?? o.partner_id;
-      const partnerName = o.partner_id?.[1] ?? `Shop ${partnerId}`;
+      const partnerName = getLocalizedCustomerNameFromOrder(o, appLanguage) || `Shop ${partnerId}`;
       const key = partnerId ?? 'unknown';
       if (!byPartner[key]) byPartner[key] = { shopId: `S${partnerId}`, shopName: partnerName, delivered: 0, pending: 0 };
       const qty = Math.round(Number(chartLineTotalsByOrder[o.id]) || 0);
@@ -588,7 +593,7 @@ export default function DashboardScreen({ navigation }) {
     });
     const real = Object.values(byPartner).filter((r) => r.delivered > 0 || r.pending > 0);
     return real;
-  }, [chartDateOrders, chartLineTotalsByOrder, chartPickingStateBySaleId]);
+  }, [chartDateOrders, chartLineTotalsByOrder, chartPickingStateBySaleId, appLanguage]);
 
   const styles = useMemo(
     () =>
@@ -649,32 +654,47 @@ export default function DashboardScreen({ navigation }) {
           alignItems: 'center',
           justifyContent: 'center',
         },
-        crewLabel: {
-          fontSize: 10,
+        crewSectionWrap: {
+          marginTop: spacing.md,
+          marginHorizontal: spacing.md,
+          padding: spacing.md,
+          borderRadius: borderRadius.lg,
+          backgroundColor: colors.surface,
+          borderWidth: 1,
+          borderColor: colors.border,
+        },
+        crewSectionLabel: {
+          fontSize: 15,
           fontWeight: '800',
-          color: 'rgba(255,255,255,0.72)',
-          letterSpacing: 1.2,
-          marginBottom: 6,
-          marginTop: 4,
+          color: colors.text,
+          letterSpacing: 0.2,
         },
-        crewScroll: { flexGrow: 0 },
-        crewChip: { alignItems: 'center', width: 58, marginRight: 10 },
-        crewAvatar: {
-          width: 40,
-          height: 40,
-          borderRadius: 20,
+        crewSectionHint: {
+          fontSize: 12,
+          color: colors.textSecondary,
+          marginTop: 4,
+          marginBottom: 12,
+          lineHeight: 17,
+        },
+        crewRowScroll: { flexGrow: 0, paddingVertical: 4 },
+        crewChipSurface: { alignItems: 'center', width: 76, marginRight: 10 },
+        crewAvatarSurface: {
+          width: 52,
+          height: 52,
+          borderRadius: 26,
           borderWidth: 2,
-          borderColor: 'rgba(255,255,255,0.35)',
+          borderColor: colors.primary + '44',
           overflow: 'hidden',
-          backgroundColor: 'rgba(255,255,255,0.1)',
+          backgroundColor: colors.background,
         },
-        crewName: {
-          fontSize: 10,
-          fontWeight: '600',
-          color: 'rgba(255,255,255,0.92)',
-          marginTop: 4,
+        crewNameSurface: {
+          fontSize: 11,
+          fontWeight: '700',
+          color: colors.text,
+          marginTop: 6,
           textAlign: 'center',
-          maxWidth: 58,
+          maxWidth: 76,
+          lineHeight: 14,
         },
         headerButtons: {
           flexDirection: 'row',
@@ -689,12 +709,13 @@ export default function DashboardScreen({ navigation }) {
         },
         greeting: { fontSize: 22, fontWeight: '800', color: colors.text },
         hint: { fontSize: 14, color: colors.textSecondary, marginTop: 2 },
-        lastSyncedRow: {
-          flexDirection: 'row',
-          alignItems: 'center',
-          gap: 8,
-        },
         lastSyncedBlock: { alignItems: 'flex-end' },
+        syncingUnderSync: {
+          alignSelf: 'flex-end',
+          marginTop: 10,
+          minHeight: 32,
+          justifyContent: 'center',
+        },
         lastSyncedLabel: {
           fontSize: 10,
           fontWeight: '600',
@@ -988,37 +1009,6 @@ export default function DashboardScreen({ navigation }) {
                 ) : null}
               </View>
             </View>
-            {crewPorters.length > 0 ? (
-              <View style={{ marginBottom: 8 }}>
-                <Text style={styles.crewLabel}>TODAY'S CREW</Text>
-                <ScrollView
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  style={styles.crewScroll}
-                  contentContainerStyle={{ flexDirection: 'row', alignItems: 'flex-start', paddingRight: 8 }}
-                >
-                  {crewPorters.map((p) => {
-                    const uri = p?.imageBase64 ? odooImageToUri(p.imageBase64) : null;
-                    return (
-                      <View key={String(p.id)} style={styles.crewChip}>
-                        <View style={styles.crewAvatar}>
-                          {uri ? (
-                            <Image source={{ uri }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
-                          ) : (
-                            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-                              <Ionicons name="people-outline" size={18} color="rgba(255,255,255,0.85)" />
-                            </View>
-                          )}
-                        </View>
-                        <Text style={styles.crewName} numberOfLines={2}>
-                          {p.name}
-                        </Text>
-                      </View>
-                    );
-                  })}
-                </ScrollView>
-              </View>
-            ) : null}
             <View style={styles.dateRow}>
               <Ionicons name="calendar-outline" size={18} color="rgba(255,255,255,0.95)" />
               <Text style={styles.dateText}>{todayDateStr}</Text>
@@ -1029,10 +1019,6 @@ export default function DashboardScreen({ navigation }) {
             </View>
           </View>
           <View style={styles.headerButtons}>
-            <View style={styles.lastSyncedRow}>
-              <View style={{ marginRight: SYNC_INDICATOR_GAP }}>
-                <SyncHeaderBadge variant="dashboard" />
-              </View>
               <View style={styles.lastSyncedBlock}>
                 <Text style={styles.lastSyncedLabel}>Last Synced</Text>
                 <Text style={styles.lastSyncTimeText} numberOfLines={1}>
@@ -1081,8 +1067,10 @@ export default function DashboardScreen({ navigation }) {
                     <Text style={styles.syncCounterText}>{orderSyncStats.syncedCompleted}</Text>
                   </View>
                 </View>
+                <View style={styles.syncingUnderSync}>
+                  <SyncHeaderBadge variant="dashboard" />
+                </View>
               </View>
-            </View>
             {/* //Daily Visit Keep Commented for now */}
             {/* <TouchableOpacity
               style={styles.dailyVisitBtnTop}
@@ -1281,6 +1269,8 @@ export default function DashboardScreen({ navigation }) {
           </TouchableOpacity>
         </View>
 
+      
+
         {/* 4. Shops Completed (delivered/total) & Gas Delivered (delivered/total) - tap to open Orders / Delivered tab */}
         <View style={styles.shopsGasRow}>
           <TouchableOpacity
@@ -1375,7 +1365,40 @@ export default function DashboardScreen({ navigation }) {
           }
         />
       </View>
-
+      {crewPorters.length > 0 && (
+          <View style={styles.crewSectionWrap}>
+            <Text style={styles.crewSectionLabel}>Porters on shift</Text>
+            <Text style={styles.crewSectionHint}>
+              Driver ({driverName || '—'}) is shown in the header — only loading staff are listed here.
+            </Text>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              style={styles.crewRowScroll}
+              contentContainerStyle={{ flexDirection: 'row', alignItems: 'flex-start', paddingRight: 12 }}
+            >
+              {crewPorters.map((p) => {
+                const uri = p?.imageBase64 ? odooImageToUri(p.imageBase64) : null;
+                return (
+                  <View key={String(p.id)} style={styles.crewChipSurface}>
+                    <View style={styles.crewAvatarSurface}>
+                      {uri ? (
+                        <Image source={{ uri }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+                      ) : (
+                        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+                          <Ionicons name="people-outline" size={22} color={colors.textSecondary} />
+                        </View>
+                      )}
+                    </View>
+                    <Text style={styles.crewNameSurface} numberOfLines={2}>
+                      {p.name}
+                    </Text>
+                  </View>
+                );
+              })}
+            </ScrollView>
+          </View>
+        )}
       {/* Commission section (separate card below Delivery Progress) */}
       <View style={{ paddingHorizontal: spacing.md }}>
         <TouchableOpacity

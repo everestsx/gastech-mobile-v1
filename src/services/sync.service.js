@@ -548,6 +548,59 @@ export async function getCollectionTotalsFromOdoo(orderNames) {
   }
 }
 
+/**
+ * Writes Odoo sale.order custom fields: driver_employee_id (many2one), porter_employee_ids (many2many).
+ * Values come from the payment queue payload (set at checkout); falls back to current session if missing.
+ */
+async function writeSaleOrderCrewFromPaymentPayload(soId, payload) {
+  const p = payload || {};
+  let driverId = null;
+  const dRaw = p.driverEmployeeId ?? p.driver_employee_id;
+  if (dRaw != null && Number.isFinite(Number(dRaw))) driverId = Number(dRaw);
+
+  let porterIds = [];
+  const pr = p.porterEmployeeIds ?? p.porter_employee_ids;
+  if (Array.isArray(pr)) {
+    porterIds = pr.map((x) => Number(x)).filter((n) => Number.isFinite(n));
+  }
+
+  if (driverId == null || porterIds.length === 0) {
+    try {
+      const session = await getUserSession();
+      if (driverId == null && session?.driverId != null) {
+        const n = Number(session.driverId);
+        if (Number.isFinite(n)) driverId = n;
+      }
+      if (porterIds.length === 0 && Array.isArray(session?.selectedPorters)) {
+        porterIds = session.selectedPorters
+          .map((x) => Number(x?.id))
+          .filter((n) => Number.isFinite(n));
+      }
+    } catch (_) {}
+  }
+
+  if (driverId == null && porterIds.length === 0) return;
+
+  const vals = {};
+  if (driverId != null) vals.driver_employee_id = driverId;
+  vals.porter_employee_ids = [[6, 0, porterIds]];
+
+  try {
+    const { callOdooArgs } = await import('./index.service.js');
+    await callOdooArgs('sale.order', 'write', [[soId], vals]);
+    log(
+      'queue',
+      `SO ${soId}: sale.order crew — driver_employee_id=${driverId ?? '—'}, porters=${porterIds.length}`
+    );
+  } catch (e) {
+    const short = (e?.message || String(e)).slice(0, 280);
+    logWarn(
+      'sale.order crew fields (driver_employee_id / porter_employee_ids)',
+      new Error(short || 'write failed')
+    );
+  }
+}
+
 /** Process pending sync queue: push delivery and payment actions to Odoo. Run at start of runSync. */
 async function processSyncQueue() {
   if (_processSyncQueuePromise) {
@@ -874,6 +927,8 @@ async function processSyncQueue() {
             logWarn('queue payment', new Error('Invalid sale_order_id'));
             continue;
           }
+
+          await writeSaleOrderCrewFromPaymentPayload(soId, p);
 
           const payments = p.payments || [];
           const orderName = p.orderName ?? `Order ${saleOrderId}`;

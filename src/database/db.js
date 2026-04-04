@@ -460,6 +460,23 @@ async function runMigrations(db) {
     }
     await db.runAsync('PRAGMA user_version = 18');
   }
+
+  // Migration 19: Partner localized names (Tamil / Sinhala) for UI + invoice
+  if (current < 19) {
+    try {
+      const info = await db.getAllAsync('PRAGMA table_info(partners)');
+      const names = new Set((info || []).map((c) => c.name));
+      if (!names.has('name_tamil')) {
+        await db.runAsync('ALTER TABLE partners ADD COLUMN name_tamil TEXT');
+      }
+      if (!names.has('name_sinhala')) {
+        await db.runAsync('ALTER TABLE partners ADD COLUMN name_sinhala TEXT');
+      }
+    } catch (e) {
+      console.warn('[Migration] partners name_tamil/name_sinhala:', e);
+    }
+    await db.runAsync('PRAGMA user_version = 19');
+  }
 }
 
 /**

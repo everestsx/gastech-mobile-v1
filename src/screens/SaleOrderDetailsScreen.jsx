@@ -35,6 +35,7 @@ import {
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
 import { getProductDisplayName, getGasSizeFromProductName } from '../utils/productDisplay';
+import { getLocalizedCustomerNameFromOrder } from '../utils/customerDisplayName';
 import { getProductImageSource } from '../utils/gasImage';
 
 function formatCurrency(amount) {
@@ -62,7 +63,7 @@ function formatWithComma(amount) {
     return parts.join('.');
 }
 export default function SaleOrderDetailsScreen({ route, navigation }) {
-  const { colors } = useTheme();
+  const { colors, appLanguage } = useTheme();
   const insets = useSafeAreaInsets();
 
   const GAS_SIZE_COLORS = useMemo(
@@ -1293,7 +1294,7 @@ const handleProceedToPayment = useCallback(async () => {
                       )}
                       <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.sm }}>
                           <Text style={styles.customerName} numberOfLines={1}>
-                              {order.partner_id?.[1] ?? '—'}
+                              {getLocalizedCustomerNameFromOrder(order, appLanguage)}
                           </Text>
                       </View>
                       {(order.city) && (

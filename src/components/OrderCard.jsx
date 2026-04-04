@@ -10,6 +10,7 @@ import {
   resolveOrderLinesForCard,
 } from '../utils/productDisplay';
 import { formatCurrency } from '../utils/format';
+import { getLocalizedCustomerNameFromOrder } from '../utils/customerDisplayName';
 
 /** Format date_order (ISO or date string) for display. */
 function formatOrderDate(dateOrder) {
@@ -49,7 +50,7 @@ export function getOrderTotalQty(order) {
  * When isDelivered and paymentSplit is provided, shows payment breakdown: Cash Paid, Cheque Paid, Credit Balance, Remaining balance.
  */
 export default function OrderCard({ order, onPress, isDelivered, orderLines = [], paymentSplit = null }) {
-  const { colors, syncDateField } = useTheme();
+  const { colors, syncDateField, appLanguage } = useTheme();
 
   // Consistent colors per gas size so users quickly identify Small/Medium/Large/Big across all cards
   const GAS_SIZE_COLORS = useMemo(
@@ -204,7 +205,7 @@ export default function OrderCard({ order, onPress, isDelivered, orderLines = []
 
       {/* Row 2: Customer name (bold) */}
       <Text style={styles.customerName} numberOfLines={1}>
-        {order.partner_id?.[1] || '—'}
+        {getLocalizedCustomerNameFromOrder(order, appLanguage)}
       </Text>
 
       {/* Row 3: Order date (left); Total amount (right), horizontally aligned */}
