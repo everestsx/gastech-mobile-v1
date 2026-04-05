@@ -5,10 +5,10 @@
 import { getDb } from './db.js';
 import { empty, num, numOrNull, iso, sqliteIntegerFkOrNull } from './dbHelpers.js';
 
-/** INTEGER FK bind for Android / Kotlin: null only when absent; never pass objects. */
+/** INTEGER FK bind for Android / Kotlin: never pass null/objects — use '' so native gets a string (stores as NULL for INTEGER). */
 function journalIdBind(raw) {
   const v = sqliteIntegerFkOrNull(raw);
-  return v === null ? null : v;
+  return v === null ? '' : v;
 }
 
 /**

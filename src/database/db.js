@@ -27,15 +27,15 @@ function patchExpoSqliteBindings(db) {
 
   db.runAsync = async (source, ...rest) => {
     const b = coerceSqliteStatementBindings(rest);
-    return b.length === 0 ? run(source) : run(source, b);
+    return b.length === 0 ? run(source) : run(source, ...b);
   };
   db.getAllAsync = async (source, ...rest) => {
     const b = coerceSqliteStatementBindings(rest);
-    return b.length === 0 ? all(source) : all(source, b);
+    return b.length === 0 ? all(source) : all(source, ...b);
   };
   db.getFirstAsync = async (source, ...rest) => {
     const b = coerceSqliteStatementBindings(rest);
-    return b.length === 0 ? first(source) : first(source, b);
+    return b.length === 0 ? first(source) : first(source, ...b);
   };
   Object.defineProperty(db, '__gastechSqlBindingsPatched', { value: true, enumerable: false });
   return db;

@@ -92,22 +92,21 @@ export function odooTextRequired(v) {
  */
 /**
  * Normalize every `runAsync` bind for expo-sqlite on Android (Kotlin).
- * Plain objects (e.g. accidental many2one left unwrapped) must not reach native.
- * Preserves `null` for SQL NULL. Maps `undefined` → `null`.
+ * The native bridge rejects JS `null`, `undefined`, and plain objects — use only string, number, or blob views.
+ * Empty string replaces former null/unknown (SQLite INTEGER affinity usually stores NULL for '').
  */
 export function sanitizeSqliteBindParams(params) {
   if (!Array.isArray(params)) return params;
   return params.map((v) => {
-    if (v === undefined) return null;
-    if (v === null) return null;
+    if (v === undefined || v === null) return '';
     if (typeof Uint8Array !== 'undefined' && v instanceof Uint8Array) return v;
     if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView && ArrayBuffer.isView(v)) return v;
     const t = typeof v;
     if (t === 'string') return v;
-    if (t === 'number') return Number.isFinite(v) ? v : null;
+    if (t === 'number') return Number.isFinite(v) ? v : 0;
     if (t === 'bigint') {
       const n = Number(v);
-      return Number.isFinite(n) ? n : null;
+      return Number.isFinite(n) ? n : 0;
     }
     if (t === 'boolean') return v ? 1 : 0;
     if (v instanceof Date) return v.toISOString();
@@ -120,15 +119,17 @@ export function sanitizeSqliteBindParams(params) {
           continue;
         }
         const n = Number(el);
-        return Number.isFinite(n) ? n : null;
+        return Number.isFinite(n) ? n : '';
       }
-      return null;
+      return '';
     }
-    if (t === 'object') {
-      // Android Kotlin bridge cannot bind plain objects; SQL NULL is safe for nullable columns.
-      return null;
+    if (t === 'object') return '';
+    try {
+      const s = String(v);
+      return s === '[object Object]' ? '' : s;
+    } catch {
+      return '';
     }
-    return String(v);
   });
 }
 
