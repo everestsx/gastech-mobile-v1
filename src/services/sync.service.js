@@ -143,7 +143,8 @@ export async function getCachedOrders(vehicleId = null) {
     const syncDateField = await storage.getItem(KEYS.SYNC_DATE_FIELD);
     const sortField = syncDateField === 'delivery_date' ? 'commitment_date' : 'date_order';
     const rows = await saleOrdersDb.getAllSaleOrders(vehicleId, sortField);
-    return rows;
+    // Keep cancelled orders hidden across the app by default.
+    return (rows || []).filter((o) => String(o?.state || '').toLowerCase() !== 'cancel');
   } catch (e) {
     console.warn('getCachedOrders', e);
     return [];
@@ -576,7 +577,7 @@ async function writeSaleOrderCrewFromPaymentPayload(soId, payload) {
           .map((x) => Number(x?.id))
           .filter((n) => Number.isFinite(n));
       }
-    } catch (_) {}
+    } catch (_) { }
   }
 
   if (driverId == null && porterIds.length === 0) return;
