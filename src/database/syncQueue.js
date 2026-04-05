@@ -120,7 +120,10 @@ export async function getPendingDeliveryItemBySaleOrderId(saleOrderId) {
 /** Update payload of an existing queue item (e.g. to merge payment updates for same sale order). */
 export async function updateQueueItemPayload(id, payload) {
   const db = await getDb();
-  const payloadStr = typeof payload === 'string' ? payload : JSON.stringify(payload ?? {});
+  const payloadStr =
+    typeof payload === 'string'
+      ? payload
+      : JSON.stringify(payload ?? {}, (_k, v) => (typeof v === 'bigint' ? v.toString() : v));
   await db.runAsync('UPDATE sync_queue SET payload = ? WHERE id = ?', [payloadStr, num(id)]);
 }
 

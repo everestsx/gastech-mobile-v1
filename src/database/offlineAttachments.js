@@ -19,11 +19,12 @@ export const MAX_RETRIES = 5;
  */
 export async function insert(row) {
   const db = await getDb();
-  const result = await db.runAsync(
+  const soId = num(row.sale_order_id);
+  await db.runAsync(
     `INSERT INTO offline_attachments (sale_order_id, local_file_path, file_name, mime_type, sync_status, retry_count, created_at)
      VALUES (?, ?, ?, ?, ?, 0, ?)`,
     [
-      num(row.sale_order_id),
+      soId,
       empty(row.local_file_path),
       empty(row.file_name),
       empty(row.mime_type) || 'image/jpeg',
@@ -31,7 +32,11 @@ export async function insert(row) {
       iso(),
     ]
   );
-  return result.lastInsertRowId;
+  const inserted = await db.getFirstAsync(
+    'SELECT id FROM offline_attachments WHERE sale_order_id = ? ORDER BY id DESC LIMIT 1',
+    [soId]
+  );
+  return num(inserted?.id);
 }
 
 /**

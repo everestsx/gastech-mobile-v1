@@ -5,7 +5,7 @@
  */
 import * as SQLite from 'expo-sqlite';
 import * as FileSystem from 'expo-file-system';
-import { sanitizeSqliteBindParams, coerceSqliteStatementBindings } from './dbHelpers.js';
+import { coerceSqliteStatementBindings } from './dbHelpers.js';
 
 const DB_NAME = 'gastech.db';
 

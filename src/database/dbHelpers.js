@@ -112,8 +112,17 @@ export function sanitizeSqliteBindParams(params) {
     if (t === 'boolean') return v ? 1 : 0;
     if (v instanceof Date) return v.toISOString();
     if (Array.isArray(v)) {
-      const n = v.length > 0 ? Number(v[0]) : NaN;
-      return Number.isFinite(n) ? n : null;
+      let x = v;
+      while (Array.isArray(x) && x.length > 0) {
+        const el = x[0];
+        if (Array.isArray(el)) {
+          x = el;
+          continue;
+        }
+        const n = Number(el);
+        return Number.isFinite(n) ? n : null;
+      }
+      return null;
     }
     if (t === 'object') {
       // Android Kotlin bridge cannot bind plain objects; SQL NULL is safe for nullable columns.
