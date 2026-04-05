@@ -6,6 +6,18 @@ import { getDb } from './db.js';
 import { empty, num, numOrNull, iso } from './dbHelpers.js';
 
 /**
+ * Signature TEXT for expo-sqlite Android: always a primitive string (never null/object).
+ * Kotlin bridge rejects null/undefined/object for some TEXT binds.
+ */
+function signatureBlobForSqlite(v) {
+  if (v == null || v === '') return '';
+  if (typeof v === 'object') return '';
+  const s = String(v).trim();
+  if (s === '' || s === '[object Object]') return '';
+  return s;
+}
+
+/**
  * Insert or replace local invoice for a sale order (one invoice per SO).
  * @param {Object} row - { sale_order_id, invoice_number, amount_total, amount_untaxed?, amount_tax?, state? }
  * @returns {Promise<number>} local invoice id
@@ -19,14 +31,8 @@ export async function upsertLocalInvoice(row) {
   const amountUntaxed = numOrNull(row.amount_untaxed) ?? amountTotal;
   const amountTax = numOrNull(row.amount_tax) ?? 0;
   const state = empty(row.state) || 'posted';
-  const custSig =
-    row.customer_signature_data != null && String(row.customer_signature_data).trim()
-      ? String(row.customer_signature_data)
-      : null;
-  const drvSig =
-    row.driver_signature_data != null && String(row.driver_signature_data).trim()
-      ? String(row.driver_signature_data)
-      : null;
+  const custSig = signatureBlobForSqlite(row.customer_signature_data);
+  const drvSig = signatureBlobForSqlite(row.driver_signature_data);
 
   const existing = await db.getFirstAsync(
     'SELECT id FROM local_invoices WHERE sale_order_id = ?',
@@ -35,7 +41,7 @@ export async function upsertLocalInvoice(row) {
   if (existing?.id != null) {
     await db.runAsync(
       `UPDATE local_invoices SET invoice_number = ?, amount_total = ?, amount_untaxed = ?, amount_tax = ?, state = ?, updated_at = ?,
-       customer_signature_data = COALESCE(?, customer_signature_data), driver_signature_data = COALESCE(?, driver_signature_data)
+       customer_signature_data = ?, driver_signature_data = ?
        WHERE sale_order_id = ?`,
       [
         invoiceNumber,
@@ -88,6 +94,34 @@ export async function getLocalInvoiceById(id) {
   const db = await getDb();
   const row = await db.getFirstAsync('SELECT * FROM local_invoices WHERE id = ?', [num(id)]);
   return row ? mapRow(row) : null;
+}
+
+/** Distinct sale order ids that have any row in local_invoices (payment completed on device). */
+export async function getSaleOrderIdsWithLocalInvoices() {
+  const db = await getDb();
+  const rows = await db.getAllAsync(
+    'SELECT DISTINCT sale_order_id FROM local_invoices WHERE sale_order_id IS NOT NULL'
+  );
+  const out = new Set();
+  for (const r of rows || []) {
+    const id = num(r.sale_order_id);
+    if (id > 0) out.add(id);
+  }
+  return out;
+}
+
+/** Sale order ids that have a local invoice not yet linked/synced to Odoo — used to preserve invoice_status during download. */
+export async function getUnsyncedLocalInvoiceSaleOrderIds() {
+  const db = await getDb();
+  const rows = await db.getAllAsync(
+    'SELECT sale_order_id FROM local_invoices WHERE synced_at IS NULL'
+  );
+  const out = new Set();
+  for (const r of rows || []) {
+    const id = num(r.sale_order_id);
+    if (id > 0) out.add(id);
+  }
+  return out;
 }
 
 /** Get all local invoices (optionally only unsynced). */

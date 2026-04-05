@@ -16,6 +16,7 @@ import DeliveredOrdersScreen from '../screens/DeliveredOrdersScreen';
 import SaleOrderDetailsScreen from '../screens/SaleOrderDetailsScreen';
 import ProceedPaymentScreen from '../screens/ProceedPaymentScreen';
 import InvoiceScreen from '../screens/InvoiceScreen';
+import PaymentProofScreen from '../screens/PaymentProofScreen';
 import QrGenerateScreen from '../screens/QrGenerateScreen';
 import ScanQRCodeScreen from '../screens/ScanQRCodeScreen';
 import ScanResultScreen from '../screens/ScanResultScreen';
@@ -197,6 +198,11 @@ function MainStackScreen() {
         name="InvoiceScreen"
         component={InvoiceScreen}
         options={{ ...headerScreenOptions, title: 'Invoice' }}
+      />
+      <MainStack.Screen
+        name="PaymentProof"
+        component={PaymentProofScreen}
+        options={{ ...headerScreenOptions, title: 'Payment proof', headerBackVisible: false }}
       />
       <MainStack.Screen
         name="ScanQRCode"

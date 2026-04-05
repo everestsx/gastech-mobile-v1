@@ -350,7 +350,10 @@ export async function updatePaymentTypeByOrderId(orderId, paymentType) {
   const idNum = num(orderId);
   logQuery(op, `id=${idNum} paymentType=${paymentType}`);
   const db = await getDb();
-  const type = paymentType === 'cash' || paymentType === 'cheque' || paymentType === 'credit' ? paymentType : null;
+  const type =
+    paymentType === 'cash' || paymentType === 'cheque' || paymentType === 'credit'
+      ? String(paymentType)
+      : '';
   try {
     await db.runAsync(
       `UPDATE sale_orders SET payment_type = ?, updated_at = ? WHERE id = ?`,
@@ -373,7 +376,10 @@ export async function updatePaymentSplitByOrderId(orderId, split, paymentType) {
   const cash = split && typeof split.cash === 'number' ? split.cash : 0;
   const cheque = split && typeof split.cheque === 'number' ? split.cheque : 0;
   const credit = split && typeof split.credit === 'number' ? split.credit : 0;
-  const type = paymentType === 'cash' || paymentType === 'cheque' || paymentType === 'credit' ? paymentType : null;
+  const type =
+    paymentType === 'cash' || paymentType === 'cheque' || paymentType === 'credit'
+      ? String(paymentType)
+      : '';
   const db = await getDb();
   try {
     await db.runAsync(
@@ -395,7 +401,10 @@ export async function updatePaymentSplitByOrderName(orderName, split, paymentTyp
   const cash = split && typeof split.cash === 'number' ? split.cash : 0;
   const cheque = split && typeof split.cheque === 'number' ? split.cheque : 0;
   const credit = split && typeof split.credit === 'number' ? split.credit : 0;
-  const type = paymentType === 'cash' || paymentType === 'cheque' || paymentType === 'credit' ? paymentType : null;
+  const type =
+    paymentType === 'cash' || paymentType === 'cheque' || paymentType === 'credit'
+      ? String(paymentType)
+      : '';
   const db = await getDb();
   try {
     await db.runAsync(
@@ -417,7 +426,10 @@ export async function updatePaymentTypeByOrderName(orderName, paymentType) {
   const op = 'updatePaymentTypeByOrderName';
   logQuery(op, `name=${trimmed} paymentType=${paymentType}`);
   const db = await getDb();
-  const type = paymentType === 'cash' || paymentType === 'cheque' || paymentType === 'credit' ? paymentType : null;
+  const type =
+    paymentType === 'cash' || paymentType === 'cheque' || paymentType === 'credit'
+      ? String(paymentType)
+      : '';
   const params = [type, iso(), trimmed];
   try {
     await db.runAsync(

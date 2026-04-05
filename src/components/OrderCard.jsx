@@ -11,6 +11,7 @@ import {
 } from '../utils/productDisplay';
 import { formatCurrency } from '../utils/format';
 import { getLocalizedCustomerNameFromOrder } from '../utils/customerDisplayName';
+import { getOrderDisplayTotal } from '../utils/orderLineTotals';
 
 /** Format date_order (ISO or date string) for display. */
 function formatOrderDate(dateOrder) {
@@ -49,7 +50,16 @@ export function getOrderTotalQty(order) {
  * Total amount; item-wise quantity badges (qty + shortcode) with color coding.
  * When isDelivered and paymentSplit is provided, shows payment breakdown: Cash Paid, Cheque Paid, Credit Balance, Remaining balance.
  */
-export default function OrderCard({ order, onPress, isDelivered, orderLines = [], paymentSplit = null }) {
+export default function OrderCard({
+  order,
+  onPress,
+  isDelivered,
+  orderLines = [],
+  paymentSplit = null,
+  deliveryBannerText = null,
+  /** When set on delivered tab: show only products with qty_done > 0 as "X kg — N delivered". */
+  qtyDoneByProductId = null,
+}) {
   const { colors, syncDateField, appLanguage } = useTheme();
 
   // Consistent colors per gas size so users quickly identify Small/Medium/Large/Big across all cards
@@ -77,7 +87,20 @@ export default function OrderCard({ order, onPress, isDelivered, orderLines = []
           shadowOffset: { width: 0, height: 2 },
           shadowOpacity: 0.06,
           shadowRadius: 4,
+          overflow: 'hidden',
         },
+        deliveryBanner: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 8,
+          backgroundColor: colors.primary,
+          paddingVertical: 10,
+          paddingHorizontal: spacing.lg,
+          marginHorizontal: -spacing.lg,
+          marginTop: -spacing.lg,
+          marginBottom: spacing.md,
+        },
+        deliveryBannerLabel: { flex: 1, color: '#fff', fontSize: 13, fontWeight: '700', lineHeight: 18 },
         rowBetween: {
           flexDirection: 'row',
           justifyContent: 'space-between',
@@ -171,11 +194,31 @@ export default function OrderCard({ order, onPress, isDelivered, orderLines = []
 
   const isStatusDarkText = String(order?.state) === 'cancel' ? false : String(order?.invoice_status) === 'invoiced';
 
+  const baseLines = order ? resolveOrderLinesForCard(order, orderLines) : [];
+  const displayOrderTotal = useMemo(
+    () => (order ? getOrderDisplayTotal(order, baseLines) : 0),
+    [order, baseLines]
+  );
+  const lines = useMemo(() => {
+    if (!isDelivered || !qtyDoneByProductId || typeof qtyDoneByProductId !== 'object') {
+      return baseLines;
+    }
+    const out = [];
+    for (const line of baseLines) {
+      const pidRaw = Array.isArray(line.product_id) ? line.product_id[0] : line.product_id;
+      const pid = pidRaw != null ? Number(pidRaw) : NaN;
+      if (!Number.isFinite(pid)) continue;
+      const done = Number(qtyDoneByProductId[pid]) || 0;
+      if (done <= 0) continue;
+      out.push({ ...line, product_uom_qty: done, __deliveredBadge: true });
+    }
+    return out;
+  }, [baseLines, isDelivered, qtyDoneByProductId]);
+
   if (!order) return null;
 
   const state = order.state || 'draft';
   const displayDate = syncDateField === 'delivery_date' ? order.commitment_date : order.date_order;
-  const lines = resolveOrderLinesForCard(order, orderLines);
 
   return (
     <TouchableOpacity
@@ -183,6 +226,14 @@ export default function OrderCard({ order, onPress, isDelivered, orderLines = []
       onPress={() => onPress?.(order)}
       activeOpacity={0.8}
     >
+      {deliveryBannerText ? (
+        <View style={styles.deliveryBanner}>
+          <Ionicons name="checkmark-circle" size={18} color="#fff" />
+          <Text style={styles.deliveryBannerLabel} numberOfLines={2}>
+            {deliveryBannerText}
+          </Text>
+        </View>
+      ) : null}
       {/* Row 1: Order ID (left); Order Type + Order Status badges (right) */}
       <View style={styles.rowBetween}>
         <Text style={styles.orderId} numberOfLines={1}>
@@ -211,7 +262,7 @@ export default function OrderCard({ order, onPress, isDelivered, orderLines = []
       {/* Row 3: Order date (left); Total amount (right), horizontally aligned */}
       <View style={[styles.rowBetween, styles.dateAmountRow]}>
         <Text style={styles.orderDate}>{formatOrderDate(displayDate)}</Text>
-        <Text style={styles.amount}>{formatCurrency(order.amount_total)}</Text>
+        <Text style={styles.amount}>{formatCurrency(displayOrderTotal)}</Text>
       </View>
 
       {/* Payment breakdown (Delivery tab): Cash Paid, Cheque Paid, Credit Balance, Remaining balance */}
@@ -237,7 +288,7 @@ export default function OrderCard({ order, onPress, isDelivered, orderLines = []
             </View>
           )}
           {(() => {
-            const total = Number(order.amount_total) || 0;
+            const total = displayOrderTotal || 0;
             const paid = (paymentSplit.cash || 0) + (paymentSplit.cheque || 0) + (paymentSplit.credit || 0);
             const remaining = Math.max(0, total - paid);
             if (remaining <= 0) return null;
@@ -265,12 +316,19 @@ export default function OrderCard({ order, onPress, isDelivered, orderLines = []
             return (
               <View key={line.id ?? line.line_id ?? index} style={[styles.qtyBadge, { borderColor: accent }]}>
                 <View style={[styles.qtyBadgeSquare, { backgroundColor: accent }]} />
-                <Text style={styles.qtyBadgeText} numberOfLines={1}>
-                  {gasSize ? (
+                <Text style={styles.qtyBadgeText} numberOfLines={2}>
+                  {line.__deliveredBadge && gasSize ? (
+                    <>
+                      <Text style={styles.qtyBadgeSizeLabel}>{gasSize.kg} kg — </Text>
+                      <Text style={styles.qtyBadgeSizeLabel}>{qty} delivered</Text>
+                    </>
+                  ) : gasSize ? (
                     <>
                       <Text style={styles.qtyBadgeSizeLabel}>{gasSize.kg} kg × </Text>
                       <Text style={styles.qtyBadgeSizeLabel}>{qty}</Text>
                     </>
+                  ) : line.__deliveredBadge ? (
+                    `${displayName} — ${qty} delivered`
                   ) : (
                     `${displayName} × ${qty}`
                   )}
@@ -279,7 +337,7 @@ export default function OrderCard({ order, onPress, isDelivered, orderLines = []
             );
           })}
         </View>
-      ) : (
+      ) : isDelivered && qtyDoneByProductId ? null : (
         <View style={styles.qtyBadgesRow}>
           <View style={[styles.qtyBadge, { borderColor: colors.border }]}>
             <View style={[styles.qtyBadgeSquare, { backgroundColor: colors.border }]} />

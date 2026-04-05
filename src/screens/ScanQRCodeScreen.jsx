@@ -38,6 +38,7 @@ async function getTodayOrderForCustomer(customerId, syncDateField) {
 export default function ScanQRCodeScreen({ navigation, route }) {
   const { colors, syncDateField } = useTheme();
   const returnTo = route?.params?.returnTo ?? null;
+  const scanContext = route?.params?.scanContext ?? null;
   const [permission, requestPermission] = useCameraPermissions();
   const [scanned, setScanned] = useState(false);
   const [resolving, setResolving] = useState(false);
@@ -141,6 +142,26 @@ export default function ScanQRCodeScreen({ navigation, route }) {
         });
         return;
       }
+      if (returnTo === 'DeliveredOrders') {
+        const todayStr = formatDate(new Date());
+        navigation.reset({
+          index: 0,
+          routes: [
+            {
+              name: 'MainTabs',
+              params: {
+                screen: 'DeliveredOrders',
+                params: {
+                  customerId,
+                  customerName: customerName || '',
+                  scannedDate: todayStr,
+                },
+              },
+            },
+          ],
+        });
+        return;
+      }
       try {
         const order = await getTodayOrderForCustomer(customerId, syncDateField);
         if (order?.id) {
@@ -161,6 +182,11 @@ export default function ScanQRCodeScreen({ navigation, route }) {
     },
     [navigation, returnTo, navigateToOrderDetails, navigateToScanResult, syncDateField]
   );
+
+  const scanHint =
+    scanContext === 'delivered'
+      ? 'Scan the customer’s QR — we’ll show their delivered orders for today'
+      : 'Align customer QR code within the frame';
 
   const handleBarCodeScanned = useCallback(
     async ({ data }) => {
@@ -245,7 +271,7 @@ export default function ScanQRCodeScreen({ navigation, route }) {
       />
       <View style={styles.overlay}>
         <View style={styles.frame} />
-        <Text style={styles.hint}>Align customer QR code within the frame</Text>
+        <Text style={styles.hint}>{scanHint}</Text>
         {resolving && (
           <View style={styles.resolvingWrap}>
             <ActivityIndicator size="large" color="#fff" />

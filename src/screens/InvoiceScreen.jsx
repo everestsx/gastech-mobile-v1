@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState, useCallback, useMemo } from 'react';
+import { useEffect, useLayoutEffect, useState, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -34,7 +34,9 @@ import * as offlineAttachmentsDb from '../database/offlineAttachments.js';
 import { callOdoo } from '../services/index.service';
 import { findBluetoothPrinters, printPdfFileToRongta } from '../services/printerService';
 import SyncHeaderBadge from '../components/SyncHeaderBadge';
+import SignatureCanvas from 'react-native-signature-canvas';
 import { resolveInvoiceCustomerDisplayName, odooLocalizedText } from '../utils/customerDisplayName';
+import { lineSubtotalAtQuantity, lineTaxAtQuantity } from '../utils/orderLineTax.js';
 
 /**
  * Expo `printToFileAsync` defaults to US Letter width (612pt), so a 104mm-wide layout sits in a
@@ -727,7 +729,19 @@ export default function InvoiceScreen({ route, navigation }) {
     invoiceLineQtys,
     deliveryPayload,
     deliveryDone: routeDeliveryDone,
+    fromProceedPayment: routeFromProceedPayment,
+    promptSignatures: routePromptSignatures,
+    skipEvidenceModal: routeSkipEvidenceModal,
+    openPaymentProofAfterPrint: routeOpenPaymentProofAfterPrint,
+    creditProofRequired: routeCreditProofRequired,
+    orderName: routeOrderName,
   } = route.params ?? {};
+
+  const fromProceedPayment = routeFromProceedPayment === true;
+  const promptSignatures = routePromptSignatures === true;
+  const skipEvidenceModal = routeSkipEvidenceModal === true;
+  const openPaymentProofAfterPrint = routeOpenPaymentProofAfterPrint === true;
+  const signaturesMandatory = openPaymentProofAfterPrint;
 
   const { setHideSyncIndicator } = useSync();
   const [order, setOrder] = useState(null);
@@ -741,19 +755,32 @@ export default function InvoiceScreen({ route, navigation }) {
     return m;
   }, [invoiceLineQtys]);
 
-  /** Preview before payment: show invoiced qtys/amounts from delivery, without changing loaded SO line records. */
+  /** Preview / post-payment invoice: show qtys from delivery without changing loaded SO line records. */
   const displayLines = useMemo(() => {
-    if (!previewBeforePayment || !invoiceLineQtys?.length) return lines;
+    const useQtyOverride =
+      invoiceLineQtys?.length > 0 && (previewBeforePayment || fromProceedPayment);
+    if (!useQtyOverride) return lines;
     return lines.map((l) => {
       const q = qtyByLineId[l.id];
       if (q === undefined) return { ...l };
-      const origQ = Number(l.product_uom_qty) || 1;
-      const scale = origQ > 0 ? q / origQ : 0;
-      const price_subtotal = (Number(l.price_subtotal) || 0) * scale;
-      const price_total = (Number(l.price_total) || 0) * scale;
-      return { ...l, product_uom_qty: q, price_subtotal, price_total };
+      const origQ = Number(l.product_uom_qty) || 0;
+      if (origQ > 0) {
+        const scale = q / origQ;
+        const price_subtotal = (Number(l.price_subtotal) || 0) * scale;
+        const price_total = (Number(l.price_total) || 0) * scale;
+        return { ...l, product_uom_qty: q, price_subtotal, price_total };
+      }
+      const price_subtotal = lineSubtotalAtQuantity(l, q);
+      const tax = lineTaxAtQuantity(l, q);
+      return { ...l, product_uom_qty: q, price_subtotal, price_total: price_subtotal + tax };
     });
-  }, [lines, previewBeforePayment, invoiceLineQtys, qtyByLineId]);
+  }, [lines, previewBeforePayment, fromProceedPayment, invoiceLineQtys, qtyByLineId]);
+
+  /** Omit cancelled / zero-qty lines from invoice table, print, and line-based totals. */
+  const invoiceVisibleLines = useMemo(
+    () => (displayLines || []).filter((l) => (Number(l.product_uom_qty) || 0) > 0),
+    [displayLines]
+  );
 
   const [invoiceNumber, setInvoiceNumber] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -771,6 +798,14 @@ export default function InvoiceScreen({ route, navigation }) {
   const [printerModalVisible, setPrinterModalVisible] = useState(false);
   const [loadingPairedPrinters, setLoadingPairedPrinters] = useState(false);
   const [pairedPrinterRows, setPairedPrinterRows] = useState([]);
+  const [showSignatureCaptureModal, setShowSignatureCaptureModal] = useState(false);
+  const [signatureModalScrollEnabled, setSignatureModalScrollEnabled] = useState(true);
+  const [captureCustomerSig, setCaptureCustomerSig] = useState(null);
+  const [captureDriverSig, setCaptureDriverSig] = useState(null);
+  const [captureCustomerSaved, setCaptureCustomerSaved] = useState(false);
+  const [captureDriverSaved, setCaptureDriverSaved] = useState(false);
+  const captureCustomerRef = useRef(null);
+  const captureDriverRef = useRef(null);
   const MAX_PHOTOS = 3;
   const rongtaPrintBlocked =
     rongtaReady && (!thermalPrinter?.address || !thermalConnected);
@@ -924,13 +959,71 @@ export default function InvoiceScreen({ route, navigation }) {
         },
         printerPickSheet: {
           backgroundColor: colors.surface,
-          borderTopLeftRadius: 16,
-          borderTopRightRadius: 16,
+          borderTopLeftRadius: 22,
+          borderTopRightRadius: 22,
           paddingHorizontal: spacing.md,
-          paddingTop: spacing.md,
+          paddingTop: spacing.sm,
           paddingBottom: spacing.lg,
-          maxHeight: '70%',
+          maxHeight: '78%',
+          borderWidth: 1,
+          borderBottomWidth: 0,
+          borderColor: colors.border,
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: -4 },
+          shadowOpacity: 0.12,
+          shadowRadius: 16,
+          elevation: 16,
         },
+        printerPickHandle: {
+          width: 44,
+          height: 5,
+          borderRadius: 3,
+          backgroundColor: colors.border,
+          alignSelf: 'center',
+          marginBottom: spacing.md,
+        },
+        printerPickHero: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, marginBottom: spacing.md },
+        printerPickIconCircle: {
+          width: 54,
+          height: 54,
+          borderRadius: 27,
+          backgroundColor: colors.primarySurface || '#eef2ff',
+          alignItems: 'center',
+          justifyContent: 'center',
+          borderWidth: 1,
+          borderColor: (colors.primary || '#6366f1') + '40',
+        },
+        printerPickHeadTitle: { fontSize: 20, fontWeight: '800', color: colors.text },
+        printerPickHeadSub: { fontSize: 13, color: colors.textSecondary, marginTop: 4, lineHeight: 19 },
+        printerPickStatusPill: {
+          alignSelf: 'stretch',
+          paddingVertical: 10,
+          paddingHorizontal: 14,
+          borderRadius: borderRadius.lg,
+          marginBottom: spacing.md,
+        },
+        printerPickStatusText: { fontSize: 13, fontWeight: '700' },
+        printerPickActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: spacing.md },
+        printerPickPrimaryBtn: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 8,
+          paddingVertical: 12,
+          paddingHorizontal: 18,
+          borderRadius: borderRadius.lg,
+          backgroundColor: colors.primary,
+        },
+        printerPickPrimaryBtnText: { fontSize: 15, fontWeight: '700', color: '#fff' },
+        printerPickGhostBtn: {
+          paddingVertical: 12,
+          paddingHorizontal: 16,
+          borderRadius: borderRadius.lg,
+          borderWidth: 1,
+          borderColor: colors.border,
+          backgroundColor: colors.background,
+          justifyContent: 'center',
+        },
+        printerPickGhostBtnText: { fontSize: 14, fontWeight: '600', color: colors.primary },
         printerPickHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.sm },
         printerPickTitle: { fontSize: 17, fontWeight: '700', color: colors.text },
         printerPickRow: {
@@ -1080,6 +1173,53 @@ export default function InvoiceScreen({ route, navigation }) {
           marginBottom: spacing.xl,
         },
         evidenceSkipBtnText: { fontSize: 16, fontWeight: '700', color: colors.textSecondary },
+        sigCapOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: spacing.md },
+        sigCapCard: {
+          borderRadius: borderRadius.lg,
+          maxHeight: '92%',
+          overflow: 'hidden',
+          padding: spacing.md,
+          paddingBottom: spacing.xl,
+        },
+        sigCapTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.sm },
+        sigCapSkip: { paddingVertical: 8, paddingHorizontal: spacing.sm },
+        sigCapSkipText: { fontSize: 15, fontWeight: '600', color: colors.primary },
+        sigCapTitle: { fontSize: 18, fontWeight: '800', color: colors.text, textAlign: 'center', flex: 1 },
+        sigCapHint: { fontSize: 13, color: colors.textSecondary, textAlign: 'center', marginBottom: spacing.md },
+        sigCapSection: { marginBottom: spacing.lg },
+        sigCapSectionHeader: { fontSize: 15, fontWeight: '700', color: colors.text, marginBottom: 4 },
+        sigCapSectionHint: { fontSize: 12, color: colors.textSecondary, marginBottom: spacing.xs },
+        sigCapCanvasWrap: {
+          height: 150,
+          marginBottom: spacing.sm,
+          borderRadius: borderRadius.md,
+          overflow: 'hidden',
+          borderWidth: 1,
+          borderColor: colors.border,
+        },
+        sigCapCanvas: { flex: 1, height: 150 },
+        sigCapBtnRow: { flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.md },
+        sigCapBtn: {
+          flex: 1,
+          paddingVertical: 12,
+          alignItems: 'center',
+          borderRadius: borderRadius.md,
+          borderWidth: 1,
+          borderColor: colors.border,
+        },
+        sigCapBtnPrimary: { backgroundColor: colors.primary, borderColor: colors.primary },
+        sigCapBtnText: { fontSize: 15, fontWeight: '600', color: colors.textSecondary },
+        sigCapBtnTextLight: { fontSize: 15, fontWeight: '600', color: '#fff' },
+        sigCapDoneBtn: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 8,
+          backgroundColor: colors.primary,
+          paddingVertical: 14,
+          borderRadius: borderRadius.lg,
+          marginTop: spacing.xs,
+        },
       }),
     [colors]
   );
@@ -1203,6 +1343,56 @@ export default function InvoiceScreen({ route, navigation }) {
     loadInvoice();
   }, [loadInvoice]);
 
+  const persistCapturedSignatures = useCallback(
+    async (rawCust, rawDrv) => {
+      const norm = (raw) => {
+        if (raw == null || typeof raw !== 'string') return '';
+        const s = raw.trim();
+        if (s === '' || s === '[object Object]') return '';
+        return s;
+      };
+      const custSig = norm(rawCust);
+      const drvSig = norm(rawDrv);
+      const existing = await localInvoicesDb.getLocalInvoiceBySaleOrderId(saleOrderId);
+      if (!existing) {
+        setShowSignatureCaptureModal(false);
+        navigation.setParams({ promptSignatures: false });
+        return;
+      }
+      await localInvoicesDb.upsertLocalInvoice({
+        sale_order_id: Number(saleOrderId),
+        invoice_number: existing.invoice_number,
+        amount_total: existing.amount_total,
+        amount_untaxed: existing.amount_untaxed,
+        amount_tax: existing.amount_tax,
+        state: existing.state || 'posted',
+        customer_signature_data: custSig,
+        driver_signature_data: drvSig,
+      });
+      setLocalCustomerSig(custSig || null);
+      setLocalDriverSig(drvSig || null);
+      setShowSignatureCaptureModal(false);
+      setCaptureCustomerSig(null);
+      setCaptureDriverSig(null);
+      setCaptureCustomerSaved(false);
+      setCaptureDriverSaved(false);
+      captureCustomerRef.current?.clearSignature();
+      captureDriverRef.current?.clearSignature();
+      navigation.setParams({ promptSignatures: false });
+    },
+    [saleOrderId, navigation]
+  );
+
+  useEffect(() => {
+    if (loading) return;
+    if (!saleOrderId) return;
+    if (!fromProceedPayment || !promptSignatures) return;
+    const hasCust = localCustomerSig && String(localCustomerSig).trim() !== '';
+    const hasDrv = localDriverSig && String(localDriverSig).trim() !== '';
+    if (hasCust && hasDrv) return;
+    setShowSignatureCaptureModal(true);
+  }, [loading, saleOrderId, fromProceedPayment, promptSignatures, localCustomerSig, localDriverSig]);
+
   useEffect(() => {
     setHideSyncIndicator(true);
     return () => setHideSyncIndicator(false);
@@ -1238,28 +1428,8 @@ export default function InvoiceScreen({ route, navigation }) {
 
   const onInvoicePrinterHeaderPress = useCallback(() => {
     if (!rongtaReady) return;
-    const statusLine =
-      thermalConnected && thermalPrinter?.name
-        ? `Connected to ${thermalPrinter.name}.`
-        : thermalPrinter?.name
-          ? `${thermalPrinter.name} is selected — tap Connect to link, or pick another device.`
-          : 'No printer selected. Pair your Rongta printer in Android settings first.';
-    Alert.alert('Bluetooth printer', statusLine, [
-      { text: 'Cancel', style: 'cancel' },
-      ...(thermalPrinter?.address && !thermalConnected
-        ? [{ text: 'Connect', onPress: () => void handleConnectToRongta() }]
-        : []),
-      { text: 'Choose device', onPress: () => void openThermalPrinterPicker() },
-      { text: 'Full settings', onPress: () => navigation.navigate('BluetoothPrinter') },
-    ]);
-  }, [
-    rongtaReady,
-    thermalConnected,
-    thermalPrinter,
-    handleConnectToRongta,
-    openThermalPrinterPicker,
-    navigation,
-  ]);
+    void openThermalPrinterPicker();
+  }, [rongtaReady, openThermalPrinterPicker]);
 
   useLayoutEffect(() => {
     navigation.setOptions({
@@ -1303,16 +1473,52 @@ export default function InvoiceScreen({ route, navigation }) {
     });
   }, [navigation, rongtaReady, thermalConnected, onInvoicePrinterHeaderPress]);
 
+  const goToPaymentProofScreen = useCallback(() => {
+    navigation.replace('PaymentProof', {
+      saleOrderId,
+      creditProofRequired: routeCreditProofRequired === true,
+      orderName: routeOrderName,
+    });
+  }, [navigation, saleOrderId, routeCreditProofRequired, routeOrderName]);
+
   const handlePrint = useCallback(async () => {
     if (!order) return;
+    if (openPaymentProofAfterPrint) {
+      const hasCust = localCustomerSig && String(localCustomerSig).trim() !== '';
+      const hasDrv = localDriverSig && String(localDriverSig).trim() !== '';
+      if (!hasCust || !hasDrv) {
+        Alert.alert(
+          'Signatures required',
+          'Add customer and driver signatures before printing the invoice.'
+        );
+        setShowSignatureCaptureModal(true);
+        return;
+      }
+    }
+    const skipEv = route.params?.skipEvidenceModal === true;
+    const wantSig = route.params?.promptSignatures === true;
+    const openAfterPrint = () => {
+      if (openPaymentProofAfterPrint) {
+        goToPaymentProofScreen();
+        return;
+      }
+      if (skipEv) {
+        if (wantSig) setShowSignatureCaptureModal(true);
+      } else {
+        setShowEvidenceModal(true);
+      }
+    };
     setPrinting(true);
     setPrintResult(null);
     setPrintError(null);
     try {
-      const orderForPrint = previewBeforePayment
+      const recomputeTotalsFromLines =
+        previewBeforePayment ||
+        (fromProceedPayment && Array.isArray(invoiceLineQtys) && invoiceLineQtys.length > 0);
+      const orderForPrint = recomputeTotalsFromLines
         ? (() => {
-            const sub = displayLines.reduce((s, l) => s + (Number(l.price_subtotal) || 0), 0);
-            const tax = displayLines.reduce(
+            const sub = invoiceVisibleLines.reduce((s, l) => s + (Number(l.price_subtotal) || 0), 0);
+            const tax = invoiceVisibleLines.reduce(
               (s, l) => s + ((Number(l.price_total) || 0) - (Number(l.price_subtotal) || 0)),
               0
             );
@@ -1327,7 +1533,7 @@ export default function InvoiceScreen({ route, navigation }) {
       const logoB64ForNative = extractRawBase64FromDataUri(logoForPrint);
       const htmlForThermal = buildInvoiceHtml(
         orderForPrint,
-        displayLines,
+        invoiceVisibleLines,
         paymentType,
         selectedBankName,
         effectiveSplitForPrint,
@@ -1344,7 +1550,7 @@ export default function InvoiceScreen({ route, navigation }) {
       );
       const htmlForSystem = buildInvoiceHtml(
         orderForPrint,
-        displayLines,
+        invoiceVisibleLines,
         paymentType,
         selectedBankName,
         effectiveSplitForPrint,
@@ -1375,7 +1581,7 @@ export default function InvoiceScreen({ route, navigation }) {
             thermalPrinter,
             { headerLogoBase64: logoB64ForNative }
           );
-          setShowEvidenceModal(true);
+          openAfterPrint();
           setPrintResult(null);
           return;
         } catch (thermalPdfErr) {
@@ -1385,7 +1591,7 @@ export default function InvoiceScreen({ route, navigation }) {
       }
 
       await Print.printAsync({ html: htmlForSystem });
-      setShowEvidenceModal(true);
+      openAfterPrint();
       setPrintResult(null);
     } catch (err) {
       console.error(err);
@@ -1401,7 +1607,7 @@ export default function InvoiceScreen({ route, navigation }) {
   }, [
     order,
     previewBeforePayment,
-    displayLines,
+    invoiceVisibleLines,
     invoiceNumber,
     paymentType,
     selectedBankName,
@@ -1421,11 +1627,23 @@ export default function InvoiceScreen({ route, navigation }) {
     thermalPrinter,
     thermalConnected,
     loadInvoiceLogoDataUriForPrint,
+    route.params?.skipEvidenceModal,
+    route.params?.promptSignatures,
+    openPaymentProofAfterPrint,
+    localCustomerSig,
+    localDriverSig,
+    goToPaymentProofScreen,
+    fromProceedPayment,
+    invoiceLineQtys,
   ]);
 
   const goToHome = useCallback(() => {
     navigation.navigate('MainTabs', { screen: 'Dashboard' });
   }, [navigation]);
+
+  const effectivePaymentSplit = (paymentType === 'split' && paymentSplit)
+    ? paymentSplit
+    : localPaymentSplit;
 
   const handleSaveEvidence = useCallback(async () => {
     const isCreditFlow = !previewBeforePayment && (((effectivePaymentSplit?.credit ?? 0) > 0) || paymentType === 'credit');
@@ -1438,6 +1656,7 @@ export default function InvoiceScreen({ route, navigation }) {
           tax: routeTaxParam,
           deliveryDone: routeDeliveryDone,
           deliveryPayload,
+          invoiceLineQtys,
         });
       } else {
         goToHome();
@@ -1507,49 +1726,50 @@ export default function InvoiceScreen({ route, navigation }) {
     deliveryPayload,
     effectivePaymentSplit,
     paymentType,
+    invoiceLineQtys,
   ]);
 
-  /** Subtotal from display lines (preview uses scaled delivered qtys). */
+  /** Subtotal from visible lines only (excludes zero-qty / cancelled lines). */
   const computedSubtotal = useMemo(() => {
-    if (!displayLines?.length) return 0;
-    return displayLines.reduce((sum, l) => sum + (Number(l.price_subtotal) || 0), 0);
-  }, [displayLines]);
+    if (!invoiceVisibleLines?.length) return 0;
+    return invoiceVisibleLines.reduce((sum, l) => sum + (Number(l.price_subtotal) || 0), 0);
+  }, [invoiceVisibleLines]);
 
   const computedTax = useMemo(() => {
-    if (!displayLines?.length) return 0;
-    return displayLines.reduce(
+    if (!invoiceVisibleLines?.length) return 0;
+    return invoiceVisibleLines.reduce(
       (sum, l) => sum + ((Number(l.price_total) || 0) - (Number(l.price_subtotal) || 0)),
       0
     );
-  }, [displayLines]);
+  }, [invoiceVisibleLines]);
 
   const displaySubtotal = useMemo(() => {
-    if (previewBeforePayment && routeSubtotalParam != null) {
+    if ((previewBeforePayment || fromProceedPayment) && routeSubtotalParam != null) {
       const n = Number(routeSubtotalParam);
       if (Number.isFinite(n)) return n;
     }
     return (order?.amount_untaxed != null && order.amount_untaxed !== 0)
       ? order.amount_untaxed
       : computedSubtotal;
-  }, [previewBeforePayment, routeSubtotalParam, order?.amount_untaxed, computedSubtotal]);
+  }, [previewBeforePayment, fromProceedPayment, routeSubtotalParam, order?.amount_untaxed, computedSubtotal]);
 
   const displayTax = useMemo(() => {
-    if (previewBeforePayment && routeTaxParam != null) {
+    if ((previewBeforePayment || fromProceedPayment) && routeTaxParam != null) {
       const n = Number(routeTaxParam);
       if (Number.isFinite(n)) return n;
     }
     return (order?.amount_tax != null && order.amount_tax !== 0)
       ? order.amount_tax
       : computedTax;
-  }, [previewBeforePayment, routeTaxParam, order?.amount_tax, computedTax]);
+  }, [previewBeforePayment, fromProceedPayment, routeTaxParam, order?.amount_tax, computedTax]);
 
   const displayTotal = useMemo(() => {
-    if (previewBeforePayment && routeTotalParam != null) {
+    if ((previewBeforePayment || fromProceedPayment) && routeTotalParam != null) {
       const n = Number(routeTotalParam);
       if (Number.isFinite(n)) return n;
     }
     return order?.amount_total ?? routeTotalParam ?? (displaySubtotal + displayTax);
-  }, [previewBeforePayment, routeTotalParam, order?.amount_total, displaySubtotal, displayTax]);
+  }, [previewBeforePayment, fromProceedPayment, routeTotalParam, order?.amount_total, displaySubtotal, displayTax]);
 
   const navigateToProceedPayment = useCallback(() => {
     navigation.navigate('ProceedPayment', {
@@ -1559,12 +1779,18 @@ export default function InvoiceScreen({ route, navigation }) {
       tax: displayTax,
       deliveryDone: routeDeliveryDone,
       deliveryPayload,
+      invoiceLineQtys,
     });
-  }, [navigation, saleOrderId, displayTotal, displaySubtotal, displayTax, routeDeliveryDone, deliveryPayload]);
-
-  const effectivePaymentSplit = (paymentType === 'split' && paymentSplit)
-    ? paymentSplit
-    : localPaymentSplit;
+  }, [
+    navigation,
+    saleOrderId,
+    displayTotal,
+    displaySubtotal,
+    displayTax,
+    routeDeliveryDone,
+    deliveryPayload,
+    invoiceLineQtys,
+  ]);
 
   const paymentLabel = (() => {
     if (previewBeforePayment) {
@@ -1655,13 +1881,13 @@ export default function InvoiceScreen({ route, navigation }) {
             <Text style={[styles.th, styles.thTax]}>Unit Price</Text>
             <Text style={[styles.th, styles.thTotal]}>Total</Text>
           </View>
-          {(displayLines || []).map((line, index) => {
+          {(invoiceVisibleLines || []).map((line, index) => {
             const lineTotal = Number(line.price_total) || 0;
             const lineUnitPrice = Number(line.price_unit) || 0;
             return (
               <View
                 key={line.id}
-                style={[styles.tableRow, index === (displayLines?.length ?? 0) - 1 && styles.tableRowLast]}
+                style={[styles.tableRow, index === (invoiceVisibleLines?.length ?? 0) - 1 && styles.tableRowLast]}
               >
                 <Text style={[styles.td, styles.tdNo]}>{index + 1}</Text>
                 <Text style={[styles.td, styles.tdProduct]} numberOfLines={2}>
@@ -1783,18 +2009,92 @@ export default function InvoiceScreen({ route, navigation }) {
       >
         <View style={styles.printerPickBackdrop}>
           <View style={styles.printerPickSheet}>
-            <View style={styles.printerPickHeader}>
-              <Text style={styles.printerPickTitle}>Paired Bluetooth printers</Text>
+            <View style={{ position: 'relative', paddingTop: 4, marginBottom: spacing.sm }}>
+              <View style={styles.printerPickHandle} />
               <TouchableOpacity
                 onPress={() => setPrinterModalVisible(false)}
                 hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                style={{ position: 'absolute', right: 0, top: 0 }}
               >
-                <Ionicons name="close" size={26} color={colors.textSecondary} />
+                <Ionicons name="close-circle" size={30} color={colors.textSecondary} />
               </TouchableOpacity>
+            </View>
+            <View style={styles.printerPickHero}>
+              <View style={styles.printerPickIconCircle}>
+                <Ionicons name="bluetooth" size={28} color={colors.primary} />
+              </View>
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={styles.printerPickHeadTitle}>Bluetooth printer</Text>
+                <Text style={styles.printerPickHeadSub}>
+                  Choose a paired device below, connect, then print your invoice from this screen.
+                </Text>
+              </View>
+            </View>
+            <View
+              style={[
+                styles.printerPickStatusPill,
+                {
+                  backgroundColor: thermalConnected
+                    ? `${colors.success ?? '#22c55e'}26`
+                    : thermalPrinter?.address
+                      ? `${colors.warning ?? '#d97706'}26`
+                      : colors.background,
+                  borderWidth: 1,
+                  borderColor: thermalConnected
+                    ? `${colors.success ?? '#22c55e'}55`
+                    : thermalPrinter?.address
+                      ? `${colors.warning ?? '#d97706'}55`
+                      : colors.border,
+                },
+              ]}
+            >
+              <Text
+                style={[
+                  styles.printerPickStatusText,
+                  {
+                    color: thermalConnected
+                      ? colors.success ?? '#15803d'
+                      : thermalPrinter?.address
+                        ? colors.warning ?? '#b45309'
+                        : colors.textSecondary,
+                  },
+                ]}
+              >
+                {thermalConnected
+                  ? `Connected · ${thermalPrinter?.name || 'Printer'}`
+                  : thermalPrinter?.name
+                    ? `Selected · ${thermalPrinter.name} — tap Connect now`
+                    : 'No printer selected — pick one from the list'}
+              </Text>
+            </View>
+            <View style={styles.printerPickActions}>
+              {thermalPrinter?.address && !thermalConnected ? (
+                <TouchableOpacity
+                  style={styles.printerPickPrimaryBtn}
+                  onPress={() => void handleConnectToRongta()}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons name="link" size={20} color="#fff" />
+                  <Text style={styles.printerPickPrimaryBtnText}>Connect now</Text>
+                </TouchableOpacity>
+              ) : null}
+              <TouchableOpacity
+                style={styles.printerPickGhostBtn}
+                onPress={() => {
+                  setPrinterModalVisible(false);
+                  navigation.navigate('BluetoothPrinter');
+                }}
+                activeOpacity={0.85}
+              >
+                <Text style={styles.printerPickGhostBtnText}>Full Bluetooth settings</Text>
+              </TouchableOpacity>
+            </View>
+            <View style={[styles.printerPickHeader, { marginTop: spacing.xs }]}>
+              <Text style={styles.printerPickTitle}>Paired devices</Text>
             </View>
             <TouchableOpacity
               style={[styles.thermalPrinterBtn, { alignSelf: 'flex-start', marginBottom: spacing.sm }]}
-              onPress={openThermalPrinterPicker}
+              onPress={() => void openThermalPrinterPicker()}
               disabled={loadingPairedPrinters}
             >
               {loadingPairedPrinters ? (
@@ -1864,6 +2164,32 @@ export default function InvoiceScreen({ route, navigation }) {
           onPress={() => {
             if (previewBeforePayment) {
               navigateToProceedPayment();
+              return;
+            }
+            if (openPaymentProofAfterPrint) {
+              const hasCust = localCustomerSig && String(localCustomerSig).trim() !== '';
+              const hasDrv = localDriverSig && String(localDriverSig).trim() !== '';
+              if (!hasCust || !hasDrv) {
+                Alert.alert(
+                  'Signatures required',
+                  'Add customer and driver signatures before continuing.'
+                );
+                setShowSignatureCaptureModal(true);
+                return;
+              }
+              goToPaymentProofScreen();
+              return;
+            }
+            if (skipEvidenceModal) {
+              if (promptSignatures) {
+                const hasCust = localCustomerSig && String(localCustomerSig).trim() !== '';
+                const hasDrv = localDriverSig && String(localDriverSig).trim() !== '';
+                if (!hasCust || !hasDrv) {
+                  setShowSignatureCaptureModal(true);
+                  return;
+                }
+              }
+              goToHome();
               return;
             }
             setShowEvidenceModal(true);
@@ -1939,6 +2265,170 @@ export default function InvoiceScreen({ route, navigation }) {
       </Modal>
 
       <Modal
+        visible={showSignatureCaptureModal}
+        animationType="slide"
+        transparent
+        onRequestClose={() => {
+          setShowSignatureCaptureModal(false);
+        }}
+      >
+        <View style={styles.sigCapOverlay}>
+          <View style={[styles.sigCapCard, { backgroundColor: colors.surface }]}>
+            <ScrollView
+              contentContainerStyle={{ paddingBottom: spacing.xl }}
+              keyboardShouldPersistTaps="handled"
+              nestedScrollEnabled
+              scrollEnabled={signatureModalScrollEnabled}
+              showsVerticalScrollIndicator={false}
+            >
+            <View style={styles.sigCapTopRow}>
+              <TouchableOpacity
+                style={styles.sigCapSkip}
+                onPress={() => {
+                  void persistCapturedSignatures('', '');
+                }}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Text style={styles.sigCapSkipText}>Skip</Text>
+              </TouchableOpacity>
+              <Text style={styles.sigCapTitle}>Signatures</Text>
+              <View style={{ width: 48 }} />
+            </View>
+            <Text style={styles.sigCapHint}>
+              {signaturesMandatory
+                ? 'For a complete record, add both signatures before printing. You can tap Skip if the customer cannot sign now — you can still print after.'
+                : 'Sign below or tap Skip to continue without signatures.'}
+            </Text>
+
+            <View style={styles.sigCapSection}>
+              <Text style={styles.sigCapSectionHeader}>Customer signature</Text>
+              <Text style={styles.sigCapSectionHint}>Sign here first.</Text>
+              <View
+                style={styles.sigCapCanvasWrap}
+                onTouchStart={() => setSignatureModalScrollEnabled(false)}
+                onTouchEnd={() => setSignatureModalScrollEnabled(true)}
+                onTouchCancel={() => setSignatureModalScrollEnabled(true)}
+              >
+                <SignatureCanvas
+                  ref={captureCustomerRef}
+                  onOK={(dataUrl) => {
+                    setCaptureCustomerSig(dataUrl);
+                    setCaptureCustomerSaved(true);
+                    setSignatureModalScrollEnabled(true);
+                  }}
+                  onEmpty={() => {
+                    setSignatureModalScrollEnabled(true);
+                    Alert.alert('Signature', 'Please sign the customer area first.');
+                  }}
+                  descriptionText=""
+                  clearText=""
+                  confirmText=""
+                  penColor="#000000"
+                  backgroundColor="rgba(255,255,255,1)"
+                  style={styles.sigCapCanvas}
+                  autoClear={false}
+                  webStyle={`.m-signature-pad--footer { display: none !important; }`}
+                />
+              </View>
+              <View style={styles.sigCapBtnRow}>
+                <TouchableOpacity
+                  style={styles.sigCapBtn}
+                  onPress={() => {
+                    captureCustomerRef.current?.clearSignature();
+                    setCaptureCustomerSig(null);
+                    setCaptureCustomerSaved(false);
+                  }}
+                >
+                  <Text style={styles.sigCapBtnText}>Clear</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.sigCapBtn, styles.sigCapBtnPrimary]}
+                  onPress={() => {
+                    setSignatureModalScrollEnabled(true);
+                    captureCustomerRef.current?.readSignature();
+                  }}
+                >
+                  <Text style={styles.sigCapBtnTextLight}>{captureCustomerSaved ? 'Saved' : 'Save customer'}</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            <View style={styles.sigCapSection}>
+              <Text style={styles.sigCapSectionHeader}>Driver signature</Text>
+              <Text style={styles.sigCapSectionHint}>Sign here next.</Text>
+              <View
+                style={styles.sigCapCanvasWrap}
+                onTouchStart={() => setSignatureModalScrollEnabled(false)}
+                onTouchEnd={() => setSignatureModalScrollEnabled(true)}
+                onTouchCancel={() => setSignatureModalScrollEnabled(true)}
+              >
+                <SignatureCanvas
+                  ref={captureDriverRef}
+                  onOK={(dataUrl) => {
+                    setCaptureDriverSig(dataUrl);
+                    setCaptureDriverSaved(true);
+                    setSignatureModalScrollEnabled(true);
+                  }}
+                  onEmpty={() => {
+                    setSignatureModalScrollEnabled(true);
+                    Alert.alert('Signature', 'Please sign the driver area first.');
+                  }}
+                  descriptionText=""
+                  clearText=""
+                  confirmText=""
+                  penColor="#000000"
+                  backgroundColor="rgba(255,255,255,1)"
+                  style={styles.sigCapCanvas}
+                  autoClear={false}
+                  webStyle={`.m-signature-pad--footer { display: none !important; }`}
+                />
+              </View>
+              <View style={styles.sigCapBtnRow}>
+                <TouchableOpacity
+                  style={styles.sigCapBtn}
+                  onPress={() => {
+                    captureDriverRef.current?.clearSignature();
+                    setCaptureDriverSig(null);
+                    setCaptureDriverSaved(false);
+                  }}
+                >
+                  <Text style={styles.sigCapBtnText}>Clear</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.sigCapBtn, styles.sigCapBtnPrimary]}
+                  onPress={() => {
+                    setSignatureModalScrollEnabled(true);
+                    captureDriverRef.current?.readSignature();
+                  }}
+                >
+                  <Text style={styles.sigCapBtnTextLight}>{captureDriverSaved ? 'Saved' : 'Save driver'}</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            <TouchableOpacity
+              style={styles.sigCapDoneBtn}
+              onPress={() => {
+                if (!captureCustomerSig || !captureDriverSig) {
+                  Alert.alert(
+                    'Signatures',
+                    'Save both customer and driver signatures, or tap Skip.'
+                  );
+                  return;
+                }
+                void persistCapturedSignatures(captureCustomerSig, captureDriverSig);
+              }}
+              activeOpacity={0.88}
+            >
+              <Ionicons name="checkmark-done-outline" size={22} color="#fff" />
+              <Text style={styles.evidenceSaveBtnText}>Save signatures</Text>
+            </TouchableOpacity>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
         visible={showEvidenceModal}
         animationType="slide"
         transparent
@@ -1958,6 +2448,7 @@ export default function InvoiceScreen({ route, navigation }) {
               tax: routeTaxParam,
               deliveryDone: routeDeliveryDone,
               deliveryPayload,
+              invoiceLineQtys,
             });
           } else {
             goToHome();
@@ -2078,6 +2569,7 @@ export default function InvoiceScreen({ route, navigation }) {
                       tax: routeTaxParam,
                       deliveryDone: routeDeliveryDone,
                       deliveryPayload,
+                      invoiceLineQtys,
                     });
                   } else {
                     goToHome();

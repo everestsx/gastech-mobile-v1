@@ -2,7 +2,7 @@
 import { callOdoo, callOdooJson2 } from "./index.service";
 
 /** Fields safe for portal-style users; do not include `barcode` (requires HR Officer in many DBs). */
-const EMPLOYEE_READ_FIELDS = ["id", "name", "image_1920"];
+const EMPLOYEE_READ_FIELDS = ["id", "name", "image_1920", "mobile_phone", "work_phone"];
 
 const CONTEXT = { lang: "en_US" };
 
@@ -56,6 +56,18 @@ export function odooImageToUri(imageField) {
  * @param {object} row — Odoo record (no barcode field required)
  * @param {string} [enteredDriverCode] — value the driver typed (stored as driver id / “password” for session)
  */
+/** Prefer mobile, then work phone — always a string for session / SQLite (never null). */
+function pickEmployeePhone(row) {
+  if (!row) return "";
+  for (const k of ["mobile_phone", "work_phone"]) {
+    const v = row[k];
+    if (v == null || typeof v === "object") continue;
+    const s = String(v).trim();
+    if (s && s.toLowerCase() !== "false") return s;
+  }
+  return "";
+}
+
 export function normalizeEmployee(row, enteredDriverCode = "") {
   if (!row || row.id == null) return null;
   const entered = String(enteredDriverCode || "").trim();
@@ -64,6 +76,7 @@ export function normalizeEmployee(row, enteredDriverCode = "") {
     name: row.name || "",
     barcode: entered,
     imageBase64: row.image_1920 != null && row.image_1920 !== false ? String(row.image_1920) : null,
+    phone: pickEmployeePhone(row),
   };
 }
 

@@ -12,6 +12,7 @@ import {
   Image,
   Modal,
   Alert,
+  Pressable,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -37,6 +38,7 @@ import { spacing, borderRadius } from '../constants/theme';
 import { getProductDisplayName, getGasSizeFromProductName } from '../utils/productDisplay';
 import { getLocalizedCustomerNameFromOrder } from '../utils/customerDisplayName';
 import { getProductImageSource } from '../utils/gasImage';
+import { lineTaxAtQuantity } from '../utils/orderLineTax.js';
 
 function formatCurrency(amount) {
     const n = Number(amount);
@@ -93,6 +95,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
   const [updateError, setUpdateError] = useState(null);
   const [productIdToAvailable, setProductIdToAvailable] = useState({});
   const [productIdToImageUri, setProductIdToImageUri] = useState({});
+  const [showCancelConfirmModal, setShowCancelConfirmModal] = useState(false);
   const [showCancelModal, setShowCancelModal] = useState(false);
   const [cancelReasons, setCancelReasons] = useState([]);
   const [cancelReason, setCancelReason] = useState('');
@@ -330,27 +333,125 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
           marginBottom: spacing.md,
         },
         cancelBannerText: { flex: 1, fontSize: 13, fontWeight: '700', color: colors.error || '#c00' },
+        cancelConfirmBackdrop: {
+          flex: 1,
+          backgroundColor: 'rgba(15, 23, 42, 0.55)',
+          justifyContent: 'center',
+          padding: spacing.lg,
+        },
+        cancelConfirmCard: {
+          backgroundColor: colors.surface,
+          borderRadius: borderRadius.lg,
+          padding: spacing.lg,
+          borderWidth: 1,
+          borderColor: (colors.border || '#e5e7eb') + 'cc',
+          elevation: 8,
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: 4 },
+          shadowOpacity: 0.15,
+          shadowRadius: 12,
+        },
+        cancelConfirmIconWrap: {
+          width: 52,
+          height: 52,
+          borderRadius: 26,
+          backgroundColor: (colors.error || '#dc2626') + '18',
+          alignItems: 'center',
+          justifyContent: 'center',
+          alignSelf: 'center',
+          marginBottom: spacing.sm,
+        },
+        cancelConfirmTitle: {
+          fontSize: 19,
+          fontWeight: '800',
+          color: colors.text,
+          textAlign: 'center',
+          letterSpacing: -0.3,
+        },
+        cancelConfirmMessage: {
+          marginTop: spacing.sm,
+          fontSize: 14,
+          lineHeight: 21,
+          color: colors.textSecondary,
+          textAlign: 'center',
+        },
+        cancelConfirmOrderLabel: {
+          marginTop: spacing.sm,
+          fontSize: 13,
+          fontWeight: '700',
+          color: colors.primary,
+          textAlign: 'center',
+        },
+        cancelConfirmActions: {
+          flexDirection: 'row',
+          gap: spacing.sm,
+          marginTop: spacing.lg,
+        },
+        cancelConfirmBtn: {
+          flex: 1,
+          paddingVertical: 14,
+          alignItems: 'center',
+          justifyContent: 'center',
+          borderRadius: borderRadius.md,
+        },
+        cancelConfirmBtnSecondary: {
+          borderWidth: 1.5,
+          borderColor: colors.border,
+          backgroundColor: colors.background,
+        },
+        cancelConfirmBtnPrimary: {
+          backgroundColor: colors.error || '#dc2626',
+        },
+        cancelConfirmBtnTextSecondary: {
+          fontSize: 15,
+          fontWeight: '700',
+          color: colors.text,
+        },
+        cancelConfirmBtnTextPrimary: {
+          fontSize: 15,
+          fontWeight: '800',
+          color: '#fff',
+        },
         cancelModalOverlay: {
           flex: 1,
-          backgroundColor: 'rgba(0,0,0,0.5)',
+          backgroundColor: 'rgba(15, 23, 42, 0.55)',
           justifyContent: 'center',
           padding: spacing.md,
         },
         cancelModalContent: {
           backgroundColor: colors.surface,
           borderRadius: borderRadius.lg,
-          padding: spacing.md,
+          padding: spacing.lg,
           maxHeight: '88%',
+          borderWidth: 1,
+          borderColor: (colors.primary || '#6366f1') + '2a',
+          elevation: 8,
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: 4 },
+          shadowOpacity: 0.12,
+          shadowRadius: 10,
+        },
+        cancelModalHeaderIcon: {
+          width: 44,
+          height: 44,
+          borderRadius: 22,
+          backgroundColor: (colors.primary || '#6366f1') + '14',
+          alignItems: 'center',
+          justifyContent: 'center',
+          alignSelf: 'center',
+          marginBottom: spacing.sm,
         },
         cancelModalTitle: {
           fontSize: 18,
           fontWeight: '800',
           color: colors.text,
           textAlign: 'center',
+          letterSpacing: -0.2,
         },
         cancelModalHint: {
-          marginTop: 6,
+          marginTop: 8,
           fontSize: 13,
+          lineHeight: 19,
           color: colors.textSecondary,
           textAlign: 'center',
         },
@@ -767,8 +868,8 @@ const validateQuantities = useCallback(() => {
 }, [lines, productIdToAvailable, isDeliveryDone]);
   /**
    * Apply qty updates locally (offline DB) and build sync payload.
-   * - `demandEdit: false` (proceed to payment): do not push SO demand; only delivery (qty_done / stock.move when needed).
-   * - `demandEdit: true` (Modify → Save): push every line whose qty differs from SO demand + stock.move both ways; cap qty_done if demand drops.
+   * - `demandEdit: false` (proceed to payment): do NOT change sale.order.line ordered qty (`product_uom_qty`). Stock moves/lines carry delivery; payload includes `saleOrderLineDeliveredUpdates` for Odoo `qty_delivered` only (after sync validates picking).
+   * - `demandEdit: true` (Modify → Save): user explicitly changes ordered qty → `orderLineUpdates` + stock.move demand.
    * - Uses all open pickings (backorders), not only the first DB row — fixes “only one product updated” when Odoo split transfers.
    */
   const applyQtyDoneAndValidate = useCallback(
@@ -844,6 +945,10 @@ const validateQuantities = useCallback(() => {
           } else if (newVal > currentMoveDemand) {
             await stockMovesDb.updateStockMoveQtyLocal(moveId, newVal);
             moveUpdates.push({ moveId, product_uom_qty: newVal });
+          } else if (newVal === 0 && currentMoveDemand > 0) {
+            /** Cancelled / not delivered: zero demand on stock.move so Odoo does not keep the line waiting (qty_done 0 + demand > 0). */
+            await stockMovesDb.updateStockMoveQtyLocal(moveId, 0);
+            moveUpdates.push({ moveId, product_uom_qty: 0 });
           }
 
           if (!demandEdit) {
@@ -879,9 +984,21 @@ const validateQuantities = useCallback(() => {
         }
       }
 
+      /** Sync writes `qty_delivered` on SO lines after picking — never overwrite ordered qty from delivery flow. */
+      const saleOrderLineDeliveredUpdates = [];
+      if (!demandEdit) {
+        for (let i = 0; i < lines.length; i++) {
+          const l = lines[i];
+          const newVal = effectiveQtys[i] != null ? Number(effectiveQtys[i]) : Number(l.newQty);
+          if (l.id == null || !Number.isFinite(Number(newVal))) continue;
+          saleOrderLineDeliveredUpdates.push({ lineId: l.id, qty_delivered: Number(newVal) });
+        }
+      }
+
       const payload = {
         saleOrderId: order.id,
         orderLineUpdates,
+        saleOrderLineDeliveredUpdates,
         pickings: pickingsOut,
       };
       if (pickingsOut[0]?.pickingId != null) {
@@ -931,6 +1048,7 @@ const getStockWarning = useCallback((lineId) => {
       });
       const needsDeliveryQueue =
         (payload.orderLineUpdates?.length > 0) ||
+        (payload.saleOrderLineDeliveredUpdates?.length > 0) ||
         (payload.pickings || []).some(
           (b) =>
             (b.moveUpdates?.length > 0) ||
@@ -938,11 +1056,12 @@ const getStockWarning = useCallback((lineId) => {
             (b.deliveryLines?.length > 0)
         );
       if (needsDeliveryQueue) {
+        const payloadWithHold = { ...payload, holdUntilPayment: true };
         const existing = await syncQueueDb.getPendingDeliveryItemBySaleOrderId(order.id);
         if (existing) {
-          await syncQueueDb.updateQueueItemPayload(existing.id, payload);
+          await syncQueueDb.updateQueueItemPayload(existing.id, payloadWithHold);
         } else {
-          await syncQueueDb.enqueue(syncQueueDb.ACTION_DELIVERY, payload);
+          await syncQueueDb.enqueue(syncQueueDb.ACTION_DELIVERY, payloadWithHold);
         }
       }
       await loadDetails();
@@ -958,20 +1077,19 @@ const getStockWarning = useCallback((lineId) => {
 
   const handleOpenCancelFlow = useCallback(() => {
     if (String(order?.state || '') === 'cancel') return;
-    Alert.alert(
-      'Cancel this order?',
-      'This will cancel the sale order in Odoo and remove it from the active delivery flow. The action cannot be undone.',
-      [
-        { text: 'Keep order', style: 'cancel' },
-        { text: 'Continue', style: 'destructive', onPress: () => setShowCancelModal(true) },
-      ]
-    );
+    setShowCancelConfirmModal(true);
   }, [order?.state]);
+
+  const openCancelReasonModal = useCallback(() => {
+    setShowCancelConfirmModal(false);
+    setCancelError(null);
+    setShowCancelModal(true);
+  }, []);
 
   const handleCancelOrder = useCallback(async () => {
     if (!order?.id || canceling || String(order?.state || '') === 'cancel') return;
     if (!cancelReason) {
-      Alert.alert('Select a reason', 'Please choose a cancellation reason before continuing.');
+      Alert.alert('Choose a reason', 'Please pick one reason from the list before you cancel the order.');
       return;
     }
 
@@ -1020,18 +1138,15 @@ const handleProceedToPayment = useCallback(async () => {
       await updateVehicleInventory(effectiveQtys);
     }
 
-    const subtotal =
-      !noChanges && lines.length
-        ? lines.reduce((sum, l) => sum + (Number(l.price_subtotal) || 0), 0)
-        : lines.reduce((sum, l) => sum + (Number(l.newQty) || 0) * (Number(l.price_unit) || 0), 0);
-    const tax =
-      !noChanges && lines.length
-        ? lines.reduce((sum, l) => sum + ((Number(l.price_total) || 0) - (Number(l.price_subtotal) || 0)), 0)
-        : lines.reduce((sum, l) => {
-            const lineTax = (Number(l.price_total) || 0) - (Number(l.price_subtotal) || 0);
-            const origQty = Number(l.product_uom_qty) || 1;
-            return sum + (origQty ? (lineTax / origQty) * (Number(l.newQty) || 0) : 0);
-          }, 0);
+    const subtotal = noChanges
+      ? lines.reduce((sum, l) => sum + (Number(l.price_subtotal) || 0), 0)
+      : lines.reduce((sum, l) => sum + (Number(l.newQty) || 0) * (Number(l.price_unit) || 0), 0);
+    const tax = noChanges
+      ? lines.reduce(
+          (sum, l) => sum + ((Number(l.price_total) || 0) - (Number(l.price_subtotal) || 0)),
+          0
+        )
+      : lines.reduce((sum, l) => sum + lineTaxAtQuantity(l, l.newQty), 0);
     const total = subtotal + tax;
 
     const invoiceLineQtys = lines.map((l, i) => ({
@@ -1039,14 +1154,13 @@ const handleProceedToPayment = useCallback(async () => {
       qty: Number(effectiveQtys[i] != null ? effectiveQtys[i] : l.newQty) || 0,
     }));
 
-    navigation.navigate('InvoiceScreen', {
+    navigation.navigate('ProceedPayment', {
       saleOrderId: order.id,
       total: total ?? order.amount_total,
       subtotal,
       tax,
       deliveryDone: true,
       deliveryPayload,
-      previewBeforePayment: true,
       invoiceLineQtys,
     });
   } catch (err) {
@@ -1082,13 +1196,11 @@ const handleProceedToPayment = useCallback(async () => {
   const computedTax = useMemo(() => {
     if (!lines.length) return Number(order?.amount_tax) || 0;
     const sum = lines.reduce((s, l) => {
-      const lineTax = (Number(l.price_total) || 0) - (Number(l.price_subtotal) || 0);
       const qtyChanged = Number(l.newQty) !== Number(l.product_uom_qty);
       if (qtyChanged) {
-        const origQty = Number(l.product_uom_qty) || 1;
-        return s + (origQty ? (lineTax / origQty) * (Number(l.newQty) || 0) : 0);
+        return s + lineTaxAtQuantity(l, l.newQty);
       }
-      return s + lineTax;
+      return s + ((Number(l.price_total) || 0) - (Number(l.price_subtotal) || 0));
     }, 0);
     return sum > 0 ? sum : (Number(order?.amount_tax) || 0);
   }, [lines, order?.amount_tax]);
@@ -1411,13 +1523,12 @@ const handleProceedToPayment = useCallback(async () => {
                   lineId: l.id,
                   qty: Number(l.newQty) || 0,
                 }));
-                navigation.navigate('InvoiceScreen', {
+                navigation.navigate('ProceedPayment', {
                   saleOrderId: order.id,
                   total: computedTotal,
                   subtotal: computedSubtotal,
                   tax: computedTax,
                   deliveryDone: true,
-                  previewBeforePayment: true,
                   invoiceLineQtys,
                 });
               } else {
@@ -1446,16 +1557,62 @@ const handleProceedToPayment = useCallback(async () => {
       </View>
 
       <Modal
+        visible={showCancelConfirmModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowCancelConfirmModal(false)}
+      >
+        <Pressable
+          style={styles.cancelConfirmBackdrop}
+          onPress={() => setShowCancelConfirmModal(false)}
+        >
+          <Pressable style={styles.cancelConfirmCard} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.cancelConfirmIconWrap}>
+              <Ionicons name="warning-outline" size={28} color={colors.error || '#dc2626'} />
+            </View>
+            <Text style={styles.cancelConfirmTitle}>Cancel this order?</Text>
+            <Text style={styles.cancelConfirmMessage}>
+              The order will be closed and taken off your delivery list. If the customer still needs a delivery, they will need a new order. You can&apos;t undo this step.
+            </Text>
+            {order?.name ? (
+              <Text style={styles.cancelConfirmOrderLabel} numberOfLines={1}>
+                {order.name}
+              </Text>
+            ) : null}
+            <View style={styles.cancelConfirmActions}>
+              <TouchableOpacity
+                style={[styles.cancelConfirmBtn, styles.cancelConfirmBtnSecondary]}
+                onPress={() => setShowCancelConfirmModal(false)}
+                activeOpacity={0.85}
+              >
+                <Text style={styles.cancelConfirmBtnTextSecondary}>Keep order</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.cancelConfirmBtn, styles.cancelConfirmBtnPrimary]}
+                onPress={openCancelReasonModal}
+                activeOpacity={0.85}
+              >
+                <Text style={styles.cancelConfirmBtnTextPrimary}>Continue</Text>
+              </TouchableOpacity>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <Modal
         visible={showCancelModal}
         transparent
         animationType="slide"
         onRequestClose={() => setShowCancelModal(false)}
       >
-        <View style={styles.cancelModalOverlay}>
-          <View style={styles.cancelModalContent}>
-            <Text style={styles.cancelModalTitle}>Cancel order</Text>
+        <Pressable style={styles.cancelModalOverlay} onPress={() => setShowCancelModal(false)}>
+          <Pressable style={styles.cancelModalContent} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.cancelModalHeaderIcon}>
+              <Ionicons name="clipboard-outline" size={22} color={colors.primary} />
+            </View>
+            <Text style={styles.cancelModalTitle}>Reason for cancellation</Text>
             <Text style={styles.cancelModalHint}>
-              Choose a reason for this cancellation. The order will be cancelled in Odoo and removed from the active flow.
+              Tap the reason that fits best. The order will be closed and removed from your list.
             </Text>
 
             <View style={styles.cancelModalBody}>
@@ -1522,8 +1679,8 @@ const handleProceedToPayment = useCallback(async () => {
                 )}
               </TouchableOpacity>
             </View>
-          </View>
-        </View>
+          </Pressable>
+        </Pressable>
       </Modal>
     </KeyboardAvoidingView>
   );

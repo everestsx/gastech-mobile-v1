@@ -9,10 +9,8 @@ import {
   ScrollView,
   TextInput,
   Image,
-  Modal,
 } from 'react-native';
 import { CommonActions } from '@react-navigation/native';
-import SignatureCanvas from 'react-native-signature-canvas';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
@@ -30,16 +28,28 @@ import { JOURNAL_CODE_CASH, JOURNAL_CODE_CHEQUE } from '../constants/journals';
 import { SRI_LANKA_BANKS } from '../constants/sriLankaBanks';
 import { formatAmount } from '../utils/format';
 import { getOrAssignInvoiceNumber } from '../utils/invoiceNumber';
+import { empty, sqliteIntegerFkOrNull, num, odooRecordId } from '../database/dbHelpers.js';
 
 const PAYMENT_CASH = 'cash';
 const PAYMENT_CHECK = 'cheque';
 const PAYMENT_CREDIT = 'credit';
 
+function userFacingPaymentError(err) {
+  const raw = String(err?.message || err || '').trim();
+  if (
+    /runAsync|Kotlin|object Object|SQLite|sqlite|SQLITE_/i.test(raw) ||
+    (raw.includes('convert') && raw.includes('type'))
+  ) {
+    return 'We could not save this payment on your phone (data error). Please try again once. If it keeps happening, restart the app or contact support.';
+  }
+  return raw || 'Could not save your payment. Please try again.';
+}
+
 export default function ProceedPaymentScreen({ route, navigation }) {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const { setHideSyncIndicator } = useSync();
-  const { saleOrderId, total, subtotal, tax, deliveryDone, deliveryPayload } = route.params || {};
+  const { saleOrderId, total, subtotal, tax, deliveryDone, deliveryPayload, invoiceLineQtys } = route.params || {};
   const orderTotal = Number(total) || 0;
   // Keep payments consistent with 2-decimal currency precision to avoid tiny float remainders
   // turning a fully-paid order into a "partial" one.
@@ -61,14 +71,6 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   const [bankSearchQuery, setBankSearchQuery] = useState('');
   const cashInputRef = useRef(null);
   const checkInputRef = useRef(null);
-  const customerSignatureRef = useRef(null);
-  const driverSignatureRef = useRef(null);
-  const [showSignatureModal, setShowSignatureModal] = useState(false);
-  const [customerSignatureData, setCustomerSignatureData] = useState(null);
-  const [driverSignatureData, setDriverSignatureData] = useState(null);
-  const [customerSignatureSaved, setCustomerSignatureSaved] = useState(false);
-  const [driverSignatureSaved, setDriverSignatureSaved] = useState(false);
-  const [signatureModalScrollEnabled, setSignatureModalScrollEnabled] = useState(true);
   const [editingField, setEditingField] = useState(null);
 
   // Use only vehicle-specific journals for Cash and Cheque (cash_journal_id / check_journal_id from fleet.vehicle).
@@ -191,8 +193,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
     !paymentAmounts.overpaid &&
     Math.abs(paymentAmounts.total - orderTotalRounded) <= 0.01 &&
     (cashPayAmount <= 0 || vehicleJournalIds.cashJournalId != null) &&
-    (chequePayAmount <= 0 || (vehicleJournalIds.chequeJournalId != null && checkNumberTrimmed !== '' && selectedLocalBankId != null)) &&
-    (creditAmountNum <= 0 || true);
+    (chequePayAmount <= 0 || (vehicleJournalIds.chequeJournalId != null && checkNumberTrimmed !== '' && selectedLocalBankId != null));
 
   const canProceed = paymentComplete;
 
@@ -296,17 +297,14 @@ export default function ProceedPaymentScreen({ route, navigation }) {
     });
   }, []);
 
-  const handleProceed = async (custSigData = null, drvSigData = null) => {
+  const handleProceed = async () => {
     if (!canProceed) return;
-    const custSig = custSigData ?? customerSignatureData;
-    const drvSig = drvSigData ?? driverSignatureData;
-    if (!custSig || !drvSig) {
-      Alert.alert('Error', 'Both customer and driver signatures are required.');
-      return;
-    }
+    /** Signatures are captured on Invoice after payment. */
+    const custSig = '';
+    const drvSig = '';
     // Use only logged-in vehicle's cash_journal_id and check_journal_id (no default/fallback journals).
-    const cashJournalId = vehicleJournalIds.cashJournalId ?? null;
-    const checkJournalId = vehicleJournalIds.chequeJournalId ?? null;
+    const cashJournalId = sqliteIntegerFkOrNull(vehicleJournalIds.cashJournalId);
+    const checkJournalId = sqliteIntegerFkOrNull(vehicleJournalIds.chequeJournalId);
     const needsCash = cashPayAmount > 0 && cashJournalId != null;
     const needsCheck = chequePayAmount > 0 && checkJournalId != null;
     const needsCredit = creditAmountNum > 0 && selectedPaymentMethods.includes(PAYMENT_CREDIT);
@@ -317,27 +315,30 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       const data = await getSaleOrderDetailsFromDB(saleOrderId);
       const orderInfo = data?.order;
       if (!orderInfo) throw new Error('Sale order not found');
-      const partnerId = Array.isArray(orderInfo.partner_id)
-        ? orderInfo.partner_id[0]
-        : orderInfo.partner_id;
+      const partnerId = odooRecordId(orderInfo.partner_id);
       const orderName = orderInfo.name ?? `Order ${saleOrderId}`;
       const invoiceNumber = await getOrAssignInvoiceNumber(saleOrderId);
 
       const soId = Number(saleOrderId);
 
-      // Enqueue delivery and mark picking done only after payment is completed (not when user only tapped "Proceed to Payment").
-      const hasPickingsToSync =
+      // Enqueue delivery (ordered-qty edits, stock moves, qty_delivered hints, validate) after payment.
+      const needsDeliverySync =
         deliveryPayload &&
         deliveryPayload.saleOrderId != null &&
-        ((Array.isArray(deliveryPayload.pickings) && deliveryPayload.pickings.length > 0) ||
+        ((Array.isArray(deliveryPayload.orderLineUpdates) && deliveryPayload.orderLineUpdates.length > 0) ||
+          (Array.isArray(deliveryPayload.saleOrderLineDeliveredUpdates) &&
+            deliveryPayload.saleOrderLineDeliveredUpdates.length > 0) ||
+          (Array.isArray(deliveryPayload.pickings) && deliveryPayload.pickings.length > 0) ||
           deliveryPayload.pickingId != null);
 
-      if (hasPickingsToSync) {
+      if (needsDeliverySync) {
+        const releasedPayload = { ...deliveryPayload };
+        delete releasedPayload.holdUntilPayment;
         const existingDelivery = await syncQueueDb.getPendingDeliveryItemBySaleOrderId(soId);
         if (existingDelivery) {
-          await syncQueueDb.updateQueueItemPayload(existingDelivery.id, deliveryPayload);
+          await syncQueueDb.updateQueueItemPayload(existingDelivery.id, releasedPayload);
         } else {
-          await syncQueueDb.enqueue(syncQueueDb.ACTION_DELIVERY, deliveryPayload);
+          await syncQueueDb.enqueue(syncQueueDb.ACTION_DELIVERY, releasedPayload);
         }
         if (Array.isArray(deliveryPayload.pickings) && deliveryPayload.pickings.length > 0) {
           for (const b of deliveryPayload.pickings) {
@@ -397,16 +398,21 @@ export default function ProceedPaymentScreen({ route, navigation }) {
 
       const queuePayload = {
         saleOrderId: soId,
-        partnerId,
-        orderName,
-        invoiceNumber,
+        partnerId: num(partnerId),
+        orderName: empty(orderName),
+        invoiceNumber: empty(invoiceNumber),
         total: orderTotalRounded,
-        payments,
+        payments: payments.map((p) => ({
+          type: String(p.type || ''),
+          amount: num(p.amount),
+          journalId: sqliteIntegerFkOrNull(p.journalId),
+          checkNumber: p.type === 'check' ? empty(p.checkNumber) : '',
+        })),
         paymentDate: paymentDateStr,
-        chequeBankName: needsCheck ? selectedLocalBank?.name : undefined,
-        checkNumber: needsCheck ? (checkNumberTrimmed || undefined) : undefined,
-        driverEmployeeId,
-        porterEmployeeIds,
+        chequeBankName: needsCheck ? empty(selectedLocalBank?.name) : '',
+        checkNumber: needsCheck ? empty(checkNumberTrimmed) : '',
+        driverEmployeeId: driverEmployeeId != null && Number.isFinite(driverEmployeeId) ? driverEmployeeId : 0,
+        porterEmployeeIds: Array.isArray(porterEmployeeIds) ? porterEmployeeIds : [],
       };
       const existingPending = await syncQueueDb.getPendingPaymentItemBySaleOrderId(soId);
       if (existingPending) {
@@ -414,11 +420,12 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         console.log(`[Payment] Updated existing pending payment for SO ${saleOrderId} (one queue item per order to avoid duplicates).`);
       } else {
         await syncQueueDb.enqueue(syncQueueDb.ACTION_PAYMENT, queuePayload);
-        console.log(`[Payment] Enqueued payment for SO ${saleOrderId}. Sync will: read proof URIs → base64 → ir.attachment.create → message_post(attachment_ids).`);
+        console.log(`[Payment] Enqueued payment for SO ${saleOrderId}.`);
       }
 
       const primaryPaymentType = needsCredit ? 'credit' : needsCheck ? 'cheque' : 'cash';
-      const creditAmountForDb = primaryPaymentType === 'credit' ? (paymentSplit.credit ?? orderTotal) : null;
+      const creditAmountForDb =
+        primaryPaymentType === 'credit' ? Number(paymentSplit.credit ?? orderTotalRounded) || 0 : 0;
       await saleOrdersDb.updateSaleOrderPaymentTypeLocal(saleOrderId, primaryPaymentType, creditAmountForDb);
 
       const amountUntaxed = orderInfo.amount_untaxed != null ? Number(orderInfo.amount_untaxed) : orderTotal;
@@ -434,12 +441,12 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         driver_signature_data: drvSig,
       });
       const paymentRows = payments.map((p) => ({
-        sale_order_id: soId,
-        payment_type: p.type === 'check' ? 'cheque' : p.type,
-        amount: p.amount,
-        journal_id: p.journalId ?? null,
-        check_number: p.type === 'check' ? (p.checkNumber || checkNumberTrimmed || '') : '',
-        bank_name: p.type === 'check' ? (selectedLocalBank?.name ?? '') : '',
+        sale_order_id: num(soId),
+        payment_type: empty(p.type === 'check' ? 'cheque' : p.type),
+        amount: num(p.amount),
+        journal_id: sqliteIntegerFkOrNull(p.journalId),
+        check_number: p.type === 'check' ? empty(p.checkNumber || checkNumberTrimmed) : '',
+        bank_name: p.type === 'check' ? empty(selectedLocalBank?.name) : '',
       }));
       console.log('========= REPLACE PAYMENTS FOR INVOICE =========');
       console.log('invoiceId', invoiceId);
@@ -447,37 +454,44 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       console.log('===============================================');
       // TODO: Credit Journal ID is not being set
       await localPaymentsDb.replacePaymentsForInvoice(invoiceId, paymentRows);
+      await saleOrdersDb.updateSaleOrderAmountsFromLines(soId);
 
-      const invoiceParams = {
-        saleOrderId,
-        total,
-        invoiceNumber,
-        paymentType: 'split',
-        paymentSplit,
-        selectedBankId: needsCheck ? checkJournalId : null,
-        selectedBankName: needsCheck ? selectedLocalBank?.name : undefined,
-        chequeBankName: needsCheck ? (selectedLocalBank?.name ?? undefined) : undefined,
-        checkNumber: needsCheck ? (checkNumber || undefined) : undefined,
-        customerSignatureDataUrl: custSig ?? undefined,
-        driverSignatureDataUrl: drvSig ?? undefined,
-      };
-
-      // Reset stack so InvoiceScreen is always on top (visible even if user had navigated away).
+      const creditProofRequired = needsCredit && creditAmountNum > 0;
       navigation.dispatch(
         CommonActions.reset({
           index: 1,
           routes: [
             { name: 'MainTabs' },
-            { name: 'InvoiceScreen', params: invoiceParams },
+            {
+              name: 'InvoiceScreen',
+              params: {
+                saleOrderId,
+                total: orderTotalRounded,
+                invoiceNumber,
+                paymentType: 'split',
+                paymentSplit: {
+                  cash: cashPayAmount,
+                  check: chequePayAmount,
+                  credit: creditAmountNum,
+                },
+                selectedBankName: needsCheck ? empty(selectedLocalBank?.name) : '',
+                chequeBankName: needsCheck ? empty(selectedLocalBank?.name) : '',
+                checkNumber: needsCheck ? empty(checkNumberTrimmed) : '',
+                fromProceedPayment: true,
+                promptSignatures: true,
+                skipEvidenceModal: true,
+                openPaymentProofAfterPrint: true,
+                creditProofRequired,
+                invoiceLineQtys,
+                orderName: empty(orderName),
+              },
+            },
           ],
         })
       );
     } catch (err) {
       console.error(err);
-      Alert.alert(
-        'Error',
-        err?.message || 'Failed to save payment (will sync when online)'
-      );
+      Alert.alert('Payment could not be saved', userFacingPaymentError(err));
     } finally {
       setLoading(false);
     }
@@ -760,91 +774,18 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           textAlign: 'center',
           marginBottom: spacing.sm,
         },
-        signatureModalOverlay: {
-          flex: 1,
-          backgroundColor: 'rgba(0,0,0,0.5)',
-          justifyContent: 'center',
-          padding: spacing.md,
-        },
-        signatureModalContent: {
-          width: '100%',
+        creditProofFollowUpCard: {
+          flexDirection: 'row',
+          alignItems: 'flex-start',
+          gap: spacing.sm,
+          backgroundColor: colors.surface,
           borderRadius: borderRadius.lg,
-          maxHeight: '92%',
-          overflow: 'hidden',
-        },
-        signatureModalScroll: {
-          width: '100%',
-        },
-        signatureModalScrollContent: {
           padding: spacing.md,
-          paddingBottom: spacing.md + insets.bottom,
-        },
-        signatureModalTitle: {
-          fontSize: 18,
-          fontWeight: '700',
-          textAlign: 'center',
-          marginBottom: 4,
-        },
-        signatureModalHint: {
-          fontSize: 13,
-          textAlign: 'center',
           marginBottom: spacing.md,
-        },
-        signatureCanvasWrap: {
-          height: 150,
-          marginBottom: spacing.sm,
-          borderRadius: borderRadius.md,
-          overflow: 'hidden',
           borderWidth: 1,
           borderColor: colors.border,
         },
-        signatureCanvas: {
-          flex: 1,
-          height: 150,
-        },
-        signatureBtnRow: {
-          flexDirection: 'row',
-          gap: spacing.sm,
-          marginBottom: spacing.md,
-        },
-        signatureActionBtn: {
-          flex: 1,
-          paddingVertical: 12,
-          alignItems: 'center',
-          justifyContent: 'center',
-          borderRadius: borderRadius.md,
-        },
-        signatureClearBtn: {
-          borderWidth: 1,
-        },
-        signatureConfirmBtn: {
-          backgroundColor: colors.primary,
-        },
-        signatureConfirmBtnSaved: {
-          backgroundColor: '#2e7d32',
-        },
-        signatureActionBtnText: { fontSize: 15, fontWeight: '600', textAlign: 'center' },
-        signatureSection: {
-          marginBottom: spacing.lg,
-          gap: spacing.sm,
-        },
-        signatureSectionHeader: {
-          fontSize: 15,
-          fontWeight: '700',
-          color: colors.text,
-        },
-        signatureSectionHint: {
-          fontSize: 12,
-          color: colors.textSecondary,
-          marginBottom: spacing.xs,
-        },
-        signatureCancelBtn: {
-          paddingVertical: 12,
-          alignItems: 'center',
-          borderWidth: 1,
-          borderRadius: borderRadius.md,
-        },
-        signatureCancelBtnText: { fontSize: 15, fontWeight: '600' },
+        creditProofFollowUpText: { flex: 1, fontSize: 13, color: colors.textSecondary, lineHeight: 20 },
       }),
     [colors, insets.bottom]
   );
@@ -1091,22 +1032,27 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         </>
       )}
 
-      {selectedPaymentMethods.includes(PAYMENT_CREDIT) && (
+      {selectedPaymentMethods.includes(PAYMENT_CREDIT) && selectedPaymentMethods.length > 0 ? (
         <>
-          <Text style={styles.sectionLabel}>Credit</Text>
           <View style={styles.creditAmountWrap}>
             <Ionicons name="wallet-outline" size={24} color={colors.textSecondary} />
             <Text style={styles.creditAmountHint}>{remainingCreditLabel}</Text>
             <Text style={styles.creditAmountText}> Rs. {formatAmount(creditAmountNum)}</Text>
           </View>
+          <View style={styles.creditProofFollowUpCard}>
+            <Ionicons name="information-circle-outline" size={22} color={colors.primary} style={{ marginTop: 2 }} />
+            <Text style={styles.creditProofFollowUpText}>
+              After you print the invoice, you can add payment proof photos on the last step. For credit, at least one photo is required there before you finish.
+            </Text>
+          </View>
         </>
-      )}
+      ) : null}
 
       <TouchableOpacity
         style={[styles.payBtn, !canProceed && styles.payBtnDisabled]}
         onPress={() => {
           if (!canProceed) return;
-          setShowSignatureModal(true);
+          void handleProceed();
         }}
         disabled={loading || !canProceed}
         activeOpacity={0.8}
@@ -1120,183 +1066,6 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           </>
         )}
       </TouchableOpacity>
-
-      <Modal
-        visible={showSignatureModal}
-        animationType="slide"
-        transparent
-        onRequestClose={() => {
-          setShowSignatureModal(false);
-        }}
-      >
-        <View style={styles.signatureModalOverlay}>
-          <View style={[styles.signatureModalContent, { backgroundColor: colors.surface }]}> 
-            <ScrollView
-              style={styles.signatureModalScroll}
-              contentContainerStyle={styles.signatureModalScrollContent}
-              showsVerticalScrollIndicator={false}
-              keyboardShouldPersistTaps="handled"
-              nestedScrollEnabled
-              scrollEnabled={signatureModalScrollEnabled}
-            >
-              <Text style={[styles.signatureModalTitle, { color: colors.text }]}>Confirm signatures</Text>
-              <Text style={[styles.signatureModalHint, { color: colors.textSecondary }]}>Customer and driver sign in the two boxes below, then tap Confirm Payment.</Text>
-
-              <View style={styles.signatureSection}>
-                <Text style={styles.signatureSectionHeader}>Customer signature</Text>
-                <Text style={styles.signatureSectionHint}>Sign here first.</Text>
-                <View
-                  style={styles.signatureCanvasWrap}
-                  onTouchStart={() => setSignatureModalScrollEnabled(false)}
-                  onTouchEnd={() => setSignatureModalScrollEnabled(true)}
-                  onTouchCancel={() => setSignatureModalScrollEnabled(true)}
-                >
-                  <SignatureCanvas
-                    ref={customerSignatureRef}
-                    onOK={(dataUrl) => {
-                      setCustomerSignatureData(dataUrl);
-                      setCustomerSignatureSaved(true);
-                      setSignatureModalScrollEnabled(true);
-                    }}
-                    onEmpty={() => {
-                      setSignatureModalScrollEnabled(true);
-                      Alert.alert('Signature required', 'Please sign the customer signature area first.');
-                    }}
-                    descriptionText=""
-                    clearText=""
-                    confirmText=""
-                    penColor="#000000"
-                    backgroundColor="rgba(255,255,255,1)"
-                    style={styles.signatureCanvas}
-                    autoClear={false}
-                    webStyle={`.m-signature-pad--footer { display: none !important; }`}
-                  />
-                </View>
-                <View style={styles.signatureBtnRow}>
-                  <TouchableOpacity
-                    style={[styles.signatureActionBtn, styles.signatureClearBtn, { borderColor: colors.border }]}
-                    onPress={() => {
-                      customerSignatureRef.current?.clearSignature();
-                      setCustomerSignatureData(null);
-                      setCustomerSignatureSaved(false);
-                    }}
-                    activeOpacity={0.8}
-                  >
-                    <Text style={[styles.signatureActionBtnText, { color: colors.textSecondary }]}>Clear</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[
-                      styles.signatureActionBtn,
-                      styles.signatureConfirmBtn,
-                      customerSignatureSaved && styles.signatureConfirmBtnSaved,
-                    ]}
-                    onPress={() => {
-                      setSignatureModalScrollEnabled(true);
-                      customerSignatureRef.current?.readSignature();
-                    }}
-                    activeOpacity={0.8}
-                  >
-                    <Text style={[styles.signatureActionBtnText, { color: '#fff' }]}>{customerSignatureSaved ? 'Saved' : 'Save customer'}</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-
-              <View style={styles.signatureSection}>
-                <Text style={styles.signatureSectionHeader}>Driver signature</Text>
-                <Text style={styles.signatureSectionHint}>Sign here next.</Text>
-                <View
-                  style={styles.signatureCanvasWrap}
-                  onTouchStart={() => setSignatureModalScrollEnabled(false)}
-                  onTouchEnd={() => setSignatureModalScrollEnabled(true)}
-                  onTouchCancel={() => setSignatureModalScrollEnabled(true)}
-                >
-                  <SignatureCanvas
-                    ref={driverSignatureRef}
-                    onOK={(dataUrl) => {
-                      setDriverSignatureData(dataUrl);
-                      setDriverSignatureSaved(true);
-                      setSignatureModalScrollEnabled(true);
-                    }}
-                    onEmpty={() => {
-                      setSignatureModalScrollEnabled(true);
-                      Alert.alert('Signature required', 'Please sign the driver signature area first.');
-                    }}
-                    descriptionText=""
-                    clearText=""
-                    confirmText=""
-                    penColor="#000000"
-                    backgroundColor="rgba(255,255,255,1)"
-                    style={styles.signatureCanvas}
-                    autoClear={false}
-                    webStyle={`.m-signature-pad--footer { display: none !important; }`}
-                  />
-                </View>
-                <View style={styles.signatureBtnRow}>
-                  <TouchableOpacity
-                    style={[styles.signatureActionBtn, styles.signatureClearBtn, { borderColor: colors.border }]}
-                    onPress={() => {
-                      driverSignatureRef.current?.clearSignature();
-                      setDriverSignatureData(null);
-                      setDriverSignatureSaved(false);
-                    }}
-                    activeOpacity={0.8}
-                  >
-                    <Text style={[styles.signatureActionBtnText, { color: colors.textSecondary }]}>Clear</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[
-                      styles.signatureActionBtn,
-                      styles.signatureConfirmBtn,
-                      driverSignatureSaved && styles.signatureConfirmBtnSaved,
-                    ]}
-                    onPress={() => {
-                      setSignatureModalScrollEnabled(true);
-                      driverSignatureRef.current?.readSignature();
-                    }}
-                    activeOpacity={0.8}
-                  >
-                    <Text style={[styles.signatureActionBtnText, { color: '#fff' }]}>{driverSignatureSaved ? 'Saved' : 'Save driver'}</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-
-              <TouchableOpacity
-                style={[styles.payBtn, { marginTop: spacing.xs }]}
-                onPress={() => {
-                  if (!customerSignatureData || !driverSignatureData) {
-                    Alert.alert('Signatures required', 'Please save both customer and driver signatures before confirming.');
-                    return;
-                  }
-                  setSignatureModalScrollEnabled(true);
-                  setShowSignatureModal(false);
-                  handleProceed(customerSignatureData, driverSignatureData);
-                }}
-                activeOpacity={0.8}
-              >
-                <Ionicons name="checkmark-done-outline" size={22} color="#fff" />
-                <Text style={styles.btnText}>Confirm Payment</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.signatureCancelBtn, { borderColor: colors.border, marginTop: spacing.sm }]}
-                onPress={() => {
-                  setShowSignatureModal(false);
-                  setCustomerSignatureData(null);
-                  setDriverSignatureData(null);
-                  setCustomerSignatureSaved(false);
-                  setDriverSignatureSaved(false);
-                  setSignatureModalScrollEnabled(true);
-                  customerSignatureRef.current?.clearSignature();
-                  driverSignatureRef.current?.clearSignature();
-                }}
-                activeOpacity={0.8}
-              >
-                <Text style={[styles.signatureCancelBtnText, { color: colors.textSecondary }]}>Cancel</Text>
-              </TouchableOpacity>
-            </ScrollView>
-          </View>
-        </View>
-      </Modal>
     </ScrollView>
   );
 }

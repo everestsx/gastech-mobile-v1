@@ -11,6 +11,9 @@ import {
   LayoutAnimation,
   UIManager,
   Image,
+  Modal,
+  Pressable,
+  Linking,
 } from 'react-native';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
@@ -35,6 +38,7 @@ import {
   getOrderLinesByOrderIdsFromDB,
 } from '../services/sync.service';
 import * as localPaymentsDb from '../database/localPayments.js';
+import * as localInvoicesDb from '../database/localInvoices.js';
 import * as syncQueueDb from '../database/syncQueue.js';
 import * as vehicleInventoriesDb from '../database/vehicleInventories.js';
 import {
@@ -42,10 +46,16 @@ import {
   calculateCommissionProgressByProducts,
 } from '../services/commission.service';
 import * as productsDb from '../database/products.js';
+import * as deliveryQtyDb from '../database/deliveryQty.js';
+import * as saleOrderLinesDb from '../database/saleOrderLines.js';
 import DeliveryProgressBarChart from '../components/DeliveryProgressBarChart';
 import SyncHeaderBadge from '../components/SyncHeaderBadge';
 import { useSync } from '../context/SyncContext';
 import { odooImageToUri } from '../services/employee.service';
+import {
+  mergePickingStateBySaleIdFromRows,
+  orderIsDeliveryDoneForProgress,
+} from '../utils/deliveryProgress.js';
 
 // const SHOPS_TARGET = 60;
 // const GAS_TARGET = 6000;
@@ -67,6 +77,38 @@ function formatShort(amount) {
   const n = Number(amount) || 0;
   if (n >= 1000) return `Rs. ${(n / 1000).toFixed(0)}K`;
   return `Rs. ${n}`;
+}
+
+/** Prefer a route named like "high" orders; else route with most orders today; else first cached route. */
+function pickDefaultDashboardRouteId(routesList, todayOrdersList) {
+  const list = routesList || [];
+  const high = list.find((r) => /high/i.test(String(r?.name || '')));
+  if (high?.id != null) return Number(high.id);
+  const counts = {};
+  for (const o of todayOrdersList || []) {
+    const rid = o?.route_id?.[0] ?? o?.route_id;
+    if (rid == null) continue;
+    const n = Number(rid);
+    if (!Number.isFinite(n)) continue;
+    counts[n] = (counts[n] || 0) + 1;
+  }
+  let best = null;
+  let bestC = -1;
+  for (const [k, c] of Object.entries(counts)) {
+    if (c > bestC) {
+      bestC = c;
+      best = Number(k);
+    }
+  }
+  if (best != null) return best;
+  return list[0]?.id != null ? Number(list[0].id) : null;
+}
+
+function safePercentDisplay(part, total) {
+  const p = Number(part);
+  const t = Number(total);
+  if (!Number.isFinite(p) || !Number.isFinite(t) || t <= 0) return 0;
+  return Math.min(100, Math.max(0, Math.round((p / t) * 100)));
 }
 
 /** Local calendar YYYY-MM-DD (avoid UTC day-shift from toISOString()). */
@@ -121,6 +163,11 @@ export default function DashboardScreen({ navigation }) {
   const [showChartDatePicker, setShowChartDatePicker] = useState(false);
   const [chartLineTotalsByOrder, setChartLineTotalsByOrder] = useState({});
   const [chartPickingsBySaleId, setChartPickingsBySaleId] = useState([]);
+  /** Sum of stock.move.line qty_done per sale order (partial delivery counts). */
+  const [qtyDoneBySaleId, setQtyDoneBySaleId] = useState({});
+  const [chartQtyDoneBySaleId, setChartQtyDoneBySaleId] = useState({});
+  /** Sale orders with Odoo qty_delivered > 0 on any line (after sync). */
+  const [backendQtyDeliveredOrderIds, setBackendQtyDeliveredOrderIds] = useState(() => new Set());
   const [paymentSplitsByOrderId, setPaymentSplitsByOrderId] = useState({});
   // Commission state
   const [commissionPlan, setCommissionPlan] = useState(null);
@@ -138,6 +185,9 @@ export default function DashboardScreen({ navigation }) {
 
   // Collection cards: tap to expand one (shows full amount), tap again to collapse
   const [expandedCollectionCard, setExpandedCollectionCard] = useState(null);
+  const [routeOverrideId, setRouteOverrideId] = useState(null);
+  const [routePickerVisible, setRoutePickerVisible] = useState(false);
+  const [profileModal, setProfileModal] = useState(null);
 
   const toggleCollectionCard = useCallback((key) => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
@@ -164,27 +214,35 @@ export default function DashboardScreen({ navigation }) {
       const vehicleId = user?.isAdmin === false ? user.vehicleId : null;
       const data = await getCachedOrders(vehicleId);
       setOrders(Array.isArray(data) ? data : []);
+      const allCachedOrderIds = (Array.isArray(data) ? data : [])
+        .map((o) => Number(o?.id))
+        .filter((id) => Number.isFinite(id));
+      const backendDeliveredSet =
+        allCachedOrderIds.length > 0
+          ? await saleOrderLinesDb.getSaleOrderIdsWithPositiveQtyDelivered(allCachedOrderIds)
+          : new Set();
+      setBackendQtyDeliveredOrderIds(backendDeliveredSet);
       const imageMap = await productsDb.getProductImageUriMap();
       setProductIdToImageUri(imageMap || {});
       const today = formatLocalDate(new Date());
       const todayOrders = (Array.isArray(data) ? data : []).filter((o) => getOrderDateForSyncMode(o).startsWith(today));
       console.log('todayOrders', todayOrders);
       const orderIds = todayOrders.map((o) => o.id);
-      const [totals, pickings, orderLines, splits] = await Promise.all([
+      const [totals, pickings, orderLines, splits, qtyDoneMap] = await Promise.all([
         getOrderLineTotalsFromDB(todayOrders),
         orderIds.length ? getPickingsBySaleIdsFromDB(orderIds) : Promise.resolve([]),
         orderIds.length ? getOrderLinesByOrderIdsFromDB(orderIds) : Promise.resolve([]),
         orderIds.length ? localPaymentsDb.getPaymentSplitsBySaleOrderIds(orderIds) : Promise.resolve({}),
+        orderIds.length ? deliveryQtyDb.getTotalQtyDoneBySaleOrderIds(orderIds) : Promise.resolve({}),
       ]);
       setLineTotalsByOrder(totals || {});
       setPickingsBySaleId(pickings || []);
+      setQtyDoneBySaleId(qtyDoneMap || {});
       setTodayOrderLines(orderLines || []);
       setPaymentSplitsByOrderId(splits || {});
 
-      // Dashboard top indicators:
-      // 1) Pending orders (not yet invoiced/completed)
-      // 2) Completed locally while offline (payment queued, not uploaded yet)
-      // 3) Completed and synced to backend (payment uploaded)
+      const saleIdToPickState = mergePickingStateBySaleIdFromRows(pickings);
+
       const pendingQueueItems = await syncQueueDb.getPending();
 
       const pendingPaymentOrderIds = new Set(
@@ -194,18 +252,48 @@ export default function DashboardScreen({ navigation }) {
           .filter((id) => Number.isFinite(id))
       );
 
+      const localInvoiceSaleOrderIds = await localInvoicesDb.getSaleOrderIdsWithLocalInvoices();
+
+      function orderCountsAsCompletedToday(order) {
+        const oid = Number(order?.id);
+        if (Number.isFinite(oid) && pendingPaymentOrderIds.has(oid)) return true;
+        if (Number.isFinite(oid) && localInvoiceSaleOrderIds.has(oid)) return true;
+        return orderIsDeliveryDoneForProgress(order, saleIdToPickState, qtyDoneMap, backendDeliveredSet);
+      }
+
+      // Dashboard top indicators:
+      // Active — not cancelled and not yet “delivery touched” (invoiced / picking / move qty_done / Odoo qty_delivered / local invoice / pay queue).
+      // Pay pending (orange) — payment upload still queued, and (invoiced OR any delivery activity).
+      // Synced (green) — no payment queue pending, and (invoiced OR any delivery activity) — includes partial backend delivery without full invoice.
+
       let pendingOrders = 0;
       let localCompleted = 0;
       let syncedCompleted = 0;
 
       for (const order of todayOrders) {
-        const orderId = Number(order?.id);
-        const isCompleted = String(order?.invoice_status || '').toLowerCase() === 'invoiced';
-        const isPendingUpload = pendingPaymentOrderIds.has(orderId);
+        if (String(order?.state || '') === 'cancel') continue;
+        if (!orderCountsAsCompletedToday(order)) pendingOrders += 1;
+      }
 
-        if (!isCompleted) pendingOrders += 1;
-        else if (isPendingUpload) localCompleted += 1;
-        else syncedCompleted += 1;
+      for (const order of todayOrders) {
+        if (String(order?.state || '') === 'cancel') continue;
+        const orderId = Number(order?.id);
+        if (!Number.isFinite(orderId)) continue;
+        const deliveryDone = orderIsDeliveryDoneForProgress(
+          order,
+          saleIdToPickState,
+          qtyDoneMap,
+          backendDeliveredSet
+        );
+        const isInvoiced =
+          String(order?.invoice_status || '').toLowerCase() === 'invoiced' ||
+          localInvoiceSaleOrderIds.has(orderId);
+        const payPending = pendingPaymentOrderIds.has(orderId);
+        if (payPending && (isInvoiced || deliveryDone)) {
+          localCompleted += 1;
+        } else if (!payPending && (isInvoiced || deliveryDone)) {
+          syncedCompleted += 1;
+        }
       }
 
       setOrderSyncStats({
@@ -225,9 +313,10 @@ export default function DashboardScreen({ navigation }) {
           const allOrderIds = (Array.isArray(data) ? data : [])
             .map((o) => Number(o?.id))
             .filter((id) => Number.isFinite(id));
-          const [allPickings, allOrderLines] = await Promise.all([
+          const [allPickings, allOrderLines, allQtyDoneBySo] = await Promise.all([
             allOrderIds.length ? getPickingsBySaleIdsFromDB(allOrderIds) : Promise.resolve([]),
             allOrderIds.length ? getOrderLinesByOrderIdsFromDB(allOrderIds) : Promise.resolve([]),
+            allOrderIds.length ? deliveryQtyDb.getTotalQtyDoneBySaleOrderIds(allOrderIds) : Promise.resolve({}),
           ]);
 
           const deliveredByPicking = new Set(
@@ -247,6 +336,10 @@ export default function DashboardScreen({ navigation }) {
               .filter((id) => Number.isFinite(id))
           );
           for (const id of deliveredByPicking) deliveredOrderIds.add(id);
+          for (const [soKey, sum] of Object.entries(allQtyDoneBySo || {})) {
+            const sid = Number(soKey);
+            if (Number.isFinite(sid) && Number(sum) > 0) deliveredOrderIds.add(sid);
+          }
 
           const deliveredQtyByProductId = {};
           for (const line of allOrderLines || []) {
@@ -288,9 +381,11 @@ export default function DashboardScreen({ navigation }) {
       setOrders([]);
       setLineTotalsByOrder({});
       setPickingsBySaleId([]);
+      setQtyDoneBySaleId({});
       setTodayOrderLines([]);
       setPaymentSplitsByOrderId({});
       setOrderSyncStats({ pendingOrders: 0, localCompleted: 0, syncedCompleted: 0 });
+      setBackendQtyDeliveredOrderIds(new Set());
       setStockCards([]);
       setProductIdToImageUri({});
     } finally {
@@ -373,6 +468,7 @@ export default function DashboardScreen({ navigation }) {
     if (selectedChartDate === today) {
       setChartLineTotalsByOrder(lineTotalsByOrder);
       setChartPickingsBySaleId(pickingsBySaleId);
+      setChartQtyDoneBySaleId(qtyDoneBySaleId);
       return;
     }
     const dateOrders = orders.filter((o) => getOrderDateForSyncMode(o).startsWith(selectedChartDate));
@@ -380,28 +476,40 @@ export default function DashboardScreen({ navigation }) {
     if (orderIds.length === 0) {
       setChartLineTotalsByOrder({});
       setChartPickingsBySaleId([]);
+      setChartQtyDoneBySaleId({});
       return;
     }
     let cancelled = false;
     (async () => {
       try {
-        const [totals, pickings] = await Promise.all([
+        const [totals, pickings, qtyMap] = await Promise.all([
           getOrderLineTotalsFromDB(dateOrders),
           getPickingsBySaleIdsFromDB(orderIds),
+          deliveryQtyDb.getTotalQtyDoneBySaleOrderIds(orderIds),
         ]);
         if (!cancelled) {
           setChartLineTotalsByOrder(totals || {});
           setChartPickingsBySaleId(pickings || []);
+          setChartQtyDoneBySaleId(qtyMap || {});
         }
       } catch (_) {
         if (!cancelled) {
           setChartLineTotalsByOrder({});
           setChartPickingsBySaleId([]);
+          setChartQtyDoneBySaleId({});
         }
       }
     })();
     return () => { cancelled = true; };
-  }, [selectedChartDate, orders, lineTotalsByOrder, pickingsBySaleId, formatLocalDate, getOrderDateForSyncMode]);
+  }, [
+    selectedChartDate,
+    orders,
+    lineTotalsByOrder,
+    pickingsBySaleId,
+    qtyDoneBySaleId,
+    formatLocalDate,
+    getOrderDateForSyncMode,
+  ]);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -430,26 +538,109 @@ export default function DashboardScreen({ navigation }) {
   const today = formatLocalDate(new Date());
   const todayOrders = orders.filter((o) => getOrderDateForSyncMode(o).startsWith(today));
 
-  const pickingStateBySaleId = useMemo(() => {
-    const map = {};
-    (pickingsBySaleId || []).forEach((p) => {
-      const sid = Array.isArray(p.sale_id) ? p.sale_id[0] : p.sale_id;
-      map[sid] = (p.state || '').toLowerCase();
-    });
-    return map;
-  }, [pickingsBySaleId]);
+  /** Sum line price_total per order so dashboard matches invoice after local line edits. */
+  const lineTotalByOrderId = useMemo(() => {
+    const m = {};
+    for (const line of todayOrderLines || []) {
+      const oid = Array.isArray(line.order_id) ? line.order_id[0] : line.order_id;
+      if (oid == null) continue;
+      const id = Number(oid);
+      const pt = Number(line.price_total);
+      if (!Number.isFinite(pt)) continue;
+      m[id] = (m[id] || 0) + pt;
+    }
+    return m;
+  }, [todayOrderLines]);
 
-  /** Today's orders that are actually delivered (picking state 'done') for this vehicle */
-  //Check and Uncomment this if you want to use the pickingStateBySaleId to get the delivered today orders
-  const deliveredTodayOrders = useMemo(
-      () => todayOrders.filter((o) => (pickingStateBySaleId[o.id] || '') === 'done' || String(o?.invoice_status || '').toLowerCase() === 'invoiced'),
-      [todayOrders, pickingStateBySaleId]
+  const orderMoneyTotal = useCallback(
+    (o) => {
+      if (!o) return 0;
+      const lt = lineTotalByOrderId[o.id];
+      if (lt != null && lt > 0) return lt;
+      return Number(o.amount_total) || 0;
+    },
+    [lineTotalByOrderId]
   );
+
+  /** Distinct routes on today's non-cancelled orders (this vehicle's list). */
+  const vehicleRouteIdsToday = useMemo(() => {
+    const s = new Set();
+    for (const o of todayOrders || []) {
+      if (String(o?.state || '').toLowerCase() === 'cancel') continue;
+      const rid = o?.route_id?.[0] ?? o?.route_id;
+      if (rid == null) continue;
+      const n = Number(rid);
+      if (Number.isFinite(n)) s.add(n);
+    }
+    return s;
+  }, [todayOrders]);
+
+  const routesInVehicleTodayPicker = useMemo(() => {
+    const fromCache = (routes || []).filter((r) => vehicleRouteIdsToday.has(Number(r.id)));
+    const byId = new Map(fromCache.map((r) => [Number(r.id), r]));
+    for (const id of vehicleRouteIdsToday) {
+      if (!byId.has(id)) {
+        const o = (todayOrders || []).find((x) => {
+          if (String(x?.state || '').toLowerCase() === 'cancel') return false;
+          const rid = x?.route_id?.[0] ?? x?.route_id;
+          return Number(rid) === id;
+        });
+        const name = o?.route_id?.[1] || `Route ${id}`;
+        byId.set(id, { id, name });
+      }
+    }
+    return Array.from(byId.values()).sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
+  }, [routes, todayOrders, vehicleRouteIdsToday]);
+
+  const showRoutePicker = vehicleRouteIdsToday.size > 1;
+
+  useEffect(() => {
+    if (!showRoutePicker) setRoutePickerVisible(false);
+  }, [showRoutePicker]);
+
+  const defaultRouteId = useMemo(
+    () => pickDefaultDashboardRouteId(routes, todayOrders),
+    [routes, todayOrders]
+  );
+  const selectedRouteId = routeOverrideId ?? defaultRouteId;
+
+  const todayOrdersForDashboard = useMemo(() => {
+    if (selectedRouteId == null) return todayOrders;
+    return todayOrders.filter((o) => {
+      const rid = o.route_id?.[0] ?? o.route_id;
+      return rid != null && Number(rid) === Number(selectedRouteId);
+    });
+  }, [todayOrders, selectedRouteId]);
+
+  const pickingStateBySaleId = useMemo(
+    () => mergePickingStateBySaleIdFromRows(pickingsBySaleId),
+    [pickingsBySaleId]
+  );
+
+  /**
+   * Delivery progress: count as delivered when any qty was recorded on move lines, picking is done/cancel, or order is invoiced.
+   * Does not require full Odoo invoice — matches “any delivery on this order” for progress bars and totals.
+   */
+  const deliveredTodayOrders = useMemo(
+    () =>
+      todayOrdersForDashboard.filter((o) =>
+        orderIsDeliveryDoneForProgress(o, pickingStateBySaleId, qtyDoneBySaleId, backendQtyDeliveredOrderIds)
+      ),
+    [todayOrdersForDashboard, pickingStateBySaleId, qtyDoneBySaleId, backendQtyDeliveredOrderIds]
+  );
+
+  const todayOrderLinesForDashboard = useMemo(() => {
+    const ids = new Set(todayOrdersForDashboard.map((o) => Number(o.id)));
+    return (todayOrderLines || []).filter((line) => {
+      const oid = Array.isArray(line.order_id) ? line.order_id[0] : line.order_id;
+      return ids.has(Number(oid));
+    });
+  }, [todayOrderLines, todayOrdersForDashboard]);
 
   const deliveredQtyByProductId = useMemo(() => {
     const deliveredOrderIds = new Set(deliveredTodayOrders.map((o) => Number(o.id)));
     const map = {};
-    (todayOrderLines || []).forEach((line) => {
+    (todayOrderLinesForDashboard || []).forEach((line) => {
       const orderId = Array.isArray(line.order_id) ? line.order_id[0] : line.order_id;
       const soId = orderId != null ? Number(orderId) : null;
       if (soId == null || !deliveredOrderIds.has(soId)) return;
@@ -462,7 +653,7 @@ export default function DashboardScreen({ navigation }) {
       map[pid] = (map[pid] || 0) + qty;
     });
     return map;
-  }, [deliveredTodayOrders, todayOrderLines]);
+  }, [deliveredTodayOrders, todayOrderLinesForDashboard]);
 
   // const deliveredTodayOrders = todayOrders;
 
@@ -481,7 +672,7 @@ export default function DashboardScreen({ navigation }) {
     const sr = Number(o.amount_credit) || 0;
     if (sc > 0 || sq > 0 || sr > 0) return s + sc;
     const pt = (o.payment_type || '').toLowerCase().trim();
-    return s + (pt === 'cash' ? (Number(o.amount_total) || 0) : 0);
+    return s + (pt === 'cash' ? orderMoneyTotal(o) : 0);
   }, 0);
   const chequeTotal = deliveredTodayOrders.reduce((s, o) => {
     const split = getSplitForOrder(o);
@@ -491,7 +682,7 @@ export default function DashboardScreen({ navigation }) {
     const sr = Number(o.amount_credit) || 0;
     if (sc > 0 || sq > 0 || sr > 0) return s + sq;
     const pt = (o.payment_type || '').toLowerCase().trim();
-    return s + (pt === 'cheque' ? (Number(o.amount_total) || 0) : 0);
+    return s + (pt === 'cheque' ? orderMoneyTotal(o) : 0);
   }, 0);
   const creditTotal = deliveredTodayOrders.reduce((s, o) => {
     const split = getSplitForOrder(o);
@@ -501,21 +692,25 @@ export default function DashboardScreen({ navigation }) {
     const sr = Number(o.amount_credit) || 0;
     if (sc > 0 || sq > 0 || sr > 0) return s + sr;
     const pt = (o.payment_type || '').toLowerCase().trim();
-    return s + (pt === 'credit' || !pt ? (Number(o.amount_total) ?? 0) : 0);
+    return s + (pt === 'credit' || !pt ? orderMoneyTotal(o) : 0);
   }, 0);
   const collectionTotal = cashTotal + chequeTotal + creditTotal || 1;
   const cashTotalDisplay = cashTotal;
   const chequeTotalDisplay = chequeTotal;
   const creditTotalDisplay = creditTotal;
   const collectionTotalDisplay = cashTotalDisplay + chequeTotalDisplay + creditTotalDisplay || 1;
-  const cashPctDisplay = Math.round((cashTotalDisplay / collectionTotalDisplay) * 100);
-  const chequePctDisplay = Math.round((chequeTotalDisplay / collectionTotalDisplay) * 100);
-  const creditPctDisplay = Math.round((creditTotalDisplay / collectionTotalDisplay) * 100);
+  const cashPctDisplay = safePercentDisplay(cashTotalDisplay, collectionTotalDisplay);
+  const chequePctDisplay = safePercentDisplay(chequeTotalDisplay, collectionTotalDisplay);
+  const creditPctDisplay = safePercentDisplay(creditTotalDisplay, collectionTotalDisplay);
 
-  const routeFromOrder = todayOrders[0]?.route_id?.[1];
-  const routeName = routeFromOrder || (routes[0]?.name) || '—';
+  const routeName =
+    routes.find((r) => Number(r.id) === Number(selectedRouteId))?.name ||
+    todayOrdersForDashboard[0]?.route_id?.[1] ||
+    routes[0]?.name ||
+    '—';
   const vehicleName = user?.licensePlate || user?.vehicleName || 'Vehicle';
   const driverName = user?.driverName;
+  const driverPhone = user?.driverPhone != null && String(user.driverPhone).trim() !== '' ? String(user.driverPhone).trim() : '';
   const driverHeaderUri = user?.driverImageBase64 ? odooImageToUri(user.driverImageBase64) : null;
   const crewPorters = Array.isArray(user?.selectedPorters) ? user.selectedPorters : [];
 
@@ -525,12 +720,12 @@ export default function DashboardScreen({ navigation }) {
   const productRateMap = commissionPlan?.productRateMap || {};
 
   // Calculate totals for fallback commission calculation
-  const allOrdersTotal = todayOrders.reduce((s, o) => s + (Number(o.amount_total) || 0), 0);
-  const deliveredOrdersTotal = deliveredTodayOrders.reduce((s, o) => s + (Number(o.amount_total) || 0), 0);
+  const allOrdersTotal = todayOrdersForDashboard.reduce((s, o) => s + orderMoneyTotal(o), 0);
+  const deliveredOrdersTotal = deliveredTodayOrders.reduce((s, o) => s + orderMoneyTotal(o), 0);
 
   // Get order lines for delivered orders (for achieved commission)
-  const deliveredOrderIds = new Set(deliveredTodayOrders.map(o => o.id));
-  const deliveredOrderLines = todayOrderLines.filter(line => {
+  const deliveredOrderIds = new Set(deliveredTodayOrders.map((o) => o.id));
+  const deliveredOrderLines = todayOrderLinesForDashboard.filter((line) => {
     const orderId = Array.isArray(line.order_id) ? line.order_id[0] : line.order_id;
     return deliveredOrderIds.has(orderId);
   });
@@ -541,7 +736,7 @@ export default function DashboardScreen({ navigation }) {
 
 
   const commissionProgress = calculateCommissionProgressByProducts(
-    todayOrderLines,
+    todayOrderLinesForDashboard,
     deliveredOrderLines,
     productRateMap,
     defaultRate
@@ -552,13 +747,13 @@ export default function DashboardScreen({ navigation }) {
   const commissionPct = commissionProgress.percentage;
 
   const shopsCompleted = deliveredTodayOrders.length;
-  const totalShopsToday = todayOrders.length;
+  const totalShopsToday = todayOrdersForDashboard.length;
   const shopsPct = totalShopsToday > 0 ? Math.min(100, Math.round((shopsCompleted / totalShopsToday) * 100)) : 0;
   const totalGasDelivered = deliveredTodayOrders.reduce(
       (s, o) => s + (Number(lineTotalsByOrder[o.id]) || 0),
       0
   );
-  const totalGasInOrders = todayOrders.reduce(
+  const totalGasInOrders = todayOrdersForDashboard.reduce(
       (s, o) => s + (Number(lineTotalsByOrder[o.id]) || 0),
       0
   );
@@ -568,14 +763,10 @@ export default function DashboardScreen({ navigation }) {
       () => orders.filter((o) => getOrderDateForSyncMode(o).startsWith(selectedChartDate)),
       [orders, selectedChartDate, getOrderDateForSyncMode]
   );
-  const chartPickingStateBySaleId = useMemo(() => {
-    const map = {};
-    (chartPickingsBySaleId || []).forEach((p) => {
-      const sid = Array.isArray(p.sale_id) ? p.sale_id[0] : p.sale_id;
-      map[sid] = (p.state || '').toLowerCase();
-    });
-    return map;
-  }, [chartPickingsBySaleId]);
+  const chartPickingStateBySaleId = useMemo(
+    () => mergePickingStateBySaleIdFromRows(chartPickingsBySaleId),
+    [chartPickingsBySaleId]
+  );
   const chartDeliveryByShop = useMemo(() => {
     const byPartner = {};
     chartDateOrders.forEach((o) => {
@@ -584,39 +775,48 @@ export default function DashboardScreen({ navigation }) {
       const key = partnerId ?? 'unknown';
       if (!byPartner[key]) byPartner[key] = { shopId: `S${partnerId}`, shopName: partnerName, delivered: 0, pending: 0 };
       const qty = Math.round(Number(chartLineTotalsByOrder[o.id]) || 0);
-      //Check and Uncomment this if you want to use the chartPickingStateBySaleId to get the delivered today orders
-      const isDone = (chartPickingStateBySaleId[o.id] || '') === 'done'
-        || String(o?.invoice_status || '').toLowerCase() === 'invoiced';
-      // const isDone = true;
+      const isDone = orderIsDeliveryDoneForProgress(
+        o,
+        chartPickingStateBySaleId,
+        chartQtyDoneBySaleId,
+        backendQtyDeliveredOrderIds
+      );
       if (isDone) byPartner[key].delivered += qty;
       else byPartner[key].pending += qty;
     });
     const real = Object.values(byPartner).filter((r) => r.delivered > 0 || r.pending > 0);
     return real;
-  }, [chartDateOrders, chartLineTotalsByOrder, chartPickingStateBySaleId, appLanguage]);
+  }, [
+    chartDateOrders,
+    chartLineTotalsByOrder,
+    chartPickingStateBySaleId,
+    chartQtyDoneBySaleId,
+    backendQtyDeliveredOrderIds,
+    appLanguage,
+  ]);
 
   const styles = useMemo(
     () =>
       StyleSheet.create({
         container: { flex: 1, backgroundColor: colors.background },
-        content: { paddingBottom: 100 },
+        content: { paddingBottom: 80 },
         center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
         topBar: {
           backgroundColor: colors.primary ?? '#6366f1',
           paddingTop: spacing.lg,
           paddingHorizontal: spacing.md,
-          paddingBottom: 28,
+          paddingBottom: 14,
         },
         topBarRow: {
           flexDirection: 'row',
           justifyContent: 'space-between',
           alignItems: 'center',
         },
-        topBarRowWithMargin: { marginBottom: 10 },
+        topBarRowWithMargin: { marginBottom: 4 },
         topBarLeft: {
           flexDirection: 'column',
           alignItems: 'flex-start',
-          gap: 6,
+          gap: 4,
           flex: 1,
         },
         vehicleName: { fontSize: 16, fontWeight: '700', color: '#fff' },
@@ -638,7 +838,7 @@ export default function DashboardScreen({ navigation }) {
           flexDirection: 'row',
           alignItems: 'center',
           gap: 10,
-          marginBottom: 8,
+          marginBottom: 4,
         },
         driverHeaderAvatar: {
           width: 46,
@@ -706,7 +906,7 @@ export default function DashboardScreen({ navigation }) {
         lastSyncedBlock: { alignItems: 'flex-end' },
         syncingUnderSync: {
           alignSelf: 'flex-end',
-          marginTop: 10,
+          marginTop: 4,
           minHeight: 32,
           justifyContent: 'center',
         },
@@ -727,9 +927,10 @@ export default function DashboardScreen({ navigation }) {
           flexDirection: 'row',
           alignItems: 'center',
           justifyContent: 'flex-end',
-          gap: 10,
-          marginTop: 8,
+          gap: 8,
+          marginTop: 6,
         },
+        syncCounterCol: { alignItems: 'center', justifyContent: 'center', minWidth: 32 },
         syncCounterPill: {
           minWidth: 28,
           height: 28,
@@ -785,13 +986,14 @@ export default function DashboardScreen({ navigation }) {
           color: colors.textSecondary,
           letterSpacing: 0.5,
           paddingHorizontal: spacing.md,
-          marginBottom: spacing.xs,
+          marginBottom: 4,
+          marginTop: 2,
         },
         collectionRow: {
           flexDirection: 'row',
           gap: spacing.xs,
           paddingHorizontal: spacing.md,
-          marginBottom: spacing.md,
+          marginBottom: spacing.sm,
         },
         collectionCard: {
           flex: 1,
@@ -950,6 +1152,64 @@ export default function DashboardScreen({ navigation }) {
         },
         syncLogStatus: { width: 8, height: 8, borderRadius: 4 },
         syncLogText: { fontSize: 12, color: colors.textSecondary, flex: 1 },
+        modalBackdrop: {
+          flex: 1,
+          backgroundColor: 'rgba(0,0,0,0.5)',
+          justifyContent: 'center',
+          padding: spacing.lg,
+        },
+        modalCard: {
+          backgroundColor: colors.surface,
+          borderRadius: borderRadius.lg,
+          padding: spacing.lg,
+          maxHeight: '85%',
+        },
+        modalTitle: { fontSize: 18, fontWeight: '800', color: colors.text, marginBottom: spacing.sm },
+        modalSubtitle: { fontSize: 13, color: colors.textSecondary, marginBottom: spacing.md },
+        routePickRow: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          paddingVertical: 14,
+          paddingHorizontal: spacing.sm,
+          borderBottomWidth: 1,
+          borderBottomColor: colors.border,
+        },
+        routePickRowActive: { backgroundColor: colors.primary + '12' },
+        routePickName: { fontSize: 16, fontWeight: '600', color: colors.text, flex: 1 },
+        profileHero: { alignItems: 'center', marginBottom: spacing.md },
+        profileAvatarLg: {
+          width: 96,
+          height: 96,
+          borderRadius: 48,
+          borderWidth: 3,
+          borderColor: colors.primary + '55',
+          overflow: 'hidden',
+          backgroundColor: colors.background,
+        },
+        profileNameLg: { fontSize: 20, fontWeight: '800', color: colors.text, marginTop: spacing.md, textAlign: 'center' },
+        profileRole: { fontSize: 13, fontWeight: '700', color: colors.primary, marginTop: 4 },
+        profilePhoneRow: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 10,
+          marginTop: spacing.md,
+          padding: spacing.md,
+          backgroundColor: colors.background,
+          borderRadius: borderRadius.md,
+          borderWidth: 1,
+          borderColor: colors.border,
+        },
+        profilePhoneText: { flex: 1, fontSize: 16, fontWeight: '600', color: colors.text },
+        profileNoPhone: { fontSize: 14, color: colors.textSecondary, fontStyle: 'italic', marginTop: spacing.sm },
+        modalCloseBtn: {
+          marginTop: spacing.lg,
+          paddingVertical: 14,
+          borderRadius: borderRadius.md,
+          backgroundColor: colors.primary,
+          alignItems: 'center',
+        },
+        modalCloseBtnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
       }),
     [colors]
   );
@@ -969,7 +1229,14 @@ export default function DashboardScreen({ navigation }) {
     year: 'numeric',
   });
 
+  const openDial = (raw) => {
+    const s = String(raw || '').replace(/[^\d+]/g, '');
+    if (!s) return;
+    Linking.openURL(`tel:${s}`).catch(() => {});
+  };
+
   return (
+    <>
     <ScrollView
       style={styles.container}
       contentContainerStyle={styles.content}
@@ -981,7 +1248,19 @@ export default function DashboardScreen({ navigation }) {
       <View style={[styles.topBar, { paddingTop: spacing.lg + insets.top }]}>
         <View style={[styles.topBarRow, styles.topBarRowWithMargin]}>
           <View style={styles.topBarLeft}>
-            <View style={styles.driverHeaderRow}>
+            <TouchableOpacity
+              style={styles.driverHeaderRow}
+              activeOpacity={0.85}
+              onPress={() =>
+                setProfileModal({
+                  kind: 'driver',
+                  name: driverName || vehicleName,
+                  subtitle: driverName ? vehicleName : 'Driver',
+                  phone: driverPhone,
+                  imageBase64: user?.driverImageBase64,
+                })
+              }
+            >
               {driverHeaderUri ? (
                 <Image source={{ uri: driverHeaderUri }} style={styles.driverHeaderAvatar} resizeMode="cover" />
               ) : (
@@ -1001,16 +1280,39 @@ export default function DashboardScreen({ navigation }) {
                     {vehicleName}
                   </Text>
                 ) : null}
+                <Text style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 4 }}>Tap for profile</Text>
               </View>
-            </View>
+            </TouchableOpacity>
             <View style={styles.dateRow}>
               <Ionicons name="calendar-outline" size={18} color="rgba(255,255,255,0.95)" />
               <Text style={styles.dateText}>{todayDateStr}</Text>
             </View>
-            <View style={styles.routePill}>
-              <Ionicons name="location-outline" size={16} color="rgba(255,255,255,0.95)" />
-              <Text style={styles.routePillText}>Route: {routeName}</Text>
-            </View>
+            {showRoutePicker ? (
+              <TouchableOpacity
+                style={styles.routePill}
+                onPress={() => setRoutePickerVisible(true)}
+                activeOpacity={0.85}
+                accessibilityRole="button"
+                accessibilityLabel="Choose route for today"
+              >
+                <Ionicons name="location-outline" size={16} color="rgba(255,255,255,0.95)" />
+                <Text style={styles.routePillText} numberOfLines={1}>
+                  Route: {routeName}
+                </Text>
+                <Ionicons name="chevron-down" size={16} color="rgba(255,255,255,0.95)" />
+              </TouchableOpacity>
+            ) : (
+              <View
+                style={styles.routePill}
+                accessibilityRole="text"
+                accessibilityLabel={`Route ${routeName}`}
+              >
+                <Ionicons name="location-outline" size={16} color="rgba(255,255,255,0.95)" />
+                <Text style={styles.routePillText} numberOfLines={1}>
+                  Route: {routeName}
+                </Text>
+              </View>
+            )}
           </View>
           <View style={styles.headerButtons}>
               <View style={styles.lastSyncedBlock}>
@@ -1028,37 +1330,52 @@ export default function DashboardScreen({ navigation }) {
                 </Text>
                 <View style={styles.syncCountersRow}>
                   <View
-                    style={[
-                      styles.syncCounterPill,
-                      {
-                        backgroundColor: 'rgba(71, 85, 105, 0.65)',
-                        borderColor: 'rgba(148, 163, 184, 0.85)',
-                      },
-                    ]}
+                    style={styles.syncCounterCol}
+                    accessibilityLabel={`Orders pending sync: ${orderSyncStats.pendingOrders}`}
                   >
-                    <Text style={styles.syncCounterText}>{orderSyncStats.pendingOrders}</Text>
+                    <View
+                      style={[
+                        styles.syncCounterPill,
+                        {
+                          backgroundColor: 'rgba(71, 85, 105, 0.65)',
+                          borderColor: 'rgba(148, 163, 184, 0.85)',
+                        },
+                      ]}
+                    >
+                      <Text style={styles.syncCounterText}>{orderSyncStats.pendingOrders}</Text>
+                    </View>
                   </View>
                   <View
-                    style={[
-                      styles.syncCounterPill,
-                      {
-                        backgroundColor: `${colors.warning ?? '#d97706'}CC`,
-                        borderColor: `${colors.warning ?? '#d97706'}F0`,
-                      },
-                    ]}
+                    style={styles.syncCounterCol}
+                    accessibilityLabel={`Payment pending upload: ${orderSyncStats.localCompleted}`}
                   >
-                    <Text style={styles.syncCounterText}>{orderSyncStats.localCompleted}</Text>
+                    <View
+                      style={[
+                        styles.syncCounterPill,
+                        {
+                          backgroundColor: `${colors.warning ?? '#d97706'}CC`,
+                          borderColor: `${colors.warning ?? '#d97706'}F0`,
+                        },
+                      ]}
+                    >
+                      <Text style={styles.syncCounterText}>{orderSyncStats.localCompleted}</Text>
+                    </View>
                   </View>
                   <View
-                    style={[
-                      styles.syncCounterPill,
-                      {
-                        backgroundColor: `${colors.success ?? '#22c55e'}CC`,
-                        borderColor: `${colors.success ?? '#22c55e'}F0`,
-                      },
-                    ]}
+                    style={styles.syncCounterCol}
+                    accessibilityLabel={`Synced completed orders: ${orderSyncStats.syncedCompleted}`}
                   >
-                    <Text style={styles.syncCounterText}>{orderSyncStats.syncedCompleted}</Text>
+                    <View
+                      style={[
+                        styles.syncCounterPill,
+                        {
+                          backgroundColor: `${colors.success ?? '#22c55e'}CC`,
+                          borderColor: `${colors.success ?? '#22c55e'}F0`,
+                        },
+                      ]}
+                    >
+                      <Text style={styles.syncCounterText}>{orderSyncStats.syncedCompleted}</Text>
+                    </View>
                   </View>
                 </View>
                 <View style={styles.syncingUnderSync}>
@@ -1079,7 +1396,7 @@ export default function DashboardScreen({ navigation }) {
         </View>
 
         {/* 2. Stock overview (lorry stock) */}
-        <View style={{ paddingHorizontal: spacing.md, marginTop: -20, marginBottom: spacing.md }}>
+        <View style={{ paddingHorizontal: spacing.md, marginTop: -10, marginBottom: spacing.sm }}>
           <TouchableOpacity
             onPress={() => navigation.navigate('MyStocks')}
             activeOpacity={0.8}
@@ -1370,8 +1687,22 @@ export default function DashboardScreen({ navigation }) {
             >
               {crewPorters.map((p) => {
                 const uri = p?.imageBase64 ? odooImageToUri(p.imageBase64) : null;
+                const porterPhone = p?.phone != null && String(p.phone).trim() !== '' ? String(p.phone).trim() : '';
                 return (
-                  <View key={String(p.id)} style={styles.crewChipSurface}>
+                  <TouchableOpacity
+                    key={String(p.id)}
+                    style={styles.crewChipSurface}
+                    activeOpacity={0.85}
+                    onPress={() =>
+                      setProfileModal({
+                        kind: 'porter',
+                        name: p.name || 'Porter',
+                        subtitle: 'Porter on shift',
+                        phone: porterPhone,
+                        imageBase64: p.imageBase64,
+                      })
+                    }
+                  >
                     <View style={styles.crewAvatarSurface}>
                       {uri ? (
                         <Image source={{ uri }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
@@ -1384,7 +1715,7 @@ export default function DashboardScreen({ navigation }) {
                     <Text style={styles.crewNameSurface} numberOfLines={2}>
                       {p.name}
                     </Text>
-                  </View>
+                  </TouchableOpacity>
                 );
               })}
             </ScrollView>
@@ -1441,5 +1772,92 @@ export default function DashboardScreen({ navigation }) {
             </View>
         )}
       </ScrollView>
+
+      <Modal visible={routePickerVisible} transparent animationType="fade" onRequestClose={() => setRoutePickerVisible(false)}>
+        <Pressable style={styles.modalBackdrop} onPress={() => setRoutePickerVisible(false)}>
+          <Pressable style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
+            <Text style={styles.modalTitle}>Choose route</Text>
+            <Text style={styles.modalSubtitle}>
+              These are the routes you have stops on today. Choose one to filter your list and totals, or use Recommended to let the app use the usual route for today.
+            </Text>
+            <ScrollView style={{ maxHeight: 360 }} keyboardShouldPersistTaps="handled">
+              <TouchableOpacity
+                style={[styles.routePickRow, routeOverrideId === null && styles.routePickRowActive]}
+                onPress={() => {
+                  setRouteOverrideId(null);
+                  setRoutePickerVisible(false);
+                }}
+              >
+                <Text style={styles.routePickName}>Recommended for today</Text>
+                {routeOverrideId === null ? <Ionicons name="checkmark-circle" size={22} color={colors.primary} /> : null}
+              </TouchableOpacity>
+              {routesInVehicleTodayPicker.map((r) => {
+                const id = Number(r.id);
+                const active = routeOverrideId != null && Number(routeOverrideId) === id;
+                return (
+                  <TouchableOpacity
+                    key={String(r.id)}
+                    style={[styles.routePickRow, active && styles.routePickRowActive]}
+                    onPress={() => {
+                      setRouteOverrideId(id);
+                      setRoutePickerVisible(false);
+                    }}
+                  >
+                    <Text style={styles.routePickName}>{r.name || `Route ${r.id}`}</Text>
+                    {active ? <Ionicons name="checkmark-circle" size={22} color={colors.primary} /> : null}
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+            <TouchableOpacity style={styles.modalCloseBtn} onPress={() => setRoutePickerVisible(false)} activeOpacity={0.88}>
+              <Text style={styles.modalCloseBtnText}>Close</Text>
+            </TouchableOpacity>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <Modal visible={profileModal != null} transparent animationType="fade" onRequestClose={() => setProfileModal(null)}>
+        <Pressable style={styles.modalBackdrop} onPress={() => setProfileModal(null)}>
+          <Pressable style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
+            {profileModal ? (
+              <>
+                <View style={styles.profileHero}>
+                  <View style={styles.profileAvatarLg}>
+                    {(() => {
+                      const uri = profileModal.imageBase64 ? odooImageToUri(profileModal.imageBase64) : null;
+                      return uri ? (
+                      <Image
+                        source={{ uri }}
+                        style={{ width: '100%', height: '100%' }}
+                        resizeMode="cover"
+                      />
+                    ) : (
+                      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+                        <Ionicons name="person" size={44} color={colors.textSecondary} />
+                      </View>
+                    );
+                    })()}
+                  </View>
+                  <Text style={styles.profileNameLg}>{profileModal.name}</Text>
+                  <Text style={styles.profileRole}>{profileModal.subtitle}</Text>
+                  {profileModal.phone ? (
+                    <TouchableOpacity style={styles.profilePhoneRow} onPress={() => openDial(profileModal.phone)} activeOpacity={0.85}>
+                      <Ionicons name="call-outline" size={22} color={colors.primary} />
+                      <Text style={styles.profilePhoneText}>{profileModal.phone}</Text>
+                      <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
+                    </TouchableOpacity>
+                  ) : (
+                    <Text style={styles.profileNoPhone}>No phone number on file</Text>
+                  )}
+                </View>
+                <TouchableOpacity style={styles.modalCloseBtn} onPress={() => setProfileModal(null)} activeOpacity={0.88}>
+                  <Text style={styles.modalCloseBtnText}>Close</Text>
+                </TouchableOpacity>
+              </>
+            ) : null}
+          </Pressable>
+        </Pressable>
+      </Modal>
+    </>
   );
 }

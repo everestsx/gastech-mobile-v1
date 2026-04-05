@@ -90,6 +90,51 @@ export function odooTextRequired(v) {
  * @param {unknown[]} params
  * @returns {(string|number)[]}
  */
+/**
+ * Normalize every `runAsync` bind for expo-sqlite on Android (Kotlin).
+ * Plain objects (e.g. accidental many2one left unwrapped) must not reach native.
+ * Preserves `null` for SQL NULL. Maps `undefined` → `null`.
+ */
+export function sanitizeSqliteBindParams(params) {
+  if (!Array.isArray(params)) return params;
+  return params.map((v) => {
+    if (v === undefined) return null;
+    if (v === null) return null;
+    if (typeof Uint8Array !== 'undefined' && v instanceof Uint8Array) return v;
+    if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView && ArrayBuffer.isView(v)) return v;
+    const t = typeof v;
+    if (t === 'string') return v;
+    if (t === 'number') return Number.isFinite(v) ? v : null;
+    if (t === 'bigint') {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    }
+    if (t === 'boolean') return v ? 1 : 0;
+    if (v instanceof Date) return v.toISOString();
+    if (Array.isArray(v)) {
+      const n = v.length > 0 ? Number(v[0]) : NaN;
+      return Number.isFinite(n) ? n : null;
+    }
+    if (t === 'object') {
+      // Android Kotlin bridge cannot bind plain objects; SQL NULL is safe for nullable columns.
+      return null;
+    }
+    return String(v);
+  });
+}
+
+/**
+ * expo-sqlite `runAsync` / `getAllAsync` accept either `sql, [a,b]` or `sql, a, b`.
+ * Always produce one sanitized array for the `sql, [...]` form so binds are never a stray object.
+ */
+export function coerceSqliteStatementBindings(restArgs) {
+  if (!restArgs || restArgs.length === 0) return [];
+  if (restArgs.length === 1 && Array.isArray(restArgs[0])) {
+    return sanitizeSqliteBindParams(restArgs[0]);
+  }
+  return sanitizeSqliteBindParams(restArgs);
+}
+
 export function coerceSqliteBindArray(params) {
   return (params || []).map((v, index) => {
     if (v === undefined || v === null) {
@@ -137,6 +182,21 @@ export function jsonArr(v) {
   if (v == null) return '[]';
   if (typeof v === 'object') return Array.isArray(v) ? JSON.stringify(v) : '[]';
   return typeof v === 'string' ? v : '[]';
+}
+
+/**
+ * Optional INTEGER FK for expo-sqlite on Android (Kotlin bridge rejects objects).
+ * Unwraps Odoo many2one [id, name]. Invalid values → SQL NULL (do not bind "" for INTEGER).
+ */
+export function sqliteIntegerFkOrNull(v) {
+  if (v == null || v === false || v === '') return null;
+  if (Array.isArray(v)) {
+    const n = v.length > 0 ? Number(v[0]) : NaN;
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }
+  if (typeof v === 'object') return null;
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : null;
 }
 
 /**

@@ -5,7 +5,7 @@
 import { getDb } from './db.js';
 import { empty, num, iso } from './dbHelpers.js';
 
-/** Delivery + order line updates: qtys, validate picking. Payload: { saleOrderId, pickingId, orderLineUpdates, moveUpdates, moveLineUpdates } */
+/** Delivery: validate picking + stock moves/lines. Payload: { saleOrderId, pickingId, pickings[], orderLineUpdates (product_uom_qty — Modify only), saleOrderLineDeliveredUpdates ({ lineId, qty_delivered }), moveUpdates, moveLineUpdates, holdUntilPayment?: true } — when true, sync.service skips until a payment queue item runs (then flushes to Odoo before invoice). */
 export const ACTION_DELIVERY = 'delivery';
 /** Payment: create invoice and payments. Payload: { saleOrderId, partnerId, orderName, total, payments[], deliveryPhotoUris? } */
 export const ACTION_PAYMENT = 'payment';
@@ -14,11 +14,16 @@ export const ACTION_INVENTORY_UPDATE = 'inventory_update';
 
 export async function enqueue(actionType, payload) {
   const db = await getDb();
-  const result = await db.runAsync(
+  const payloadStr =
+    typeof payload === 'string'
+      ? payload
+      : JSON.stringify(payload ?? {}, (_k, v) => (typeof v === 'bigint' ? v.toString() : v));
+  await db.runAsync(
     'INSERT INTO sync_queue (action_type, payload, created_at, is_uploaded) VALUES (?, ?, ?, 0)',
-    [empty(actionType) || 'unknown', typeof payload === 'string' ? payload : JSON.stringify(payload ?? {}), iso()]
+    [empty(actionType) || 'unknown', payloadStr, iso()]
   );
-  return result.lastInsertRowId;
+  const row = await db.getFirstAsync('SELECT last_insert_rowid() AS id');
+  return num(row?.id);
 }
 
 export async function getPending() {

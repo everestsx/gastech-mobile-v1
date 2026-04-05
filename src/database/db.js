@@ -5,6 +5,7 @@
  */
 import * as SQLite from 'expo-sqlite';
 import * as FileSystem from 'expo-file-system';
+import { sanitizeSqliteBindParams, coerceSqliteStatementBindings } from './dbHelpers.js';
 
 const DB_NAME = 'gastech.db';
 
@@ -14,11 +15,38 @@ let rawDbPromise = null;
 /** Serialize all DB access: one operation at a time. */
 let _queue = Promise.resolve();
 
+/**
+ * expo-sqlite Android: Kotlin cannot bind JS objects. Patch the native connection once so
+ * every runAsync / getAllAsync / getFirstAsync sanitizes arguments (covers transactions + any missed wrapper paths).
+ */
+function patchExpoSqliteBindings(db) {
+  if (db.__gastechSqlBindingsPatched) return db;
+  const run = db.runAsync.bind(db);
+  const all = db.getAllAsync.bind(db);
+  const first = db.getFirstAsync.bind(db);
+
+  db.runAsync = async (source, ...rest) => {
+    const b = coerceSqliteStatementBindings(rest);
+    return b.length === 0 ? run(source) : run(source, b);
+  };
+  db.getAllAsync = async (source, ...rest) => {
+    const b = coerceSqliteStatementBindings(rest);
+    return b.length === 0 ? all(source) : all(source, b);
+  };
+  db.getFirstAsync = async (source, ...rest) => {
+    const b = coerceSqliteStatementBindings(rest);
+    return b.length === 0 ? first(source) : first(source, b);
+  };
+  Object.defineProperty(db, '__gastechSqlBindingsPatched', { value: true, enumerable: false });
+  return db;
+}
+
 function getRawDb() {
   if (!rawDbPromise) {
-    rawDbPromise = SQLite.openDatabaseAsync(DB_NAME).then((db) =>
-      runMigrations(db).then(() => db)
-    );
+    rawDbPromise = SQLite.openDatabaseAsync(DB_NAME).then(async (db) => {
+      await runMigrations(db);
+      return patchExpoSqliteBindings(db);
+    });
   }
   return rawDbPromise;
 }
@@ -477,6 +505,20 @@ async function runMigrations(db) {
     }
     await db.runAsync('PRAGMA user_version = 19');
   }
+
+  // Migration 20: Odoo qty_delivered on sale_order_lines (partial delivery from backend for dashboard / lists)
+  if (current < 20) {
+    try {
+      const info = await db.getAllAsync('PRAGMA table_info(sale_order_lines)');
+      const names = new Set((info || []).map((c) => c.name));
+      if (!names.has('qty_delivered')) {
+        await db.runAsync('ALTER TABLE sale_order_lines ADD COLUMN qty_delivered REAL');
+      }
+    } catch (e) {
+      console.warn('[Migration] sale_order_lines qty_delivered:', e);
+    }
+    await db.runAsync('PRAGMA user_version = 20');
+  }
 }
 
 /**
@@ -499,10 +541,15 @@ export async function getDb() {
   return {
     getAllAsync: (...args) => enqueue((db) => db.getAllAsync(...args)),
     getFirstAsync: (...args) => enqueue((db) => db.getFirstAsync(...args)),
-    runAsync: (...args) => enqueue((db) => db.runAsync(...args)),
+    runAsync: (sql, params) =>
+      enqueue((db) => {
+        if (params == null) return db.runAsync(sql);
+        return db.runAsync(sql, params);
+      }),
     execAsync: (sql) => enqueue((db) => db.execAsync(sql)),
+    /** Same DB instance as outside the transaction; BEGIN/COMMIT wrap all ops. Bind sanitization is on the native db. */
     withTransactionAsync: (fn) =>
-      enqueue((db) => db.withTransactionAsync(() => fn(db))),
+      enqueue((db) => db.withTransactionAsync(async () => fn(db))),
   };
 }
 

@@ -171,6 +171,7 @@ export default function LoginScreen({ navigation }) {
         name: p.name,
         barcode: p.barcode,
         imageBase64: p.imageBase64,
+        phone: p.phone || '',
       }));
 
     setLoading(true);
@@ -184,6 +185,7 @@ export default function LoginScreen({ navigation }) {
         driverName: matchedDriver.name,
         driverBarcode: matchedDriver.barcode,
         driverImageBase64: matchedDriver.imageBase64,
+        driverPhone: matchedDriver.phone || '',
         selectedPorters,
         loggedInAt: new Date().toISOString(),
       });
@@ -582,12 +584,12 @@ export default function LoginScreen({ navigation }) {
                   </TouchableOpacity>
                 </Modal>
               </View>
-              <Text style={styles.inputLabel}>Driver code</Text>
+              <Text style={styles.inputLabel}>Driver pin</Text>
               <View style={styles.inputGroup}>
                 <Ionicons name="key-outline" size={20} color={colors.primary} style={{ marginRight: 12 }} />
                 <TextInput
                     style={{ flex: 1, fontSize: 16, color: colors.text }}
-                    placeholder="Your driver code"
+                    placeholder="Your driver pin"
                     placeholderTextColor={colors.textSecondary}
                     secureTextEntry={!showPassword}
                     value={password}

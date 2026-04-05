@@ -58,9 +58,13 @@ export const getSaleOrderDetails = async (saleOrderId) => {
   return { order, lines };
 };
 
-/* ---------------- UPDATE SALE ORDER LINE QTY (order line product_uom_qty) ---------------- */
+/* ---------------- UPDATE SALE ORDER LINE QTY (ordered qty — Modify/Save only, not delivery flow) ---------------- */
 export const updateSaleOrderLineQty = (lineId, qty) =>
   callOdoo("sale.order.line", "write", [[lineId], { product_uom_qty: qty }]);
+
+/** Delivered qty on SO line (do not change ordered qty). May fail on some Odoo configs if field is computed — caller should catch. */
+export const updateSaleOrderLineQtyDelivered = (lineId, qtyDelivered) =>
+  callOdoo("sale.order.line", "write", [[lineId], { qty_delivered: Number(qtyDelivered) }]);
 
 /* ---------------- GET PAYMENT JOURNALS (bank and cash only, from Odoo) ---------------- */
 export const getJournals = () =>

@@ -3,7 +3,13 @@
  * Full history of payment_type-wise split; sync queue uploads to Odoo later.
  */
 import { getDb } from './db.js';
-import { empty, num, numOrNull, iso } from './dbHelpers.js';
+import { empty, num, numOrNull, iso, sqliteIntegerFkOrNull } from './dbHelpers.js';
+
+/** INTEGER FK bind for Android / Kotlin: null only when absent; never pass objects. */
+function journalIdBind(raw) {
+  const v = sqliteIntegerFkOrNull(raw);
+  return v === null ? null : v;
+}
 
 /**
  * Insert a local payment row (one per payment type with amount > 0).
@@ -20,7 +26,7 @@ export async function insertLocalPayment(row) {
       num(row.sale_order_id),
       empty(row.payment_type),
       num(row.amount),
-      numOrNull(row.journal_id),
+      journalIdBind(row.journal_id),
       empty(row.check_number),
       empty(row.bank_name),
       now,
@@ -47,7 +53,7 @@ export async function replacePaymentsForInvoice(invoiceId, paymentRows) {
           num(row.sale_order_id),
           empty(row.payment_type),
           num(row.amount),
-          numOrNull(row.journal_id) ?? '',
+          journalIdBind(row.journal_id),
           empty(row.check_number),
           empty(row.bank_name),
           now,

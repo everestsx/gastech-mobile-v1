@@ -26,6 +26,7 @@ import {
 } from '../services/sync.service';
 import OrderCard from '../components/OrderCard';
 import SyncHeaderBadge from '../components/SyncHeaderBadge';
+import * as deliveryQtyDb from '../database/deliveryQty.js';
 
 const TAB_TO_DELIVER = 'to_deliver';
 
@@ -61,9 +62,16 @@ export default function SaleOrderListScreen({ route, navigation }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchField, setSearchField] = useState('customer');
   const [showFieldDropdown, setShowFieldDropdown] = useState(false);
-  // Orders tab: not delivered, or delivered but not yet invoiced (so we can collect payment)
+  // Orders tab: same “completed” rule as dashboard / delivery — hide once invoiced or any real delivery activity.
   const filteredOrders = useMemo(
-    () => orders.filter((o) => String(o.state || '') !== 'cancel' && (!o.isDelivered || String(o.invoice_status) !== 'invoiced')),
+    () =>
+      orders.filter((o) => {
+        if (String(o.state || '') === 'cancel') return false;
+        const inv = String(o.invoice_status || '').toLowerCase() === 'invoiced';
+        const st = String(o.pickingState || '').toLowerCase();
+        const q = Number(o.qtyDoneSum) || 0;
+        return !(inv || st === 'done' || st === 'cancel' || q > 0);
+      }),
     [orders]
   );
   const searchFieldLabels = { customer: 'Customer', orderId: 'Order ID' };
@@ -250,10 +258,11 @@ export default function SaleOrderListScreen({ route, navigation }) {
         if (partner?.name) setCustomerNameForEmpty((prev) => prev || partner.name);
       }
       const orderIds = list.map((o) => o.id);
-      const [totals, pickings, allLines] = await Promise.all([
+      const [totals, pickings, allLines, qtyDoneMap] = await Promise.all([
         getOrderLineTotalsFromDB(list),
         getPickingsBySaleIdsFromDB(orderIds),
         getOrderLinesByOrderIdsFromDB(orderIds),
+        orderIds.length ? deliveryQtyDb.getTotalQtyDoneBySaleOrderIds(orderIds) : Promise.resolve({}),
       ]);
       const saleIdToPickingState = {};
       (pickings || []).forEach((p) => {
@@ -275,6 +284,8 @@ export default function SaleOrderListScreen({ route, navigation }) {
         list.map((o) => ({
           ...o,
           totalQty: totals[o.id] != null ? totals[o.id] : null,
+          pickingState: saleIdToPickingState[o.id] ?? '',
+          qtyDoneSum: Number(qtyDoneMap?.[o.id]) || 0,
           isDelivered: saleIdToPickingState[o.id] === 'done',
           orderLines: linesByOrderId[o.id] || [],
         }))
@@ -329,15 +340,7 @@ export default function SaleOrderListScreen({ route, navigation }) {
   };
 
   const onOrderPress = (order) => {
-    const delivereAndInvoiced = order.isDelivered && String(order.invoice_status) === 'invoiced';
-    if (delivereAndInvoiced) {
-      navigation.navigate('InvoiceScreen', {
-        saleOrderId: order.id,
-        total: order.amount_total,
-      });
-    } else {
-      navigation.navigate('SaleOrderDetails', { saleOrderId: order.id });
-    }
+    navigation.navigate('SaleOrderDetails', { saleOrderId: order.id });
   };
 
   if (loading) {

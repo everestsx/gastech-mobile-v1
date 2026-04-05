@@ -83,7 +83,7 @@ export default function MenuScreen({ navigation }) {
   const handleDeleteLocalData = () => {
     showAlert(
       'Delete local data',
-      'This will remove all synced customers, orders, and other data from this device. Your login is not affected. Sync again to reload data from Odoo. Continue?',
+      'This will remove all synced customers, orders, and other data from this device. Your login is not affected. Sync again to reload data from Gas Tech. Continue?',
       [
         { text: 'Cancel', style: 'cancel', onPress : hideAlert },
         {
@@ -114,7 +114,7 @@ export default function MenuScreen({ navigation }) {
                           await refreshLastSync();
                           showAlert(
                             'Done',
-                            'Local data deleted (unsynced items were discarded). Use Sync to load data from Odoo again.'
+                            'Local data deleted (unsynced items were discarded). Use Sync to load data from Gas Tech again.'
                           );
                         } catch (e2) {
                           showAlert('Error', e2?.message || 'Failed to delete local data.');
@@ -254,7 +254,7 @@ export default function MenuScreen({ navigation }) {
         <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
       </TouchableOpacity>
 
-      <TouchableOpacity
+      {/* <TouchableOpacity
         style={[styles.menuItem, { backgroundColor: colors.surface, borderColor: colors.border }]}
         onPress={() => navigation.navigate('MyCommissions')}
         activeOpacity={0.8}
@@ -262,7 +262,7 @@ export default function MenuScreen({ navigation }) {
         <Ionicons name="cash-outline" size={24} color={colors.primary} />
         <Text style={[styles.menuItemText, { color: colors.text }]}>My Commissions</Text>
         <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
-      </TouchableOpacity>
+      </TouchableOpacity> */}
 
       <TouchableOpacity
         style={[styles.menuItem, { backgroundColor: colors.surface, borderColor: colors.border }]}
@@ -304,7 +304,7 @@ export default function MenuScreen({ navigation }) {
         <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
       </TouchableOpacity>
 
-      <TouchableOpacity
+      {/* <TouchableOpacity
         style={[styles.menuItem, { backgroundColor: colors.surface, borderColor: colors.border }]}
         onPress={() => navigation.navigate('QRGenerator')}
         activeOpacity={0.8}
@@ -312,7 +312,7 @@ export default function MenuScreen({ navigation }) {
         <Ionicons name="qr-code-outline" size={24} color={colors.primary} />
         <Text style={[styles.menuItemText, { color: colors.text }]}>Customer QR Generator</Text>
         <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
-      </TouchableOpacity>
+      </TouchableOpacity> */}
 
       <Text style={[styles.lastSync, { color: colors.textSecondary }]}>
         {lastSync

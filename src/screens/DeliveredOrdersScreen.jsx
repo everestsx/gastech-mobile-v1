@@ -8,6 +8,9 @@ import {
   StyleSheet,
   ActivityIndicator,
   Platform,
+  TextInput,
+  Modal,
+  Pressable,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -16,13 +19,17 @@ import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
 import {
   getCachedOrders,
+  getCachedCustomers,
   getCachedJournals,
   getOrderLineTotalsFromDB,
   getOrderLinesByOrderIdsFromDB,
   getPickingsBySaleIdsFromDB,
   getUserSession,
 } from '../services/sync.service';
+import { mergePickingStateBySaleIdFromRows, orderIsDeliveryDoneForProgress } from '../utils/deliveryProgress';
+import * as saleOrderLinesDb from '../database/saleOrderLines.js';
 import * as localPaymentsDb from '../database/localPayments.js';
+import * as deliveryQtyDb from '../database/deliveryQty.js';
 import OrderCard from '../components/OrderCard';
 import SyncHeaderBadge from '../components/SyncHeaderBadge';
 
@@ -41,6 +48,53 @@ function formatDate(d) {
 function isToday(d) {
   const today = formatDate(new Date());
   return formatDate(d) === today;
+}
+
+function lineProductId(line) {
+  const raw = Array.isArray(line?.product_id) ? line.product_id[0] : line?.product_id;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : NaN;
+}
+
+/** Sum a numeric line field per product (e.g. qty_delivered, product_uom_qty). */
+function sumQtyByProductFromLines(orderLines, field) {
+  const m = {};
+  for (const line of orderLines || []) {
+    const pid = lineProductId(line);
+    if (!Number.isFinite(pid)) continue;
+    const q = Number(line?.[field]) || 0;
+    if (q <= 0) continue;
+    m[pid] = (m[pid] || 0) + q;
+  }
+  return m;
+}
+
+/**
+ * Delivered tab badges: prefer stock move qty_done, sale line qty_delivered, and for invoiced
+ * orders local line qty (product_uom_qty) so increased / adjusted quantities match the invoice.
+ */
+function buildDisplayDeliveredQtyByProduct(moveMap, orderLines, isInvoiced) {
+  const fromMoves = { ...(moveMap || {}) };
+  const fromDeliveredField = sumQtyByProductFromLines(orderLines, 'qty_delivered');
+  const fromOrdered = sumQtyByProductFromLines(orderLines, 'product_uom_qty');
+  const pids = new Set([
+    ...Object.keys(fromMoves),
+    ...Object.keys(fromDeliveredField),
+    ...(isInvoiced ? Object.keys(fromOrdered) : []),
+  ]);
+  const out = {};
+  for (const k of pids) {
+    const p = Number(k);
+    const move = Number(fromMoves[p]) || 0;
+    const qd = Number(fromDeliveredField[p]) || 0;
+    let v = Math.max(move, qd);
+    if (isInvoiced) {
+      const ord = Number(fromOrdered[p]) || 0;
+      v = Math.max(v, ord);
+    }
+    if (v > 0) out[p] = v;
+  }
+  return Object.keys(out).length > 0 ? out : null;
 }
 
 /**
@@ -70,33 +124,88 @@ function getPrimaryPaymentType(paymentSplit, fallbackPaymentType) {
 export default function DeliveredOrdersScreen({ route, navigation }) {
   const { colors, syncDateField } = useTheme();
   const insets = useSafeAreaInsets();
+  const customerId = route?.params?.customerId ?? null;
+  const customerNameFromParams = route?.params?.customerName ?? null;
+  const scannedDateParam = route?.params?.scannedDate ?? null;
   const [orders, setOrders] = useState([]);
+  const [pickingStateBySaleId, setPickingStateBySaleId] = useState({});
+  const [qtyDoneBySaleId, setQtyDoneBySaleId] = useState({});
+  const [qtyDoneBySaleAndProduct, setQtyDoneBySaleAndProduct] = useState({});
+  const [backendQtyDeliveredOrderIds, setBackendQtyDeliveredOrderIds] = useState(() => new Set());
   const [journals, setJournals] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [selectedDate, setSelectedDate] = useState(() => new Date());
+  const [selectedDate, setSelectedDate] = useState(() => {
+    if (scannedDateParam) {
+      const d = new Date(`${scannedDateParam}T12:00:00`);
+      return isNaN(d.getTime()) ? new Date() : d;
+    }
+    return new Date();
+  });
+  const [customerNameForEmpty, setCustomerNameForEmpty] = useState(customerNameFromParams ?? '');
   const [showPicker, setShowPicker] = useState(false);
   const [activeTab, setActiveTab] = useState(TAB_ALL);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchField, setSearchField] = useState('customer');
+  const [showFieldDropdown, setShowFieldDropdown] = useState(false);
 
-  /** All delivered orders (with or without payment). Cash/Cheque/Credit tabs filter by payment_type. */
+  /**
+   * Same rule as dashboard: invoiced, picking done/cancel, move qty_done, or Odoo line qty_delivered (partial delivery).
+   */
   const deliveredOrders = useMemo(
-    () => orders.filter((o) => o.invoice_status === 'invoiced'),
-    [orders]
+    () =>
+      orders.filter((o) =>
+        orderIsDeliveryDoneForProgress(o, pickingStateBySaleId, qtyDoneBySaleId, backendQtyDeliveredOrderIds)
+      ),
+    [orders, pickingStateBySaleId, qtyDoneBySaleId, backendQtyDeliveredOrderIds]
   );
+
+  const searchFieldLabels = { customer: 'Customer', orderId: 'Order ID' };
+
+  const deliveredOrdersForCustomer = useMemo(() => {
+    if (customerId == null) return deliveredOrders;
+    return deliveredOrders.filter((o) => o.partner_id?.[0] === customerId);
+  }, [deliveredOrders, customerId]);
 
   /** Each order appears in exactly one tab: by payment amounts (cash / cheque / credit), highest amount wins. */
   const filteredOrders = useMemo(() => {
-    if (activeTab === TAB_ALL) return deliveredOrders;
-    return deliveredOrders.filter((o) => getPrimaryPaymentType(o.paymentSplit, o.payment_type) === activeTab);
-  }, [deliveredOrders, activeTab]);
+    const base =
+      activeTab === TAB_ALL
+        ? deliveredOrdersForCustomer
+        : deliveredOrdersForCustomer.filter(
+            (o) => getPrimaryPaymentType(o.paymentSplit, o.payment_type) === activeTab
+          );
+    return base;
+  }, [deliveredOrdersForCustomer, activeTab]);
+
+  const ordersFilteredBySearch = useMemo(() => {
+    const q = (searchQuery || '').trim().toLowerCase();
+    if (!q) return filteredOrders;
+    return filteredOrders.filter((o) => {
+      if (searchField === 'customer') {
+        const name = o.partner_id?.[1] ? String(o.partner_id[1]) : '';
+        return name.toLowerCase().includes(q);
+      }
+      if (searchField === 'orderId') {
+        const name = o.name ? String(o.name) : '';
+        return name.toLowerCase().includes(q);
+      }
+      return true;
+    });
+  }, [filteredOrders, searchQuery, searchField]);
 
   const tabCounts = useMemo(
     () => ({
-      [TAB_CASH]: deliveredOrders.filter((o) => getPrimaryPaymentType(o.paymentSplit, o.payment_type) === TAB_CASH).length,
-      [TAB_CHEQUE]: deliveredOrders.filter((o) => getPrimaryPaymentType(o.paymentSplit, o.payment_type) === TAB_CHEQUE).length,
-      [TAB_CREDIT]: deliveredOrders.filter((o) => getPrimaryPaymentType(o.paymentSplit, o.payment_type) === TAB_CREDIT).length,
-      [TAB_ALL]: deliveredOrders.length,
+      [TAB_CASH]: deliveredOrdersForCustomer.filter((o) => getPrimaryPaymentType(o.paymentSplit, o.payment_type) === TAB_CASH)
+        .length,
+      [TAB_CHEQUE]: deliveredOrdersForCustomer.filter(
+        (o) => getPrimaryPaymentType(o.paymentSplit, o.payment_type) === TAB_CHEQUE
+      ).length,
+      [TAB_CREDIT]: deliveredOrdersForCustomer.filter(
+        (o) => getPrimaryPaymentType(o.paymentSplit, o.payment_type) === TAB_CREDIT
+      ).length,
+      [TAB_ALL]: deliveredOrdersForCustomer.length,
     }),
-    [deliveredOrders]
+    [deliveredOrdersForCustomer]
   );
 
   const styles = useMemo(
@@ -199,6 +308,90 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
         empty: { alignItems: 'center', justifyContent: 'center', paddingVertical: 48 },
         emptyText: { fontSize: 16, color: colors.textSecondary, marginTop: 12 },
         emptyHint: { fontSize: 13, color: colors.textSecondary, marginTop: 6 },
+        customerFilterBanner: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: spacing.sm,
+          paddingHorizontal: spacing.md,
+          paddingVertical: spacing.sm,
+          backgroundColor: colors.primary + '14',
+          borderBottomWidth: 1,
+          borderBottomColor: colors.primary + '35',
+        },
+        customerFilterBannerText: { flex: 1, fontSize: 13, fontWeight: '600', color: colors.text },
+        customerFilterClear: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 4,
+          paddingVertical: 6,
+          paddingHorizontal: 10,
+          borderRadius: borderRadius.md,
+          backgroundColor: colors.surface,
+          borderWidth: 1,
+          borderColor: colors.border,
+        },
+        customerFilterClearText: { fontSize: 12, fontWeight: '700', color: colors.primary },
+        searchRow: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          paddingHorizontal: spacing.md,
+          paddingVertical: spacing.sm,
+          backgroundColor: colors.surface,
+          borderBottomWidth: 1,
+          borderBottomColor: colors.border,
+          gap: spacing.sm,
+        },
+        searchInput: {
+          flex: 1,
+          height: 42,
+          backgroundColor: colors.background,
+          borderRadius: borderRadius.md,
+          paddingHorizontal: spacing.md,
+          fontSize: 15,
+          color: colors.text,
+          borderWidth: 1,
+          borderColor: colors.border,
+        },
+        searchFieldBtn: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          height: 42,
+          paddingHorizontal: spacing.sm,
+          backgroundColor: colors.background,
+          borderRadius: borderRadius.md,
+          borderWidth: 1,
+          borderColor: colors.border,
+          gap: 4,
+        },
+        searchFieldBtnText: { fontSize: 13, fontWeight: '600', color: colors.text, maxWidth: 88 },
+        dropdownModal: {
+          flex: 1,
+          justifyContent: 'flex-start',
+          alignItems: 'flex-end',
+          paddingTop: 168,
+          paddingRight: spacing.md,
+        },
+        dropdownBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'transparent' },
+        dropdownMenu: {
+          backgroundColor: colors.surface,
+          borderRadius: borderRadius.md,
+          borderWidth: 1,
+          borderColor: colors.border,
+          elevation: 4,
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: 2 },
+          shadowOpacity: 0.15,
+          shadowRadius: 4,
+          minWidth: 160,
+        },
+        dropdownItem: {
+          paddingVertical: 12,
+          paddingHorizontal: spacing.md,
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 8,
+        },
+        dropdownItemText: { fontSize: 15, fontWeight: '500', color: colors.text },
       }),
     [colors, insets.top]
   );
@@ -208,32 +401,40 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
     try {
       const user = await getUserSession();
       const vehicleId = user?.isAdmin === false ? user.vehicleId : null;
-      const data = await getCachedOrders(vehicleId);
+      const [data, cachedCustomers] = await Promise.all([
+        getCachedOrders(vehicleId),
+        customerId != null ? getCachedCustomers() : Promise.resolve([]),
+      ]);
       const all = Array.isArray(data) ? data : [];
       const dateStr = formatDate(selectedDate);
-      const list = all.filter((o) => {
+      let list = all.filter((o) => {
         const selectedDateValue = syncDateField === 'delivery_date'
           ? (o.commitment_date || o.date_order)
           : (o.date_order || o.commitment_date);
         return String(selectedDateValue || '').startsWith(dateStr);
       });
+      if (customerId != null) {
+        list = list.filter((o) => o.partner_id?.[0] === customerId);
+        const partner = Array.isArray(cachedCustomers)
+          ? cachedCustomers.find((c) => c.id === customerId)
+          : null;
+        if (partner?.name) setCustomerNameForEmpty((prev) => prev || partner.name);
+      }
       const orderIds = list.map((o) => o.id);
-      const [totals, pickings, allLines, paymentSplits, journalsList] = await Promise.all([
+      const [totals, pickings, allLines, paymentSplits, journalsList, qtyMap, qtyByProductMap, backendDeliveredSet] =
+        await Promise.all([
         getOrderLineTotalsFromDB(list),
         getPickingsBySaleIdsFromDB(orderIds),
         getOrderLinesByOrderIdsFromDB(orderIds),
         localPaymentsDb.getPaymentSplitsWithJournalsBySaleOrderIds(orderIds),
         getCachedJournals(),
+        orderIds.length ? deliveryQtyDb.getTotalQtyDoneBySaleOrderIds(orderIds) : Promise.resolve({}),
+        orderIds.length ? deliveryQtyDb.getQtyDoneBySaleOrderProductMap(orderIds) : Promise.resolve({}),
+        orderIds.length ? saleOrderLinesDb.getSaleOrderIdsWithPositiveQtyDelivered(orderIds) : Promise.resolve(new Set()),
       ]);
+      setBackendQtyDeliveredOrderIds(backendDeliveredSet instanceof Set ? backendDeliveredSet : new Set());
       setJournals(Array.isArray(journalsList) ? journalsList : []);
-      const saleIdToPickingState = {};
-      (pickings || []).forEach((p) => {
-        const saleId = Array.isArray(p.sale_id) ? p.sale_id[0] : p.sale_id;
-        if (saleId != null) {
-          if (p.state === 'done') saleIdToPickingState[saleId] = 'done';
-          else if (saleIdToPickingState[saleId] !== 'done') saleIdToPickingState[saleId] = p.state;
-        }
-      });
+      const saleIdToPickingState = mergePickingStateBySaleIdFromRows(pickings || []);
       const linesByOrderId = {};
       (allLines || []).forEach((line) => {
         const oid = Array.isArray(line.order_id) ? line.order_id[0] : line.order_id;
@@ -265,26 +466,52 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
           credit: pt === 'credit' ? amt : 0,
         };
       };
+      setPickingStateBySaleId(saleIdToPickingState);
+      setQtyDoneBySaleId(qtyMap || {});
+      const mergedQtyBySaleAndProduct = {};
+      for (const o of list) {
+        const oid = o.id;
+        const lines = linesByOrderId[oid] || [];
+        const moveMap = qtyByProductMap[oid] || {};
+        const inv = String(o.invoice_status || '').toLowerCase() === 'invoiced';
+        const merged = buildDisplayDeliveredQtyByProduct(moveMap, lines, inv);
+        if (merged != null) mergedQtyBySaleAndProduct[oid] = merged;
+      }
+      setQtyDoneBySaleAndProduct(mergedQtyBySaleAndProduct);
       setOrders(
-        list.map((o) => ({
-          ...o,
-          totalQty: totals[o.id] != null ? totals[o.id] : null,
-          isDelivered: o.invoice_status === 'invoiced',
-          orderLines: linesByOrderId[o.id] || [],
-          paymentSplit: syntheticSplit(o) || null,
-        }))
+        list.map((o) => {
+          const inv = String(o.invoice_status).toLowerCase() === 'invoiced';
+          const st = String(saleIdToPickingState[o.id] || '').toLowerCase();
+          const q = Number(qtyMap[o.id]) || 0;
+          const deliveryDone = inv || st === 'done' || st === 'cancel' || q > 0;
+          return {
+            ...o,
+            totalQty: totals[o.id] != null ? totals[o.id] : null,
+            isDelivered: deliveryDone,
+            orderLines: linesByOrderId[o.id] || [],
+            paymentSplit: syntheticSplit(o) || null,
+          };
+        })
       );
     } catch (err) {
       console.error('Delivered Orders Error:', err);
       setOrders([]);
+      setPickingStateBySaleId({});
+      setQtyDoneBySaleId({});
+      setQtyDoneBySaleAndProduct({});
+      setBackendQtyDeliveredOrderIds(new Set());
     } finally {
       setLoading(false);
     }
-  }, [selectedDate, syncDateField]);
+  }, [selectedDate, syncDateField, customerId]);
 
   useEffect(() => {
     loadOrders();
   }, [loadOrders]);
+
+  useEffect(() => {
+    if (customerNameFromParams) setCustomerNameForEmpty((prev) => prev || customerNameFromParams);
+  }, [customerNameFromParams]);
 
   useEffect(() => {
     const unsub = navigation.addListener?.('focus', loadOrders);
@@ -312,23 +539,24 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
   };
 
   const onBackPress = () => {
-    navigation.navigate('Dashboard');
+    if (customerId != null) {
+      navigation.navigate('DeliveredOrders', {
+        customerId: null,
+        customerName: null,
+        scannedDate: null,
+      });
+    } else {
+      navigation.navigate('Dashboard');
+    }
   };
 
   const onOrderPress = (order) => {
-    const isInvoiced = String(order.invoice_status) === 'invoiced';
-    if (isInvoiced) {
-      navigation.navigate('InvoiceScreen', {
-        saleOrderId: order.id,
-        total: order.amount_total,
-      });
-    } else {
-      navigation.navigate('ProceedPayment', {
-        saleOrderId: order.id,
-        total: order.amount_total,
-        deliveryDone: true,
-      });
-    }
+    navigation.navigate('InvoiceScreen', {
+      saleOrderId: order.id,
+      total: order.amount_total,
+      skipEvidenceModal: true,
+      promptSignatures: false,
+    });
   };
 
   if (loading) {
@@ -368,10 +596,20 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
         <View style={[styles.headerRight, { flexWrap: 'wrap', justifyContent: 'flex-end', gap: 6 }]}>
           <SyncHeaderBadge variant="surface" />
           <View style={styles.countPill}>
-            <Text style={styles.countPillText}>
-              {deliveredOrders.length}
-            </Text>
+            <Text style={styles.countPillText}>{ordersFilteredBySearch.length}</Text>
           </View>
+          <TouchableOpacity
+            onPress={() =>
+              navigation.navigate('ScanQRCode', {
+                returnTo: 'DeliveredOrders',
+                scanContext: 'delivered',
+              })
+            }
+            style={[styles.headerBtn, { alignItems: 'flex-end' }]}
+            accessibilityLabel="Scan customer QR to filter delivered orders"
+          >
+            <Ionicons name="qr-code-outline" size={28} color={colors.primary} />
+          </TouchableOpacity>
         </View>
       </View>
 
@@ -391,6 +629,87 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
           <Text style={styles.doneDateText}>Done</Text>
         </TouchableOpacity>
       )}
+
+      {customerId != null ? (
+        <View style={styles.customerFilterBanner}>
+          <Ionicons name="person-circle-outline" size={22} color={colors.primary} />
+          <Text style={styles.customerFilterBannerText} numberOfLines={2}>
+            Deliveries for {customerNameForEmpty || 'this customer'} · change date above if needed
+          </Text>
+          <TouchableOpacity
+            style={styles.customerFilterClear}
+            onPress={() =>
+              navigation.navigate('DeliveredOrders', {
+                customerId: null,
+                customerName: null,
+                scannedDate: null,
+              })
+            }
+            activeOpacity={0.85}
+          >
+            <Ionicons name="close-circle-outline" size={18} color={colors.primary} />
+            <Text style={styles.customerFilterClearText}>Clear</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
+
+      <View style={styles.searchRow}>
+        <Ionicons name="search-outline" size={20} color={colors.textSecondary} style={{ opacity: 0.85 }} />
+        <TextInput
+          style={styles.searchInput}
+          value={searchQuery}
+          onChangeText={setSearchQuery}
+          placeholder={`Search ${(searchFieldLabels[searchField] || 'customer').toLowerCase()}…`}
+          placeholderTextColor={colors.textSecondary}
+          returnKeyType="search"
+        />
+        <TouchableOpacity
+          style={styles.searchFieldBtn}
+          onPress={() => setShowFieldDropdown(true)}
+          activeOpacity={0.8}
+        >
+          <Text style={styles.searchFieldBtnText} numberOfLines={1}>
+            {searchFieldLabels[searchField] || 'Field'}
+          </Text>
+          <Ionicons name="chevron-down" size={18} color={colors.textSecondary} />
+        </TouchableOpacity>
+      </View>
+
+      <Modal
+        visible={showFieldDropdown}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowFieldDropdown(false)}
+      >
+        <Pressable style={styles.dropdownBackdrop} onPress={() => setShowFieldDropdown(false)}>
+          <View style={styles.dropdownModal}>
+            <View style={styles.dropdownMenu}>
+              <TouchableOpacity
+                style={styles.dropdownItem}
+                onPress={() => {
+                  setSearchField('customer');
+                  setShowFieldDropdown(false);
+                }}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="person-outline" size={20} color={colors.primary} />
+                <Text style={styles.dropdownItemText}>Customer name</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.dropdownItem}
+                onPress={() => {
+                  setSearchField('orderId');
+                  setShowFieldDropdown(false);
+                }}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="document-text-outline" size={20} color={colors.primary} />
+                <Text style={styles.dropdownItemText}>Order ID</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Pressable>
+      </Modal>
 
       <View style={styles.tabsWrap}>
         <ScrollView
@@ -454,7 +773,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
       </View>
 
       <FlatList
-        data={filteredOrders}
+        data={ordersFilteredBySearch}
         keyExtractor={(item) => String(item.id)}
         contentContainerStyle={styles.list}
         ListEmptyComponent={
@@ -465,11 +784,21 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
               color={colors.textSecondary}
             />
             <Text style={styles.emptyText}>
-              {activeTab === TAB_ALL
-                ? 'No delivered orders for this date'
-                : `No delivered orders paid by ${activeTab === TAB_CASH ? 'Cash' : activeTab === TAB_CHEQUE ? 'Cheque' : 'Credit'} for this date`}
+              {searchQuery.trim()
+                ? 'No delivered orders match your search'
+                : activeTab === TAB_ALL
+                  ? customerId != null
+                    ? `No delivered orders for ${customerNameForEmpty || 'this customer'} on this date`
+                    : 'No delivered orders for this date'
+                  : `No delivered orders paid by ${activeTab === TAB_CASH ? 'Cash' : activeTab === TAB_CHEQUE ? 'Cheque' : 'Credit'} for this date`}
             </Text>
-            <Text style={styles.emptyHint}>Delivered & paid orders appear here after payment</Text>
+            <Text style={styles.emptyHint}>
+              {searchQuery.trim()
+                ? 'Try another keyword or clear search'
+                : customerId != null
+                  ? 'Try another date or clear the customer filter'
+                  : 'Delivered & paid orders appear here after payment'}
+            </Text>
           </View>
         }
         renderItem={({ item }) => (
@@ -479,6 +808,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
             onPress={onOrderPress}
             isDelivered={true}
             paymentSplit={item.paymentSplit}
+            qtyDoneByProductId={qtyDoneBySaleAndProduct[item.id] || null}
           />
         )}
       />

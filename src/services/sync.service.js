@@ -645,6 +645,7 @@ async function processSyncQueue() {
       }
       const {
         updateSaleOrderLineQty,
+        updateSaleOrderLineQtyDelivered,
         confirmSaleOrder,
       } = await import('./saleOrderLine.service');
       const {
@@ -703,176 +704,213 @@ async function processSyncQueue() {
         return [];
       };
 
-      for (const item of delivery) {
-        try {
-          const p = item.payload || {};
-          const saleOrderId = p.saleOrderId ?? p.sale_id;
-          const orderLineUpdates = p.orderLineUpdates || [];
-          const blocks = pickingsBlocksFromPayload(p);
+      /** Push one delivery queue row to Odoo and mark synced. Used from main delivery pass and pre-payment flush. */
+      const processOneDeliveryQueueItem = async (item) => {
+        const p = item.payload || {};
+        const saleOrderId = p.saleOrderId ?? p.sale_id;
+        const orderLineUpdates = p.orderLineUpdates || [];
+        const saleOrderLineDeliveredUpdates = p.saleOrderLineDeliveredUpdates || [];
+        const blocks = pickingsBlocksFromPayload(p);
 
-          try {
-            for (const u of orderLineUpdates) {
-              await updateSaleOrderLineQty(u.lineId, u.product_uom_qty);
-            }
-          } catch (soLineErr) {
-            logWarn('queue delivery (sale order lines)', soLineErr);
-            throw soLineErr;
+        const applySoLineOrderedQty = async () => {
+          for (const u of orderLineUpdates) {
+            if (u.lineId == null || u.product_uom_qty == null) continue;
+            await updateSaleOrderLineQty(u.lineId, u.product_uom_qty);
           }
+        };
 
-          if (blocks.length === 0) {
-            await syncQueueDb.markSynced(Number(item.id));
-            log('queue', `delivery SO ${saleOrderId} — order lines only (no pickings), synced id=${item.id}`);
+        const applySoLineDeliveredQty = async () => {
+          for (const u of saleOrderLineDeliveredUpdates) {
+            if (u.lineId == null || u.qty_delivered == null) continue;
+            try {
+              await updateSaleOrderLineQtyDelivered(u.lineId, Number(u.qty_delivered));
+            } catch (qdErr) {
+              logWarn(
+                'queue delivery (sale.order.line qty_delivered)',
+                new Error(`line ${u.lineId}: ${String(qdErr?.message || qdErr).slice(0, 120)}`)
+              );
+            }
+          }
+        };
+
+        try {
+          await applySoLineOrderedQty();
+        } catch (soLineErr) {
+          logWarn('queue delivery (sale order lines product_uom_qty)', soLineErr);
+          throw soLineErr;
+        }
+
+        const hasPickings = blocks.length > 0;
+        if (!hasPickings) {
+          await applySoLineDeliveredQty();
+          await syncQueueDb.markSynced(Number(item.id));
+          log(
+            'queue',
+            `delivery SO ${saleOrderId} — no pickings (SO line updates only), synced id=${item.id}`
+          );
+          return;
+        }
+
+        for (const block of blocks) {
+          let pickingId = block.pickingId;
+          if (pickingId == null && saleOrderId != null) {
+            const pickings = await getPickingBySaleOrder(saleOrderId);
+            const first = Array.isArray(pickings) ? pickings[0] : null;
+            if (first?.state === 'done') {
+              log('queue', `delivery block skipped — SO ${saleOrderId} first picking already done`);
+              pickingId = null;
+            } else {
+              pickingId = first?.id ?? null;
+            }
+          }
+          if (pickingId == null) {
+            logWarn('queue delivery', new Error('No picking id for block (SO ' + saleOrderId + ')'));
             continue;
           }
 
-          for (const block of blocks) {
-            let pickingId = block.pickingId;
-            if (pickingId == null && saleOrderId != null) {
-              const pickings = await getPickingBySaleOrder(saleOrderId);
-              const first = Array.isArray(pickings) ? pickings[0] : null;
-              if (first?.state === 'done') {
-                log('queue', `delivery block skipped — SO ${saleOrderId} first picking already done`);
-                pickingId = null;
-              } else {
-                pickingId = first?.id ?? null;
-              }
-            }
-            if (pickingId == null) {
-              logWarn('queue delivery', new Error('No picking id for block (SO ' + saleOrderId + ')'));
+          try {
+            const stateRows = await getPickingState(pickingId);
+            const pick = Array.isArray(stateRows) ? stateRows[0] : stateRows;
+            if (pick?.state === 'done') {
+              log('queue', `delivery picking ${pickingId} already done — skip block`);
               continue;
             }
+          } catch (_) { }
 
-            try {
-              const stateRows = await getPickingState(pickingId);
-              const pick = Array.isArray(stateRows) ? stateRows[0] : stateRows;
-              if (pick?.state === 'done') {
-                log('queue', `delivery picking ${pickingId} already done — skip block`);
-                continue;
-              }
-            } catch (_) { }
+          const moveUpdates = block.moveUpdates || [];
+          const moveLineUpdates = block.moveLineUpdates || [];
+          const deliveryLines = block.deliveryLines || [];
 
-            const moveUpdates = block.moveUpdates || [];
-            const moveLineUpdates = block.moveLineUpdates || [];
-            const deliveryLines = block.deliveryLines || [];
-
-            try {
-              for (const u of moveUpdates) {
-                await updateStockMoveQty(u.moveId, u.product_uom_qty);
-              }
-              const hasMoveLineUpdates = Array.isArray(moveLineUpdates) && moveLineUpdates.length > 0;
-              if (!hasMoveLineUpdates && deliveryLines.length > 0) {
-                for (const line of deliveryLines) {
-                  const moveId = line.moveId ?? line.move_id;
-                  const productId = line.productId ?? line.product_id;
-                  const qty = line.qty_done;
-                  if (moveId != null && productId != null && qty != null) {
-                    await createMoveLine(pickingId, moveId, productId, qty);
-                  }
-                }
-              } else {
-                for (const u of moveLineUpdates) {
-                  await updateMoveLineQty(u.moveLineId, u.qty_done);
-                }
-              }
-              /** Ensure stock.move.quantity_done matches payload (avoids validating a "zero" transfer when move_line ids were wrong locally). */
-              const qtyDoneByMoveId = new Map();
+          try {
+            for (const u of moveUpdates) {
+              await updateStockMoveQty(u.moveId, u.product_uom_qty);
+            }
+            const hasMoveLineUpdates = Array.isArray(moveLineUpdates) && moveLineUpdates.length > 0;
+            if (!hasMoveLineUpdates && deliveryLines.length > 0) {
               for (const line of deliveryLines) {
-                const mid = line.moveId ?? line.move_id;
-                if (mid == null) continue;
-                qtyDoneByMoveId.set(Number(mid), Number(line.qty_done));
-              }
-              for (const [moveId, qty] of qtyDoneByMoveId) {
-                try {
-                  await updateStockMoveQuantityDone(moveId, qty);
-                } catch (qErr) {
-                  log(
-                    'queue',
-                    `delivery quantity_done on move ${moveId} skipped: ${String(qErr?.message || qErr).slice(0, 100)}`
-                  );
+                const moveId = line.moveId ?? line.move_id;
+                const productId = line.productId ?? line.product_id;
+                const qty = line.qty_done;
+                const qtyN = qty != null ? Number(qty) : NaN;
+                if (moveId != null && productId != null && Number.isFinite(qtyN) && qtyN > 0) {
+                  await createMoveLine(pickingId, moveId, productId, qtyN);
                 }
               }
-            } catch (updateErr) {
-              const msg = (updateErr?.message || String(updateErr)).toLowerCase();
-              const recordDeleted = msg.includes('does not exist or has been deleted') || msg.includes('has been deleted');
-              if (recordDeleted) {
-                log('queue', `delivery updates skipped (record deleted): ${msg.slice(0, 80)}`);
-              } else {
-                throw updateErr;
+            } else {
+              for (const u of moveLineUpdates) {
+                await updateMoveLineQty(u.moveLineId, u.qty_done);
               }
             }
-
-            const tryValidateOne = async () => {
-              await validatePickingWithContext(pickingId, { skip_backorder: true });
-            };
-            const validateMsgOkToSkip = (msg) => {
-              const v = (msg || '').toLowerCase();
-              return (
-                v.includes('does not exist') ||
-                v.includes('has been deleted') ||
-                v.includes('already') ||
-                v.includes('nothing to') ||
-                (v.includes('done') && v.includes('picking'))
-              );
-            };
-            const mightBeStockReservation = (msg) => {
-              const v = (msg || '').toLowerCase();
-              return (
-                v.includes('availability') ||
-                v.includes('available') ||
-                v.includes('not available') ||
-                v.includes('reserved') ||
-                v.includes('reservation') ||
-                v.includes('quantity') ||
-                v.includes('assigned') ||
-                v.includes('waiting') ||
-                v.includes('move line') ||
-                v.includes('need to supply')
-              );
-            };
-
-            try {
+            /** Ensure stock.move.quantity_done matches payload (avoids validating a "zero" transfer when move_line ids were wrong locally). */
+            const qtyDoneByMoveId = new Map();
+            for (const line of deliveryLines) {
+              const mid = line.moveId ?? line.move_id;
+              if (mid == null) continue;
+              qtyDoneByMoveId.set(Number(mid), Number(line.qty_done));
+            }
+            for (const [moveId, qty] of qtyDoneByMoveId) {
               try {
-                await actionAssignPicking(pickingId);
-                log('queue', `delivery action_assign picking ${pickingId}`);
-              } catch (assignErr) {
+                await updateStockMoveQuantityDone(moveId, qty);
+              } catch (qErr) {
                 log(
                   'queue',
-                  `delivery action_assign picking ${pickingId} (non-fatal): ${String(assignErr?.message || assignErr).slice(0, 120)}`
+                  `delivery quantity_done on move ${moveId} skipped: ${String(qErr?.message || qErr).slice(0, 100)}`
                 );
               }
-              try {
-                await tryValidateOne();
-                log('queue', `delivery validated picking ${pickingId} (skip_backorder)`);
-              } catch (validateErr) {
-                const vMsgRaw = String(validateErr?.message || validateErr);
-                const vMsg = vMsgRaw.toLowerCase();
-                if (validateMsgOkToSkip(vMsg)) {
-                  log('queue', `delivery validate skipped (picking ${pickingId}): ${vMsg.slice(0, 80)}`);
-                } else if (mightBeStockReservation(vMsg)) {
-                  log('queue', `delivery validate failed (stock?) picking ${pickingId} — retry after action_assign`);
-                  try {
-                    await actionAssignPicking(pickingId);
-                  } catch (_) {
-                    /* second assign optional */
-                  }
-                  await tryValidateOne();
-                  log('queue', `delivery validated picking ${pickingId} after assign retry`);
-                } else {
-                  throw validateErr;
-                }
-              }
+            }
+          } catch (updateErr) {
+            const msg = (updateErr?.message || String(updateErr)).toLowerCase();
+            const recordDeleted = msg.includes('does not exist or has been deleted') || msg.includes('has been deleted');
+            if (recordDeleted) {
+              log('queue', `delivery updates skipped (record deleted): ${msg.slice(0, 80)}`);
+            } else {
+              throw updateErr;
+            }
+          }
+
+          const tryValidateOne = async () => {
+            await validatePickingWithContext(pickingId, { skip_backorder: true });
+          };
+          const validateMsgOkToSkip = (msg) => {
+            const v = (msg || '').toLowerCase();
+            return (
+              v.includes('does not exist') ||
+              v.includes('has been deleted') ||
+              v.includes('already') ||
+              v.includes('nothing to') ||
+              (v.includes('done') && v.includes('picking'))
+            );
+          };
+          const mightBeStockReservation = (msg) => {
+            const v = (msg || '').toLowerCase();
+            return (
+              v.includes('availability') ||
+              v.includes('available') ||
+              v.includes('not available') ||
+              v.includes('reserved') ||
+              v.includes('reservation') ||
+              v.includes('quantity') ||
+              v.includes('assigned') ||
+              v.includes('waiting') ||
+              v.includes('move line') ||
+              v.includes('need to supply')
+            );
+          };
+
+          try {
+            try {
+              await actionAssignPicking(pickingId);
+              log('queue', `delivery action_assign picking ${pickingId}`);
+            } catch (assignErr) {
+              log(
+                'queue',
+                `delivery action_assign picking ${pickingId} (non-fatal): ${String(assignErr?.message || assignErr).slice(0, 120)}`
+              );
+            }
+            try {
+              await tryValidateOne();
+              log('queue', `delivery validated picking ${pickingId} (skip_backorder)`);
             } catch (validateErr) {
-              const vMsg = String(validateErr?.message || validateErr).toLowerCase();
+              const vMsgRaw = String(validateErr?.message || validateErr);
+              const vMsg = vMsgRaw.toLowerCase();
               if (validateMsgOkToSkip(vMsg)) {
-                log('queue', `delivery validate skipped (picking already done or deleted): ${vMsg.slice(0, 60)}`);
+                log('queue', `delivery validate skipped (picking ${pickingId}): ${vMsg.slice(0, 80)}`);
+              } else if (mightBeStockReservation(vMsg)) {
+                log('queue', `delivery validate failed (stock?) picking ${pickingId} — retry after action_assign`);
+                try {
+                  await actionAssignPicking(pickingId);
+                } catch (_) {
+                  /* second assign optional */
+                }
+                await tryValidateOne();
+                log('queue', `delivery validated picking ${pickingId} after assign retry`);
               } else {
                 throw validateErr;
               }
             }
+          } catch (validateErr) {
+            const vMsg = String(validateErr?.message || validateErr).toLowerCase();
+            if (validateMsgOkToSkip(vMsg)) {
+              log('queue', `delivery validate skipped (picking already done or deleted): ${vMsg.slice(0, 60)}`);
+            } else {
+              throw validateErr;
+            }
           }
+        }
 
-          await syncQueueDb.markSynced(Number(item.id));
-          log('queue', `delivery synced id=${item.id} (${blocks.length} picking block(s))`);
+        await applySoLineDeliveredQty();
+        await syncQueueDb.markSynced(Number(item.id));
+        log('queue', `delivery synced id=${item.id} (${blocks.length} picking block(s))`);
+      };
+
+      for (const item of delivery) {
+        const p0 = item.payload || {};
+        if (p0.holdUntilPayment === true) {
+          log('queue', `delivery id=${item.id} SO ${p0.saleOrderId ?? p0.sale_id} held until payment — skip`);
+          continue;
+        }
+        try {
+          await processOneDeliveryQueueItem(item);
         } catch (e) {
           logWarn('queue delivery', e);
         }
@@ -927,6 +965,22 @@ async function processSyncQueue() {
           if (saleOrderId == null || Number.isNaN(soId)) {
             logWarn('queue payment', new Error('Invalid sale_order_id'));
             continue;
+          }
+
+          const pendingForFlush = await syncQueueDb.getPending();
+          const heldDeliveriesForSo = (pendingForFlush || []).filter(
+            (q) =>
+              q.action_type === syncQueueDb.ACTION_DELIVERY &&
+              Number((q.payload || {}).saleOrderId ?? (q.payload || {}).sale_id) === soId &&
+              (q.payload || {}).holdUntilPayment === true
+          );
+          for (const h of heldDeliveriesForSo) {
+            try {
+              const released = { ...h, payload: { ...(h.payload || {}), holdUntilPayment: false } };
+              await processOneDeliveryQueueItem(released);
+            } catch (flushErr) {
+              logWarn('queue delivery (flush before payment)', flushErr);
+            }
           }
 
           await writeSaleOrderCrewFromPaymentPayload(soId, p);
@@ -1607,12 +1661,20 @@ export async function runSync() {
     // Dashboard and order lists read from local DB only; preserve local state for orders with pending upload.
     const pendingSaleOrderIds = await syncQueueDb.getPendingSaleOrderIds();
     const syncedPaymentSaleOrderIds = await syncQueueDb.getSyncedPaymentSaleOrderIds();
+    const localInvoicesMod = await import('../database/localInvoices.js');
+    const unsyncedInvoiceSoIds = await localInvoicesMod.getUnsyncedLocalInvoiceSaleOrderIds();
     const fetchedOrderIds = (orders || []).map((o) => o?.id).filter((id) => id != null).map((id) => Number(id));
     const fetchedOrderIdSet = new Set(fetchedOrderIds);
     const preserveLocalSaleOrderIds = new Set(pendingSaleOrderIds);
     for (const soId of syncedPaymentSaleOrderIds) {
       const idNum = Number(soId);
       if (Number.isFinite(idNum) && fetchedOrderIdSet.has(idNum)) {
+        preserveLocalSaleOrderIds.add(idNum);
+      }
+    }
+    for (const soId of unsyncedInvoiceSoIds) {
+      const idNum = Number(soId);
+      if (Number.isFinite(idNum) && idNum > 0 && fetchedOrderIdSet.has(idNum)) {
         preserveLocalSaleOrderIds.add(idNum);
       }
     }
@@ -1656,7 +1718,17 @@ export async function runSync() {
           'search_read',
           [[['id', 'in', lineIds]]],
           {
-            fields: ['id', 'order_id', 'product_id', 'name', 'product_uom_qty', 'price_unit', 'price_subtotal', 'price_total'],
+            fields: [
+              'id',
+              'order_id',
+              'product_id',
+              'name',
+              'product_uom_qty',
+              'qty_delivered',
+              'price_unit',
+              'price_subtotal',
+              'price_total',
+            ],
             limit: 1000,
           }
         );
@@ -1697,7 +1769,9 @@ export async function runSync() {
     }
 
     log('db', 'sale_order_lines');
-    await saleOrderLinesDb.upsertSaleOrderLines(allLines);
+    await saleOrderLinesDb.upsertSaleOrderLines(allLines, {
+      preserveQtyForOrderIds: preserveLocalSaleOrderIds,
+    });
     log('db', 'stock_pickings');
     await stockPickingsDb.upsertStockPickings(allPickings, { preserveLocalStateForSaleOrderIds: pendingSaleOrderIds });
     log('db', 'stock_moves');
