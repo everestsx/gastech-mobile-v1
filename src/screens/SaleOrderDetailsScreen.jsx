@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
   Text,
@@ -39,6 +40,7 @@ import { getProductDisplayName, getGasSizeFromProductName } from '../utils/produ
 import { getLocalizedCustomerNameFromOrder } from '../utils/customerDisplayName';
 import { getProductImageSource } from '../utils/gasImage';
 import { lineTaxAtQuantity } from '../utils/orderLineTax.js';
+import { getCheckoutResumeEntry } from '../services/checkoutResume.service';
 
 function formatCurrency(amount) {
     const n = Number(amount);
@@ -101,6 +103,26 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
   const [cancelReason, setCancelReason] = useState('');
   const [cancelReasonsLoading, setCancelReasonsLoading] = useState(false);
   const [cancelError, setCancelError] = useState(null);
+  const [checkoutResumeEntry, setCheckoutResumeEntry] = useState(null);
+
+  useFocusEffect(
+    useCallback(() => {
+      let alive = true;
+      (async () => {
+        try {
+          const e = await getCheckoutResumeEntry(saleOrderId);
+          if (!alive) return;
+          setCheckoutResumeEntry(e && e.invoiceParams ? e : null);
+        } catch {
+          if (!alive) return;
+          setCheckoutResumeEntry(null);
+        }
+      })();
+      return () => {
+        alive = false;
+      };
+    }, [saleOrderId])
+  );
 
   const styles = useMemo(
     () =>
@@ -333,6 +355,25 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
           marginBottom: spacing.md,
         },
         cancelBannerText: { flex: 1, fontSize: 13, fontWeight: '700', color: colors.error || '#c00' },
+        checkoutResumeBanner: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: spacing.sm,
+          backgroundColor: (colors.primary || '#4f46e5') + '18',
+          borderLeftWidth: 4,
+          borderLeftColor: colors.primary,
+          paddingVertical: 12,
+          paddingHorizontal: spacing.md,
+          borderRadius: borderRadius.md,
+          marginBottom: spacing.md,
+        },
+        checkoutResumeBannerTitle: { fontSize: 14, fontWeight: '800', color: colors.text },
+        checkoutResumeBannerSub: {
+          fontSize: 12,
+          fontWeight: '500',
+          color: colors.textSecondary,
+          marginTop: 2,
+        },
         cancelConfirmBackdrop: {
           flex: 1,
           backgroundColor: 'rgba(15, 23, 42, 0.55)',
@@ -1390,6 +1431,35 @@ const handleProceedToPayment = useCallback(async () => {
             <Ionicons name="close-circle-outline" size={18} color={colors.error || '#c00'} />
             <Text style={styles.cancelBannerText}>This order has been cancelled.</Text>
           </View>
+        )}
+
+        {checkoutResumeEntry && !orderIsCancelled && (
+          <TouchableOpacity
+            style={styles.checkoutResumeBanner}
+            onPress={() => {
+              if (checkoutResumeEntry.phase === 'payment_proof') {
+                navigation.navigate('PaymentProof', {
+                  saleOrderId,
+                  creditProofRequired: checkoutResumeEntry.invoiceParams.creditProofRequired === true,
+                  orderName: checkoutResumeEntry.invoiceParams.orderName,
+                });
+              } else {
+                navigation.navigate('InvoiceScreen', checkoutResumeEntry.invoiceParams);
+              }
+            }}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="hourglass-outline" size={22} color={colors.primary} />
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={styles.checkoutResumeBannerTitle}>
+                {checkoutResumeEntry.phase === 'payment_proof'
+                  ? 'Payment proof not finished'
+                  : 'Invoice step not finished'}
+              </Text>
+              <Text style={styles.checkoutResumeBannerSub}>Tap to continue where you left off.</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={22} color={colors.primary} />
+          </TouchableOpacity>
         )}
 
         {/* Order ID + Customer */}

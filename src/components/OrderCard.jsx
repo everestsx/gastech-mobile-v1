@@ -59,6 +59,8 @@ export default function OrderCard({
   deliveryBannerText = null,
   /** When set on delivered tab: show only products with qty_done > 0 as "X kg — N delivered". */
   qtyDoneByProductId = null,
+  /** 'invoice' | 'payment_proof' — checkout in progress after payment (resume from list). */
+  checkoutResumePhase = null,
 }) {
   const { colors, syncDateField, appLanguage } = useTheme();
 
@@ -116,6 +118,7 @@ export default function OrderCard({
         badgeStatusToDeliver: { backgroundColor: '#93c5fd' },
         badgeStatusInvoiced: { backgroundColor: colors.primarySurface || '#e0e7ff' },
         badgeStatusDelivered: { backgroundColor: colors.success ?? '#059669' },
+        badgeStatusResume: { backgroundColor: '#fef3c7' },
         badgeText: { fontSize: 10, fontWeight: '700', color: '#fff' },
         badgeStatusText: { fontSize: 12, fontWeight: '700', color: colors.text },
         badgeStatusTextInvoiced: { fontSize: 11, fontWeight: '600', color: colors.text },
@@ -180,6 +183,8 @@ export default function OrderCard({
 
   function getOrderStatusLabel() {
     if (String(order?.state) === 'cancel') return 'Cancelled';
+    if (checkoutResumePhase === 'payment_proof') return 'Add payment photo';
+    if (checkoutResumePhase === 'invoice') return 'Finish invoice';
     if (isDelivered) return 'Delivered';
     if (String(order?.invoice_status) === 'invoiced') return 'Invoiced';
     return 'To Deliver';
@@ -187,12 +192,18 @@ export default function OrderCard({
 
   function getOrderStatusBadgeStyle() {
     if (String(order?.state) === 'cancel') return styles.badgeCancel;
+    if (checkoutResumePhase) return styles.badgeStatusResume;
     if (isDelivered) return styles.badgeStatusDelivered;
     if (String(order?.invoice_status) === 'invoiced') return styles.badgeStatusInvoiced;
     return styles.badgeStatusToDeliver;
   }
 
-  const isStatusDarkText = String(order?.state) === 'cancel' ? false : String(order?.invoice_status) === 'invoiced';
+  const isStatusDarkText =
+    String(order?.state) === 'cancel'
+      ? false
+      : checkoutResumePhase
+        ? true
+        : String(order?.invoice_status) === 'invoiced';
 
   const baseLines = order ? resolveOrderLinesForCard(order, orderLines) : [];
   const displayOrderTotal = useMemo(

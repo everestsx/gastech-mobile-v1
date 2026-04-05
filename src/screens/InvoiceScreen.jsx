@@ -37,6 +37,7 @@ import SyncHeaderBadge from '../components/SyncHeaderBadge';
 import SignatureCanvas from 'react-native-signature-canvas';
 import { resolveInvoiceCustomerDisplayName, odooLocalizedText } from '../utils/customerDisplayName';
 import { lineSubtotalAtQuantity, lineTaxAtQuantity } from '../utils/orderLineTax.js';
+import { setCheckoutResumePhase, clearCheckoutResume } from '../services/checkoutResume.service';
 
 /**
  * Expo `printToFileAsync` defaults to US Letter width (612pt), so a 104mm-wide layout sits in a
@@ -419,7 +420,7 @@ function buildInvoiceHtml(
   </div>
   ` : ''}
   <div class="footer">GasTech – Your Trusted Business Partner</div>
-  <div class="powered">Powered by everestx.com</div>
+  <div class="powered">Powered by everestsx.com</div>
   </div>
 </body>
 </html>`;
@@ -742,6 +743,7 @@ export default function InvoiceScreen({ route, navigation }) {
   const skipEvidenceModal = routeSkipEvidenceModal === true;
   const openPaymentProofAfterPrint = routeOpenPaymentProofAfterPrint === true;
   const signaturesMandatory = openPaymentProofAfterPrint;
+  const blockSignatureModalDismiss = signaturesMandatory || (fromProceedPayment && promptSignatures);
 
   const { setHideSyncIndicator } = useSync();
   const [order, setOrder] = useState(null);
@@ -1079,6 +1081,9 @@ export default function InvoiceScreen({ route, navigation }) {
         resultModalTitle: { fontSize: 20, fontWeight: '700', color: '#0f172a', marginBottom: 8, textAlign: 'center' },
         resultModalSub: { fontSize: 14, color: '#64748b', textAlign: 'center', marginBottom: 24 },
         resultModalBtnRow: { flexDirection: 'row', gap: 12, width: '100%' },
+        resultModalActionsColumn: { width: '100%', gap: 10 },
+        resultModalLinkBtn: { paddingVertical: 12, paddingHorizontal: 8 },
+        resultModalLinkText: { fontSize: 15, fontWeight: '600', color: colors.primary, textAlign: 'center' },
         resultModalBtn: {
           flex: 1,
           flexDirection: 'row',
@@ -1181,11 +1186,25 @@ export default function InvoiceScreen({ route, navigation }) {
           padding: spacing.md,
           paddingBottom: spacing.xl,
         },
-        sigCapTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.sm },
-        sigCapSkip: { paddingVertical: 8, paddingHorizontal: spacing.sm },
-        sigCapSkipText: { fontSize: 15, fontWeight: '600', color: colors.primary },
-        sigCapTitle: { fontSize: 18, fontWeight: '800', color: colors.text, textAlign: 'center', flex: 1 },
-        sigCapHint: { fontSize: 13, color: colors.textSecondary, textAlign: 'center', marginBottom: spacing.md },
+        sigCapHero: { alignItems: 'center', marginBottom: spacing.lg },
+        sigCapHeroIconWrap: {
+          width: 64,
+          height: 64,
+          borderRadius: 32,
+          backgroundColor: (colors.primary || '#6366f1') + '22',
+          alignItems: 'center',
+          justifyContent: 'center',
+          marginBottom: spacing.md,
+        },
+        sigCapHeroTitle: { fontSize: 20, fontWeight: '800', color: colors.text, textAlign: 'center' },
+        sigCapHeroSubtitle: {
+          fontSize: 14,
+          color: colors.textSecondary,
+          textAlign: 'center',
+          marginTop: spacing.sm,
+          lineHeight: 21,
+          paddingHorizontal: spacing.sm,
+        },
         sigCapSection: { marginBottom: spacing.lg },
         sigCapSectionHeader: { fontSize: 15, fontWeight: '700', color: colors.text, marginBottom: 4 },
         sigCapSectionHint: { fontSize: 12, color: colors.textSecondary, marginBottom: spacing.xs },
@@ -1473,7 +1492,14 @@ export default function InvoiceScreen({ route, navigation }) {
     });
   }, [navigation, rongtaReady, thermalConnected, onInvoicePrinterHeaderPress]);
 
-  const goToPaymentProofScreen = useCallback(() => {
+  const goToPaymentProofScreen = useCallback(async () => {
+    if (saleOrderId != null) {
+      try {
+        await setCheckoutResumePhase(saleOrderId, 'payment_proof');
+      } catch (e) {
+        console.warn('[InvoiceScreen] setCheckoutResumePhase', e?.message ?? e);
+      }
+    }
     navigation.replace('PaymentProof', {
       saleOrderId,
       creditProofRequired: routeCreditProofRequired === true,
@@ -1499,7 +1525,7 @@ export default function InvoiceScreen({ route, navigation }) {
     const wantSig = route.params?.promptSignatures === true;
     const openAfterPrint = () => {
       if (openPaymentProofAfterPrint) {
-        goToPaymentProofScreen();
+        void goToPaymentProofScreen();
         return;
       }
       if (skipEv) {
@@ -1637,9 +1663,16 @@ export default function InvoiceScreen({ route, navigation }) {
     invoiceLineQtys,
   ]);
 
-  const goToHome = useCallback(() => {
+  const goToHome = useCallback(async () => {
+    try {
+      if (fromProceedPayment && !openPaymentProofAfterPrint && saleOrderId != null) {
+        await clearCheckoutResume(saleOrderId);
+      }
+    } catch (e) {
+      console.warn('[InvoiceScreen] clearCheckoutResume', e?.message ?? e);
+    }
     navigation.navigate('MainTabs', { screen: 'Dashboard' });
-  }, [navigation]);
+  }, [navigation, fromProceedPayment, openPaymentProofAfterPrint, saleOrderId]);
 
   const effectivePaymentSplit = (paymentType === 'split' && paymentSplit)
     ? paymentSplit
@@ -1659,7 +1692,7 @@ export default function InvoiceScreen({ route, navigation }) {
           invoiceLineQtys,
         });
       } else {
-        goToHome();
+        void goToHome();
       }
     };
     if (isCreditFlow && deliveryPhotos.length === 0) {
@@ -1790,6 +1823,52 @@ export default function InvoiceScreen({ route, navigation }) {
     routeDeliveryDone,
     deliveryPayload,
     invoiceLineQtys,
+  ]);
+
+  const handlePrintFailContinueWithoutPrinting = useCallback(() => {
+    setPrintResult(null);
+    setPrintError(null);
+    if (previewBeforePayment) {
+      navigateToProceedPayment();
+      return;
+    }
+    if (openPaymentProofAfterPrint) {
+      const hasCust = localCustomerSig && String(localCustomerSig).trim() !== '';
+      const hasDrv = localDriverSig && String(localDriverSig).trim() !== '';
+      if (!hasCust || !hasDrv) {
+        Alert.alert(
+          'Signatures required',
+          'Add customer and driver signatures before continuing.'
+        );
+        setShowSignatureCaptureModal(true);
+        return;
+      }
+      void goToPaymentProofScreen();
+      return;
+    }
+    if (skipEvidenceModal) {
+      if (promptSignatures) {
+        const hasCust = localCustomerSig && String(localCustomerSig).trim() !== '';
+        const hasDrv = localDriverSig && String(localDriverSig).trim() !== '';
+        if (!hasCust || !hasDrv) {
+          setShowSignatureCaptureModal(true);
+          return;
+        }
+      }
+      void goToHome();
+      return;
+    }
+    setShowEvidenceModal(true);
+  }, [
+    previewBeforePayment,
+    navigateToProceedPayment,
+    openPaymentProofAfterPrint,
+    localCustomerSig,
+    localDriverSig,
+    skipEvidenceModal,
+    promptSignatures,
+    goToPaymentProofScreen,
+    goToHome,
   ]);
 
   const paymentLabel = (() => {
@@ -2177,7 +2256,7 @@ export default function InvoiceScreen({ route, navigation }) {
                 setShowSignatureCaptureModal(true);
                 return;
               }
-              goToPaymentProofScreen();
+              void goToPaymentProofScreen();
               return;
             }
             if (skipEvidenceModal) {
@@ -2189,7 +2268,7 @@ export default function InvoiceScreen({ route, navigation }) {
                   return;
                 }
               }
-              goToHome();
+              void goToHome();
               return;
             }
             setShowEvidenceModal(true);
@@ -2236,11 +2315,11 @@ export default function InvoiceScreen({ route, navigation }) {
             <Text style={styles.resultModalSub}>
               {printResult === 'success'
                 ? 'Invoice sent to printer.'
-                : (printError || 'Could not print.')}
+                : `${printError || 'Could not print.'}\n\nYou can re-print, continue without printing (if signatures are saved), or go to the dashboard — the order stays on your list until payment proof is finished.`}
             </Text>
-            <View style={styles.resultModalBtnRow}>
+            <View style={styles.resultModalActionsColumn}>
               <TouchableOpacity
-                style={[styles.resultModalBtn, styles.resultModalBtnPrimary]}
+                style={[styles.resultModalBtn, styles.resultModalBtnPrimary, { width: '100%', flex: 0 }]}
                 onPress={() => {
                   setPrintResult(null);
                   setPrintError(null);
@@ -2252,12 +2331,17 @@ export default function InvoiceScreen({ route, navigation }) {
                 <Text style={styles.resultModalBtnTextPrimary}>Re-print</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.resultModalBtn, styles.resultModalBtnSecondary]}
-                onPress={goToHome}
+                style={[styles.resultModalBtn, styles.resultModalBtnSecondary, { width: '100%', flex: 0 }]}
+                onPress={handlePrintFailContinueWithoutPrinting}
                 activeOpacity={0.8}
               >
-                <Ionicons name="home-outline" size={22} color={colors.primary} />
-                <Text style={styles.resultModalBtnTextSecondary}>Go to home</Text>
+                <Ionicons name="arrow-forward-circle-outline" size={22} color={colors.primary} />
+                <Text style={styles.resultModalBtnTextSecondary}>Continue without printing</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.resultModalLinkBtn} onPress={() => void goToHome()} activeOpacity={0.75}>
+                <Text style={[styles.resultModalLinkText, { color: colors.textSecondary }]}>
+                  Save for later — go to dashboard
+                </Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -2269,6 +2353,13 @@ export default function InvoiceScreen({ route, navigation }) {
         animationType="slide"
         transparent
         onRequestClose={() => {
+          if (blockSignatureModalDismiss) {
+            Alert.alert(
+              'Signatures required',
+              'Customer and driver signatures are required to finish this delivery. Please sign both boxes, tap Save on each, then Save signatures.'
+            );
+            return;
+          }
           setShowSignatureCaptureModal(false);
         }}
       >
@@ -2281,24 +2372,17 @@ export default function InvoiceScreen({ route, navigation }) {
               scrollEnabled={signatureModalScrollEnabled}
               showsVerticalScrollIndicator={false}
             >
-            <View style={styles.sigCapTopRow}>
-              <TouchableOpacity
-                style={styles.sigCapSkip}
-                onPress={() => {
-                  void persistCapturedSignatures('', '');
-                }}
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              >
-                <Text style={styles.sigCapSkipText}>Skip</Text>
-              </TouchableOpacity>
-              <Text style={styles.sigCapTitle}>Signatures</Text>
-              <View style={{ width: 48 }} />
+            <View style={styles.sigCapHero}>
+              <View style={styles.sigCapHeroIconWrap}>
+                <Ionicons name="create-outline" size={32} color={colors.primary} />
+              </View>
+              <Text style={styles.sigCapHeroTitle}>Sign to confirm delivery</Text>
+              <Text style={styles.sigCapHeroSubtitle}>
+                {blockSignatureModalDismiss
+                  ? 'Both the customer and you (driver) need to sign. Use Save customer and Save driver, then tap Save signatures at the bottom.'
+                  : 'Add signatures when possible. You can close this screen if signatures are optional for this step.'}
+              </Text>
             </View>
-            <Text style={styles.sigCapHint}>
-              {signaturesMandatory
-                ? 'For a complete record, add both signatures before printing. You can tap Skip if the customer cannot sign now — you can still print after.'
-                : 'Sign below or tap Skip to continue without signatures.'}
-            </Text>
 
             <View style={styles.sigCapSection}>
               <Text style={styles.sigCapSectionHeader}>Customer signature</Text>
@@ -2412,7 +2496,7 @@ export default function InvoiceScreen({ route, navigation }) {
                 if (!captureCustomerSig || !captureDriverSig) {
                   Alert.alert(
                     'Signatures',
-                    'Save both customer and driver signatures, or tap Skip.'
+                    'Use Save customer and Save driver for each box, then tap Save signatures.'
                   );
                   return;
                 }
@@ -2451,7 +2535,7 @@ export default function InvoiceScreen({ route, navigation }) {
               invoiceLineQtys,
             });
           } else {
-            goToHome();
+            void goToHome();
           }
         }}
       >
@@ -2572,7 +2656,7 @@ export default function InvoiceScreen({ route, navigation }) {
                       invoiceLineQtys,
                     });
                   } else {
-                    goToHome();
+                    void goToHome();
                   }
                 }}
                 disabled={savingEvidence}

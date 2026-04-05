@@ -11,6 +11,7 @@ import {
   Image,
 } from 'react-native';
 import { CommonActions } from '@react-navigation/native';
+import { setCheckoutResumeFromPayment } from '../services/checkoutResume.service';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
@@ -457,6 +458,28 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       await saleOrdersDb.updateSaleOrderAmountsFromLines(soId);
 
       const creditProofRequired = needsCredit && creditAmountNum > 0;
+      const invoiceNavParams = {
+        saleOrderId,
+        total: orderTotalRounded,
+        invoiceNumber,
+        paymentType: 'split',
+        paymentSplit: {
+          cash: cashPayAmount,
+          check: chequePayAmount,
+          credit: creditAmountNum,
+        },
+        selectedBankName: needsCheck ? empty(selectedLocalBank?.name) : '',
+        chequeBankName: needsCheck ? empty(selectedLocalBank?.name) : '',
+        checkNumber: needsCheck ? empty(checkNumberTrimmed) : '',
+        fromProceedPayment: true,
+        promptSignatures: true,
+        skipEvidenceModal: true,
+        openPaymentProofAfterPrint: true,
+        creditProofRequired,
+        invoiceLineQtys,
+        orderName: empty(orderName),
+      };
+      await setCheckoutResumeFromPayment(soId, invoiceNavParams);
       navigation.dispatch(
         CommonActions.reset({
           index: 1,
@@ -464,27 +487,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
             { name: 'MainTabs' },
             {
               name: 'InvoiceScreen',
-              params: {
-                saleOrderId,
-                total: orderTotalRounded,
-                invoiceNumber,
-                paymentType: 'split',
-                paymentSplit: {
-                  cash: cashPayAmount,
-                  check: chequePayAmount,
-                  credit: creditAmountNum,
-                },
-                selectedBankName: needsCheck ? empty(selectedLocalBank?.name) : '',
-                chequeBankName: needsCheck ? empty(selectedLocalBank?.name) : '',
-                checkNumber: needsCheck ? empty(checkNumberTrimmed) : '',
-                fromProceedPayment: true,
-                promptSignatures: true,
-                skipEvidenceModal: true,
-                openPaymentProofAfterPrint: true,
-                creditProofRequired,
-                invoiceLineQtys,
-                orderName: empty(orderName),
-              },
+              params: invoiceNavParams,
             },
           ],
         })

@@ -18,6 +18,7 @@ import { spacing, borderRadius } from '../constants/theme';
 import * as offlineAttachmentsDb from '../database/offlineAttachments.js';
 import { empty } from '../database/dbHelpers.js';
 import { runSync } from '../services/sync.service';
+import { clearCheckoutResume } from '../services/checkoutResume.service';
 
 const MAX_PHOTOS = 3;
 
@@ -71,6 +72,7 @@ export default function PaymentProofScreen({ route, navigation }) {
     setSaving(true);
     try {
       await persistPhotos();
+      await clearCheckoutResume(soId);
       runSync().catch((e) => console.warn('[PaymentProof] sync', e?.message ?? e));
       navigation.reset({
         index: 0,

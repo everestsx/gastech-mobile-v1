@@ -27,6 +27,7 @@ import {
 import OrderCard from '../components/OrderCard';
 import SyncHeaderBadge from '../components/SyncHeaderBadge';
 import * as deliveryQtyDb from '../database/deliveryQty.js';
+import { getCheckoutResumeMap } from '../services/checkoutResume.service';
 
 const TAB_TO_DELIVER = 'to_deliver';
 
@@ -62,17 +63,20 @@ export default function SaleOrderListScreen({ route, navigation }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchField, setSearchField] = useState('customer');
   const [showFieldDropdown, setShowFieldDropdown] = useState(false);
-  // Orders tab: same “completed” rule as dashboard / delivery — hide once invoiced or any real delivery activity.
+  const [checkoutResumeMap, setCheckoutResumeMap] = useState({});
+  // Orders tab: hide once invoiced or delivered — unless checkout (invoice / payment photo) is still in progress.
   const filteredOrders = useMemo(
     () =>
       orders.filter((o) => {
         if (String(o.state || '') === 'cancel') return false;
+        const rid = String(o.id);
+        if (checkoutResumeMap[rid]?.invoiceParams) return true;
         const inv = String(o.invoice_status || '').toLowerCase() === 'invoiced';
         const st = String(o.pickingState || '').toLowerCase();
         const q = Number(o.qtyDoneSum) || 0;
         return !(inv || st === 'done' || st === 'cancel' || q > 0);
       }),
-    [orders]
+    [orders, checkoutResumeMap]
   );
   const searchFieldLabels = { customer: 'Customer', orderId: 'Order ID' };
   const ordersFilteredBySearch = useMemo(() => {
@@ -238,10 +242,12 @@ export default function SaleOrderListScreen({ route, navigation }) {
     try {
       const user = await getUserSession();
       const vehicleId = user?.isAdmin === false ? user.vehicleId : null;
-      const [data, cachedCustomers] = await Promise.all([
+      const [data, cachedCustomers, resumeMap] = await Promise.all([
         getCachedOrders(vehicleId),
         customerId != null ? getCachedCustomers() : Promise.resolve([]),
+        getCheckoutResumeMap(),
       ]);
+      setCheckoutResumeMap(resumeMap && typeof resumeMap === 'object' ? resumeMap : {});
       const all = Array.isArray(data) ? data : [];
       const dateStr = formatDate(selectedDate);
       let list = all.filter((o) => {
@@ -293,6 +299,7 @@ export default function SaleOrderListScreen({ route, navigation }) {
     } catch (err) {
       console.error('Sale Order Error:', err);
       setOrders([]);
+      setCheckoutResumeMap({});
     } finally {
       setLoading(false);
     }
@@ -340,6 +347,19 @@ export default function SaleOrderListScreen({ route, navigation }) {
   };
 
   const onOrderPress = (order) => {
+    const entry = checkoutResumeMap[String(order.id)];
+    if (entry?.invoiceParams) {
+      if (entry.phase === 'payment_proof') {
+        navigation.navigate('PaymentProof', {
+          saleOrderId: order.id,
+          creditProofRequired: entry.invoiceParams.creditProofRequired === true,
+          orderName: entry.invoiceParams.orderName,
+        });
+        return;
+      }
+      navigation.navigate('InvoiceScreen', entry.invoiceParams);
+      return;
+    }
     navigation.navigate('SaleOrderDetails', { saleOrderId: order.id });
   };
 
@@ -501,6 +521,7 @@ export default function SaleOrderListScreen({ route, navigation }) {
             orderLines={item.orderLines}
             onPress={onOrderPress}
             isDelivered={false}
+            checkoutResumePhase={checkoutResumeMap[String(item.id)]?.phase ?? null}
           />
         )}
       />

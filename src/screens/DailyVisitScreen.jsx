@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
   Text,
@@ -21,6 +22,7 @@ import {
 } from '../services/sync.service';
 import OrderCard from '../components/OrderCard';
 import SyncHeaderBadge from '../components/SyncHeaderBadge';
+import { getCheckoutResumeMap } from '../services/checkoutResume.service';
 
 function formatDate(d) {
   return d.toISOString().split('T')[0];
@@ -33,6 +35,7 @@ export default function DailyVisitScreen({ route, navigation }) {
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [showPicker, setShowPicker] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [checkoutResumeMap, setCheckoutResumeMap] = useState({});
 
   const styles = useMemo(
     () =>
@@ -102,15 +105,19 @@ export default function DailyVisitScreen({ route, navigation }) {
         filtered = filtered.filter((o) => o.partner_id?.[0] === customerId);
       }
       if (filtered.length === 0) {
+        const resumeOnly = await getCheckoutResumeMap();
+        setCheckoutResumeMap(resumeOnly && typeof resumeOnly === 'object' ? resumeOnly : {});
         setOrders([]);
         return;
       }
       const orderIds = filtered.map((o) => o.id);
-      const [totals, pickings, allLines] = await Promise.all([
+      const [totals, pickings, allLines, resumeMap] = await Promise.all([
         getOrderLineTotalsFromDB(filtered),
         getPickingsBySaleIdsFromDB(orderIds),
         getOrderLinesByOrderIdsFromDB(orderIds),
+        getCheckoutResumeMap(),
       ]);
+      setCheckoutResumeMap(resumeMap && typeof resumeMap === 'object' ? resumeMap : {});
       const saleIdToPickingState = {};
       (pickings || []).forEach((p) => {
         const saleId = Array.isArray(p.sale_id) ? p.sale_id[0] : p.sale_id;
@@ -137,14 +144,17 @@ export default function DailyVisitScreen({ route, navigation }) {
       );
     } catch (_) {
       setOrders([]);
+      setCheckoutResumeMap({});
     } finally {
       setLoading(false);
     }
   }, [selectedDate, customerId, syncDateField]);
 
-  useEffect(() => {
-    loadOrders();
-  }, [loadOrders]);
+  useFocusEffect(
+    useCallback(() => {
+      void loadOrders();
+    }, [loadOrders])
+  );
 
   const onDateChange = (event, date) => {
     if (Platform.OS === 'android') setShowPicker(false);
@@ -152,6 +162,19 @@ export default function DailyVisitScreen({ route, navigation }) {
   };
 
   const onOrderPress = (order) => {
+    const entry = checkoutResumeMap[String(order.id)];
+    if (entry?.invoiceParams) {
+      if (entry.phase === 'payment_proof') {
+        navigation.navigate('PaymentProof', {
+          saleOrderId: order.id,
+          creditProofRequired: entry.invoiceParams.creditProofRequired === true,
+          orderName: entry.invoiceParams.orderName,
+        });
+        return;
+      }
+      navigation.navigate('InvoiceScreen', entry.invoiceParams);
+      return;
+    }
     if (order.isDelivered) {
       navigation.navigate('ProceedPayment', {
         saleOrderId: order.id,
@@ -177,6 +200,7 @@ export default function DailyVisitScreen({ route, navigation }) {
       orderLines={item.orderLines}
       onPress={onOrderPress}
       isDelivered={item.isDelivered}
+      checkoutResumePhase={checkoutResumeMap[String(item.id)]?.phase ?? null}
     />
   );
 

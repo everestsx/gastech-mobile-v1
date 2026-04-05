@@ -1,27 +1,18 @@
 {
   "cli": {
-    "version": ">= 18.4.0",
+    "version": ">= 18.5.0",
     "appVersionSource": "remote"
   },
   "build": {
     "development": {
       "developmentClient": true,
-      "distribution": "internal",
-      "env": {
-        "EAS_DANGEROUS_OVERRIDE_ANDROID_APPLICATION_ID": "com.gastech.mobile"
-      }
+      "distribution": "internal"
     },
     "preview": {
-      "distribution": "internal",
-      "env": {
-        "EAS_DANGEROUS_OVERRIDE_ANDROID_APPLICATION_ID": "com.gastech.mobile"
-      }
+      "distribution": "internal"
     },
     "production": {
-      "autoIncrement": true,
-      "env": {
-        "EAS_DANGEROUS_OVERRIDE_ANDROID_APPLICATION_ID": "com.gastech.mobile"
-      }
+      "autoIncrement": true
     }
   },
   "submit": {
