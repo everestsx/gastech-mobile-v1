@@ -819,6 +819,9 @@ export default function InvoiceScreen({ route, navigation }) {
   const [captureDriverSig, setCaptureDriverSig] = useState(null);
   const [captureCustomerSaved, setCaptureCustomerSaved] = useState(false);
   const [captureDriverSaved, setCaptureDriverSaved] = useState(false);
+  /** Bumps when signature modal opens so pads remount with correct initial dataURL. */
+  const [signatureModalSession, setSignatureModalSession] = useState(0);
+  const signatureModalEnteredRef = useRef(false);
   const captureCustomerRef = useRef(null);
   const captureDriverRef = useRef(null);
   const MAX_PHOTOS = 3;
@@ -1289,6 +1292,23 @@ export default function InvoiceScreen({ route, navigation }) {
           borderWidth: 1,
           borderColor: colors.border,
         },
+        /** Both pads stay mounted while the modal is open so tab switches keep each WebView’s strokes. */
+        sigCapCanvasWrapStack: {
+          height: 240,
+          marginBottom: spacing.sm,
+          borderRadius: borderRadius.md,
+          overflow: 'hidden',
+          borderWidth: 1,
+          borderColor: colors.border,
+          position: 'relative',
+        },
+        sigCapCanvasLayer: {
+          position: 'absolute',
+          left: 0,
+          right: 0,
+          top: 0,
+          bottom: 0,
+        },
         sigCapCanvas: { flex: 1, height: 150 },
         sigCapCanvasLarge: { flex: 1, height: 240 },
         sigCapBtnRow: { flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.md },
@@ -1488,9 +1508,23 @@ export default function InvoiceScreen({ route, navigation }) {
   }, [loading, saleOrderId, fromProceedPayment, promptSignatures, localCustomerSig, localDriverSig]);
 
   useLayoutEffect(() => {
-    if (!showSignatureCaptureModal) return;
+    if (!showSignatureCaptureModal) {
+      signatureModalEnteredRef.current = false;
+      return;
+    }
+    if (signatureModalEnteredRef.current) return;
+    signatureModalEnteredRef.current = true;
+
+    const c =
+      localCustomerSig && String(localCustomerSig).trim() !== '' ? localCustomerSig : null;
+    const d = localDriverSig && String(localDriverSig).trim() !== '' ? localDriverSig : null;
+    setCaptureCustomerSig(c);
+    setCaptureDriverSig(d);
+    setCaptureCustomerSaved(!!c);
+    setCaptureDriverSaved(!!d);
     setSignatureCaptureStep('customer');
-  }, [showSignatureCaptureModal]);
+    setSignatureModalSession((s) => s + 1);
+  }, [showSignatureCaptureModal, localCustomerSig, localDriverSig]);
 
   useEffect(() => {
     setHideSyncIndicator(true);
@@ -2508,10 +2542,20 @@ export default function InvoiceScreen({ route, navigation }) {
               </TouchableOpacity>
             </View>
 
-            {signatureCaptureStep === 'customer' ? (
-              <View style={styles.sigCapSection}>
-                <View style={styles.sigCapCanvasWrapLarge}>
+            <View style={styles.sigCapSection}>
+              <View style={styles.sigCapCanvasWrapStack}>
+                <View
+                  style={[
+                    styles.sigCapCanvasLayer,
+                    {
+                      opacity: signatureCaptureStep === 'customer' ? 1 : 0,
+                      zIndex: signatureCaptureStep === 'customer' ? 2 : 0,
+                    },
+                  ]}
+                  pointerEvents={signatureCaptureStep === 'customer' ? 'auto' : 'none'}
+                >
                   <SignatureCanvas
+                    key={`${signatureModalSession}-customer`}
                     ref={captureCustomerRef}
                     dataURL={
                       captureCustomerSig && String(captureCustomerSig).trim() !== ''
@@ -2535,31 +2579,18 @@ export default function InvoiceScreen({ route, navigation }) {
                     webStyle={`.m-signature-pad--footer { display: none !important; }`}
                   />
                 </View>
-                <View style={styles.sigCapBtnRow}>
-                  <TouchableOpacity
-                    style={styles.sigCapBtn}
-                    onPress={() => {
-                      captureCustomerRef.current?.clearSignature();
-                      setCaptureCustomerSig(null);
-                      setCaptureCustomerSaved(false);
-                    }}
-                  >
-                    <Text style={styles.sigCapBtnText}>Clear</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.sigCapBtn, styles.sigCapBtnPrimary]}
-                    onPress={() => captureCustomerRef.current?.readSignature()}
-                  >
-                    <Text style={styles.sigCapBtnTextLight}>
-                      {captureCustomerSaved ? 'Saved' : 'Save customer'}
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            ) : (
-              <View style={styles.sigCapSection}>
-                <View style={styles.sigCapCanvasWrapLarge}>
+                <View
+                  style={[
+                    styles.sigCapCanvasLayer,
+                    {
+                      opacity: signatureCaptureStep === 'driver' ? 1 : 0,
+                      zIndex: signatureCaptureStep === 'driver' ? 2 : 0,
+                    },
+                  ]}
+                  pointerEvents={signatureCaptureStep === 'driver' ? 'auto' : 'none'}
+                >
                   <SignatureCanvas
+                    key={`${signatureModalSession}-driver`}
                     ref={captureDriverRef}
                     dataURL={
                       captureDriverSig && String(captureDriverSig).trim() !== '' ? captureDriverSig : ''
@@ -2581,6 +2612,30 @@ export default function InvoiceScreen({ route, navigation }) {
                     webStyle={`.m-signature-pad--footer { display: none !important; }`}
                   />
                 </View>
+              </View>
+
+              {signatureCaptureStep === 'customer' ? (
+                <View style={styles.sigCapBtnRow}>
+                  <TouchableOpacity
+                    style={styles.sigCapBtn}
+                    onPress={() => {
+                      captureCustomerRef.current?.clearSignature();
+                      setCaptureCustomerSig(null);
+                      setCaptureCustomerSaved(false);
+                    }}
+                  >
+                    <Text style={styles.sigCapBtnText}>Clear</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.sigCapBtn, styles.sigCapBtnPrimary]}
+                    onPress={() => captureCustomerRef.current?.readSignature()}
+                  >
+                    <Text style={styles.sigCapBtnTextLight}>
+                      {captureCustomerSaved ? 'Saved' : 'Save customer'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              ) : (
                 <View style={styles.sigCapBtnRow}>
                   <TouchableOpacity
                     style={styles.sigCapBtn}
@@ -2596,19 +2651,25 @@ export default function InvoiceScreen({ route, navigation }) {
                     style={[styles.sigCapBtn, styles.sigCapBtnPrimary]}
                     onPress={() => captureDriverRef.current?.readSignature()}
                   >
-                    <Text style={styles.sigCapBtnTextLight}>{captureDriverSaved ? 'Saved' : 'Save driver'}</Text>
+                    <Text style={styles.sigCapBtnTextLight}>
+                      {captureDriverSaved ? 'Saved' : 'Save driver'}
+                    </Text>
                   </TouchableOpacity>
                 </View>
-              </View>
-            )}
+              )}
+            </View>
 
             <TouchableOpacity
               style={styles.sigCapDoneBtn}
               onPress={() => {
-                if (!captureCustomerSig || !captureDriverSig) {
+                const custOk =
+                  captureCustomerSig && String(captureCustomerSig).trim() !== '' && captureCustomerSaved;
+                const drvOk =
+                  captureDriverSig && String(captureDriverSig).trim() !== '' && captureDriverSaved;
+                if (!custOk || !drvOk) {
                   Alert.alert(
                     'Signatures',
-                    'Save customer and driver with the buttons above, then tap Save signatures.'
+                    'Use Save customer and Save driver on each tab, then tap Save signatures.'
                   );
                   return;
                 }
