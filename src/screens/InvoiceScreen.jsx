@@ -1241,6 +1241,34 @@ export default function InvoiceScreen({ route, navigation }) {
           lineHeight: 21,
           paddingHorizontal: spacing.sm,
         },
+        sigCapTabs: {
+          flexDirection: 'row',
+          marginBottom: spacing.md,
+          borderBottomWidth: StyleSheet.hairlineWidth,
+          borderBottomColor: colors.border,
+        },
+        sigCapTab: {
+          flex: 1,
+          paddingVertical: 12,
+          paddingHorizontal: 4,
+          alignItems: 'center',
+          justifyContent: 'center',
+        },
+        sigCapTabActive: {
+          borderBottomWidth: 2,
+          borderBottomColor: colors.primary,
+          marginBottom: -StyleSheet.hairlineWidth,
+        },
+        sigCapTabText: {
+          fontSize: 13,
+          fontWeight: '600',
+          color: colors.textSecondary,
+          textAlign: 'center',
+        },
+        sigCapTabTextActive: {
+          color: colors.primary,
+          fontWeight: '700',
+        },
         sigCapSection: { marginBottom: spacing.lg },
         sigCapSectionHeader: { fontSize: 15, fontWeight: '700', color: colors.text, marginBottom: 4 },
         sigCapSectionHint: { fontSize: 12, color: colors.textSecondary, marginBottom: spacing.xs },
@@ -2428,7 +2456,7 @@ export default function InvoiceScreen({ route, navigation }) {
           if (blockSignatureModalDismiss) {
             Alert.alert(
               'Signatures needed',
-              'Customer first, then driver. Tap Save signatures when both are done.'
+              'Add both signatures, then tap Save signatures. Use the tabs to switch between customer and driver.'
             );
             return;
           }
@@ -2443,30 +2471,59 @@ export default function InvoiceScreen({ route, navigation }) {
               </View>
               <Text style={styles.sigCapHeroTitle}>Sign to confirm delivery</Text>
               <Text style={styles.sigCapHeroSubtitle}>
-                {signatureCaptureStep === 'customer'
-                  ? blockSignatureModalDismiss
-                    ? '1 of 2 — customer signs below, then Save & continue.'
-                    : '1 of 2 — customer signs below. You can close if not required.'
-                  : blockSignatureModalDismiss
-                    ? '2 of 2 — your signature, then Save signatures.'
-                    : '2 of 2 — your signature, then Save signatures.'}
+                {blockSignatureModalDismiss
+                  ? 'Add customer and driver signatures, then tap Save signatures.'
+                  : 'Add signatures if you can. You can close when they are optional.'}
               </Text>
+            </View>
+
+            <View style={styles.sigCapTabs}>
+              <TouchableOpacity
+                style={[styles.sigCapTab, signatureCaptureStep === 'customer' && styles.sigCapTabActive]}
+                onPress={() => setSignatureCaptureStep('customer')}
+                activeOpacity={0.85}
+              >
+                <Text
+                  style={[
+                    styles.sigCapTabText,
+                    signatureCaptureStep === 'customer' && styles.sigCapTabTextActive,
+                  ]}
+                >
+                  Customer signature
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.sigCapTab, signatureCaptureStep === 'driver' && styles.sigCapTabActive]}
+                onPress={() => setSignatureCaptureStep('driver')}
+                activeOpacity={0.85}
+              >
+                <Text
+                  style={[
+                    styles.sigCapTabText,
+                    signatureCaptureStep === 'driver' && styles.sigCapTabTextActive,
+                  ]}
+                >
+                  Driver signature
+                </Text>
+              </TouchableOpacity>
             </View>
 
             {signatureCaptureStep === 'customer' ? (
               <View style={styles.sigCapSection}>
-                <Text style={styles.sigCapSectionHeader}>Customer signature</Text>
-                <Text style={styles.sigCapSectionHint}>Customer</Text>
                 <View style={styles.sigCapCanvasWrapLarge}>
                   <SignatureCanvas
                     ref={captureCustomerRef}
+                    dataURL={
+                      captureCustomerSig && String(captureCustomerSig).trim() !== ''
+                        ? captureCustomerSig
+                        : ''
+                    }
                     onOK={(dataUrl) => {
                       setCaptureCustomerSig(dataUrl);
                       setCaptureCustomerSaved(true);
-                      setSignatureCaptureStep('driver');
                     }}
                     onEmpty={() => {
-                      Alert.alert('Signature', 'Customer needs to sign first.');
+                      Alert.alert('Signature', 'Sign in the box, then tap Save customer.');
                     }}
                     descriptionText=""
                     clearText=""
@@ -2493,84 +2550,75 @@ export default function InvoiceScreen({ route, navigation }) {
                     style={[styles.sigCapBtn, styles.sigCapBtnPrimary]}
                     onPress={() => captureCustomerRef.current?.readSignature()}
                   >
-                    <Text style={styles.sigCapBtnTextLight}>Save & continue</Text>
+                    <Text style={styles.sigCapBtnTextLight}>
+                      {captureCustomerSaved ? 'Saved' : 'Save customer'}
+                    </Text>
                   </TouchableOpacity>
                 </View>
               </View>
             ) : (
-              <>
-                <View style={styles.sigCapSection}>
-                  <Text style={styles.sigCapSectionHeader}>Driver signature</Text>
-                  <Text style={styles.sigCapSectionHint}>Driver</Text>
-                  <View style={styles.sigCapCanvasWrapLarge}>
-                    <SignatureCanvas
-                      ref={captureDriverRef}
-                      onOK={(dataUrl) => {
-                        setCaptureDriverSig(dataUrl);
-                        setCaptureDriverSaved(true);
-                      }}
-                      onEmpty={() => {
-                        Alert.alert('Signature', 'Sign in the box above.');
-                      }}
-                      descriptionText=""
-                      clearText=""
-                      confirmText=""
-                      penColor="#000000"
-                      backgroundColor="rgba(255,255,255,1)"
-                      style={styles.sigCapCanvasLarge}
-                      autoClear={false}
-                      webStyle={`.m-signature-pad--footer { display: none !important; }`}
-                    />
-                  </View>
-                  <View style={styles.sigCapBtnRow}>
-                    <TouchableOpacity
-                      style={styles.sigCapBtn}
-                      onPress={() => {
-                        captureDriverRef.current?.clearSignature();
-                        setCaptureDriverSig(null);
-                        setCaptureDriverSaved(false);
-                      }}
-                    >
-                      <Text style={styles.sigCapBtnText}>Clear</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={[styles.sigCapBtn, styles.sigCapBtnPrimary]}
-                      onPress={() => captureDriverRef.current?.readSignature()}
-                    >
-                      <Text style={styles.sigCapBtnTextLight}>{captureDriverSaved ? 'Saved' : 'Save driver'}</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-
-                <TouchableOpacity
-                  style={styles.sigCapDoneBtn}
-                  onPress={() => {
-                    if (!captureCustomerSig || !captureDriverSig) {
-                      Alert.alert('Signatures', 'Tap Save driver first, then Save signatures.');
-                      return;
+              <View style={styles.sigCapSection}>
+                <View style={styles.sigCapCanvasWrapLarge}>
+                  <SignatureCanvas
+                    ref={captureDriverRef}
+                    dataURL={
+                      captureDriverSig && String(captureDriverSig).trim() !== '' ? captureDriverSig : ''
                     }
-                    void persistCapturedSignatures(captureCustomerSig, captureDriverSig);
-                  }}
-                  activeOpacity={0.88}
-                >
-                  <Ionicons name="checkmark-done-outline" size={22} color="#fff" />
-                  <Text style={styles.evidenceSaveBtnText}>Save signatures</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={[styles.sigCapBtn, { marginTop: spacing.sm }]}
-                  onPress={() => {
-                    captureCustomerRef.current?.clearSignature();
-                    setCaptureCustomerSig(null);
-                    setCaptureCustomerSaved(false);
-                    setSignatureCaptureStep('customer');
-                  }}
-                  activeOpacity={0.85}
-                >
-                  <Text style={styles.sigCapBtnText}>← Back to customer</Text>
-                </TouchableOpacity>
-              </>
+                    onOK={(dataUrl) => {
+                      setCaptureDriverSig(dataUrl);
+                      setCaptureDriverSaved(true);
+                    }}
+                    onEmpty={() => {
+                      Alert.alert('Signature', 'Sign in the box, then tap Save driver.');
+                    }}
+                    descriptionText=""
+                    clearText=""
+                    confirmText=""
+                    penColor="#000000"
+                    backgroundColor="rgba(255,255,255,1)"
+                    style={styles.sigCapCanvasLarge}
+                    autoClear={false}
+                    webStyle={`.m-signature-pad--footer { display: none !important; }`}
+                  />
+                </View>
+                <View style={styles.sigCapBtnRow}>
+                  <TouchableOpacity
+                    style={styles.sigCapBtn}
+                    onPress={() => {
+                      captureDriverRef.current?.clearSignature();
+                      setCaptureDriverSig(null);
+                      setCaptureDriverSaved(false);
+                    }}
+                  >
+                    <Text style={styles.sigCapBtnText}>Clear</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.sigCapBtn, styles.sigCapBtnPrimary]}
+                    onPress={() => captureDriverRef.current?.readSignature()}
+                  >
+                    <Text style={styles.sigCapBtnTextLight}>{captureDriverSaved ? 'Saved' : 'Save driver'}</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
             )}
+
+            <TouchableOpacity
+              style={styles.sigCapDoneBtn}
+              onPress={() => {
+                if (!captureCustomerSig || !captureDriverSig) {
+                  Alert.alert(
+                    'Signatures',
+                    'Save customer and driver with the buttons above, then tap Save signatures.'
+                  );
+                  return;
+                }
+                void persistCapturedSignatures(captureCustomerSig, captureDriverSig);
+              }}
+              activeOpacity={0.88}
+            >
+              <Ionicons name="checkmark-done-outline" size={22} color="#fff" />
+              <Text style={styles.evidenceSaveBtnText}>Save signatures</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>
