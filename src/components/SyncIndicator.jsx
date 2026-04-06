@@ -51,7 +51,7 @@ export default function SyncIndicator({ dotSize = DOT_SIZE, gap = GAP, style }) 
   const color = '#22c55e';
   return (
     <View style={[styles.wrap, style]}>
-      <Text style={styles.label}>Device Syncing...</Text>
+      <Text style={styles.label}>Syncing…</Text>
       <View style={styles.row}>
         <Animated.View style={[styles.dot, { width: dotSize, height: dotSize, borderRadius: dotSize / 2, backgroundColor: color, opacity: a1 }]} />
         <Animated.View style={[styles.dot, { width: dotSize, height: dotSize, borderRadius: dotSize / 2, backgroundColor: color, opacity: a2, marginLeft: gap }]} />

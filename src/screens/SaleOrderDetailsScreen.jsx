@@ -1112,7 +1112,7 @@ const getStockWarning = useCallback((lineId) => {
       setQtyChanged(false);
       setUpdateError(null);
     } catch (err) {
-      setUpdateError(err?.message ?? 'Update failed. Please try again.');
+      setUpdateError(err?.message ?? 'Update failed. Try again.');
     } finally {
       setUpdating(false);
     }
@@ -1132,7 +1132,7 @@ const getStockWarning = useCallback((lineId) => {
   const handleCancelOrder = useCallback(async () => {
     if (!order?.id || canceling || String(order?.state || '') === 'cancel') return;
     if (!cancelReason) {
-      Alert.alert('Choose a reason', 'Please pick one reason from the list before you cancel the order.');
+      Alert.alert('Reason needed', 'Pick a cancel reason from the list.');
       return;
     }
 
@@ -1150,7 +1150,7 @@ const getStockWarning = useCallback((lineId) => {
       setShowCancelModal(false);
       navigation.goBack();
     } catch (err) {
-      setCancelError(err?.message ?? 'Cancel failed. Please try again.');
+      setCancelError(err?.message ?? 'Cancel failed. Try again.');
     } finally {
       setCanceling(false);
     }
@@ -1207,7 +1207,7 @@ const handleProceedToPayment = useCallback(async () => {
       invoiceLineQtys,
     });
   } catch (err) {
-    setUpdateError(err?.message ?? 'Delivery update failed. Please try again.');
+    setUpdateError(err?.message ?? 'Delivery update failed. Try again.');
   } finally {
     setUpdating(false);
   }
@@ -1447,10 +1447,7 @@ const handleProceedToPayment = useCallback(async () => {
                   orderName: checkoutResumeEntry.invoiceParams.orderName,
                 });
               } else {
-                navigation.navigate('InvoiceScreen', {
-                  ...checkoutResumeEntry.invoiceParams,
-                  promptSignatures: false,
-                });
+                navigation.navigate('InvoiceScreen', checkoutResumeEntry.invoiceParams);
               }
             }}
             activeOpacity={0.85}
@@ -1462,7 +1459,7 @@ const handleProceedToPayment = useCallback(async () => {
                   ? 'Payment proof not finished'
                   : 'Invoice step not finished'}
               </Text>
-              <Text style={styles.checkoutResumeBannerSub}>Tap to continue where you left off.</Text>
+              <Text style={styles.checkoutResumeBannerSub}>Tap to continue.</Text>
             </View>
             <Ionicons name="chevron-forward" size={22} color={colors.primary} />
           </TouchableOpacity>

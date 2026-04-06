@@ -62,11 +62,11 @@ export default function PaymentProofScreen({ route, navigation }) {
 
   const handleComplete = useCallback(async () => {
     if (!Number.isFinite(soId) || soId <= 0) {
-      Alert.alert('Error', 'Invalid order.');
+      Alert.alert('Error', 'Missing order.');
       return;
     }
     if (creditProofRequired && photos.length === 0) {
-      Alert.alert('Photo required', 'Add at least one payment proof photo for credit payment.');
+      Alert.alert('Photo required', 'Add at least one photo for credit payment.');
       return;
     }
     setSaving(true);
@@ -79,7 +79,7 @@ export default function PaymentProofScreen({ route, navigation }) {
         routes: [{ name: 'MainTabs', params: { screen: 'Dashboard' } }],
       });
     } catch (e) {
-      Alert.alert('Error', e?.message || 'Could not finish. Try again.');
+      Alert.alert('Error', e?.message || 'Something went wrong. Try again.');
     } finally {
       setSaving(false);
     }
@@ -215,12 +215,12 @@ export default function PaymentProofScreen({ route, navigation }) {
           <Text style={styles.title}>Payment proof</Text>
           <Text style={styles.subtitle}>
             {creditProofRequired
-              ? 'Credit is part of this payment. Add at least one clear photo of the proof (receipt, agreement, or handover) before completing.'
-              : 'Optional: add photos for your records. You can finish without attaching any.'}
+              ? 'Credit: add at least one clear photo (receipt, agreement, or handover).'
+              : 'Optional photos for your records. You can finish without any.'}
           </Text>
           <View style={styles.badge}>
             <Text style={styles.badgeText}>
-              {creditProofRequired ? 'Credit payment — photo required' : 'Cash / cheque — photos optional'}
+              {creditProofRequired ? 'Credit — photo required' : 'Cash/cheque — photos optional'}
             </Text>
           </View>
           {orderName ? (
@@ -237,7 +237,7 @@ export default function PaymentProofScreen({ route, navigation }) {
                 if (photos.length >= MAX_PHOTOS) return;
                 const { status } = await ImagePicker.requestCameraPermissionsAsync();
                 if (status !== 'granted') {
-                  Alert.alert('Permission', 'Camera access is required.');
+                  Alert.alert('Permission', 'Allow camera to take a photo.');
                   return;
                 }
                 const result = await ImagePicker.launchCameraAsync({
@@ -260,7 +260,7 @@ export default function PaymentProofScreen({ route, navigation }) {
                 if (photos.length >= MAX_PHOTOS) return;
                 const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
                 if (status !== 'granted') {
-                  Alert.alert('Permission', 'Gallery access is required.');
+                  Alert.alert('Permission', 'Allow photos to pick from gallery.');
                   return;
                 }
                 const result = await ImagePicker.launchImageLibraryAsync({

@@ -24,8 +24,8 @@ export default function ScanResultScreen({ route, navigation }) {
         iconColor: colors.warning ?? colors.textSecondary,
         title: 'No order for this date',
         message: customerName
-          ? `There are no order details for ${customerName}.`
-          : 'There are no order details for this customer.',
+          ? `No order on file for ${customerName} for this date.`
+          : 'No order on file for this customer for this date.',
       };
     }
     if (type === 'customer_not_found') {
@@ -33,14 +33,18 @@ export default function ScanResultScreen({ route, navigation }) {
         icon: 'person-remove-outline',
         iconColor: colors.error,
         title: 'Customer not found',
-        message: customMessage || (refCode ? `No customer found for reference "${refCode}". Please check the code and try again.` : 'The scanned code did not match any customer.'),
+        message:
+          customMessage ||
+          (refCode
+            ? `No customer for code "${refCode}". Check and try again.`
+            : 'That code does not match a customer.'),
       };
     }
     return {
       icon: 'cloud-offline-outline',
       iconColor: colors.error,
       title: 'Something went wrong',
-      message: customMessage || 'Could not look up customer. Please check your connection and try again.',
+      message: customMessage || 'Could not look up customer. Check connection.',
     };
   }, [type, customerName, customMessage, refCode, colors]);
 

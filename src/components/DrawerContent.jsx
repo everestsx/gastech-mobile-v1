@@ -36,10 +36,7 @@ export default function DrawerContent({ navigation }) {
       if (result.error) {
         Alert.alert('Sync failed', result.error);
       } else {
-        Alert.alert(
-          'Sync complete',
-          `Customers: ${result.customers}, Orders: ${result.orders}`
-        );
+        Alert.alert('Sync done', `${result.customers} customers · ${result.orders} orders`);
       }
     } finally {
       setSyncing(false);

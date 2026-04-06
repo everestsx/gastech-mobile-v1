@@ -1471,14 +1471,14 @@ export default function InvoiceScreen({ route, navigation }) {
 
   const handleConnectToRongta = useCallback(async () => {
     if (!thermalPrinter?.address) {
-      Alert.alert('Printer', 'Choose a paired printer first.');
+      Alert.alert('Printer', 'Pick a paired printer first.');
       return;
     }
     try {
       await connect();
     } catch (e) {
-      const msg = e?.message || 'Could not connect. Check Bluetooth is on and the printer is paired.';
-      Alert.alert('Bluetooth connection failed', msg);
+      const msg = e?.message || 'Turn on Bluetooth and make sure the printer is paired.';
+      Alert.alert('Could not connect', msg);
     }
   }, [thermalPrinter, connect]);
 
@@ -1491,7 +1491,7 @@ export default function InvoiceScreen({ route, navigation }) {
       const list = await findBluetoothPrinters();
       setPairedPrinterRows(list);
     } catch (e) {
-      Alert.alert('Bluetooth', e?.message || 'Could not list paired printers.');
+      Alert.alert('Bluetooth', e?.message || 'Could not load paired devices.');
     } finally {
       setLoadingPairedPrinters(false);
     }
@@ -1565,10 +1565,7 @@ export default function InvoiceScreen({ route, navigation }) {
       const hasCust = localCustomerSig && String(localCustomerSig).trim() !== '';
       const hasDrv = localDriverSig && String(localDriverSig).trim() !== '';
       if (!hasCust || !hasDrv) {
-        Alert.alert(
-          'Signatures required',
-          'Add customer and driver signatures before printing the invoice.'
-        );
+        Alert.alert('Signatures needed', 'Add customer and driver signatures before printing.');
         setShowSignatureCaptureModal(true);
         return;
       }
@@ -1647,7 +1644,7 @@ export default function InvoiceScreen({ route, navigation }) {
       if (rongtaReady && thermalConnected && thermalPrinter?.address) {
         try {
           if (!logoB64ForNative) {
-            throw new Error('Invoice logo could not be loaded. Please retry so logo prints correctly.');
+            throw new Error('Could not load the invoice logo. Try again.');
           }
           const { uri } = await Print.printToFileAsync({
             html: htmlForThermal,
@@ -1748,7 +1745,7 @@ export default function InvoiceScreen({ route, navigation }) {
       }
     };
     if (isCreditFlow && deliveryPhotos.length === 0) {
-      Alert.alert('Evidence required', 'Evidence photo is required when payment includes credit.');
+      Alert.alert('Photo needed', 'Credit payment needs at least one evidence photo.');
       return;
     }
 
@@ -1794,7 +1791,7 @@ export default function InvoiceScreen({ route, navigation }) {
       goNextAfterEvidence();
     } catch (err) {
       console.error('[InvoiceScreen] save evidence failed', err);
-      Alert.alert('Error', 'Failed to save evidence photos. Please try again.');
+      Alert.alert('Save failed', 'Could not save photos. Try again.');
     } finally {
       setSavingEvidence(false);
     }
@@ -1888,10 +1885,7 @@ export default function InvoiceScreen({ route, navigation }) {
       const hasCust = localCustomerSig && String(localCustomerSig).trim() !== '';
       const hasDrv = localDriverSig && String(localDriverSig).trim() !== '';
       if (!hasCust || !hasDrv) {
-        Alert.alert(
-          'Signatures required',
-          'Add customer and driver signatures before continuing.'
-        );
+        Alert.alert('Signatures needed', 'Add customer and driver signatures first.');
         setShowSignatureCaptureModal(true);
         return;
       }
@@ -2207,12 +2201,12 @@ export default function InvoiceScreen({ route, navigation }) {
                   ]}
                 >
                   {connectingThermal
-                    ? 'Connecting to the printer…'
+                    ? 'Connecting…'
                     : thermalConnected
-                      ? `Ready to print · ${thermalPrinter?.name || 'Printer'}`
+                      ? `Ready · ${thermalPrinter?.name || 'Printer'}`
                       : thermalPrinter?.name
-                        ? `Selected · ${thermalPrinter.name} — tap Connect or wait a moment`
-                        : 'No printer saved yet — tap one in the list below'}
+                        ? `${thermalPrinter.name} — tap Connect`
+                        : 'Pick a printer from the list'}
                 </Text>
               </View>
             </View>
@@ -2282,7 +2276,7 @@ export default function InvoiceScreen({ route, navigation }) {
               ListEmptyComponent={
                 loadingPairedPrinters ? null : (
                   <Text style={{ color: colors.textSecondary, paddingVertical: 16 }}>
-                    No paired devices. Pair the printer in system Settings, then Refresh.
+                    No paired printers. Pair in phone Settings, then refresh.
                   </Text>
                 )
               }
@@ -2293,8 +2287,7 @@ export default function InvoiceScreen({ route, navigation }) {
 
       {rongtaPrintBlocked ? (
         <Text style={styles.printBlockedHint}>
-          Tap the Bluetooth status in the header (Not connected), choose a paired device, then Connect — then Print
-          invoice unlocks.
+          Use the Bluetooth icon in the header, choose a printer, tap Connect — then you can print.
         </Text>
       ) : null}
 
@@ -2329,10 +2322,7 @@ export default function InvoiceScreen({ route, navigation }) {
               const hasCust = localCustomerSig && String(localCustomerSig).trim() !== '';
               const hasDrv = localDriverSig && String(localDriverSig).trim() !== '';
               if (!hasCust || !hasDrv) {
-                Alert.alert(
-                  'Signatures required',
-                  'Add customer and driver signatures before continuing.'
-                );
+                Alert.alert('Signatures needed', 'Add customer and driver signatures first.');
                 setShowSignatureCaptureModal(true);
                 return;
               }
@@ -2396,8 +2386,8 @@ export default function InvoiceScreen({ route, navigation }) {
             </Text>
             <Text style={styles.resultModalSub}>
               {printResult === 'success'
-                ? 'Invoice sent to printer.'
-                : `${printError || 'Could not print.'}\n\nYou can re-print, continue without printing (if signatures are saved), or go to the dashboard — the order stays on your list until payment proof is finished.`}
+                ? 'Sent to the printer.'
+                : `${printError || 'Could not print.'}\n\nTry again, skip printing, or go to the dashboard. Finish payment proof when you can.`}
             </Text>
             <View style={styles.resultModalActionsColumn}>
               <TouchableOpacity
@@ -2422,7 +2412,7 @@ export default function InvoiceScreen({ route, navigation }) {
               </TouchableOpacity>
               <TouchableOpacity style={styles.resultModalLinkBtn} onPress={() => void goToHome()} activeOpacity={0.75}>
                 <Text style={[styles.resultModalLinkText, { color: colors.textSecondary }]}>
-                  Save for later — go to dashboard
+                  Go to dashboard
                 </Text>
               </TouchableOpacity>
             </View>
@@ -2437,8 +2427,8 @@ export default function InvoiceScreen({ route, navigation }) {
         onRequestClose={() => {
           if (blockSignatureModalDismiss) {
             Alert.alert(
-              'Signatures required',
-              'Customer and driver signatures are required to finish this delivery. Complete customer first, then driver, then tap Save signatures.'
+              'Signatures needed',
+              'Customer first, then driver. Tap Save signatures when both are done.'
             );
             return;
           }
@@ -2455,18 +2445,18 @@ export default function InvoiceScreen({ route, navigation }) {
               <Text style={styles.sigCapHeroSubtitle}>
                 {signatureCaptureStep === 'customer'
                   ? blockSignatureModalDismiss
-                    ? 'Step 1 of 2: Customer signs in the box below. Then continue to your signature.'
-                    : 'Step 1 of 2: Customer signature. You can close if optional for this step.'
+                    ? '1 of 2 — customer signs below, then Save & continue.'
+                    : '1 of 2 — customer signs below. You can close if not required.'
                   : blockSignatureModalDismiss
-                    ? 'Step 2 of 2: Sign as driver, save, then finish with Save signatures.'
-                    : 'Step 2 of 2: Your signature. Tap Save signatures when done.'}
+                    ? '2 of 2 — your signature, then Save signatures.'
+                    : '2 of 2 — your signature, then Save signatures.'}
               </Text>
             </View>
 
             {signatureCaptureStep === 'customer' ? (
               <View style={styles.sigCapSection}>
                 <Text style={styles.sigCapSectionHeader}>Customer signature</Text>
-                <Text style={styles.sigCapSectionHint}>Step 1 of 2 — more space, no scrolling.</Text>
+                <Text style={styles.sigCapSectionHint}>Customer</Text>
                 <View style={styles.sigCapCanvasWrapLarge}>
                   <SignatureCanvas
                     ref={captureCustomerRef}
@@ -2476,7 +2466,7 @@ export default function InvoiceScreen({ route, navigation }) {
                       setSignatureCaptureStep('driver');
                     }}
                     onEmpty={() => {
-                      Alert.alert('Signature', 'Please ask the customer to sign first.');
+                      Alert.alert('Signature', 'Customer needs to sign first.');
                     }}
                     descriptionText=""
                     clearText=""
@@ -2511,7 +2501,7 @@ export default function InvoiceScreen({ route, navigation }) {
               <>
                 <View style={styles.sigCapSection}>
                   <Text style={styles.sigCapSectionHeader}>Driver signature</Text>
-                  <Text style={styles.sigCapSectionHint}>Step 2 of 2 — your signature.</Text>
+                  <Text style={styles.sigCapSectionHint}>Driver</Text>
                   <View style={styles.sigCapCanvasWrapLarge}>
                     <SignatureCanvas
                       ref={captureDriverRef}
@@ -2520,7 +2510,7 @@ export default function InvoiceScreen({ route, navigation }) {
                         setCaptureDriverSaved(true);
                       }}
                       onEmpty={() => {
-                        Alert.alert('Signature', 'Please sign in the driver box.');
+                        Alert.alert('Signature', 'Sign in the box above.');
                       }}
                       descriptionText=""
                       clearText=""
@@ -2556,10 +2546,7 @@ export default function InvoiceScreen({ route, navigation }) {
                   style={styles.sigCapDoneBtn}
                   onPress={() => {
                     if (!captureCustomerSig || !captureDriverSig) {
-                      Alert.alert(
-                        'Signatures',
-                        'Save the driver signature first, then tap Save signatures.'
-                      );
+                      Alert.alert('Signatures', 'Tap Save driver first, then Save signatures.');
                       return;
                     }
                     void persistCapturedSignatures(captureCustomerSig, captureDriverSig);
@@ -2594,7 +2581,7 @@ export default function InvoiceScreen({ route, navigation }) {
         transparent
         onRequestClose={() => {
           if (evidenceRequired && deliveryPhotos.length === 0 && !savingEvidence) {
-            Alert.alert('Evidence required', 'You must upload at least one evidence photo for credit payment.');
+            Alert.alert('Photo needed', 'Credit payment needs at least one photo.');
             return;
           }
           setShowEvidenceModal(false);
@@ -2617,11 +2604,11 @@ export default function InvoiceScreen({ route, navigation }) {
       >
         <View style={styles.evidenceModalOverlay}>
           <ScrollView style={styles.evidenceModalContent} nestedScrollEnabled showsVerticalScrollIndicator={false}>
-            <Text style={styles.evidenceModalTitle}>Delivery Evidence Photos</Text>
+            <Text style={styles.evidenceModalTitle}>Delivery photos</Text>
             <Text style={styles.evidenceModalHint}>
               {evidenceRequired
-                ? 'At least one evidence photo is required for credit payments.'
-                : 'Optionally attach photos as evidence of delivery'}
+                ? 'Credit: add at least one photo.'
+                : 'Optional — add photos if you want a record.'}
             </Text>
 
             {deliveryPhotos.length < MAX_PHOTOS && (
@@ -2631,7 +2618,7 @@ export default function InvoiceScreen({ route, navigation }) {
                   onPress={async () => {
                     const { status } = await ImagePicker.requestCameraPermissionsAsync();
                     if (status !== 'granted') {
-                      Alert.alert('Permission', 'Camera access is required to take a photo.');
+                      Alert.alert('Permission', 'Allow camera to take a photo.');
                       return;
                     }
                     const result = await ImagePicker.launchCameraAsync({
@@ -2653,7 +2640,7 @@ export default function InvoiceScreen({ route, navigation }) {
                   onPress={async () => {
                     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
                     if (status !== 'granted') {
-                      Alert.alert('Permission', 'Gallery access is required to choose a photo.');
+                      Alert.alert('Permission', 'Allow photos to pick from gallery.');
                       return;
                     }
                     const result = await ImagePicker.launchImageLibraryAsync({

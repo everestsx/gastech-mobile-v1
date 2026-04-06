@@ -804,10 +804,10 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
             </Text>
             <Text style={styles.emptyHint}>
               {searchQuery.trim()
-                ? 'Try another keyword or clear search'
+                ? 'Try another word or clear search.'
                 : customerId != null
-                  ? 'Try another date or clear the customer filter'
-                  : 'Delivered & paid orders appear here after payment'}
+                  ? 'Try another date or clear the customer filter.'
+                  : 'Paid deliveries show here after you complete payment.'}
             </Text>
           </View>
         }

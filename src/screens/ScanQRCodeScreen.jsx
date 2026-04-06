@@ -176,7 +176,7 @@ export default function ScanQRCodeScreen({ navigation, route }) {
         console.warn('ScanQR: getTodayOrderForCustomer failed', err);
         navigateToScanResult({
           type: 'error',
-          message: 'Could not load orders. Please try again.',
+          message: 'Could not load orders. Try again.',
         });
       }
     },
@@ -185,8 +185,8 @@ export default function ScanQRCodeScreen({ navigation, route }) {
 
   const scanHint =
     scanContext === 'delivered'
-      ? 'Scan the customer’s QR — we’ll show their delivered orders for today'
-      : 'Align customer QR code within the frame';
+      ? "Scan the customer QR to see today's delivered orders"
+      : 'Point the camera at the customer QR';
 
   const handleBarCodeScanned = useCallback(
     async ({ data }) => {
@@ -208,7 +208,7 @@ export default function ScanQRCodeScreen({ navigation, route }) {
             console.warn('ScanQR: getPartnersByIds failed', err);
             navigateToScanResult({
               type: 'error',
-              message: 'Could not look up customer. Please check your connection and try again.',
+              message: 'Could not look up customer. Check connection and try again.',
             });
           } finally {
             setResolving(false);
@@ -232,7 +232,7 @@ export default function ScanQRCodeScreen({ navigation, route }) {
         console.warn('ScanQR: getCustomerByRef failed', err);
         navigateToScanResult({
           type: 'error',
-          message: 'Could not look up customer. Please check your connection and try again.',
+          message: 'Could not look up customer. Check connection and try again.',
         });
       } finally {
         setResolving(false);
@@ -245,7 +245,7 @@ export default function ScanQRCodeScreen({ navigation, route }) {
   if (!permission) {
     return (
       <View style={styles.center}>
-        <Text style={styles.text}>Checking camera permission...</Text>
+        <Text style={styles.text}>Checking camera…</Text>
       </View>
     );
   }

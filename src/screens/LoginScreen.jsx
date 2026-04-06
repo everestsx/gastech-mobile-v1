@@ -15,6 +15,7 @@ import {
   Keyboard,
   Image,
   ScrollView,
+  Pressable,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import AppLogo from '../components/AppLogo';
@@ -29,17 +30,25 @@ import {
   syncVehiclesOnly,
   getSessionExpiryAtIsoEndOfLocalDay,
 } from '../services/sync.service';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { fetchAndStoreVehicleJournals } from '../services/vehicle.service';
 import { getDriverByBarcode, getPortersEmployees, odooImageToUri } from '../services/employee.service';
 
 
 
+const LANGUAGE_OPTIONS = [
+  { v: 'en', l: 'English' },
+  { v: 'ta', l: 'தமிழ்' },
+  { v: 'si', l: 'සිංහල' },
+];
+
 export default function LoginScreen({ navigation }) {
   const { colors, appLanguage, setAppLanguage } = useTheme();
+  const insets = useSafeAreaInsets();
   const [vehicles, setVehicles] = useState([]);
   const [selected, setSelected] = useState(null);
   const [dropdownVisible, setDropdownVisible] = useState(false);
+  const [languageMenuVisible, setLanguageMenuVisible] = useState(false);
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
 
@@ -123,19 +132,19 @@ export default function LoginScreen({ navigation }) {
 
   const handleLogin = async () => {
     Keyboard.dismiss();
-    if (!selected) return showAlert('Required', 'Please select a vehicle.');
-    if (!password.trim()) return showAlert('Required', 'Please enter your driver code.');
+    if (!selected) return showAlert('Required', 'Pick a vehicle first.');
+    if (!password.trim()) return showAlert('Required', 'Enter your driver code.');
 
     setLoading(true);
     try {
       const driver = await getDriverByBarcode(password);
       if (!driver) {
-        throw new Error('Unknown driver code. Use the code set on your Driving employee in GasTech.');
+        throw new Error('That code does not match. Use the driver code from GasTech.');
       }
       setMatchedDriver(driver);
       setLoginPhase('driverReview');
     } catch (err) {
-      showAlert('Login Failed', err.message || 'Could not verify driver.', [{ text: 'Try Again', onPress: hideAlert }]);
+      showAlert('Login failed', err.message || 'Could not check your code.', [{ text: 'Try again', onPress: hideAlert }]);
     } finally {
       setLoading(false);
     }
@@ -151,14 +160,12 @@ export default function LoginScreen({ navigation }) {
       const list = await getPortersEmployees();
       setPortersList(Array.isArray(list) ? list : []);
       if (!list?.length) {
-        showAlert(
-          'No porters',
-          'No employees found in the Porters department. Ask an admin to check Odoo.',
-          [{ text: 'OK', onPress: hideAlert }]
-        );
+        showAlert('No porters', 'None on file. Ask your office to check the porter list in GasTech.', [
+          { text: 'OK', onPress: hideAlert },
+        ]);
       }
     } catch (e) {
-      showAlert('Could not load porters', e?.message || 'Check your connection and try again.', [
+      showAlert('Could not load porters', e?.message || 'Check your connection.', [
         { text: 'Back', onPress: () => { hideAlert(); setLoginPhase('driverReview'); } },
       ]);
       setPortersList([]);
@@ -170,7 +177,7 @@ export default function LoginScreen({ navigation }) {
   const finishLoginWithPorters = async () => {
     if (!selected || !matchedDriver) return;
     if (selectedPorterIds.length === 0) {
-      return showAlert('Select porters', 'Choose at least one porter for this shift.', [{ text: 'OK', onPress: hideAlert }]);
+      return showAlert('Select porters', 'Pick at least one porter.', [{ text: 'OK', onPress: hideAlert }]);
     }
 
     const selectedPorters = portersList
@@ -210,7 +217,7 @@ export default function LoginScreen({ navigation }) {
       setPassword('');
       navigation.replace('Main');
     } catch (err) {
-      showAlert('Login Failed', err.message || 'Could not save session.', [{ text: 'Try Again', onPress: hideAlert }]);
+      showAlert('Login failed', err.message || 'Could not save your session.', [{ text: 'Try again', onPress: hideAlert }]);
     } finally {
       setLoading(false);
     }
@@ -286,7 +293,6 @@ export default function LoginScreen({ navigation }) {
     innerContainer: {
       flex: 1,
       paddingHorizontal: spacing.lg,
-      justifyContent: 'center',
     },
     headerSection: {
       alignItems: 'center',
@@ -563,43 +569,76 @@ export default function LoginScreen({ navigation }) {
       alignItems: 'center',
       paddingHorizontal: spacing.md,
     },
-    langRow: {
-      width: '100%',
-      marginBottom: spacing.md,
-      paddingVertical: spacing.sm,
-      paddingHorizontal: spacing.sm,
-      borderRadius: borderRadius.lg,
-      backgroundColor: colors.background,
-      borderWidth: 1,
-      borderColor: colors.border,
+    mainScrollArea: {
+      flex: 1,
+      justifyContent: 'center',
     },
-    langRowInner: {
+    langFooter: {
+      paddingTop: spacing.sm,
+    },
+    langSelectBtn: {
       flexDirection: 'row',
       alignItems: 'center',
-      gap: 8,
-      flexWrap: 'wrap',
-    },
-    langLabel: {
-      fontSize: 13,
-      fontWeight: '700',
-      color: colors.textSecondary,
-      marginRight: 4,
-    },
-    langChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, flex: 1, justifyContent: 'flex-end' },
-    langChip: {
-      paddingVertical: 8,
-      paddingHorizontal: 12,
-      borderRadius: borderRadius.md,
-      backgroundColor: colors.surface,
+      backgroundColor: colors.background,
       borderWidth: 1.5,
       borderColor: colors.border,
+      borderRadius: borderRadius.lg,
+      paddingHorizontal: 16,
+      height: 52,
+      gap: 10,
     },
-    langChipOn: {
+    langSelectBtnOpen: {
       borderColor: colors.primary,
-      backgroundColor: colors.primary + '18',
     },
-    langChipText: { fontSize: 13, fontWeight: '600', color: colors.text },
-    langChipTextOn: { color: colors.primary, fontWeight: '700' },
+    langSelectLabel: {
+      flex: 1,
+      fontSize: 16,
+      fontWeight: '600',
+      color: colors.text,
+    },
+    langMenuBackdrop: {
+      flex: 1,
+      backgroundColor: 'rgba(15, 23, 42, 0.45)',
+    },
+    langMenuDismissArea: {
+      flex: 1,
+    },
+    langMenuSheet: {
+      marginHorizontal: spacing.lg,
+      marginBottom: spacing.sm,
+      borderRadius: borderRadius.lg,
+      backgroundColor: colors.surface,
+      borderWidth: 1,
+      borderColor: colors.border,
+      overflow: 'hidden',
+      maxHeight: 280,
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: -4 },
+      shadowOpacity: 0.12,
+      shadowRadius: 12,
+      elevation: 16,
+    },
+    langMenuRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingVertical: 16,
+      paddingHorizontal: 18,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: colors.border,
+    },
+    langMenuRowOn: {
+      backgroundColor: colors.primary + '12',
+    },
+    langMenuRowText: {
+      flex: 1,
+      fontSize: 16,
+      fontWeight: '600',
+      color: colors.text,
+    },
+    langMenuRowTextOn: {
+      color: colors.primary,
+      fontWeight: '700',
+    },
 
   }), [colors]);
 
@@ -624,11 +663,16 @@ export default function LoginScreen({ navigation }) {
   const displayLabel = selected
       ? (selected?.license_plate || selected?.name)
       : 'Select Vehicle';
+
+  const currentLanguageLabel =
+    LANGUAGE_OPTIONS.find((o) => o.v === appLanguage)?.l ?? 'English';
+
   return (
 
       <SafeAreaView style={styles.container}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
           <View style={styles.innerContainer}>
+            <View style={styles.mainScrollArea}>
             <View style={styles.headerSection}>
               <AppLogo size={150} useImage={true} />
               <Text style={styles.title}>Delivery Terminal</Text>
@@ -636,43 +680,6 @@ export default function LoginScreen({ navigation }) {
             </View>
 
             <View style={styles.formSection}>
-              {loginPhase === 'credentials' ? (
-                <View style={styles.langRow}>
-                  <View style={styles.langRowInner}>
-                    <Ionicons name="language-outline" size={20} color={colors.primary} />
-                    <Text style={styles.langLabel}>Language</Text>
-                    <View style={styles.langChips}>
-                      {[
-                        { v: 'en', l: 'English' },
-                        { v: 'ta', l: 'தமிழ்' },
-                        { v: 'si', l: 'සිංහල' },
-                      ].map((opt) => (
-                        <TouchableOpacity
-                          key={opt.v}
-                          style={[styles.langChip, appLanguage === opt.v && styles.langChipOn]}
-                          onPress={() => void setAppLanguage(opt.v)}
-                          activeOpacity={0.85}
-                        >
-                          <Text style={[styles.langChipText, appLanguage === opt.v && styles.langChipTextOn]}>
-                            {opt.l}
-                          </Text>
-                        </TouchableOpacity>
-                      ))}
-                    </View>
-                  </View>
-                  <Text
-                    style={{
-                      fontSize: 11,
-                      color: colors.textSecondary,
-                      marginTop: 8,
-                      textAlign: 'center',
-                    }}
-                  >
-                    App restarts your shift after midnight — sign in again each day.
-                  </Text>
-                </View>
-              ) : null}
-
               <View
                   style={styles.dropdownWrapper}
               >
@@ -787,16 +794,83 @@ export default function LoginScreen({ navigation }) {
                 )}
               </TouchableOpacity>
             </View>
+            </View>
 
-
+            {loginPhase === 'credentials' ? (
+              <View style={[styles.langFooter, { paddingBottom: spacing.sm }]}>
+                <TouchableOpacity
+                  style={[styles.langSelectBtn, languageMenuVisible && styles.langSelectBtnOpen]}
+                  onPress={() => {
+                    Keyboard.dismiss();
+                    setLanguageMenuVisible(true);
+                  }}
+                  activeOpacity={0.85}
+                  accessibilityRole="button"
+                  accessibilityLabel="Language"
+                  accessibilityHint="Choose app language"
+                >
+                  <Ionicons name="language-outline" size={22} color={colors.primary} />
+                  <Text style={styles.langSelectLabel} numberOfLines={1}>
+                    {currentLanguageLabel}
+                  </Text>
+                  <Ionicons
+                    name={languageMenuVisible ? 'chevron-down' : 'chevron-up'}
+                    size={20}
+                    color={colors.textSecondary}
+                  />
+                </TouchableOpacity>
+              </View>
+            ) : null}
           </View>
         </KeyboardAvoidingView>
+
+        <Modal
+          visible={languageMenuVisible}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setLanguageMenuVisible(false)}
+        >
+          <View style={styles.langMenuBackdrop}>
+            <Pressable
+              style={styles.langMenuDismissArea}
+              onPress={() => setLanguageMenuVisible(false)}
+            />
+            <View
+              style={[
+                styles.langMenuSheet,
+                { marginBottom: Math.max(insets.bottom, spacing.sm) },
+              ]}
+            >
+              {LANGUAGE_OPTIONS.map((opt, index) => {
+                const on = appLanguage === opt.v;
+                return (
+                  <TouchableOpacity
+                    key={opt.v}
+                    style={[
+                      styles.langMenuRow,
+                      on && styles.langMenuRowOn,
+                      index === LANGUAGE_OPTIONS.length - 1 && { borderBottomWidth: 0 },
+                    ]}
+                    onPress={() => {
+                      void setAppLanguage(opt.v);
+                      setLanguageMenuVisible(false);
+                    }}
+                    activeOpacity={0.75}
+                  >
+                    <Text style={[styles.langMenuRowText, on && styles.langMenuRowTextOn]}>{opt.l}</Text>
+                    {on ? <Ionicons name="checkmark-circle" size={22} color={colors.primary} /> : null}
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </View>
+        </Modal>
 
         <Modal visible={loginPhase === 'driverReview'} transparent animationType="fade">
           <View style={styles.modalOverlay}>
             <View style={styles.modalCard}>
               <Text style={styles.modalTitle}>Signed in as driver</Text>
-              <Text style={styles.modalSubtitle}>Confirm your profile, then choose your porters for this vehicle.</Text>
+              <Text style={styles.modalSubtitle}>If this is you, continue to pick porters for this vehicle.</Text>
               <View style={styles.driverAvatarWrap}>
                 {matchedDriver && odooImageToUri(matchedDriver.imageBase64) ? (
                   <Image
@@ -842,14 +916,14 @@ export default function LoginScreen({ navigation }) {
             <View style={[styles.modalCard, { paddingBottom: spacing.md, maxHeight: '92%' }]}>
               <Text style={styles.modalTitle}>Who's on this shift?</Text>
               <Text style={styles.modalSubtitle}>
-                Search below, then tap porters in the list. Everyone you pick appears right under the search — tap a chip or the row again to remove.
+                Tap names to add or remove. Selected people show above the list.
               </Text>
               {!portersLoading ? (
                 <View style={styles.porterSearchWrap}>
                   <Ionicons name="search" size={22} color={colors.primary} />
                   <TextInput
                     style={styles.porterSearchInput}
-                    placeholder="Type a name or code…"
+                    placeholder="Search by name or code"
                     placeholderTextColor={colors.textSecondary}
                     value={porterSearchQuery}
                     onChangeText={setPorterSearchQuery}
@@ -873,7 +947,7 @@ export default function LoginScreen({ navigation }) {
                     <View style={styles.porterSelectedEmpty}>
                       <Ionicons name="arrow-down-outline" size={22} color={colors.primary} />
                       <Text style={styles.porterSelectedEmptyText}>
-                        No one selected yet. Use the list below — selected people will show up here as pills you can review at a glance.
+                        Nobody selected yet. Choose from the list below.
                       </Text>
                     </View>
                   ) : (
@@ -947,9 +1021,7 @@ export default function LoginScreen({ navigation }) {
                           {portersList.length === 0 ? 'No porters loaded' : 'No matches'}
                         </Text>
                         <Text style={{ fontSize: 13, color: colors.textSecondary, textAlign: 'center', marginTop: 4 }}>
-                          {portersList.length === 0
-                            ? 'Try again or contact your admin.'
-                            : 'Try a different search term.'}
+                          {portersList.length === 0 ? 'Try again or contact the office.' : 'Try another search.'}
                         </Text>
                       </View>
                     }
@@ -981,10 +1053,10 @@ export default function LoginScreen({ navigation }) {
                             ) : null}
                             {on ? (
                               <Text style={{ fontSize: 11, fontWeight: '700', color: colors.primary, marginTop: 4 }}>
-                                On this shift · tap to remove
+                                Selected — tap to remove
                               </Text>
                             ) : (
-                              <Text style={{ fontSize: 11, color: colors.textSecondary, marginTop: 4 }}>Tap to add</Text>
+                              <Text style={{ fontSize: 11, color: colors.textSecondary, marginTop: 4 }}>Tap to select</Text>
                             )}
                           </View>
                           <View style={[styles.porterCheck, on && styles.porterCheckOn]}>

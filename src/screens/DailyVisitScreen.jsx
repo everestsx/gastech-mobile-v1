@@ -172,10 +172,7 @@ export default function DailyVisitScreen({ route, navigation }) {
         });
         return;
       }
-      navigation.navigate('InvoiceScreen', {
-        ...entry.invoiceParams,
-        promptSignatures: false,
-      });
+      navigation.navigate('InvoiceScreen', entry.invoiceParams);
       return;
     }
     if (order.isDelivered) {

@@ -393,7 +393,7 @@ export default function SettingsScreen({ navigation }) {
       {sectionTitle('App')}
       <TouchableOpacity
         style={[styles.menuRow, { backgroundColor: colors.surface, borderColor: colors.border }]}
-        onPress={() => Alert.alert('Notifications', 'Notification settings coming soon.')}
+        onPress={() => Alert.alert('Notifications', 'Not available yet.')}
         activeOpacity={0.8}
       >
         <Ionicons name="notifications-outline" size={22} color={colors.primary} />
@@ -411,7 +411,7 @@ export default function SettingsScreen({ navigation }) {
       </TouchableOpacity>
       <TouchableOpacity
         style={[styles.menuRow, { backgroundColor: colors.surface, borderColor: colors.border }]}
-        onPress={() => Alert.alert('Help', 'Help & support coming soon.')}
+        onPress={() => Alert.alert('Help', 'Support options are not available yet.')}
         activeOpacity={0.8}
       >
         <Ionicons name="help-circle-outline" size={22} color={colors.primary} />
@@ -420,7 +420,7 @@ export default function SettingsScreen({ navigation }) {
       </TouchableOpacity>
       <TouchableOpacity
         style={[styles.menuRow, { backgroundColor: colors.surface, borderColor: colors.border }]}
-        onPress={() => Alert.alert('Privacy', 'Privacy policy coming soon.')}
+        onPress={() => Alert.alert('Privacy', 'Privacy policy is not available yet.')}
         activeOpacity={0.8}
       >
         <Ionicons name="shield-checkmark-outline" size={22} color={colors.primary} />

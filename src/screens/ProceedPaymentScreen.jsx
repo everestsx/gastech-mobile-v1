@@ -44,9 +44,9 @@ function userFacingPaymentError(err) {
     /runAsync|Kotlin|object Object|SQLite|sqlite|SQLITE_/i.test(raw) ||
     (raw.includes('convert') && raw.includes('type'))
   ) {
-    return 'We could not save this payment on your phone (data error). Please try again once. If it keeps happening, restart the app or contact support.';
+    return 'Could not save payment on this device. Try again, or restart the app if it keeps happening.';
   }
-  return raw || 'Could not save your payment. Please try again.';
+  return raw || 'Could not save payment. Try again.';
 }
 
 export default function ProceedPaymentScreen({ route, navigation }) {
@@ -478,7 +478,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         chequeBankName: needsCheck ? empty(selectedLocalBank?.name) : '',
         checkNumber: needsCheck ? empty(checkNumberTrimmed) : '',
         fromProceedPayment: true,
-        promptSignatures: false,
+        promptSignatures: true,
         skipEvidenceModal: true,
         openPaymentProofAfterPrint: true,
         creditProofRequired,
@@ -940,14 +940,14 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       {!journalsLoading && selectedPaymentMethods.includes(PAYMENT_CASH) && cashPayAmount > 0 && vehicleJournalIds.cashJournalId == null && (
         <Text style={[styles.cashHint, { color: hasSyncedOnce ? colors.error : colors.textSecondary, marginBottom: spacing.sm }]}>
           {hasSyncedOnce
-            ? 'Vehicle Cash journal is not configured. Please contact admin.'
+            ? 'Cash journal not set for this vehicle. Ask the office.'
             : 'Sync when online to load Cash payment option.'}
         </Text>
       )}
       {!journalsLoading && selectedPaymentMethods.includes(PAYMENT_CHECK) && chequePayAmount > 0 && vehicleJournalIds.chequeJournalId == null && (
         <Text style={[styles.cashHint, { color: hasSyncedOnce ? colors.error : colors.textSecondary, marginBottom: spacing.sm }]}>
           {hasSyncedOnce
-            ? 'Vehicle Cheque journal is not configured. Please contact admin.'
+            ? 'Cheque journal not set for this vehicle. Ask the office.'
             : 'Sync when online to load Cheque payment option.'}
         </Text>
       )}
@@ -1069,7 +1069,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           <View style={styles.creditProofFollowUpCard}>
             <Ionicons name="information-circle-outline" size={22} color={colors.primary} style={{ marginTop: 2 }} />
             <Text style={styles.creditProofFollowUpText}>
-              After you print the invoice, you can add payment proof photos on the last step. For credit, at least one photo is required there before you finish.
+              After printing, add payment proof on the next screen. Credit needs at least one photo.
             </Text>
           </View>
         </>

@@ -83,7 +83,7 @@ export default function MenuScreen({ navigation }) {
   const handleDeleteLocalData = () => {
     showAlert(
       'Delete local data',
-      'This will remove all synced customers, orders, and other data from this device. Your login is not affected. Sync again to reload data from Gas Tech. Continue?',
+      'Removes customers, orders, and other synced data on this phone. You stay logged in. Sync again to reload from GasTech. Continue?',
       [
         { text: 'Cancel', style: 'cancel', onPress : hideAlert },
         {
@@ -94,14 +94,14 @@ export default function MenuScreen({ navigation }) {
             try {
               await deleteLocalData();
               await refreshLastSync();
-              showAlert('Done', 'Local data deleted. Use Sync to load data from Odoo again.');
+              showAlert('Done', 'Deleted. Tap Sync to download data again.');
             } catch (e) {
               if (e?.code === 'PENDING_SYNC') {
                 const q = e.pendingQueueCount ?? 0;
                 const a = e.pendingAttachmentCount ?? 0;
                 showAlert(
-                  'Unsynced data on device',
-                  `There are items not yet sent to Odoo (sync queue: ${q}, pending attachments: ${a}). Tap "Sync" and try again, or discard that data and clear the local database anyway. Discarding means those actions will not appear on the server.`,
+                  'Not everything is synced',
+                  `${q} item(s) in queue, ${a} photo(s) not sent yet. Sync first, or delete anyway and lose those items on the server.`,
                   [
                     { text: 'Cancel', style: 'cancel', onPress: hideAlert },
                     {
@@ -112,10 +112,7 @@ export default function MenuScreen({ navigation }) {
                         try {
                           await deleteLocalData({ discardUnsynced: true });
                           await refreshLastSync();
-                          showAlert(
-                            'Done',
-                            'Local data deleted (unsynced items were discarded). Use Sync to load data from Gas Tech again.'
-                          );
+                          showAlert('Done', 'Deleted (unsynced items were dropped). Tap Sync to reload.');
                         } catch (e2) {
                           showAlert('Error', e2?.message || 'Failed to delete local data.');
                         }

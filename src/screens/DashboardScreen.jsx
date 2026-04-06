@@ -1780,7 +1780,7 @@ export default function DashboardScreen({ navigation }) {
           <Pressable style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
             <Text style={styles.modalTitle}>Choose route</Text>
             <Text style={styles.modalSubtitle}>
-              These are the routes you have stops on today. Choose one to filter your list and totals, or use Recommended to let the app use the usual route for today.
+              Pick a route to filter your list, or Recommended for today's usual route.
             </Text>
             <ScrollView style={{ maxHeight: 360 }} keyboardShouldPersistTaps="handled">
               <TouchableOpacity
@@ -1790,7 +1790,7 @@ export default function DashboardScreen({ navigation }) {
                   setRoutePickerVisible(false);
                 }}
               >
-                <Text style={styles.routePickName}>Recommended for today</Text>
+                <Text style={styles.routePickName}>Recommended (today)</Text>
                 {routeOverrideId === null ? <Ionicons name="checkmark-circle" size={22} color={colors.primary} /> : null}
               </TouchableOpacity>
               {routesInVehicleTodayPicker.map((r) => {

@@ -384,10 +384,7 @@ export default function SaleOrderListScreen({ route, navigation }) {
         });
         return;
       }
-      navigation.navigate('InvoiceScreen', {
-        ...entry.invoiceParams,
-        promptSignatures: false,
-      });
+      navigation.navigate('InvoiceScreen', entry.invoiceParams);
       return;
     }
     navigation.navigate('SaleOrderDetails', { saleOrderId: order.id });
@@ -542,15 +539,15 @@ export default function SaleOrderListScreen({ route, navigation }) {
               {searchQuery.trim()
                 ? 'No orders match your search'
                 : customerId != null
-                  ? `There are no order details for ${customerNameForEmpty || 'this customer'}.`
+                  ? `No orders for ${customerNameForEmpty || 'this customer'} on this date.`
                   : 'No orders to deliver'}
             </Text>
             <Text style={styles.emptyHint}>
               {searchQuery.trim()
-                ? 'Try a different search or clear the search box'
+                ? 'Try another search or clear the box.'
                 : customerId != null
-                  ? 'Orders for this date will appear here after sync, or try another date.'
-                  : 'Orders for this date will appear here after sync'}
+                  ? 'Sync or pick another date.'
+                  : 'Sync to load orders for this date.'}
             </Text>
           </View>
         }
