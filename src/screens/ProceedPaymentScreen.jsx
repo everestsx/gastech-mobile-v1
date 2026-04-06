@@ -478,7 +478,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         chequeBankName: needsCheck ? empty(selectedLocalBank?.name) : '',
         checkNumber: needsCheck ? empty(checkNumberTrimmed) : '',
         fromProceedPayment: true,
-        promptSignatures: true,
+        promptSignatures: false,
         skipEvidenceModal: true,
         openPaymentProofAfterPrint: true,
         creditProofRequired,
@@ -510,7 +510,12 @@ export default function ProceedPaymentScreen({ route, navigation }) {
     () =>
       StyleSheet.create({
         container: { flex: 1, backgroundColor: colors.background },
-        content: { padding: spacing.md, paddingBottom: spacing.xl + 220 + insets.bottom },
+        /* Extra bottom padding so the last controls stay above the home gesture / nav bar when fully scrolled.
+           Android: avoid stacking KeyboardAvoidingView `height` with softwareKeyboardLayoutMode resize (see app.json). */
+        content: {
+          padding: spacing.md,
+          paddingBottom: spacing.xl * 2 + insets.bottom + 200,
+        },
         title: { fontSize: 22, fontWeight: '800', color: colors.text, textAlign: 'center', marginBottom: spacing.lg },
         totalCard: {
           backgroundColor: colors.surface,
@@ -802,8 +807,8 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   return (
     <KeyboardAvoidingView
       style={{ flex: 1, backgroundColor: colors.background }}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      keyboardVerticalOffset={headerHeight}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? headerHeight : 0}
     >
     <ScrollView
       ref={scrollRef}

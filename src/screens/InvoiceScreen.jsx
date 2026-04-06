@@ -745,8 +745,8 @@ export default function InvoiceScreen({ route, navigation }) {
   const promptSignatures = routePromptSignatures === true;
   const skipEvidenceModal = routeSkipEvidenceModal === true;
   const openPaymentProofAfterPrint = routeOpenPaymentProofAfterPrint === true;
-  const signaturesMandatory = openPaymentProofAfterPrint;
-  const blockSignatureModalDismiss = signaturesMandatory || (fromProceedPayment && promptSignatures);
+  const blockSignatureModalDismiss =
+    promptSignatures && (openPaymentProofAfterPrint || fromProceedPayment);
 
   const { setHideSyncIndicator } = useSync();
   const [order, setOrder] = useState(null);
@@ -813,7 +813,8 @@ export default function InvoiceScreen({ route, navigation }) {
   }, [printerModalVisible, rongtaReady, thermalPrinter?.address, thermalConnected, connectingThermal, connect]);
   const [pairedPrinterRows, setPairedPrinterRows] = useState([]);
   const [showSignatureCaptureModal, setShowSignatureCaptureModal] = useState(false);
-  const [signatureModalScrollEnabled, setSignatureModalScrollEnabled] = useState(true);
+  /** 'customer' | 'driver' — one pad at a time for comfortable signing */
+  const [signatureCaptureStep, setSignatureCaptureStep] = useState('customer');
   const [captureCustomerSig, setCaptureCustomerSig] = useState(null);
   const [captureDriverSig, setCaptureDriverSig] = useState(null);
   const [captureCustomerSaved, setCaptureCustomerSaved] = useState(false);
@@ -1251,7 +1252,17 @@ export default function InvoiceScreen({ route, navigation }) {
           borderWidth: 1,
           borderColor: colors.border,
         },
+        /** Single-step flow: taller signing area (no vertical scroll in modal). */
+        sigCapCanvasWrapLarge: {
+          height: 240,
+          marginBottom: spacing.sm,
+          borderRadius: borderRadius.md,
+          overflow: 'hidden',
+          borderWidth: 1,
+          borderColor: colors.border,
+        },
         sigCapCanvas: { flex: 1, height: 150 },
+        sigCapCanvasLarge: { flex: 1, height: 240 },
         sigCapBtnRow: { flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.md },
         sigCapBtn: {
           flex: 1,
@@ -1430,6 +1441,7 @@ export default function InvoiceScreen({ route, navigation }) {
       setCaptureDriverSig(null);
       setCaptureCustomerSaved(false);
       setCaptureDriverSaved(false);
+      setSignatureCaptureStep('customer');
       captureCustomerRef.current?.clearSignature();
       captureDriverRef.current?.clearSignature();
       navigation.setParams({ promptSignatures: false });
@@ -1446,6 +1458,11 @@ export default function InvoiceScreen({ route, navigation }) {
     if (hasCust && hasDrv) return;
     setShowSignatureCaptureModal(true);
   }, [loading, saleOrderId, fromProceedPayment, promptSignatures, localCustomerSig, localDriverSig]);
+
+  useLayoutEffect(() => {
+    if (!showSignatureCaptureModal) return;
+    setSignatureCaptureStep('customer');
+  }, [showSignatureCaptureModal]);
 
   useEffect(() => {
     setHideSyncIndicator(true);
@@ -1544,7 +1561,7 @@ export default function InvoiceScreen({ route, navigation }) {
 
   const handlePrint = useCallback(async () => {
     if (!order) return;
-    if (openPaymentProofAfterPrint) {
+    if (openPaymentProofAfterPrint && promptSignatures) {
       const hasCust = localCustomerSig && String(localCustomerSig).trim() !== '';
       const hasDrv = localDriverSig && String(localDriverSig).trim() !== '';
       if (!hasCust || !hasDrv) {
@@ -1867,7 +1884,7 @@ export default function InvoiceScreen({ route, navigation }) {
       navigateToProceedPayment();
       return;
     }
-    if (openPaymentProofAfterPrint) {
+    if (openPaymentProofAfterPrint && promptSignatures) {
       const hasCust = localCustomerSig && String(localCustomerSig).trim() !== '';
       const hasDrv = localDriverSig && String(localDriverSig).trim() !== '';
       if (!hasCust || !hasDrv) {
@@ -1878,6 +1895,8 @@ export default function InvoiceScreen({ route, navigation }) {
         setShowSignatureCaptureModal(true);
         return;
       }
+    }
+    if (openPaymentProofAfterPrint) {
       void goToPaymentProofScreen();
       return;
     }
@@ -2306,7 +2325,7 @@ export default function InvoiceScreen({ route, navigation }) {
               navigateToProceedPayment();
               return;
             }
-            if (openPaymentProofAfterPrint) {
+            if (openPaymentProofAfterPrint && promptSignatures) {
               const hasCust = localCustomerSig && String(localCustomerSig).trim() !== '';
               const hasDrv = localDriverSig && String(localDriverSig).trim() !== '';
               if (!hasCust || !hasDrv) {
@@ -2317,6 +2336,8 @@ export default function InvoiceScreen({ route, navigation }) {
                 setShowSignatureCaptureModal(true);
                 return;
               }
+            }
+            if (openPaymentProofAfterPrint) {
               void goToPaymentProofScreen();
               return;
             }
@@ -2417,7 +2438,7 @@ export default function InvoiceScreen({ route, navigation }) {
           if (blockSignatureModalDismiss) {
             Alert.alert(
               'Signatures required',
-              'Customer and driver signatures are required to finish this delivery. Please sign both boxes, tap Save on each, then Save signatures.'
+              'Customer and driver signatures are required to finish this delivery. Complete customer first, then driver, then tap Save signatures.'
             );
             return;
           }
@@ -2426,149 +2447,143 @@ export default function InvoiceScreen({ route, navigation }) {
       >
         <View style={styles.sigCapOverlay}>
           <View style={[styles.sigCapCard, { backgroundColor: colors.surface }]}>
-            <ScrollView
-              contentContainerStyle={{ paddingBottom: spacing.xl }}
-              keyboardShouldPersistTaps="handled"
-              nestedScrollEnabled
-              scrollEnabled={signatureModalScrollEnabled}
-              showsVerticalScrollIndicator={false}
-            >
             <View style={styles.sigCapHero}>
               <View style={styles.sigCapHeroIconWrap}>
                 <Ionicons name="create-outline" size={32} color={colors.primary} />
               </View>
               <Text style={styles.sigCapHeroTitle}>Sign to confirm delivery</Text>
               <Text style={styles.sigCapHeroSubtitle}>
-                {blockSignatureModalDismiss
-                  ? 'Both the customer and you (driver) need to sign. Use Save customer and Save driver, then tap Save signatures at the bottom.'
-                  : 'Add signatures when possible. You can close this screen if signatures are optional for this step.'}
+                {signatureCaptureStep === 'customer'
+                  ? blockSignatureModalDismiss
+                    ? 'Step 1 of 2: Customer signs in the box below. Then continue to your signature.'
+                    : 'Step 1 of 2: Customer signature. You can close if optional for this step.'
+                  : blockSignatureModalDismiss
+                    ? 'Step 2 of 2: Sign as driver, save, then finish with Save signatures.'
+                    : 'Step 2 of 2: Your signature. Tap Save signatures when done.'}
               </Text>
             </View>
 
-            <View style={styles.sigCapSection}>
-              <Text style={styles.sigCapSectionHeader}>Customer signature</Text>
-              <Text style={styles.sigCapSectionHint}>Sign here first.</Text>
-              <View
-                style={styles.sigCapCanvasWrap}
-                onTouchStart={() => setSignatureModalScrollEnabled(false)}
-                onTouchEnd={() => setSignatureModalScrollEnabled(true)}
-                onTouchCancel={() => setSignatureModalScrollEnabled(true)}
-              >
-                <SignatureCanvas
-                  ref={captureCustomerRef}
-                  onOK={(dataUrl) => {
-                    setCaptureCustomerSig(dataUrl);
-                    setCaptureCustomerSaved(true);
-                    setSignatureModalScrollEnabled(true);
-                  }}
-                  onEmpty={() => {
-                    setSignatureModalScrollEnabled(true);
-                    Alert.alert('Signature', 'Please sign the customer area first.');
-                  }}
-                  descriptionText=""
-                  clearText=""
-                  confirmText=""
-                  penColor="#000000"
-                  backgroundColor="rgba(255,255,255,1)"
-                  style={styles.sigCapCanvas}
-                  autoClear={false}
-                  webStyle={`.m-signature-pad--footer { display: none !important; }`}
-                />
+            {signatureCaptureStep === 'customer' ? (
+              <View style={styles.sigCapSection}>
+                <Text style={styles.sigCapSectionHeader}>Customer signature</Text>
+                <Text style={styles.sigCapSectionHint}>Step 1 of 2 — more space, no scrolling.</Text>
+                <View style={styles.sigCapCanvasWrapLarge}>
+                  <SignatureCanvas
+                    ref={captureCustomerRef}
+                    onOK={(dataUrl) => {
+                      setCaptureCustomerSig(dataUrl);
+                      setCaptureCustomerSaved(true);
+                      setSignatureCaptureStep('driver');
+                    }}
+                    onEmpty={() => {
+                      Alert.alert('Signature', 'Please ask the customer to sign first.');
+                    }}
+                    descriptionText=""
+                    clearText=""
+                    confirmText=""
+                    penColor="#000000"
+                    backgroundColor="rgba(255,255,255,1)"
+                    style={styles.sigCapCanvasLarge}
+                    autoClear={false}
+                    webStyle={`.m-signature-pad--footer { display: none !important; }`}
+                  />
+                </View>
+                <View style={styles.sigCapBtnRow}>
+                  <TouchableOpacity
+                    style={styles.sigCapBtn}
+                    onPress={() => {
+                      captureCustomerRef.current?.clearSignature();
+                      setCaptureCustomerSig(null);
+                      setCaptureCustomerSaved(false);
+                    }}
+                  >
+                    <Text style={styles.sigCapBtnText}>Clear</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.sigCapBtn, styles.sigCapBtnPrimary]}
+                    onPress={() => captureCustomerRef.current?.readSignature()}
+                  >
+                    <Text style={styles.sigCapBtnTextLight}>Save & continue</Text>
+                  </TouchableOpacity>
+                </View>
               </View>
-              <View style={styles.sigCapBtnRow}>
+            ) : (
+              <>
+                <View style={styles.sigCapSection}>
+                  <Text style={styles.sigCapSectionHeader}>Driver signature</Text>
+                  <Text style={styles.sigCapSectionHint}>Step 2 of 2 — your signature.</Text>
+                  <View style={styles.sigCapCanvasWrapLarge}>
+                    <SignatureCanvas
+                      ref={captureDriverRef}
+                      onOK={(dataUrl) => {
+                        setCaptureDriverSig(dataUrl);
+                        setCaptureDriverSaved(true);
+                      }}
+                      onEmpty={() => {
+                        Alert.alert('Signature', 'Please sign in the driver box.');
+                      }}
+                      descriptionText=""
+                      clearText=""
+                      confirmText=""
+                      penColor="#000000"
+                      backgroundColor="rgba(255,255,255,1)"
+                      style={styles.sigCapCanvasLarge}
+                      autoClear={false}
+                      webStyle={`.m-signature-pad--footer { display: none !important; }`}
+                    />
+                  </View>
+                  <View style={styles.sigCapBtnRow}>
+                    <TouchableOpacity
+                      style={styles.sigCapBtn}
+                      onPress={() => {
+                        captureDriverRef.current?.clearSignature();
+                        setCaptureDriverSig(null);
+                        setCaptureDriverSaved(false);
+                      }}
+                    >
+                      <Text style={styles.sigCapBtnText}>Clear</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.sigCapBtn, styles.sigCapBtnPrimary]}
+                      onPress={() => captureDriverRef.current?.readSignature()}
+                    >
+                      <Text style={styles.sigCapBtnTextLight}>{captureDriverSaved ? 'Saved' : 'Save driver'}</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+
                 <TouchableOpacity
-                  style={styles.sigCapBtn}
+                  style={styles.sigCapDoneBtn}
+                  onPress={() => {
+                    if (!captureCustomerSig || !captureDriverSig) {
+                      Alert.alert(
+                        'Signatures',
+                        'Save the driver signature first, then tap Save signatures.'
+                      );
+                      return;
+                    }
+                    void persistCapturedSignatures(captureCustomerSig, captureDriverSig);
+                  }}
+                  activeOpacity={0.88}
+                >
+                  <Ionicons name="checkmark-done-outline" size={22} color="#fff" />
+                  <Text style={styles.evidenceSaveBtnText}>Save signatures</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.sigCapBtn, { marginTop: spacing.sm }]}
                   onPress={() => {
                     captureCustomerRef.current?.clearSignature();
                     setCaptureCustomerSig(null);
                     setCaptureCustomerSaved(false);
+                    setSignatureCaptureStep('customer');
                   }}
+                  activeOpacity={0.85}
                 >
-                  <Text style={styles.sigCapBtnText}>Clear</Text>
+                  <Text style={styles.sigCapBtnText}>← Back to customer</Text>
                 </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.sigCapBtn, styles.sigCapBtnPrimary]}
-                  onPress={() => {
-                    setSignatureModalScrollEnabled(true);
-                    captureCustomerRef.current?.readSignature();
-                  }}
-                >
-                  <Text style={styles.sigCapBtnTextLight}>{captureCustomerSaved ? 'Saved' : 'Save customer'}</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-
-            <View style={styles.sigCapSection}>
-              <Text style={styles.sigCapSectionHeader}>Driver signature</Text>
-              <Text style={styles.sigCapSectionHint}>Sign here next.</Text>
-              <View
-                style={styles.sigCapCanvasWrap}
-                onTouchStart={() => setSignatureModalScrollEnabled(false)}
-                onTouchEnd={() => setSignatureModalScrollEnabled(true)}
-                onTouchCancel={() => setSignatureModalScrollEnabled(true)}
-              >
-                <SignatureCanvas
-                  ref={captureDriverRef}
-                  onOK={(dataUrl) => {
-                    setCaptureDriverSig(dataUrl);
-                    setCaptureDriverSaved(true);
-                    setSignatureModalScrollEnabled(true);
-                  }}
-                  onEmpty={() => {
-                    setSignatureModalScrollEnabled(true);
-                    Alert.alert('Signature', 'Please sign the driver area first.');
-                  }}
-                  descriptionText=""
-                  clearText=""
-                  confirmText=""
-                  penColor="#000000"
-                  backgroundColor="rgba(255,255,255,1)"
-                  style={styles.sigCapCanvas}
-                  autoClear={false}
-                  webStyle={`.m-signature-pad--footer { display: none !important; }`}
-                />
-              </View>
-              <View style={styles.sigCapBtnRow}>
-                <TouchableOpacity
-                  style={styles.sigCapBtn}
-                  onPress={() => {
-                    captureDriverRef.current?.clearSignature();
-                    setCaptureDriverSig(null);
-                    setCaptureDriverSaved(false);
-                  }}
-                >
-                  <Text style={styles.sigCapBtnText}>Clear</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.sigCapBtn, styles.sigCapBtnPrimary]}
-                  onPress={() => {
-                    setSignatureModalScrollEnabled(true);
-                    captureDriverRef.current?.readSignature();
-                  }}
-                >
-                  <Text style={styles.sigCapBtnTextLight}>{captureDriverSaved ? 'Saved' : 'Save driver'}</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-
-            <TouchableOpacity
-              style={styles.sigCapDoneBtn}
-              onPress={() => {
-                if (!captureCustomerSig || !captureDriverSig) {
-                  Alert.alert(
-                    'Signatures',
-                    'Use Save customer and Save driver for each box, then tap Save signatures.'
-                  );
-                  return;
-                }
-                void persistCapturedSignatures(captureCustomerSig, captureDriverSig);
-              }}
-              activeOpacity={0.88}
-            >
-              <Ionicons name="checkmark-done-outline" size={22} color="#fff" />
-              <Text style={styles.evidenceSaveBtnText}>Save signatures</Text>
-            </TouchableOpacity>
-            </ScrollView>
+              </>
+            )}
           </View>
         </View>
       </Modal>

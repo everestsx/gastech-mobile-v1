@@ -1447,7 +1447,10 @@ const handleProceedToPayment = useCallback(async () => {
                   orderName: checkoutResumeEntry.invoiceParams.orderName,
                 });
               } else {
-                navigation.navigate('InvoiceScreen', checkoutResumeEntry.invoiceParams);
+                navigation.navigate('InvoiceScreen', {
+                  ...checkoutResumeEntry.invoiceParams,
+                  promptSignatures: false,
+                });
               }
             }}
             activeOpacity={0.85}

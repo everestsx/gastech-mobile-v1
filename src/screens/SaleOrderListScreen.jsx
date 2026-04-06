@@ -384,7 +384,10 @@ export default function SaleOrderListScreen({ route, navigation }) {
         });
         return;
       }
-      navigation.navigate('InvoiceScreen', entry.invoiceParams);
+      navigation.navigate('InvoiceScreen', {
+        ...entry.invoiceParams,
+        promptSignatures: false,
+      });
       return;
     }
     navigation.navigate('SaleOrderDetails', { saleOrderId: order.id });
