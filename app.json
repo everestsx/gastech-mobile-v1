@@ -18,6 +18,7 @@
       "bundleIdentifier": "com.gastech.mobile"
     },
     "android": {
+      "softwareKeyboardLayoutMode": "resize",
       "package": "com.gastech.mobile",
       "adaptiveIcon": {
         "foregroundImage": "./assets/icon.png",

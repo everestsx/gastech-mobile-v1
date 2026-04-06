@@ -1,6 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import { AppState, View, StyleSheet } from 'react-native';
-import { NavigationContainer } from '@react-navigation/native';
+import { NavigationContainer, createNavigationContainerRef } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -32,7 +32,18 @@ import BluetoothPrinterScreen from '../screens/BluetoothPrinterScreen';
 import SyncHeaderBadge from '../components/SyncHeaderBadge';
 
 import { useTheme } from '../context/ThemeContext';
-import { runSync, getSyncIntervalMs } from '../services/sync.service';
+import { runSync, getSyncIntervalMs, getUserSession, logout, isSessionExpired } from '../services/sync.service';
+
+export const rootNavigationRef = createNavigationContainerRef();
+
+async function enforceSessionNotExpired() {
+  const user = await getUserSession();
+  if (!user || !isSessionExpired(user)) return;
+  await logout();
+  if (rootNavigationRef.isReady()) {
+    rootNavigationRef.reset({ index: 0, routes: [{ name: 'Login' }] });
+  }
+}
 
 const RootStack = createNativeStackNavigator();
 const Tab = createBottomTabNavigator();
@@ -240,6 +251,7 @@ export default function AppNavigator() {
 
     const sub = AppState.addEventListener('change', (nextState) => {
       if (nextState === 'active' && appStateRef.current !== 'active') {
+        void enforceSessionNotExpired();
         run();
         syncIntervalRef.current = setInterval(run, intervalMs);
       } else if (nextState !== 'active') {
@@ -252,6 +264,7 @@ export default function AppNavigator() {
     });
 
     if (AppState.currentState === 'active') {
+      void enforceSessionNotExpired();
       run();
       syncIntervalRef.current = setInterval(run, intervalMs);
     }
@@ -262,8 +275,15 @@ export default function AppNavigator() {
     };
   }, [syncInterval]);
 
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (AppState.currentState === 'active') void enforceSessionNotExpired();
+    }, 60 * 1000);
+    return () => clearInterval(id);
+  }, []);
+
   return (
-    <NavigationContainer>
+    <NavigationContainer ref={rootNavigationRef}>
       <View style={styles.navWrap}>
         <View style={styles.navContent}>
           <RootStack.Navigator

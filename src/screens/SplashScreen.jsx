@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, ActivityIndicator, Dimensions } from 'react-nat
 import Svg, { Defs, LinearGradient, Stop, Rect } from 'react-native-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AppLogo from '../components/AppLogo';
-import { getUserSession } from '../services/sync.service';
+import { getUserSession, logout, isSessionExpired } from '../services/sync.service';
 import { getDb } from '../database/db';
 
 const { width: W } = Dimensions.get('window');
@@ -54,7 +54,11 @@ export default function SplashScreenComponent({ navigation }) {
       } catch (_) {
         /* continue */
       }
-      const user = await getUserSession();
+      let user = await getUserSession();
+      if (user && isSessionExpired(user)) {
+        await logout();
+        user = null;
+      }
       setReady(true);
       if (user) {
         navigation.replace('Main');

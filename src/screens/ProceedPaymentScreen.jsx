@@ -9,8 +9,11 @@ import {
   ScrollView,
   TextInput,
   Image,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import { CommonActions } from '@react-navigation/native';
+import { useHeaderHeight } from '@react-navigation/elements';
 import { setCheckoutResumeFromPayment } from '../services/checkoutResume.service';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -49,6 +52,7 @@ function userFacingPaymentError(err) {
 export default function ProceedPaymentScreen({ route, navigation }) {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
+  const headerHeight = useHeaderHeight();
   const { setHideSyncIndicator } = useSync();
   const { saleOrderId, total, subtotal, tax, deliveryDone, deliveryPayload, invoiceLineQtys } = route.params || {};
   const orderTotal = Number(total) || 0;
@@ -72,6 +76,8 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   const [bankSearchQuery, setBankSearchQuery] = useState('');
   const cashInputRef = useRef(null);
   const checkInputRef = useRef(null);
+  const scrollRef = useRef(null);
+  const checkNumberInputRef = useRef(null);
   const [editingField, setEditingField] = useState(null);
 
   // Use only vehicle-specific journals for Cash and Cheque (cash_journal_id / check_journal_id from fleet.vehicle).
@@ -504,7 +510,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
     () =>
       StyleSheet.create({
         container: { flex: 1, backgroundColor: colors.background },
-        content: { padding: spacing.md, paddingBottom: spacing.xl + 80 + insets.bottom },
+        content: { padding: spacing.md, paddingBottom: spacing.xl + 220 + insets.bottom },
         title: { fontSize: 22, fontWeight: '800', color: colors.text, textAlign: 'center', marginBottom: spacing.lg },
         totalCard: {
           backgroundColor: colors.surface,
@@ -794,11 +800,18 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   );
 
   return (
+    <KeyboardAvoidingView
+      style={{ flex: 1, backgroundColor: colors.background }}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={headerHeight}
+    >
     <ScrollView
-      style={styles.container}
+      ref={scrollRef}
+      style={{ flex: 1 }}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}
       keyboardShouldPersistTaps="handled"
+      keyboardDismissMode="on-drag"
     >
       <View style={styles.totalCard}>
         {(orderSubtotal != null || orderTax != null) ? (
@@ -1023,11 +1036,17 @@ export default function ProceedPaymentScreen({ route, navigation }) {
               <Text style={[styles.sectionLabel]}>Cheque number <Text style={styles.requiredStar}>*</Text></Text>
               <View style={[styles.checkInputRow , { marginBottom: spacing.sm }]}>
                 <TextInput
+                  ref={checkNumberInputRef}
                   style={[styles.checkAmountInput, { flex: 1 }]}
                   value={checkNumber}
                   onChangeText={setCheckNumber}
                   placeholder="Check #"
                   placeholderTextColor={colors.textSecondary}
+                  onFocus={() => {
+                    setTimeout(() => {
+                      scrollRef.current?.scrollToEnd({ animated: true });
+                    }, 200);
+                  }}
                 />
               </View>
             </>
@@ -1070,5 +1089,6 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         )}
       </TouchableOpacity>
     </ScrollView>
+    </KeyboardAvoidingView>
   );
 }

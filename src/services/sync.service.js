@@ -94,6 +94,22 @@ export async function saveUserSession(user) {
   await storage.setItem(KEYS.USER, JSON.stringify(user));
 }
 
+/** Next local midnight (12:00 AM) as ISO string — session is valid until then. */
+export function getSessionExpiryAtIsoEndOfLocalDay() {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  d.setHours(0, 0, 0, 0);
+  return d.toISOString();
+}
+
+/** True when session should end (daily auto logout at local midnight). */
+export function isSessionExpired(user) {
+  if (!user || !user.sessionExpiresAt) return false;
+  const t = Date.parse(user.sessionExpiresAt);
+  if (Number.isNaN(t)) return false;
+  return Date.now() >= t;
+}
+
 export async function saveLastVehicleId(vehicleId) {
   try {
     const storage = await getAsyncStorage();

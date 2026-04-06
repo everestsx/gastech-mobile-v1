@@ -67,6 +67,35 @@ export async function getPendingBySaleOrderId(saleOrderId) {
  * Get all pending attachments across all sale orders (for sync engine).
  * Process in batches; max 3 uploads at a time per doc.
  */
+/** Count rows per sale order (any sync status). */
+export async function getAttachmentCountsBySaleOrderIds(saleOrderIds) {
+  if (!Array.isArray(saleOrderIds) || saleOrderIds.length === 0) return {};
+  const db = await getDb();
+  const ids = [...new Set(saleOrderIds.map((id) => num(id)).filter((n) => n > 0))];
+  if (ids.length === 0) return {};
+  const placeholders = ids.map(() => '?').join(',');
+  const rows = await db.getAllAsync(
+    `SELECT sale_order_id, COUNT(*) as c FROM offline_attachments WHERE sale_order_id IN (${placeholders}) GROUP BY sale_order_id`,
+    ids
+  );
+  const out = {};
+  for (const id of ids) out[id] = 0;
+  for (const r of rows || []) {
+    out[num(r.sale_order_id)] = num(r.c);
+  }
+  return out;
+}
+
+/** Sale orders that still have proof files not uploaded to Odoo. */
+export async function getSaleOrderIdsWithPendingAttachmentUploads() {
+  const db = await getDb();
+  const rows = await db.getAllAsync(
+    `SELECT DISTINCT sale_order_id FROM offline_attachments WHERE sync_status = ? AND retry_count < ?`,
+    [SYNC_STATUS_PENDING, MAX_RETRIES]
+  );
+  return new Set((rows || []).map((r) => num(r.sale_order_id)));
+}
+
 export async function getAllPending(limit = 50) {
   const db = await getDb();
   const rows = await db.getAllAsync(

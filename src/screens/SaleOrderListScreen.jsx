@@ -10,6 +10,7 @@ import {
   TextInput,
   Modal,
   Pressable,
+  KeyboardAvoidingView,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -27,6 +28,8 @@ import {
 import OrderCard from '../components/OrderCard';
 import SyncHeaderBadge from '../components/SyncHeaderBadge';
 import * as deliveryQtyDb from '../database/deliveryQty.js';
+import * as localPaymentsDb from '../database/localPayments.js';
+import * as offlineAttachmentsDb from '../database/offlineAttachments.js';
 import { getCheckoutResumeMap } from '../services/checkoutResume.service';
 
 const TAB_TO_DELIVER = 'to_deliver';
@@ -264,12 +267,32 @@ export default function SaleOrderListScreen({ route, navigation }) {
         if (partner?.name) setCustomerNameForEmpty((prev) => prev || partner.name);
       }
       const orderIds = list.map((o) => o.id);
-      const [totals, pickings, allLines, qtyDoneMap] = await Promise.all([
+      const resumeForSort = resumeMap && typeof resumeMap === 'object' ? resumeMap : {};
+      const [totals, pickings, allLines, qtyDoneMap, paymentSplits, attachCounts, pendingUploadSet] =
+        await Promise.all([
         getOrderLineTotalsFromDB(list),
         getPickingsBySaleIdsFromDB(orderIds),
         getOrderLinesByOrderIdsFromDB(orderIds),
         orderIds.length ? deliveryQtyDb.getTotalQtyDoneBySaleOrderIds(orderIds) : Promise.resolve({}),
+        orderIds.length ? localPaymentsDb.getPaymentSplitsBySaleOrderIds(orderIds) : Promise.resolve({}),
+        orderIds.length ? offlineAttachmentsDb.getAttachmentCountsBySaleOrderIds(orderIds) : Promise.resolve({}),
+        orderIds.length
+          ? offlineAttachmentsDb.getSaleOrderIdsWithPendingAttachmentUploads()
+          : Promise.resolve(new Set()),
       ]);
+      const listPriority = (o) => {
+        const id = Number(o.id);
+        const rid = String(id);
+        const entry = resumeForSort[rid];
+        if (entry?.phase === 'payment_proof') return 0;
+        if (entry?.phase === 'invoice') return 1;
+        const split = paymentSplits[id] ?? paymentSplits[String(id)];
+        const cred = Number(split?.credit) || 0;
+        const att = Number(attachCounts[id] ?? attachCounts[String(id)] ?? 0) || 0;
+        if (cred > 0 && att === 0) return 2;
+        if (pendingUploadSet.has(id)) return 3;
+        return 10;
+      };
       const saleIdToPickingState = {};
       (pickings || []).forEach((p) => {
         const saleId = Array.isArray(p.sale_id) ? p.sale_id[0] : p.sale_id;
@@ -286,16 +309,20 @@ export default function SaleOrderListScreen({ route, navigation }) {
           linesByOrderId[oid].push(line);
         }
       });
-      setOrders(
-        list.map((o) => ({
-          ...o,
-          totalQty: totals[o.id] != null ? totals[o.id] : null,
-          pickingState: saleIdToPickingState[o.id] ?? '',
-          qtyDoneSum: Number(qtyDoneMap?.[o.id]) || 0,
-          isDelivered: saleIdToPickingState[o.id] === 'done',
-          orderLines: linesByOrderId[o.id] || [],
-        }))
-      );
+      const enriched = list.map((o) => ({
+        ...o,
+        totalQty: totals[o.id] != null ? totals[o.id] : null,
+        pickingState: saleIdToPickingState[o.id] ?? '',
+        qtyDoneSum: Number(qtyDoneMap?.[o.id]) || 0,
+        isDelivered: saleIdToPickingState[o.id] === 'done',
+        orderLines: linesByOrderId[o.id] || [],
+      }));
+      enriched.sort((a, b) => {
+        const d = listPriority(a) - listPriority(b);
+        if (d !== 0) return d;
+        return String(a.name || '').localeCompare(String(b.name || ''));
+      });
+      setOrders(enriched);
     } catch (err) {
       console.error('Sale Order Error:', err);
       setOrders([]);
@@ -372,7 +399,12 @@ export default function SaleOrderListScreen({ route, navigation }) {
   }
 
   return (
-    <View style={styles.container}>
+    <KeyboardAvoidingView
+      style={styles.container}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={insets.top + 8}
+    >
+    <View style={{ flex: 1 }}>
       {/* Header: back (to Dashboard), date navigator (center, tap = calendar), QR (right) */}
       <View style={styles.header}>
         <View style={styles.headerLeft}>
@@ -493,9 +525,13 @@ export default function SaleOrderListScreen({ route, navigation }) {
       </Modal>
 
       <FlatList
+        style={{ flex: 1 }}
         data={ordersFilteredBySearch}
         keyExtractor={(item) => String(item.id)}
         contentContainerStyle={styles.list}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+        automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
         ListEmptyComponent={
           <View style={styles.empty}>
             <Ionicons name="cube-outline" size={48} color={colors.textSecondary} />
@@ -526,5 +562,6 @@ export default function SaleOrderListScreen({ route, navigation }) {
         )}
       />
     </View>
+    </KeyboardAvoidingView>
   );
 }

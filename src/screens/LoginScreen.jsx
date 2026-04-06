@@ -14,12 +14,21 @@ import {
   Modal,
   Keyboard,
   Image,
+  ScrollView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import AppLogo from '../components/AppLogo';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
-import { getCachedVehicles, getLastVehicleId, runSync, saveUserSession, saveLastVehicleId, syncVehiclesOnly } from '../services/sync.service';
+import {
+  getCachedVehicles,
+  getLastVehicleId,
+  runSync,
+  saveUserSession,
+  saveLastVehicleId,
+  syncVehiclesOnly,
+  getSessionExpiryAtIsoEndOfLocalDay,
+} from '../services/sync.service';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { fetchAndStoreVehicleJournals } from '../services/vehicle.service';
 import { getDriverByBarcode, getPortersEmployees, odooImageToUri } from '../services/employee.service';
@@ -27,7 +36,7 @@ import { getDriverByBarcode, getPortersEmployees, odooImageToUri } from '../serv
 
 
 export default function LoginScreen({ navigation }) {
-  const { colors } = useTheme();
+  const { colors, appLanguage, setAppLanguage } = useTheme();
   const [vehicles, setVehicles] = useState([]);
   const [selected, setSelected] = useState(null);
   const [dropdownVisible, setDropdownVisible] = useState(false);
@@ -188,6 +197,7 @@ export default function LoginScreen({ navigation }) {
         driverPhone: matchedDriver.phone || '',
         selectedPorters,
         loggedInAt: new Date().toISOString(),
+        sessionExpiresAt: getSessionExpiryAtIsoEndOfLocalDay(),
       });
 
       saveLastVehicleId(selected.id);
@@ -421,10 +431,89 @@ export default function LoginScreen({ navigation }) {
       flexDirection: 'row',
       alignItems: 'center',
       paddingVertical: 12,
-      paddingHorizontal: 4,
-      borderBottomWidth: 1,
+      paddingHorizontal: 10,
+      borderBottomWidth: StyleSheet.hairlineWidth,
       borderBottomColor: colors.border,
       gap: 12,
+    },
+    porterRowSelected: {
+      backgroundColor: (colors.primary || '#6366f1') + '14',
+      borderLeftWidth: 3,
+      borderLeftColor: colors.primary,
+      paddingLeft: 7,
+    },
+    porterSelectedSection: {
+      marginTop: spacing.sm,
+      marginBottom: spacing.sm,
+    },
+    porterSelectedSectionLabel: {
+      fontSize: 12,
+      fontWeight: '800',
+      color: colors.textSecondary,
+      letterSpacing: 0.4,
+      textTransform: 'uppercase',
+      marginBottom: 8,
+    },
+    porterSelectedChipsScroll: { marginHorizontal: -4 },
+    porterSelectedChipsContent: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 4, paddingHorizontal: 4 },
+    porterSelectedChip: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+      paddingVertical: 8,
+      paddingLeft: 6,
+      paddingRight: 10,
+      borderRadius: borderRadius.lg,
+      backgroundColor: colors.primary,
+      maxWidth: 168,
+      shadowColor: colors.primary,
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.2,
+      shadowRadius: 4,
+      elevation: 3,
+    },
+    porterChipAvatar: {
+      width: 32,
+      height: 32,
+      borderRadius: 16,
+      overflow: 'hidden',
+      backgroundColor: 'rgba(255,255,255,0.35)',
+      borderWidth: 1.5,
+      borderColor: 'rgba(255,255,255,0.5)',
+    },
+    porterChipName: {
+      flex: 1,
+      fontSize: 14,
+      fontWeight: '700',
+      color: '#fff',
+      minWidth: 0,
+    },
+    porterSelectedEmpty: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 10,
+      paddingVertical: 14,
+      paddingHorizontal: 12,
+      borderRadius: borderRadius.lg,
+      borderWidth: 1.5,
+      borderStyle: 'dashed',
+      borderColor: colors.border,
+      backgroundColor: colors.background,
+    },
+    porterSelectedEmptyText: {
+      flex: 1,
+      fontSize: 13,
+      color: colors.textSecondary,
+      lineHeight: 18,
+    },
+    porterListSectionLabel: {
+      fontSize: 12,
+      fontWeight: '800',
+      color: colors.textSecondary,
+      letterSpacing: 0.4,
+      textTransform: 'uppercase',
+      marginTop: spacing.xs,
+      marginBottom: 6,
     },
     porterAvatar: {
       width: 48,
@@ -474,6 +563,43 @@ export default function LoginScreen({ navigation }) {
       alignItems: 'center',
       paddingHorizontal: spacing.md,
     },
+    langRow: {
+      width: '100%',
+      marginBottom: spacing.md,
+      paddingVertical: spacing.sm,
+      paddingHorizontal: spacing.sm,
+      borderRadius: borderRadius.lg,
+      backgroundColor: colors.background,
+      borderWidth: 1,
+      borderColor: colors.border,
+    },
+    langRowInner: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+      flexWrap: 'wrap',
+    },
+    langLabel: {
+      fontSize: 13,
+      fontWeight: '700',
+      color: colors.textSecondary,
+      marginRight: 4,
+    },
+    langChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, flex: 1, justifyContent: 'flex-end' },
+    langChip: {
+      paddingVertical: 8,
+      paddingHorizontal: 12,
+      borderRadius: borderRadius.md,
+      backgroundColor: colors.surface,
+      borderWidth: 1.5,
+      borderColor: colors.border,
+    },
+    langChipOn: {
+      borderColor: colors.primary,
+      backgroundColor: colors.primary + '18',
+    },
+    langChipText: { fontSize: 13, fontWeight: '600', color: colors.text },
+    langChipTextOn: { color: colors.primary, fontWeight: '700' },
 
   }), [colors]);
 
@@ -488,6 +614,12 @@ export default function LoginScreen({ navigation }) {
       return name.includes(q) || code.includes(q);
     });
   }, [portersList, porterSearchQuery]);
+
+  /** Selected porters in stable list order — shown as chips under search. */
+  const selectedPortersOrdered = useMemo(() => {
+    const idSet = new Set(selectedPorterIds);
+    return portersList.filter((p) => idSet.has(Number(p.id)));
+  }, [portersList, selectedPorterIds]);
 
   const displayLabel = selected
       ? (selected?.license_plate || selected?.name)
@@ -504,6 +636,42 @@ export default function LoginScreen({ navigation }) {
             </View>
 
             <View style={styles.formSection}>
+              {loginPhase === 'credentials' ? (
+                <View style={styles.langRow}>
+                  <View style={styles.langRowInner}>
+                    <Ionicons name="language-outline" size={20} color={colors.primary} />
+                    <Text style={styles.langLabel}>Language</Text>
+                    <View style={styles.langChips}>
+                      {[
+                        { v: 'en', l: 'English' },
+                        { v: 'ta', l: 'தமிழ்' },
+                        { v: 'si', l: 'සිංහල' },
+                      ].map((opt) => (
+                        <TouchableOpacity
+                          key={opt.v}
+                          style={[styles.langChip, appLanguage === opt.v && styles.langChipOn]}
+                          onPress={() => void setAppLanguage(opt.v)}
+                          activeOpacity={0.85}
+                        >
+                          <Text style={[styles.langChipText, appLanguage === opt.v && styles.langChipTextOn]}>
+                            {opt.l}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  </View>
+                  <Text
+                    style={{
+                      fontSize: 11,
+                      color: colors.textSecondary,
+                      marginTop: 8,
+                      textAlign: 'center',
+                    }}
+                  >
+                    App restarts your shift after midnight — sign in again each day.
+                  </Text>
+                </View>
+              ) : null}
 
               <View
                   style={styles.dropdownWrapper}
@@ -668,17 +836,20 @@ export default function LoginScreen({ navigation }) {
         <Modal visible={loginPhase === 'porterPick'} transparent animationType="slide">
           <KeyboardAvoidingView
             style={styles.modalOverlay}
-            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 40 : 0}
           >
-            <View style={[styles.modalCard, { paddingBottom: spacing.md }]}>
-              <Text style={styles.modalTitle}>Select porters</Text>
-              <Text style={styles.modalSubtitle}>Search by name, then tap everyone on this shift.</Text>
+            <View style={[styles.modalCard, { paddingBottom: spacing.md, maxHeight: '92%' }]}>
+              <Text style={styles.modalTitle}>Who's on this shift?</Text>
+              <Text style={styles.modalSubtitle}>
+                Search below, then tap porters in the list. Everyone you pick appears right under the search — tap a chip or the row again to remove.
+              </Text>
               {!portersLoading ? (
                 <View style={styles.porterSearchWrap}>
                   <Ionicons name="search" size={22} color={colors.primary} />
                   <TextInput
                     style={styles.porterSearchInput}
-                    placeholder="Search porters…"
+                    placeholder="Type a name or code…"
                     placeholderTextColor={colors.textSecondary}
                     value={porterSearchQuery}
                     onChangeText={setPorterSearchQuery}
@@ -693,18 +864,80 @@ export default function LoginScreen({ navigation }) {
                   ) : null}
                 </View>
               ) : null}
+              {!portersLoading ? (
+                <View style={styles.porterSelectedSection}>
+                  <Text style={styles.porterSelectedSectionLabel}>
+                    On this shift ({selectedPortersOrdered.length})
+                  </Text>
+                  {selectedPortersOrdered.length === 0 ? (
+                    <View style={styles.porterSelectedEmpty}>
+                      <Ionicons name="arrow-down-outline" size={22} color={colors.primary} />
+                      <Text style={styles.porterSelectedEmptyText}>
+                        No one selected yet. Use the list below — selected people will show up here as pills you can review at a glance.
+                      </Text>
+                    </View>
+                  ) : (
+                    <ScrollView
+                      horizontal
+                      showsHorizontalScrollIndicator={false}
+                      style={styles.porterSelectedChipsScroll}
+                      contentContainerStyle={styles.porterSelectedChipsContent}
+                      keyboardShouldPersistTaps="handled"
+                    >
+                      {selectedPortersOrdered.map((p) => {
+                        const id = Number(p.id);
+                        const uri = odooImageToUri(p.imageBase64);
+                        const shortName =
+                          String(p.name || '')
+                            .trim()
+                            .split(/\s+/)
+                            .slice(0, 2)
+                            .join(' ') || '—';
+                        return (
+                          <TouchableOpacity
+                            key={String(p.id)}
+                            style={styles.porterSelectedChip}
+                            onPress={() => togglePorter(id)}
+                            activeOpacity={0.85}
+                            accessibilityRole="button"
+                            accessibilityLabel={`Remove ${p.name} from shift`}
+                          >
+                            <View style={styles.porterChipAvatar}>
+                              {uri ? (
+                                <Image source={{ uri }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+                              ) : (
+                                <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+                                  <Ionicons name="person" size={16} color="#fff" />
+                                </View>
+                              )}
+                            </View>
+                            <Text style={styles.porterChipName} numberOfLines={1}>
+                              {shortName}
+                            </Text>
+                            <Ionicons name="close-circle" size={20} color="rgba(255,255,255,0.92)" />
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </ScrollView>
+                  )}
+                </View>
+              ) : null}
               {portersLoading ? (
                 <ActivityIndicator size="large" color={colors.primary} style={{ marginVertical: spacing.xl }} />
               ) : (
                 <>
+                  <Text style={styles.porterListSectionLabel}>
+                    {porterSearchQuery.trim() ? 'Matching porters' : 'All porters'}
+                  </Text>
                   <Text style={styles.porterListHint}>
-                    {filteredPortersList.length} of {portersList.length} shown
-                    {selectedPorterIds.length > 0 ? ` · ${selectedPorterIds.length} selected` : ''}
+                    {filteredPortersList.length} shown
+                    {porterSearchQuery.trim() ? ` · ${portersList.length} total` : ''}
+                    {selectedPorterIds.length > 0 ? ` · ${selectedPorterIds.length} on shift` : ''}
                   </Text>
                   <FlatList
                     data={filteredPortersList}
                     keyExtractor={(item) => String(item.id)}
-                    style={{ maxHeight: 320 }}
+                    style={{ maxHeight: 280 }}
                     keyboardShouldPersistTaps="handled"
                     keyboardDismissMode="on-drag"
                     ListEmptyComponent={
@@ -726,11 +959,11 @@ export default function LoginScreen({ navigation }) {
                       const uri = odooImageToUri(p.imageBase64);
                       return (
                         <TouchableOpacity
-                          style={styles.porterRow}
+                          style={[styles.porterRow, on && styles.porterRowSelected]}
                           onPress={() => togglePorter(id)}
                           activeOpacity={0.75}
                         >
-                          <View style={styles.porterAvatar}>
+                          <View style={[styles.porterAvatar, on && { borderColor: colors.primary, borderWidth: 2 }]}>
                             {uri ? (
                               <Image source={{ uri }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
                             ) : (
@@ -739,11 +972,20 @@ export default function LoginScreen({ navigation }) {
                               </View>
                             )}
                           </View>
-                          <View style={{ flex: 1 }}>
-                            <Text style={{ fontSize: 16, fontWeight: '700', color: colors.text }}>{p.name}</Text>
+                          <View style={{ flex: 1, minWidth: 0 }}>
+                            <Text style={{ fontSize: 16, fontWeight: '700', color: colors.text }} numberOfLines={2}>
+                              {p.name}
+                            </Text>
                             {p.barcode ? (
                               <Text style={{ fontSize: 12, color: colors.textSecondary, marginTop: 2 }}>{p.barcode}</Text>
                             ) : null}
+                            {on ? (
+                              <Text style={{ fontSize: 11, fontWeight: '700', color: colors.primary, marginTop: 4 }}>
+                                On this shift · tap to remove
+                              </Text>
+                            ) : (
+                              <Text style={{ fontSize: 11, color: colors.textSecondary, marginTop: 4 }}>Tap to add</Text>
+                            )}
                           </View>
                           <View style={[styles.porterCheck, on && styles.porterCheckOn]}>
                             {on ? <Ionicons name="checkmark" size={18} color="#fff" /> : null}

@@ -708,9 +708,12 @@ export default function InvoiceScreen({ route, navigation }) {
     rongtaReady,
     thermalPrinter,
     thermalConnected,
+    connectingThermal,
     selectPrinter,
     connect,
+    clearPrinter,
   } = usePrinterConnection();
+
   const [invoiceLogoDataUri, setInvoiceLogoDataUri] = useState(null);
   const {
     saleOrderId,
@@ -799,6 +802,15 @@ export default function InvoiceScreen({ route, navigation }) {
   const [savingEvidence, setSavingEvidence] = useState(false);
   const [printerModalVisible, setPrinterModalVisible] = useState(false);
   const [loadingPairedPrinters, setLoadingPairedPrinters] = useState(false);
+
+  useEffect(() => {
+    if (!printerModalVisible || !rongtaReady) return;
+    if (!thermalPrinter?.address || thermalConnected || connectingThermal) return;
+    const t = setTimeout(() => {
+      connect().catch(() => {});
+    }, 450);
+    return () => clearTimeout(t);
+  }, [printerModalVisible, rongtaReady, thermalPrinter?.address, thermalConnected, connectingThermal, connect]);
   const [pairedPrinterRows, setPairedPrinterRows] = useState([]);
   const [showSignatureCaptureModal, setShowSignatureCaptureModal] = useState(false);
   const [signatureModalScrollEnabled, setSignatureModalScrollEnabled] = useState(true);
@@ -1026,6 +1038,29 @@ export default function InvoiceScreen({ route, navigation }) {
           justifyContent: 'center',
         },
         printerPickGhostBtnText: { fontSize: 14, fontWeight: '600', color: colors.primary },
+        printerPickCloseBtn: {
+          position: 'absolute',
+          right: 0,
+          top: 0,
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 6,
+          paddingVertical: 6,
+          paddingHorizontal: 8,
+        },
+        printerPickCloseBtnText: { fontSize: 15, fontWeight: '700', color: colors.primary },
+        printerPickOutlineBtn: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 8,
+          paddingVertical: 12,
+          paddingHorizontal: 16,
+          borderRadius: borderRadius.lg,
+          borderWidth: 1.5,
+          borderColor: colors.error || '#dc2626',
+          backgroundColor: (colors.error || '#dc2626') + '14',
+        },
+        printerPickOutlineBtnText: { fontSize: 14, fontWeight: '700', color: colors.error || '#b91c1c' },
         printerPickHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.sm },
         printerPickTitle: { fontSize: 17, fontWeight: '700', color: colors.text },
         printerPickRow: {
@@ -2093,9 +2128,11 @@ export default function InvoiceScreen({ route, navigation }) {
               <TouchableOpacity
                 onPress={() => setPrinterModalVisible(false)}
                 hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-                style={{ position: 'absolute', right: 0, top: 0 }}
+                style={styles.printerPickCloseBtn}
+                activeOpacity={0.75}
               >
-                <Ionicons name="close-circle" size={30} color={colors.textSecondary} />
+                <Text style={styles.printerPickCloseBtnText}>Close</Text>
+                <Ionicons name="close-circle" size={26} color={colors.primary} />
               </TouchableOpacity>
             </View>
             <View style={styles.printerPickHero}>
@@ -2105,7 +2142,7 @@ export default function InvoiceScreen({ route, navigation }) {
               <View style={{ flex: 1, minWidth: 0 }}>
                 <Text style={styles.printerPickHeadTitle}>Bluetooth printer</Text>
                 <Text style={styles.printerPickHeadSub}>
-                  Choose a paired device below, connect, then print your invoice from this screen.
+                  Choose a paired device, then print. This sheet tries to connect for you — use Connect if it does not link, or Clear saved printer to pick another device.
                 </Text>
               </View>
             </View>
@@ -2113,41 +2150,55 @@ export default function InvoiceScreen({ route, navigation }) {
               style={[
                 styles.printerPickStatusPill,
                 {
-                  backgroundColor: thermalConnected
-                    ? `${colors.success ?? '#22c55e'}26`
-                    : thermalPrinter?.address
-                      ? `${colors.warning ?? '#d97706'}26`
-                      : colors.background,
+                  backgroundColor: connectingThermal
+                    ? `${colors.primary}18`
+                    : thermalConnected
+                      ? `${colors.success ?? '#22c55e'}26`
+                      : thermalPrinter?.address
+                        ? `${colors.warning ?? '#d97706'}26`
+                        : colors.background,
                   borderWidth: 1,
-                  borderColor: thermalConnected
-                    ? `${colors.success ?? '#22c55e'}55`
-                    : thermalPrinter?.address
-                      ? `${colors.warning ?? '#d97706'}55`
-                      : colors.border,
+                  borderColor: connectingThermal
+                    ? `${colors.primary}44`
+                    : thermalConnected
+                      ? `${colors.success ?? '#22c55e'}55`
+                      : thermalPrinter?.address
+                        ? `${colors.warning ?? '#d97706'}55`
+                        : colors.border,
                 },
               ]}
             >
-              <Text
-                style={[
-                  styles.printerPickStatusText,
-                  {
-                    color: thermalConnected
-                      ? colors.success ?? '#15803d'
-                      : thermalPrinter?.address
-                        ? colors.warning ?? '#b45309'
-                        : colors.textSecondary,
-                  },
-                ]}
-              >
-                {thermalConnected
-                  ? `Connected · ${thermalPrinter?.name || 'Printer'}`
-                  : thermalPrinter?.name
-                    ? `Selected · ${thermalPrinter.name} — tap Connect now`
-                    : 'No printer selected — pick one from the list'}
-              </Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                {connectingThermal ? (
+                  <ActivityIndicator size="small" color={colors.primary} />
+                ) : null}
+                <Text
+                  style={[
+                    styles.printerPickStatusText,
+                    {
+                      flex: 1,
+                      color: connectingThermal
+                        ? colors.primary
+                        : thermalConnected
+                          ? colors.success ?? '#15803d'
+                          : thermalPrinter?.address
+                            ? colors.warning ?? '#b45309'
+                            : colors.textSecondary,
+                    },
+                  ]}
+                >
+                  {connectingThermal
+                    ? 'Connecting to the printer…'
+                    : thermalConnected
+                      ? `Ready to print · ${thermalPrinter?.name || 'Printer'}`
+                      : thermalPrinter?.name
+                        ? `Selected · ${thermalPrinter.name} — tap Connect or wait a moment`
+                        : 'No printer saved yet — tap one in the list below'}
+                </Text>
+              </View>
             </View>
             <View style={styles.printerPickActions}>
-              {thermalPrinter?.address && !thermalConnected ? (
+              {thermalPrinter?.address && !thermalConnected && !connectingThermal ? (
                 <TouchableOpacity
                   style={styles.printerPickPrimaryBtn}
                   onPress={() => void handleConnectToRongta()}
@@ -2155,6 +2206,16 @@ export default function InvoiceScreen({ route, navigation }) {
                 >
                   <Ionicons name="link" size={20} color="#fff" />
                   <Text style={styles.printerPickPrimaryBtnText}>Connect now</Text>
+                </TouchableOpacity>
+              ) : null}
+              {thermalPrinter?.address ? (
+                <TouchableOpacity
+                  style={styles.printerPickOutlineBtn}
+                  onPress={() => void clearPrinter()}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons name="trash-outline" size={20} color={colors.error || '#b91c1c'} />
+                  <Text style={styles.printerPickOutlineBtnText}>Clear saved printer</Text>
                 </TouchableOpacity>
               ) : null}
               <TouchableOpacity

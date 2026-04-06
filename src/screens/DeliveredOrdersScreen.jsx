@@ -11,6 +11,7 @@ import {
   TextInput,
   Modal,
   Pressable,
+  KeyboardAvoidingView,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -568,7 +569,12 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
   }
 
   return (
-    <View style={styles.container}>
+    <KeyboardAvoidingView
+      style={styles.container}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={insets.top + 8}
+    >
+    <View style={{ flex: 1 }}>
       <View style={styles.header}>
         <View style={styles.headerLeft}>
           <TouchableOpacity onPress={onBackPress} style={styles.headerBtn}>
@@ -773,9 +779,13 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
       </View>
 
       <FlatList
+        style={{ flex: 1 }}
         data={ordersFilteredBySearch}
         keyExtractor={(item) => String(item.id)}
         contentContainerStyle={styles.list}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+        automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
         ListEmptyComponent={
           <View style={styles.empty}>
             <Ionicons
@@ -813,5 +823,6 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
         )}
       />
     </View>
+    </KeyboardAvoidingView>
   );
 }

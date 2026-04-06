@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
+import { useHeaderHeight } from '@react-navigation/elements';
 import {
   View,
   Text,
@@ -69,6 +70,7 @@ function formatWithComma(amount) {
 export default function SaleOrderDetailsScreen({ route, navigation }) {
   const { colors, appLanguage } = useTheme();
   const insets = useSafeAreaInsets();
+  const headerHeight = useHeaderHeight();
 
   const GAS_SIZE_COLORS = useMemo(
     () => ({
@@ -136,7 +138,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
         container: { flex: 1, backgroundColor: colors.background },
         center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.background },
         scroll: { flex: 1 },
-        scrollContent: { padding: spacing.md, paddingBottom: 24 },
+        scrollContent: { padding: spacing.md, paddingBottom: Math.max(24, insets.bottom + 220) },
         errorText: { fontSize: 16, color: colors.textSecondary },
         customerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.md, paddingVertical: 4 },
         customerLabel: { fontSize: 14, fontWeight: '600', color: colors.textSecondary },
@@ -1417,14 +1419,15 @@ const handleProceedToPayment = useCallback(async () => {
   return (
     <KeyboardAvoidingView
       style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={headerHeight}
     >
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
       >
         {orderIsCancelled && (
           <View style={styles.cancelBanner}>

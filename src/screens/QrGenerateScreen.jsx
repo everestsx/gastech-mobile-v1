@@ -9,6 +9,9 @@ import {
   TextInput,
   FlatList,
   Alert,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
 } from "react-native";
 import QRCode from "react-native-qrcode-svg";
 import * as MediaLibrary from "expo-media-library";
@@ -18,10 +21,12 @@ const BASE64 = (FileSystem.EncodingType && FileSystem.EncodingType.Base64) || "b
 import { Ionicons } from "@expo/vector-icons";
 
 import { useTheme } from "../context/ThemeContext";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { getCustomers } from "../services/customer.service";
 
 export default function QrGenerateScreen({ navigation }) {
   const { colors, isDark } = useTheme();
+  const insets = useSafeAreaInsets();
   const [customers, setCustomers] = useState([]);
   const [filtered, setFiltered] = useState([]);
   const [search, setSearch] = useState("");
@@ -168,9 +173,19 @@ export default function QrGenerateScreen({ navigation }) {
   const qrValue = selectedCustomer ? `CUSTOMER:${selectedCustomer.id}` : "";
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={{ flex: 1, backgroundColor: colors.background }}>
       <StatusBar style={isDark ? "light" : "dark"} />
-      
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        keyboardVerticalOffset={Platform.OS === "ios" ? insets.top + 8 : 0}
+      >
+        <ScrollView
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+          contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 200 }}
+          showsVerticalScrollIndicator={false}
+        >
       {/* ---------------- HEADER ---------------- */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()}>
@@ -193,6 +208,8 @@ export default function QrGenerateScreen({ navigation }) {
           data={filtered}
           keyExtractor={(item) => item.id.toString()}
           style={styles.suggestionBox}
+          scrollEnabled={false}
+          keyboardShouldPersistTaps="handled"
           renderItem={({ item }) => (
             <TouchableOpacity
               style={styles.suggestionItem}
@@ -232,6 +249,8 @@ export default function QrGenerateScreen({ navigation }) {
           </View>
         )}
       </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }

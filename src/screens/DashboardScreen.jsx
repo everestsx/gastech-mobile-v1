@@ -544,6 +544,7 @@ export default function DashboardScreen({ navigation }) {
     for (const line of todayOrderLines || []) {
       const oid = Array.isArray(line.order_id) ? line.order_id[0] : line.order_id;
       if (oid == null) continue;
+      if ((Number(line.product_uom_qty) || 0) <= 0) continue;
       const id = Number(oid);
       const pt = Number(line.price_total);
       if (!Number.isFinite(pt)) continue;
@@ -692,7 +693,8 @@ export default function DashboardScreen({ navigation }) {
     const sr = Number(o.amount_credit) || 0;
     if (sc > 0 || sq > 0 || sr > 0) return s + sr;
     const pt = (o.payment_type || '').toLowerCase().trim();
-    return s + (pt === 'credit' || !pt ? orderMoneyTotal(o) : 0);
+    // Do not treat unknown/empty payment_type as full credit (fresh device after sync was inflating credit).
+    return s + (pt === 'credit' ? orderMoneyTotal(o) : 0);
   }, 0);
   const collectionTotal = cashTotal + chequeTotal + creditTotal || 1;
   const cashTotalDisplay = cashTotal;
