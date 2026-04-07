@@ -15,6 +15,7 @@ import {
   Modal,
   Alert,
   Pressable,
+  Keyboard,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -1326,6 +1327,9 @@ const handleProceedToPayment = useCallback(async () => {
                       placeholder="0"
                       placeholderTextColor={colors.textSecondary}
                       selectTextOnFocus
+                      returnKeyType="done"
+                      blurOnSubmit
+                      onSubmitEditing={() => Keyboard.dismiss()}
                       editable
                     />
                     <TouchableOpacity
@@ -1419,8 +1423,8 @@ const handleProceedToPayment = useCallback(async () => {
   return (
     <KeyboardAvoidingView
       style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      keyboardVerticalOffset={headerHeight}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? headerHeight : 0}
     >
       <ScrollView
         style={styles.scroll}

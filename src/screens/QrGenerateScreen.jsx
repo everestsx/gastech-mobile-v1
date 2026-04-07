@@ -12,6 +12,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
+  Keyboard,
 } from "react-native";
 import QRCode from "react-native-qrcode-svg";
 import * as MediaLibrary from "expo-media-library";
@@ -177,7 +178,7 @@ export default function QrGenerateScreen({ navigation }) {
       <StatusBar style={isDark ? "light" : "dark"} />
       <KeyboardAvoidingView
         style={{ flex: 1 }}
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
         keyboardVerticalOffset={Platform.OS === "ios" ? insets.top + 8 : 0}
       >
         <ScrollView
@@ -201,6 +202,9 @@ export default function QrGenerateScreen({ navigation }) {
         placeholderTextColor={colors.textSecondary}
         value={search}
         onChangeText={onSearch}
+        returnKeyType="search"
+        blurOnSubmit
+        onSubmitEditing={() => Keyboard.dismiss()}
       />
 
       {filtered.length > 0 && (

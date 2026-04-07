@@ -10,6 +10,7 @@ import {
   TextInput,
   Modal,
   Pressable,
+  Keyboard,
   KeyboardAvoidingView,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -401,8 +402,8 @@ export default function SaleOrderListScreen({ route, navigation }) {
   return (
     <KeyboardAvoidingView
       style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      keyboardVerticalOffset={insets.top + 8}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top + 8 : 0}
     >
     <View style={{ flex: 1 }}>
       {/* Header: back (to Dashboard), date navigator (center, tap = calendar), QR (right) */}
@@ -481,6 +482,8 @@ export default function SaleOrderListScreen({ route, navigation }) {
           placeholder={`Search by ${searchFieldLabels[searchField]?.toLowerCase() || 'customer'}…`}
           placeholderTextColor={colors.textSecondary}
           returnKeyType="search"
+          blurOnSubmit
+          onSubmitEditing={() => Keyboard.dismiss()}
         />
         <TouchableOpacity
           style={styles.searchFieldBtn}

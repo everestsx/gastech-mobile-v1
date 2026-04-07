@@ -11,6 +11,7 @@ import {
   Image,
   KeyboardAvoidingView,
   Platform,
+  Keyboard,
 } from 'react-native';
 import { CommonActions } from '@react-navigation/native';
 import { useHeaderHeight } from '@react-navigation/elements';
@@ -973,6 +974,9 @@ export default function ProceedPaymentScreen({ route, navigation }) {
                     placeholderTextColor={colors.textSecondary}
                     autoCapitalize="none"
                     autoCorrect={false}
+                    returnKeyType="search"
+                    blurOnSubmit
+                    onSubmitEditing={() => Keyboard.dismiss()}
                   />
                   {bankSearchQuery.length > 0 ? (
                     <TouchableOpacity onPress={() => setBankSearchQuery('')} style={styles.searchClear} hitSlop={8}>
@@ -1047,6 +1051,9 @@ export default function ProceedPaymentScreen({ route, navigation }) {
                   onChangeText={setCheckNumber}
                   placeholder="Check #"
                   placeholderTextColor={colors.textSecondary}
+                  returnKeyType="done"
+                  blurOnSubmit
+                  onSubmitEditing={() => Keyboard.dismiss()}
                   onFocus={() => {
                     setTimeout(() => {
                       scrollRef.current?.scrollToEnd({ animated: true });

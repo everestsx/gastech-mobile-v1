@@ -670,7 +670,7 @@ export default function LoginScreen({ navigation }) {
   return (
 
       <SafeAreaView style={styles.container}>
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
           <View style={styles.innerContainer}>
             <View style={styles.mainScrollArea}>
             <View style={styles.headerSection}>
@@ -771,6 +771,7 @@ export default function LoginScreen({ navigation }) {
                     autoCapitalize="none"
                     autoCorrect={false}
                     returnKeyType="done"
+                    blurOnSubmit
                     onChangeText={setPassword}
                     onSubmitEditing={handleLogin}
                 />
@@ -910,7 +911,7 @@ export default function LoginScreen({ navigation }) {
         <Modal visible={loginPhase === 'porterPick'} transparent animationType="slide">
           <KeyboardAvoidingView
             style={styles.modalOverlay}
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
             keyboardVerticalOffset={Platform.OS === 'ios' ? 40 : 0}
           >
             <View style={[styles.modalCard, { paddingBottom: spacing.md, maxHeight: '92%' }]}>
@@ -930,6 +931,8 @@ export default function LoginScreen({ navigation }) {
                     autoCapitalize="none"
                     autoCorrect={false}
                     returnKeyType="search"
+                    blurOnSubmit
+                    onSubmitEditing={() => Keyboard.dismiss()}
                   />
                   {porterSearchQuery.length > 0 ? (
                     <TouchableOpacity onPress={() => setPorterSearchQuery('')} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
