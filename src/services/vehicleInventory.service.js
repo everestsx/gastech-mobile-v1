@@ -20,11 +20,11 @@ export async function getVehicleInventoryByLocation(locationId) {
     { fields: ['product_id', 'quantity', 'available_quantity'] }
   );
   const rows = Array.isArray(response) ? response : [];
-  const withStock = rows.filter((r) => {
-    const quantity = Number(r?.quantity) || 0;
-    const available = Number(r?.available_quantity) || 0;
-    return quantity > 0 || available > 0;
-  });
-  console.log('[Vehicle Inventory API] locationId:', locationId, 'rows:', rows.length, 'withStock:', withStock.length);
-  return withStock;
+  const normalized = rows.map((r) => ({
+    ...r,
+    quantity: Math.max(0, Number(r?.quantity) || 0),
+    available_quantity: Math.max(0, Number(r?.available_quantity) || 0),
+  }));
+  console.log('[Vehicle Inventory API] locationId:', locationId, 'rows:', normalized.length);
+  return normalized;
 }

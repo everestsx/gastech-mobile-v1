@@ -977,6 +977,22 @@ export default function InvoiceScreen({ route, navigation }) {
     }, 450);
     return () => clearTimeout(t);
   }, [printerModalVisible, rongtaReady, thermalPrinter?.address, thermalConnected, connectingThermal, connect]);
+
+  /** Only auto-close after a connect attempt in this modal session (not when opening while already connected). */
+  const printerModalConnectAttemptRef = useRef(false);
+  useEffect(() => {
+    if (!printerModalVisible) printerModalConnectAttemptRef.current = false;
+  }, [printerModalVisible]);
+  useEffect(() => {
+    if (connectingThermal) printerModalConnectAttemptRef.current = true;
+  }, [connectingThermal]);
+  useEffect(() => {
+    if (!printerModalVisible || !thermalConnected || connectingThermal) return;
+    if (!printerModalConnectAttemptRef.current) return;
+    printerModalConnectAttemptRef.current = false;
+    const t = setTimeout(() => setPrinterModalVisible(false), 500);
+    return () => clearTimeout(t);
+  }, [printerModalVisible, thermalConnected, connectingThermal]);
   const [pairedPrinterRows, setPairedPrinterRows] = useState([]);
   const [showSignatureCaptureModal, setShowSignatureCaptureModal] = useState(false);
   /** 'customer' | 'driver' — one pad at a time for comfortable signing */
@@ -1738,13 +1754,19 @@ export default function InvoiceScreen({ route, navigation }) {
             <TouchableOpacity
               onPress={onInvoicePrinterHeaderPress}
               activeOpacity={0.85}
+              accessibilityRole="button"
+              accessibilityLabel={thermalConnected ? 'Bluetooth printer connected' : 'Connect Bluetooth printer'}
               style={{
                 flexDirection: 'row',
                 alignItems: 'center',
                 marginRight: 6,
-                paddingVertical: 4,
-                paddingHorizontal: 4,
-                maxWidth: 130,
+                paddingVertical: 6,
+                paddingHorizontal: 8,
+                maxWidth: 140,
+                borderRadius: 8,
+                borderWidth: 1,
+                borderColor: thermalConnected ? 'rgba(187, 247, 208, 0.55)' : 'rgba(255, 255, 255, 0.5)',
+                backgroundColor: thermalConnected ? 'rgba(0, 0, 0, 0.12)' : 'rgba(0, 0, 0, 0.22)',
               }}
             >
               <Ionicons
@@ -2360,16 +2382,23 @@ export default function InvoiceScreen({ route, navigation }) {
         visible={printerModalVisible}
         transparent
         animationType="slide"
-        onRequestClose={() => setPrinterModalVisible(false)}
+        onRequestClose={() => {
+          if (connectingThermal) return;
+          setPrinterModalVisible(false);
+        }}
       >
         <View style={styles.printerPickBackdrop}>
           <View style={styles.printerPickSheet}>
             <View style={{ position: 'relative', paddingTop: 4, marginBottom: spacing.sm }}>
               <View style={styles.printerPickHandle} />
               <TouchableOpacity
-                onPress={() => setPrinterModalVisible(false)}
+                onPress={() => {
+                  if (connectingThermal) return;
+                  setPrinterModalVisible(false);
+                }}
+                disabled={connectingThermal}
                 hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-                style={styles.printerPickCloseBtn}
+                style={[styles.printerPickCloseBtn, connectingThermal && { opacity: 0.45 }]}
                 activeOpacity={0.75}
               >
                 <Text style={styles.printerPickCloseBtnText}>Close</Text>
@@ -2462,9 +2491,11 @@ export default function InvoiceScreen({ route, navigation }) {
               <TouchableOpacity
                 style={styles.printerPickGhostBtn}
                 onPress={() => {
+                  if (connectingThermal) return;
                   setPrinterModalVisible(false);
                   navigation.navigate('BluetoothPrinter');
                 }}
+                disabled={connectingThermal}
                 activeOpacity={0.85}
               >
                 <Text style={styles.printerPickGhostBtnText}>Full Bluetooth settings</Text>
@@ -2493,8 +2524,8 @@ export default function InvoiceScreen({ route, navigation }) {
                 <TouchableOpacity
                   style={styles.printerPickRow}
                   onPress={async () => {
+                    if (connectingThermal) return;
                     await selectPrinter(item);
-                    setPrinterModalVisible(false);
                   }}
                 >
                   <Text style={styles.printerPickName}>{item.name}</Text>

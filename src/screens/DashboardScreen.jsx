@@ -25,7 +25,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
 import { dashboardConfig } from '../constants/dashboardConfig';
-import { getGasTypeBlueColor } from '../utils/productDisplay';
+import { getGasTypeBlueColor, parseKgFromProductName } from '../utils/productDisplay';
 import { getLocalizedCustomerNameFromOrder } from '../utils/customerDisplayName';
 import {
   getCachedOrders,
@@ -355,7 +355,10 @@ export default function DashboardScreen({ navigation }) {
             deliveredQtyByProductId[pid] = (deliveredQtyByProductId[pid] || 0) + qty;
           }
 
-          const inventories = await vehicleInventoriesDb.getVehicleInventoryByVehicleId(vehicleId);
+          const [inventories, productNameMap] = await Promise.all([
+            vehicleInventoriesDb.getVehicleInventoryByVehicleId(vehicleId),
+            productsDb.getProductsMap(),
+          ]);
           const byProduct = {};
           for (const inv of inventories || []) {
             const pid = inv?.product_id != null ? Number(inv.product_id) : null;
@@ -363,14 +366,26 @@ export default function DashboardScreen({ navigation }) {
             const total = Number(inv.quantity) || 0;
             const delivered = Number(deliveredQtyByProductId[pid]) || 0;
             const remaining = Math.max(0, total - delivered);
+            const resolvedName = (productNameMap && productNameMap[pid]) || inv?.product_name || `Product ${pid}`;
             byProduct[pid] = {
               product_id: pid,
-              product_name: inv?.product_name ?? `Product ${pid}`,
+              product_name: resolvedName,
               total,
               remaining,
             };
           }
-          setStockCards(Object.values(byProduct).sort((a, b) => (a.product_name || '').localeCompare(b.product_name || '')));
+          /** Match My Stocks: hide non–gas items at 0 on-hand; always show gas cylinders (including at 0). */
+          const sorted = Object.values(byProduct).sort((a, b) =>
+            (a.product_name || '').localeCompare(b.product_name || '')
+          );
+          const visibleStock = sorted.filter((s) => {
+            const rawName = String(s.product_name || '');
+            const isGas = parseKgFromProductName(rawName) != null;
+            const onHand = Math.max(0, Number(s.total) || 0);
+            if (!isGas && onHand <= 0) return false;
+            return true;
+          });
+          setStockCards(visibleStock);
         } else {
           setStockCards([]);
         }

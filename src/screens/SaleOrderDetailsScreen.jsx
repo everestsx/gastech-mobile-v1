@@ -68,6 +68,13 @@ function formatWithComma(amount) {
     parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
     return parts.join('.');
 }
+
+/** Odoo can return negative reserved qty; UI and caps use non‑negative stock only. */
+function clampNonNegativeStock(n) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return 0;
+  return Math.max(0, x);
+}
 export default function SaleOrderDetailsScreen({ route, navigation }) {
   const { colors, appLanguage } = useTheme();
   const insets = useSafeAreaInsets();
@@ -99,6 +106,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
   const [canceling, setCanceling] = useState(false);
   const [updateError, setUpdateError] = useState(null);
   const [productIdToAvailable, setProductIdToAvailable] = useState({});
+  const [productIdToOnHand, setProductIdToOnHand] = useState({});
   const [productIdToImageUri, setProductIdToImageUri] = useState({});
   const [showCancelConfirmModal, setShowCancelConfirmModal] = useState(false);
   const [showCancelModal, setShowCancelModal] = useState(false);
@@ -617,7 +625,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
 
         if (productId == null || qtyUsed <= 0) continue;
 
-        const currentStock = productIdToAvailable[productId] ?? 0;
+        const currentStock = clampNonNegativeStock(productIdToAvailable[productId] ?? 0);
         const newStock = Math.max(0, currentStock - qtyUsed);
 
         console.log(`[Inventory Update] Product ${productId}: ${currentStock} - ${qtyUsed} = ${newStock}`);
@@ -647,7 +655,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
           return {
             productId,
             quantityUsed: qtyUsed,
-            newQuantity: Math.max(0, (productIdToAvailable[productId] ?? 0) - qtyUsed)
+            newQuantity: Math.max(0, clampNonNegativeStock(productIdToAvailable[productId] ?? 0) - qtyUsed)
           };
         }).filter(u => u.productId != null)
       });
@@ -666,6 +674,8 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
         setOrder(null);
         setLines([]);
         setIsDelivered(false);
+        setProductIdToAvailable({});
+        setProductIdToOnHand({});
         return;
       }
       setOrder(data.order);
@@ -714,24 +724,36 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
 
             if (locationId) {
               const inventories = await getCachedVehicleInventoryByLocation(locationId);
-              const map = {};
+              const mapAvail = {};
+              const mapOnHand = {};
               (inventories || []).forEach((inv) => {
                 const pid = inv.product_id != null ? inv.product_id : inv.id;
                 if (pid != null) {
-                  map[pid] = Number(inv.quantity) ?? 0;
+                  mapAvail[pid] = clampNonNegativeStock(inv.available_quantity);
+                  mapOnHand[pid] = clampNonNegativeStock(inv.quantity);
                 }
               });
-              setProductIdToAvailable(map);
+              (data.lines || []).forEach((l) => {
+                const pid = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
+                if (pid == null) return;
+                if (mapAvail[pid] === undefined) mapAvail[pid] = 0;
+                if (mapOnHand[pid] === undefined) mapOnHand[pid] = 0;
+              });
+              setProductIdToAvailable(mapAvail);
+              setProductIdToOnHand(mapOnHand);
             } else {
               console.warn(`[UI Debug] No location_id found for vehicle ${vehicleId}`);
               setProductIdToAvailable({});
+              setProductIdToOnHand({});
             }
           } catch (error) {
             console.error('Failed to load vehicle inventory:', error);
             setProductIdToAvailable({});
+            setProductIdToOnHand({});
           }
         } else {
           setProductIdToAvailable({});
+          setProductIdToOnHand({});
         }
     } catch (_) {
       setOrder(null);
@@ -739,6 +761,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
       setIsDelivered(false);
       setIsDeliveryDone(false);
       setProductIdToImageUri({});
+      setProductIdToOnHand({});
     } finally {
       setLoading(false);
     }
@@ -789,6 +812,19 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
         { value: 'other', label: 'Other' },
       ];
 
+  /**
+   * Max total units deliverable for this product (sum of line qtys) — capped by **on-hand** lorry stock (`quantity`).
+   * Does not use available/free ("extra") quantity for limits.
+   */
+  const getMaxDeliverableTotalForProduct = useCallback(
+    (productId, linesSnapshot = lines) => {
+      if (isDeliveryDone) return undefined;
+      if (productIdToOnHand[productId] === undefined) return undefined;
+      return clampNonNegativeStock(productIdToOnHand[productId]);
+    },
+    [isDeliveryDone, lines, productIdToOnHand]
+  );
+
     const setLineQty = useCallback((lineId, value) => {
       setUpdateError(null);
       const trimmed = value.replace(/[^0-9.]/g, '');
@@ -800,14 +836,18 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
         const line = prev.find((l) => l.id === lineId);
         if (line) {
           const productId = Array.isArray(line.product_id) ? line.product_id[0] : line.product_id;
-          const baseQty = Number(line.product_uom_qty ?? 0) || 0;
 
-          // productIdToAvailable[productId] is the on-hand stock in the lorry.
-          // Max that can be delivered for this line = on-hand stock total.
-          if (productId != null && productIdToAvailable[productId] !== undefined) {
-            const onHandTotal = Number(productIdToAvailable[productId]) || 0;
-            const maxAllowed = onHandTotal;
-            safeQty = Math.min(safeQty, maxAllowed);
+          if (!isDeliveryDone && productId != null && productIdToOnHand[productId] !== undefined) {
+            const maxTot = getMaxDeliverableTotalForProduct(productId, prev);
+            if (maxTot !== undefined) {
+              const sumOther = prev.reduce((s, l) => {
+                if (l.id === lineId) return s;
+                const p = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
+                return p === productId ? s + (Number(l.newQty) || 0) : s;
+              }, 0);
+              const maxLine = Math.max(0, maxTot - sumOther);
+              safeQty = Math.min(safeQty, maxLine);
+            }
           }
         }
 
@@ -817,7 +857,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
       });
 
       setQtyChanged(true);
-    }, [productIdToAvailable, isDeliveryDone]);
+    }, [getMaxDeliverableTotalForProduct, isDeliveryDone, productIdToOnHand]);
 const changeQtyBy = useCallback((lineId, delta) => {
   setUpdateError(null);
   const MAX_QTY = 9999;
@@ -830,12 +870,18 @@ const changeQtyBy = useCallback((lineId, delta) => {
       let next = current + delta;
 
       const productId = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
-      const baseQty = Number(l.product_uom_qty ?? 0) || 0;
 
-      if (productId != null && productIdToAvailable[productId] !== undefined) {
-        const onHandTotal = Number(productIdToAvailable[productId]) || 0;
-        const maxAllowed = Math.min(MAX_QTY, onHandTotal);
-        next = Math.max(0, Math.min(maxAllowed, next));
+      if (!isDeliveryDone && productId != null && productIdToOnHand[productId] !== undefined) {
+        const maxTot = getMaxDeliverableTotalForProduct(productId, prev);
+        if (maxTot !== undefined) {
+          const sumOther = prev.reduce((s, x) => {
+            if (x.id === lineId) return s;
+            const p = Array.isArray(x.product_id) ? x.product_id[0] : x.product_id;
+            return p === productId ? s + (Number(x.newQty) || 0) : s;
+          }, 0);
+          const maxLine = Math.max(0, maxTot - sumOther);
+          next = Math.max(0, Math.min(maxLine, next));
+        }
       } else {
         next = Math.max(0, Math.min(MAX_QTY, next));
       }
@@ -845,7 +891,7 @@ const changeQtyBy = useCallback((lineId, delta) => {
   );
 
   setQtyChanged(true);
-}, [productIdToAvailable, isDeliveryDone]);
+}, [getMaxDeliverableTotalForProduct, isDeliveryDone, productIdToOnHand]);
   const hasQtyChanges = useCallback(() => {
     return lines.some(
       (l) => Number(l.newQty) !== Number(l.product_uom_qty)
@@ -868,48 +914,38 @@ const validateQuantities = useCallback(() => {
     }
   }
 
-  // 2) Stock constraint (only applies when increasing beyond baseQty)
-  // productIdToAvailable[pid] represents remaining "extra stock" in the lorry.
-  const baseTotalByProductId = {};
-  const requestedTotalByProductId = {};
+  // 2) Stock constraint (skipped when delivery picking is already done)
+  if (!isDeliveryDone) {
+    const requestedTotalByProductId = {};
+    for (const l of lines) {
+      const productId = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
+      if (productId == null) continue;
+      const requestedQty = Number(l.newQty ?? 0) || 0;
+      requestedTotalByProductId[productId] = (requestedTotalByProductId[productId] || 0) + requestedQty;
+    }
 
-  for (const l of lines) {
-    const productId = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
-    if (productId == null) continue;
+    for (const pid of Object.keys(requestedTotalByProductId)) {
+      const productId = Number(pid);
+      const maxAllowedTotal = getMaxDeliverableTotalForProduct(productId);
+      if (maxAllowedTotal === undefined) continue;
 
-    const baseQty = Number(l.product_uom_qty ?? 0) || 0;
-    const requestedQty = Number(l.newQty ?? 0) || 0;
-
-    baseTotalByProductId[productId] = (baseTotalByProductId[productId] || 0) + baseQty;
-    requestedTotalByProductId[productId] = (requestedTotalByProductId[productId] || 0) + requestedQty;
-  }
-
-  for (const pid of Object.keys(requestedTotalByProductId)) {
-    const productId = Number(pid);
-    const onHandTotal = productIdToAvailable[productId];
-    if (onHandTotal === undefined) continue;
-
-    const baseTotal = baseTotalByProductId[productId] || 0;
-    const requestedTotal = requestedTotalByProductId[productId] || 0;
-
-    const maxAllowedTotal = Math.min(Number(onHandTotal) || 0, baseTotal + Math.max(0, Number(onHandTotal) || 0));
-    if (requestedTotal > maxAllowedTotal) {
-      const lineForName = lines.find((l) => {
-        const pid2 = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
-        return Number(pid2) === productId;
-      });
-      const productName = lineForName
-        ? getProductDisplayName(lineForName.product_id?.[1] ?? lineForName.name ?? '')
-        : `Product ${productId}`;
-
-      const extraRequested = requestedTotal - baseTotal;
-      const stockHint = Number(onHandTotal) || 0;
-      return `Insufficient stock for "${productName}". Available (lorry): ${stockHint}, requested over order base: ${extraRequested}`;
+      const requestedTotal = requestedTotalByProductId[productId] || 0;
+      if (requestedTotal > maxAllowedTotal) {
+        const lineForName = lines.find((l) => {
+          const pid2 = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
+          return Number(pid2) === productId;
+        });
+        const productName = lineForName
+          ? getProductDisplayName(lineForName.product_id?.[1] ?? lineForName.name ?? '')
+          : `Product ${productId}`;
+        const stockHint = clampNonNegativeStock(productIdToOnHand[productId]);
+        return `Insufficient stock for "${productName}". On hand (lorry): ${stockHint}, max deliverable total: ${maxAllowedTotal}`;
+      }
     }
   }
 
   return null;
-}, [lines, productIdToAvailable, isDeliveryDone]);
+}, [lines, productIdToOnHand, isDeliveryDone, getMaxDeliverableTotalForProduct]);
   /**
    * Apply qty updates locally (offline DB) and build sync payload.
    * - `demandEdit: false` (proceed to payment): do NOT change sale.order.line ordered qty (`product_uom_qty`). Stock moves/lines carry delivery; payload includes `saleOrderLineDeliveredUpdates` for Odoo `qty_delivered` only (after sync validates picking).
@@ -1069,15 +1105,22 @@ const getStockWarning = useCallback((lineId) => {
   const qty = Number(line.newQty);
   const productId = Array.isArray(line.product_id) ? line.product_id[0] : line.product_id;
 
-  if (productId == null || productIdToAvailable[productId] === undefined) return null;
-  const availableExtra = Number(productIdToAvailable[productId]) || 0;
-  const baseQty = Number(line.product_uom_qty ?? 0) || 0;
-  const maxAllowed = baseQty + Math.max(0, availableExtra);
-  if (qty > maxAllowed) {
-    return `Insufficient stock (max allowed for this order: ${maxAllowed})`;
+  if (isDeliveryDone || productId == null || productIdToOnHand[productId] === undefined) return null;
+
+  const maxTot = getMaxDeliverableTotalForProduct(productId);
+  if (maxTot === undefined) return null;
+
+  const sumOther = lines.reduce((s, l) => {
+    if (l.id === lineId) return s;
+    const p = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
+    return p === productId ? s + (Number(l.newQty) || 0) : s;
+  }, 0);
+  const maxLine = Math.max(0, maxTot - sumOther);
+  if (qty > maxLine) {
+    return `Insufficient stock (max allowed for this line: ${maxLine})`;
   }
   return null;
-}, [lines, productIdToAvailable]);
+}, [lines, productIdToOnHand, isDeliveryDone, getMaxDeliverableTotalForProduct]);
   const updateQty = async () => {
     const validationError = validateQuantities();
     if (validationError) {
@@ -1213,17 +1256,6 @@ const handleProceedToPayment = useCallback(async () => {
     setUpdating(false);
   }
 }, [order, lines, validateQuantities, hasQtyChanges, applyQtyDoneAndValidate, updateVehicleInventory, isDeliveryDone, navigation]);
-  /** Per-product total qty in this order (current newQty values). Used for dynamic "remaining after order" stock. */
-  const totalQtyByProductId = useMemo(() => {
-    const map = {};
-    lines.forEach((l) => {
-      const pid = l.product_id != null && Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
-      if (pid != null) {
-        map[pid] = (map[pid] || 0) + (Number(l.newQty) || 0);
-      }
-    });
-    return map;
-  }, [lines]);
 
   /** Subtotal from lines; fallback to order.amount_untaxed when no lines or sum is 0 */
   const computedSubtotal = useMemo(() => {
@@ -1269,9 +1301,9 @@ const handleProceedToPayment = useCallback(async () => {
     const gasAccent =
       gasSize && GAS_SIZE_COLORS[gasSize.size] ? GAS_SIZE_COLORS[gasSize.size] : FALLBACK_ACCENT;
     const productId = item.product_id != null && Array.isArray(item.product_id) ? item.product_id[0] : item.product_id;
-    const availableStock = productId != null ? productIdToAvailable[productId] : undefined;
-    const totalOrderedForProduct = productId != null ? (totalQtyByProductId[productId] ?? 0) : 0;
-    const remainingAfterOrder = availableStock !== undefined ? availableStock - totalOrderedForProduct : undefined;
+    const onHandStockRaw = productId != null ? productIdToOnHand[productId] : undefined;
+    const onHandStock =
+      onHandStockRaw !== undefined ? clampNonNegativeStock(onHandStockRaw) : undefined;
     const backendImageUri = productId != null ? productIdToImageUri[productId] : null;
     const imageSource = backendImageUri ? { uri: backendImageUri } : getProductImageSource(productName);
 
@@ -1341,18 +1373,15 @@ const handleProceedToPayment = useCallback(async () => {
                     </TouchableOpacity>
                   </View>
                 </View>
-                {availableStock !== undefined && (
+                {gasSize && onHandStock !== undefined && (
                   <View style={styles.availableStockRow}>
-                    <Text style={styles.availableStockText}>
-                      Available: {availableStock}
-                      {/* {remainingAfterOrder !== undefined && (
-                        <>
-                          {'  ·  '}
-                          <Text style={[styles.availableStockText, remainingAfterOrder < 0 && { color: colors.error || '#c00', fontWeight: '700' }]}>
-                            After this order: {remainingAfterOrder}
-                          </Text>
-                        </>
-                      )} */}
+                    <Text
+                      style={[
+                        styles.availableStockText,
+                        onHandStock === 0 && { color: colors.error || '#c00' },
+                      ]}
+                    >
+                      On hand: {onHandStock}
                     </Text>
                   </View>
                 )}

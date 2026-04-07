@@ -315,6 +315,19 @@ useEffect(() => {
     load(true).catch(() => {});
   }, [syncCompleteTimestamp, load]);
 
+  /** Hide non–gas-cylinder products with zero on-hand (e.g. hoses, packs) from the stock grid. */
+  const visibleInventory = useMemo(() => {
+    return (inventory || []).filter((item) => {
+      const resolvedName =
+        item.product_id != null ? productIdToName[item.product_id] || item.product_name : item.product_name;
+      const rawName = resolvedName || '';
+      const isGas = parseKgFromProductName(rawName) != null;
+      const onHand = Math.max(0, Number(item.quantity) || 0);
+      if (!isGas && onHand <= 0) return false;
+      return true;
+    });
+  }, [inventory, productIdToName]);
+
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
     await load();
@@ -369,7 +382,8 @@ useEffect(() => {
     );
   }
 
-  const hasData = inventory.length > 0;
+  const hasData = visibleInventory.length > 0;
+  const hasRawInventory = inventory.length > 0;
 
   return (
     <ScrollView
@@ -382,16 +396,23 @@ useEffect(() => {
     >
       <View style={screenStyles.summaryBar}>
         <Text style={screenStyles.summaryText}>Item-wise stock</Text>
-        <Text style={screenStyles.summaryCount}>{inventory.length} product{inventory.length !== 1 ? 's' : ''}</Text>
+        <Text style={screenStyles.summaryCount}>
+          {visibleInventory.length} product{visibleInventory.length !== 1 ? 's' : ''}
+        </Text>
       </View>
-      {!hasData && (
+      {hasRawInventory && !hasData ? (
+        <Text style={[screenStyles.hint, { marginBottom: spacing.sm }]}>
+          Accessories with zero on-hand are hidden. Gas cylinders always show, including at 0 stock.
+        </Text>
+      ) : null}
+      {!hasRawInventory && (
         <Text style={screenStyles.notSyncedText}>
           No stock rows on this device yet. Sync once while online (Menu → Sync or Home); data stays available offline. Pull to refresh after sync.
         </Text>
       )}
       <View style={screenStyles.grid}>
         {hasData ? (
-          inventory.map((item, index) => (
+          visibleInventory.map((item, index) => (
             <StockCard
               key={String(item.id)}
               item={{
@@ -407,7 +428,7 @@ useEffect(() => {
               deliveredQty={item.product_id != null ? (productStatsById[item.product_id]?.delivered ?? 0) : 0}
             />
           ))
-        ) : (
+        ) : !hasRawInventory ? (
           <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border, width: cardWidth * 2 + CARD_GAP, marginBottom: CARD_GAP }]}>
             <View style={[styles.cardAccent, { backgroundColor: colors.border }]} />
             <View style={styles.cardContent}>
@@ -418,7 +439,7 @@ useEffect(() => {
               <Text style={[screenStyles.hint, { marginTop: spacing.xs }]}>Pull to refresh or sync from the dashboard.</Text>
             </View>
           </View>
-        )}
+        ) : null}
       </View>
     </ScrollView>
   );

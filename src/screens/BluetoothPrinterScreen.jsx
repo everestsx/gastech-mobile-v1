@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import {
   View,
   Text,
@@ -159,6 +159,12 @@ export default function BluetoothPrinterScreen() {
     }
   }, [connect]);
 
+  useEffect(() => {
+    if (!printerModalVisible || !thermalConnected || connectingThermal) return;
+    const t = setTimeout(() => setPrinterModalVisible(false), 500);
+    return () => clearTimeout(t);
+  }, [printerModalVisible, thermalConnected, connectingThermal]);
+
   if (!rongtaReady) {
     return (
       <ScrollView style={styles.container} contentContainerStyle={styles.content}>
@@ -233,12 +239,26 @@ export default function BluetoothPrinterScreen() {
         ) : null}
       </View>
 
-      <Modal visible={printerModalVisible} transparent animationType="slide" onRequestClose={() => setPrinterModalVisible(false)}>
+      <Modal
+        visible={printerModalVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => {
+          if (connectingThermal) return;
+          setPrinterModalVisible(false);
+        }}
+      >
         <View style={styles.modalBackdrop}>
           <View style={styles.modalSheet}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Paired Bluetooth printers</Text>
-              <TouchableOpacity onPress={() => setPrinterModalVisible(false)} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
+              <TouchableOpacity
+                onPress={() => {
+                  if (connectingThermal) return;
+                  setPrinterModalVisible(false);
+                }}
+                hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+              >
                 <Ionicons name="close" size={26} color={colors.textSecondary} />
               </TouchableOpacity>
             </View>
@@ -263,7 +283,6 @@ export default function BluetoothPrinterScreen() {
                   style={styles.pickRow}
                   onPress={async () => {
                     await selectPrinter(item);
-                    setPrinterModalVisible(false);
                   }}
                 >
                   <Text style={styles.pickName}>{item.name}</Text>
