@@ -4,6 +4,7 @@
  * logo: require() to assets/images/banks/bank_<id>.png — replace placeholders with real logos.
  */
 export const SRI_LANKA_BANKS = [
+  { id: 'amana', name: 'Amana Bank PLC', icon: 'card-outline', logo: require('../../assets/images/banks/bank_amana.png') },
   { id: 'boc', name: 'Bank of Ceylon', icon: 'business-outline', logo: require('../../assets/images/banks/bank_boc.png') },
   { id: 'peoples', name: "People's Bank", icon: 'people-outline', logo: require('../../assets/images/banks/bank_peoples.png') },
   { id: 'commercial', name: 'Commercial Bank of Ceylon PLC', icon: 'business-outline', logo: require('../../assets/images/banks/bank_commercial.png') },
@@ -14,7 +15,6 @@ export const SRI_LANKA_BANKS = [
   { id: 'ndb', name: 'National Development Bank PLC', icon: 'trending-up-outline', logo: require('../../assets/images/banks/bank_ndb.png') },
   { id: 'ntb', name: 'Nations Trust Bank PLC', icon: 'card-outline', logo: require('../../assets/images/banks/bank_ntb.png') },
   { id: 'panasia', name: 'Pan Asia Banking Corporation PLC', icon: 'business-outline', logo: require('../../assets/images/banks/bank_panasia.png') },
-  { id: 'amana', name: 'Amana Bank PLC', icon: 'card-outline', logo: require('../../assets/images/banks/bank_amana.png') },
   { id: 'cargills', name: 'Cargills Bank PLC', icon: 'business-outline', logo: require('../../assets/images/banks/bank_cargills.png') },
   { id: 'union', name: 'Union Bank of Colombo PLC', icon: 'business-outline', logo: require('../../assets/images/banks/bank_union.png') },
   { id: 'hsbc', name: 'The Hongkong & Shanghai Banking Corporation Ltd (HSBC)', icon: 'globe-outline', logo: require('../../assets/images/banks/bank_hsbc.png') },

@@ -142,6 +142,81 @@ function formatPrintedDateTime(value = new Date()) {
   });
 }
 
+function convertIntegerToWords(value) {
+  const ones = [
+    '',
+    'One',
+    'Two',
+    'Three',
+    'Four',
+    'Five',
+    'Six',
+    'Seven',
+    'Eight',
+    'Nine',
+    'Ten',
+    'Eleven',
+    'Twelve',
+    'Thirteen',
+    'Fourteen',
+    'Fifteen',
+    'Sixteen',
+    'Seventeen',
+    'Eighteen',
+    'Nineteen',
+  ];
+  const tens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+  const scales = ['', 'Thousand', 'Million', 'Billion', 'Trillion'];
+
+  const toWordsUnderThousand = (n) => {
+    const parts = [];
+    const hundreds = Math.floor(n / 100);
+    const rest = n % 100;
+
+    if (hundreds > 0) {
+      parts.push(`${ones[hundreds]} Hundred`);
+    }
+
+    if (rest > 0) {
+      if (rest < 20) {
+        parts.push(ones[rest]);
+      } else {
+        const ten = Math.floor(rest / 10);
+        const unit = rest % 10;
+        parts.push(unit > 0 ? `${tens[ten]} ${ones[unit]}` : tens[ten]);
+      }
+    }
+
+    return parts.join(' ').trim();
+  };
+
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 'Zero';
+  if (numeric === 0) return 'Zero';
+
+  const isNegative = numeric < 0;
+  let n = Math.abs(Math.round(numeric));
+  let scaleIndex = 0;
+  const words = [];
+
+  while (n > 0 && scaleIndex < scales.length) {
+    const chunk = n % 1000;
+    if (chunk > 0) {
+      const chunkWords = toWordsUnderThousand(chunk);
+      words.unshift(scales[scaleIndex] ? `${chunkWords} ${scales[scaleIndex]}` : chunkWords);
+    }
+    n = Math.floor(n / 1000);
+    scaleIndex += 1;
+  }
+
+  const full = words.join(' ').replace(/\s+/g, ' ').trim() || 'Zero';
+  return isNegative ? `Minus ${full}` : full;
+}
+
+function formatAmountInWords(amount) {
+  return `${convertIntegerToWords(amount)} Only`;
+}
+
 function buildInvoiceHtml(
   order,
   lines,
@@ -170,7 +245,6 @@ function buildInvoiceHtml(
         day: 'numeric',
       })
     : new Date().toLocaleDateString('en-LK');
-  const printedAt = formatPrintedDateTime();
   const customerName = safeDisplay(resolveInvoiceCustomerDisplayName(order, partyInfo, appLanguage)).replace(
     /</g,
     '&lt;'
@@ -192,6 +266,16 @@ function buildInvoiceHtml(
   const supplierName = safeDisplay(partyInfo?.supplierName || 'GasTech').replace(/</g, '&lt;');
   const supplierPhone = safeDisplay(partyInfo?.supplierPhone || '—').replace(/</g, '&lt;');
   const supplierAddress = safeDisplay(partyInfo?.supplierAddress || '—').replace(/</g, '&lt;');
+  const supplierAddressMultiline = supplierAddress
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .join(',<br/>') || supplierAddress;
+  const customerAddressMultiline = customerAddress
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .join(',<br/>') || customerAddress;
   const chequeAmount = Number(paymentSplit?.check ?? paymentSplit?.cheque ?? 0);
   const invNo = invoiceNumber ?? order?.name ?? '—';
   const showSplitBreakdown =
@@ -224,22 +308,21 @@ function buildInvoiceHtml(
         (l, i) => {
           const productName = getProductDisplayName(l.product_id?.[1] ?? '—').replace(/</g, '&lt;').substring(0, 42);
           const lineSub = Number(l.price_subtotal) || 0;
-          const lineTotal = Number(l.price_total) || 0;
           return `<tr>
-            <td style="padding:2px;border-bottom:1px solid #ccc;font-size:9px;font-weight:700">${i + 1}</td>
-            <td style="padding:2px;border-bottom:1px solid #ccc;font-size:9px;font-weight:700">${productName}</td>
-            <td style="padding:2px 4px 2px 2px;border-bottom:1px solid #ccc;text-align:right;font-size:9px;font-weight:700">${Number(l.product_uom_qty ?? 0)}</td>
-            <td style="padding:2px 2px 2px 4px;border-bottom:1px solid #ccc;text-align:right;font-size:9px;font-weight:700">${formatAmount(l.price_unit ?? 0)}</td>
-            <td style="padding:2px;border-bottom:1px solid #ccc;text-align:right;font-size:9px;font-weight:700">${formatAmount(lineSub)}</td>
-            <td style="padding:2px;border-bottom:1px solid #ccc;text-align:right;font-size:9px;font-weight:700">${formatAmount(lineTotal)}</td>
+            <td style="padding:4px 2px;border:1px solid #000;font-size:10px">${i + 1}</td>
+            <td style="padding:4px 2px;border:1px solid #000;font-size:10px">${productName}</td>
+            <td style="padding:4px 4px 4px 2px;border:1px solid #000;text-align:right;font-size:10px">${Number(l.product_uom_qty ?? 0)}</td>
+            <td style="padding:4px 2px 4px 4px;border:1px solid #000;text-align:right;font-size:10px">${formatAmount(l.price_unit ?? 0)}</td>
+            <td style="padding:4px 2px;border:1px solid #000;text-align:right;font-size:10px">${formatAmount(lineSub)}</td>
           </tr>`;
         }
       )
-      .join('') || '<tr><td colspan="6" style="padding:4px;text-align:center;font-size:9px;font-weight:700">No line items</td></tr>';
+      .join('') || '<tr><td colspan="5" style="padding:4px;text-align:center;font-size:10px;border:1px solid #000">No line items</td></tr>';
 
   const amountUntaxed = (order?.amount_untaxed != null && order.amount_untaxed !== 0) ? order.amount_untaxed : computedUntaxed;
   const amountTax = (order?.amount_tax != null && order.amount_tax !== 0) ? order.amount_tax : computedTax;
   const amountTotal = order?.amount_total ?? (amountUntaxed + amountTax);
+  const amountInWords = formatAmountInWords(amountTotal);
 
   const logoImg = omitLogoBlock
     ? ''
@@ -269,9 +352,9 @@ function buildInvoiceHtml(
       .page { padding-bottom: 10mm !important; }
     }
     body {
-      font-family: system-ui, -apple-system, sans-serif;
+      font-family: Tahoma, "Trebuchet MS", Arial, sans-serif;
       font-size: 10px;
-      font-weight: 700;
+      font-weight: 400;
       color: #000;
       margin: 0 auto;
       padding: 3px 4px;
@@ -289,7 +372,7 @@ function buildInvoiceHtml(
       padding-top: 0;
     }
     body.thermal-native-invoice .title {
-      margin: 0 0 3px;
+      margin: 0 0 5px;
     }
     .page {
       width: 100%;
@@ -298,85 +381,165 @@ function buildInvoiceHtml(
       padding-bottom: 10mm;
     }
     .title {
-      font-size: 12px;
+      font-size: 13px;
       font-weight: 700;
       text-align: center;
-      margin: 2px 0 4px;
+      margin: 3px 0 6px;
       border: 1px solid #000;
-      padding: 3px 6px;
+      padding: 4px 6px;
+      text-transform: uppercase;
     }
-    .two-col { display: flex; gap: 6px; margin-bottom: 4px; line-height: 1.2; }
-    .col { flex: 1; min-width: 0; overflow: hidden; }
-    .field { margin-bottom: 2px; font-size: 9px; font-weight: 700; word-break: break-word; }
-    .label { font-weight: 700; color: #000; }
+    .top-row {
+      display: flex;
+      width: 100%;
+      border: 1px solid #000;
+      margin-bottom: 4px;
+    }
+    .top-row .info-cell {
+      flex: 1;
+      min-width: 0;
+      padding: 4px;
+      font-size: 10px;
+      line-height: 1.3;
+      word-break: break-word;
+    }
+    .top-row .info-cell:first-child {
+      border-right: 1px solid #000;
+    }
+    .info-box {
+      border: 1px solid #000;
+      margin-bottom: 4px;
+      display: flex;
+      width: 100%;
+    }
+    .two-col {
+      display: flex;
+      width: 100%;
+    }
+    .col {
+      flex: 1;
+      min-width: 0;
+      padding: 4px;
+      line-height: 1.35;
+    }
+    .col:first-child {
+      border-right: 1px solid #000;
+    }
+    .field {
+      margin-bottom: 3px;
+      font-size: 10px;
+      font-weight: 400;
+      word-break: break-word;
+    }
+    .label {
+      font-weight: 400;
+      color: #000;
+    }
     table {
       width: 100%;
       border-collapse: collapse;
-      margin: 4px 0;
-      font-size: 9px;
-      font-weight: 700;
+      margin: 0;
+      font-size: 10px;
       border: 1px solid #000;
       table-layout: fixed;
     }
     th {
       text-align: left;
       padding: 3px 2px;
-      border-bottom: 1px solid #000;
-      background: #e8e8e8;
+      border: 1px solid #000;
+      background: #fff;
       font-weight: 700;
-      font-size: 8px;
+      font-size: 10px;
     }
     th:nth-child(1) { width: 6%; text-align: center; }
-    th:nth-child(2) { width: 27%; }
-    th:nth-child(3) { width: 9%; text-align: right; padding-right: 4px; }
-    th:nth-child(4) { width: 13%; text-align: right; padding-left: 4px; }
-    th:nth-child(5) { width: 14%; text-align: right; }
-    th:nth-child(6) { width: 14%; text-align: right; }
-    th:nth-child(7) { width: 17%; text-align: right; }
+    th:nth-child(2) { width: 42%; }
+    th:nth-child(3) { width: 10%; text-align: right; padding-right: 4px; }
+    th:nth-child(4) { width: 18%; text-align: right; padding-left: 4px; }
+    th:nth-child(5) { width: 24%; text-align: right; }
     td {
-      padding: 3px 2px;
-      border-bottom: 1px solid #ccc;
-      font-size: 9px;
-      font-weight: 700;
+      padding: 4px 2px;
+      border: 1px solid #000;
+      font-size: 10px;
       word-break: break-word;
     }
     td:nth-child(1) { text-align: center; }
     td:nth-child(2) { overflow: hidden; text-overflow: ellipsis; }
     td:nth-child(3) { padding-right: 4px; }
     td:nth-child(4) { padding-left: 4px; }
-    td:nth-child(3), td:nth-child(4), td:nth-child(5), td:nth-child(6), td:nth-child(7) { text-align: right; }
-    tr:last-child td { border-bottom: none; }
-    .totals { margin-top: 3px; border-top: 1px solid #000; padding-top: 3px; font-size: 8px; font-weight: 700; }
-    .row { display: flex; justify-content: space-between; margin: 1px 0; align-items: flex-start; gap: 4px; }
-    .total-row { font-weight: 700; font-size: 9px; margin-top: 1px; }
-    .payment { margin-top: 4px; padding: 4px; background: #e8e8e8; font-size: 9px; font-weight: 700; text-align: center; }
-    .footer { margin-top: 6px; font-size: 9px; font-weight: 700; color: #333; text-align: center; }
-    .powered { margin-top: 2px; font-size: 9px; font-weight: 700; font-style: italic; color: #111; text-align: center; }
+    td:nth-child(3), td:nth-child(4), td:nth-child(5) { text-align: right; }
+    .totals-box {
+      border: 1px solid #000;
+      border-top: none;
+      margin-bottom: 4px;
+    }
+    .totals-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 4px;
+      padding: 3px 4px;
+      border-top: 1px solid #000;
+      font-size: 10px;
+    }
+    .totals-row:first-child {
+      border-top: none;
+    }
+    .meta-box {
+      border: 1px solid #000;
+      margin-bottom: 6px;
+    }
+    .meta-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 4px;
+      padding: 3px 4px;
+      border-top: 1px solid #000;
+      font-size: 10px;
+    }
+    .meta-row:first-child {
+      border-top: none;
+    }
+    .meta-row span:last-child {
+      text-align: right;
+    }
+    .payment { margin-top: 4px; padding: 4px; font-size: 10px; text-align: center; }
+    .footer { margin-top: 6px; font-size: 10px; color: #333; text-align: center; }
+    .powered { margin-top: 2px; font-size: 10px; font-style: italic; color: #111; text-align: center; }
   </style>
 </head>
 <body class="${omitLogoBlock ? 'thermal-native-invoice' : ''}">
   <div class="page">
   ${logoImg}
   <div class="title">Tax Invoice</div>
+
+  <div class="top-row">
+    <div class="info-cell">Date of Invoice: ${date}</div>
+    <div class="info-cell">Tax Invoice No.: ${invNo}</div>
+  </div>
+
+  <div class="info-box">
   <div class="two-col">
     <div class="col">
-      <div class="field"><span class="label">Invoice No.:</span>  ${invNo}</div>
-      ${hasSupplierTin ? `<div class="field"><span class="label">Suppliers TIN:</span> ${supplierTinSafe}</div>` : ''}
-      <div class="field"><span class="label">Supplier Name:</span> ${supplierName}</div>
-      <div class="field"><span class="label">Address:</span> ${supplierAddress}</div>
+      <div class="field"><span class="label">Supplier's TIN:</span> ${hasSupplierTin ? supplierTinSafe : '—'}</div>
+      <div class="field"><span class="label">Supplier's Name:</span> ${supplierName}</div>
+      <div class="field"><span class="label">Address:</span> ${supplierAddressMultiline}</div>
       <div class="field"><span class="label">Telephone No:</span> ${supplierPhone}</div>
-      <div class="field"><span class="label">Date of Delivery:</span> ${date}</div>
-      <div class="field"><span class="label">Printed At:</span> ${printedAt}</div>
     </div>
     <div class="col">
-      <div class="field"><span class="label">Date of Invoice :</span> ${date}</div>
-      ${hasPurchaserTin ? `<div class="field"><span class="label">Customer TIN:</span> ${purchaserTinSafe}</div>` : ''}
-      <div class="field"><span class="label">Customer Name:</span> ${customerName}</div>
-      <div class="field"><span class="label">Address:</span> ${customerAddress}</div>
+      <div class="field"><span class="label">Purchaser's TIN:</span> ${hasPurchaserTin ? purchaserTinSafe : '—'}</div>
+      <div class="field"><span class="label">Purchaser's Name:</span> ${customerName}</div>
+      <div class="field"><span class="label">Address:</span> ${customerAddressMultiline}</div>
       <div class="field"><span class="label">Telephone No:</span> ${customerPhone}</div>
-      <div class="field"><span class="label">Place of Supply:</span> ${cityPart !== '—' ? cityPart.replace(/</g, '&lt;') : '—'}</div>
     </div>
   </div>
+  </div>
+
+  <div class="top-row">
+    <div class="info-cell">Date of Delivery: ${date}</div>
+    <div class="info-cell">Place of Supply: ${cityPart !== '—' ? cityPart.replace(/</g, '&lt;') : '—'}</div>
+  </div>
+
   <table>
     <thead>
       <tr>
@@ -384,20 +547,23 @@ function buildInvoiceHtml(
         <th>Description</th>
         <th>Qty</th>
         <th>Unit Price</th>
-        <th>Amount </th>
-        <th>Total </th>
+        <th>Amount Excluding VAT</th>
       </tr>
     </thead>
     <tbody>${rows}</tbody>
   </table>
-  <div class="totals">
-    <div class="row"><span>Gross Amount:</span><span>${formatInvoiceCurrency(amountUntaxed)}</span></div>
-    <div class="row"><span>VAT (18%):</span><span>${formatInvoiceCurrency(amountTax)}</span></div>
-    <div class="row total-row"><span>Net Amount:</span><span>${formatInvoiceCurrency(amountTotal)}</span></div>
-    <div class="row" style="margin-top:2px"><span>Mode of Payment:</span><span>${paymentLabel.replace(/</g, '&lt;')}</span></div>
+  <div class="totals-box">
+    <div class="totals-row"><span>Total Value of Supply:</span><span>${formatInvoiceCurrency(amountUntaxed)}</span></div>
+    <div class="totals-row"><span>VAT Amount (18%):</span><span>${formatInvoiceCurrency(amountTax)}</span></div>
+    <div class="totals-row"><span>Total Amount including VAT:</span><span>${formatInvoiceCurrency(amountTotal)}</span></div>
+  </div>
+
+  <div class="meta-box">
+    <div class="meta-row"><span>Total Amount in words:</span><span>${amountInWords}</span></div>
+    <div class="meta-row"><span>Mode of Payment:</span><span>${paymentLabel.replace(/</g, '&lt;')}</span></div>
     ${(chequeBankName || checkNumber) ? `
-    <div class="row" style="margin-top:1px"><span>Bank (Cheque):</span><span>${(chequeBankName || '—').replace(/</g, '&lt;')}</span></div>
-    <div class="row" style="margin-top:1px"><span>Cheque No.:</span><span>${(checkNumber || '—').replace(/</g, '&lt;')}</span></div>
+    <div class="meta-row"><span>Bank (Cheque):</span><span>${(chequeBankName || '—').replace(/</g, '&lt;')}</span></div>
+    <div class="meta-row"><span>Cheque No.:</span><span>${(checkNumber || '—').replace(/</g, '&lt;')}</span></div>
     ` : ''}
   </div>
   <div class="payment">Thank you for your business</div>
@@ -405,13 +571,13 @@ function buildInvoiceHtml(
   <div class="signature-section" style="margin-top:4px;padding-top:4px;border-top:1px solid #000;width:100%;box-sizing:border-box;">
     <div style="display:flex;flex-direction:row;width:100%;justify-content:space-between;align-items:flex-start;box-sizing:border-box;">
       <div style="flex:0 1 48%;min-width:0;text-align:left;">
-        <div style="font-size:9px;font-weight:700;color:#000;margin-bottom:2px;text-align:left;">Driver signature</div>
+        <div style="font-size:9px;font-weight:400;color:#000;margin-bottom:2px;text-align:left;">Driver signature</div>
         ${driverSignatureDataUrl
           ? `<img src="${driverSignatureDataUrl}" alt="" style="max-width:34mm;width:auto;height:auto;max-height:18mm;display:block;margin:0;" />`
           : `<div style="height:18mm;max-width:34mm;border:1px dashed #999;box-sizing:border-box;"></div>`}
       </div>
       <div style="flex:0 1 48%;min-width:0;display:flex;flex-direction:column;align-items:flex-end;text-align:right;">
-        <div style="font-size:9px;font-weight:700;color:#000;margin-bottom:2px;width:100%;text-align:right;">Customer signature</div>
+        <div style="font-size:9px;font-weight:400;color:#000;margin-bottom:2px;width:100%;text-align:right;">Customer signature</div>
         ${customerSignatureDataUrl
           ? `<img src="${customerSignatureDataUrl}" alt="" style="max-width:34mm;width:auto;height:auto;max-height:18mm;display:block;margin:0;margin-left:auto;" />`
           : `<div style="height:18mm;max-width:34mm;border:1px dashed #999;box-sizing:border-box;margin-left:auto;"></div>`}
