@@ -25,7 +25,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
 import { dashboardConfig } from '../constants/dashboardConfig';
-import { getGasTypeBlueColor, parseKgFromProductName } from '../utils/productDisplay';
+import { getGasTypeBlueColor } from '../utils/productDisplay';
+import { buildDefaultGasDashboardStockCards } from '../utils/defaultGasStock';
 import { getLocalizedCustomerNameFromOrder } from '../utils/customerDisplayName';
 import {
   getCachedOrders,
@@ -374,18 +375,8 @@ export default function DashboardScreen({ navigation }) {
               remaining,
             };
           }
-          /** Match My Stocks: hide non–gas items at 0 on-hand; always show gas cylinders (including at 0). */
-          const sorted = Object.values(byProduct).sort((a, b) =>
-            (a.product_name || '').localeCompare(b.product_name || '')
-          );
-          const visibleStock = sorted.filter((s) => {
-            const rawName = String(s.product_name || '');
-            const isGas = parseKgFromProductName(rawName) != null;
-            const onHand = Math.max(0, Number(s.total) || 0);
-            if (!isGas && onHand <= 0) return false;
-            return true;
-          });
-          setStockCards(visibleStock);
+          /** Always show the four default cylinder sizes; merge Odoo rows, fill missing with 0 on-hand / 0 remaining. */
+          setStockCards(buildDefaultGasDashboardStockCards(Object.values(byProduct), productNameMap || {}));
         } else {
           setStockCards([]);
         }
@@ -1436,11 +1427,12 @@ export default function DashboardScreen({ navigation }) {
                 const productLabel = String(s.product_name || '').replace(/^\[[^\]]+\]\s*/, '');
                 const backendImageUri = s.product_id != null ? productIdToImageUri[s.product_id] : null;
                 const gasImageSource = backendImageUri ? { uri: backendImageUri } : getGasImageByProductName(productLabel);
-                const deliveredQty = Number(deliveredQtyByProductId[s.product_id]) || 0;
+                const deliveredQty =
+                  s.product_id != null ? Number(deliveredQtyByProductId[s.product_id]) || 0 : 0;
 
                 return (
                   <TouchableOpacity
-                    key={s.product_id}
+                    key={String(s.display_key ?? s.product_id ?? s._defaultGasKg)}
                     activeOpacity={0.85}
                     onPress={() => navigation.navigate('MyStocks')}
                     style={{
@@ -1485,7 +1477,7 @@ export default function DashboardScreen({ navigation }) {
                       On Hand Stock
                     </Text>
                     <Text style={{ fontSize: 18, fontWeight: '900', color: isOut ? '#dc2626' : '#3b82f6', marginTop: 4 }}>
-                      {s.total.toLocaleString('en-IN')}
+                      {(Number(s.total) || 0).toLocaleString('en-IN')}
                     </Text>
                     <View style={{ height: 6 }} />
                     <Text style={{ fontSize: 12, color: colors.textSecondary, fontWeight: '800' }}>

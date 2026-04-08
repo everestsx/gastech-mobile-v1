@@ -16,6 +16,7 @@ import { useSync } from '../context/SyncContext';
 import { spacing, borderRadius } from '../constants/theme';
 import { getUserSession, getCachedVehicleInventoryByLocation, getVehicleLocationId, getCachedOrders, getPickingsBySaleIdsFromDB, getOrderLinesByOrderIdsFromDB } from '../services/sync.service';
 import { getGasTypeBlueColor, parseKgFromProductName } from '../utils/productDisplay';
+import { buildDefaultGasVehicleInventoryRows } from '../utils/defaultGasStock';
 import { getProductImageSource } from '../utils/gasImage';
 import * as productsDb from '../database/products.js';
 
@@ -315,18 +316,11 @@ useEffect(() => {
     load(true).catch(() => {});
   }, [syncCompleteTimestamp, load]);
 
-  /** Hide non–gas-cylinder products with zero on-hand (e.g. hoses, packs) from the stock grid. */
+  /** Four default cylinder sizes only; merge API/local rows, pad missing sizes with 0 on-hand / 0 extra. */
   const visibleInventory = useMemo(() => {
-    return (inventory || []).filter((item) => {
-      const resolvedName =
-        item.product_id != null ? productIdToName[item.product_id] || item.product_name : item.product_name;
-      const rawName = resolvedName || '';
-      const isGas = parseKgFromProductName(rawName) != null;
-      const onHand = Math.max(0, Number(item.quantity) || 0);
-      if (!isGas && onHand <= 0) return false;
-      return true;
-    });
-  }, [inventory, productIdToName]);
+    if (!user?.vehicleId) return [];
+    return buildDefaultGasVehicleInventoryRows(inventory || [], productIdToName);
+  }, [inventory, productIdToName, user?.vehicleId]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -382,7 +376,8 @@ useEffect(() => {
     );
   }
 
-  const hasData = visibleInventory.length > 0;
+  const hasVehicle = !!user?.vehicleId;
+  const hasData = hasVehicle && visibleInventory.length > 0;
   const hasRawInventory = inventory.length > 0;
 
   return (
@@ -396,25 +391,16 @@ useEffect(() => {
     >
       <View style={screenStyles.summaryBar}>
         <Text style={screenStyles.summaryText}>Item-wise stock</Text>
-        <Text style={screenStyles.summaryCount}>
-          {visibleInventory.length} product{visibleInventory.length !== 1 ? 's' : ''}
-        </Text>
+        {/* <Text style={screenStyles.summaryCount}>
+          {visibleInventory.length} gas size{visibleInventory.length !== 1 ? 's' : ''}
+        </Text> */}
       </View>
-      {hasRawInventory && !hasData ? (
-        <Text style={[screenStyles.hint, { marginBottom: spacing.sm }]}>
-          Accessories with zero on-hand are hidden. Gas cylinders always show, including at 0 stock.
-        </Text>
-      ) : null}
-      {!hasRawInventory && (
-        <Text style={screenStyles.notSyncedText}>
-          No stock rows on this device yet. Sync once while online (Menu → Sync or Home); data stays available offline. Pull to refresh after sync.
-        </Text>
-      )}
+  
       <View style={screenStyles.grid}>
         {hasData ? (
           visibleInventory.map((item, index) => (
             <StockCard
-              key={String(item.id)}
+              key={String(item.display_key ?? item.id)}
               item={{
                 ...item,
                 product_name: item.product_id != null
@@ -428,15 +414,15 @@ useEffect(() => {
               deliveredQty={item.product_id != null ? (productStatsById[item.product_id]?.delivered ?? 0) : 0}
             />
           ))
-        ) : !hasRawInventory ? (
+        ) : !hasVehicle ? (
           <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border, width: cardWidth * 2 + CARD_GAP, marginBottom: CARD_GAP }]}>
             <View style={[styles.cardAccent, { backgroundColor: colors.border }]} />
             <View style={styles.cardContent}>
               <View style={styles.cardIconWrap}>
                 <Ionicons name="cube-outline" size={28} color={colors.textSecondary} />
               </View>
-              <Text style={[styles.cardProductName, { color: colors.textSecondary }]}>No stock data yet</Text>
-              <Text style={[screenStyles.hint, { marginTop: spacing.xs }]}>Pull to refresh or sync from the dashboard.</Text>
+              <Text style={[styles.cardProductName, { color: colors.textSecondary }]}>No vehicle in session</Text>
+              <Text style={[screenStyles.hint, { marginTop: spacing.xs }]}>Log in with a vehicle to see lorry stock.</Text>
             </View>
           </View>
         ) : null}
