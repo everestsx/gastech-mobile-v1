@@ -4,7 +4,7 @@
  */
 import { getCustomers, getPartnersByIds } from './customer.service';
 import { getAllSaleOrders, getSaleOrdersByVehicle } from './saleOrder.service';
-import { getAllProducts, getProductsByIds } from './product.service';
+import { getAllProducts } from './product.service';
 import { getStockMovesByPickingId, getStockMoveLinesByMoveIds } from './delivery.service';
 import { getJournals } from './journal.service';
 import { getRoutes } from './route.service';
@@ -1052,6 +1052,10 @@ async function processSyncQueue() {
         let invoiceBlockFailedNoItemsToInvoice = false;
         try {
           const p = item.payload || {};
+          if (p.holdUntilComplete === true) {
+            log('queue', `payment id=${item.id} SO ${p.saleOrderId ?? p.sale_id} held until complete — skip`);
+            continue;
+          }
           const saleOrderId = p.saleOrderId ?? p.sale_id;
           const soId = typeof saleOrderId === 'number' ? saleOrderId : parseInt(saleOrderId, 10);
           if (saleOrderId == null || Number.isNaN(soId)) {
@@ -1872,21 +1876,22 @@ async function runSyncInternal() {
     await stockMovesDb.upsertStockMoves(allMoves);
     log('db', 'stock_move_lines');
     await stockMoveLinesDb.upsertStockMoveLines(allMoveLines);
-    if (productIds.size > 0) {
-      const ids = Array.from(productIds);
-      try {
-        log('fetch', vehicleId != null ? `product.product (${ids.length} ids)` : 'product.product');
-        const products = vehicleId != null
-          ? await getProductsByIds(ids)
-          : await getAllProducts();
-        if (products?.length) {
-          log('db', `products (${products.length})`);
-          await productsDb.upsertProducts(products);
-        } else {
-          await productsDb.upsertProducts(ids.map((id) => ({ id, name: null })));
-        }
-      } catch (e) {
-        logWarn('fetch products', e);
+    // Always refresh full product catalog so invoice rows can include all goods
+    // (e.g. HOSE / PACK / REG) even when they are not in current order lines.
+    try {
+      log('fetch', 'product.product (full catalog)');
+      const products = await getAllProducts();
+      if (products?.length) {
+        log('db', `products (${products.length})`);
+        await productsDb.upsertProducts(products);
+      } else if (productIds.size > 0) {
+        const ids = Array.from(productIds);
+        await productsDb.upsertProducts(ids.map((id) => ({ id, name: null })));
+      }
+    } catch (e) {
+      logWarn('fetch products', e);
+      if (productIds.size > 0) {
+        const ids = Array.from(productIds);
         await productsDb.upsertProducts(ids.map((id) => ({ id, name: null })));
       }
     }

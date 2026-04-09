@@ -57,6 +57,10 @@ import {
   mergePickingStateBySaleIdFromRows,
   orderIsDeliveryDoneForProgress,
 } from '../utils/deliveryProgress.js';
+import {
+  getCheckoutResumeMap,
+  pendingCheckoutSaleOrderIdsFromResumeMap,
+} from '../services/checkoutResume.service';
 
 // const SHOPS_TARGET = 60;
 // const GAS_TARGET = 6000;
@@ -169,6 +173,7 @@ export default function DashboardScreen({ navigation }) {
   const [chartQtyDoneBySaleId, setChartQtyDoneBySaleId] = useState({});
   /** Sale orders with Odoo qty_delivered > 0 on any line (after sync). */
   const [backendQtyDeliveredOrderIds, setBackendQtyDeliveredOrderIds] = useState(() => new Set());
+  const [pendingCheckoutOrderIds, setPendingCheckoutOrderIds] = useState(() => new Set());
   const [paymentSplitsByOrderId, setPaymentSplitsByOrderId] = useState({});
   // Commission state
   const [commissionPlan, setCommissionPlan] = useState(null);
@@ -213,7 +218,9 @@ export default function DashboardScreen({ navigation }) {
       setUser(user);
       setRoutes(Array.isArray(routesData) ? routesData : []);
       const vehicleId = user?.isAdmin === false ? user.vehicleId : null;
-      const data = await getCachedOrders(vehicleId);
+      const [data, resumeMap] = await Promise.all([getCachedOrders(vehicleId), getCheckoutResumeMap()]);
+      const pendingCheckoutSaleOrderIds = pendingCheckoutSaleOrderIdsFromResumeMap(resumeMap);
+      setPendingCheckoutOrderIds(pendingCheckoutSaleOrderIds);
       setOrders(Array.isArray(data) ? data : []);
       const allCachedOrderIds = (Array.isArray(data) ? data : [])
         .map((o) => Number(o?.id))
@@ -257,9 +264,16 @@ export default function DashboardScreen({ navigation }) {
 
       function orderCountsAsCompletedToday(order) {
         const oid = Number(order?.id);
+        if (Number.isFinite(oid) && pendingCheckoutSaleOrderIds.has(oid)) return false;
         if (Number.isFinite(oid) && pendingPaymentOrderIds.has(oid)) return true;
         if (Number.isFinite(oid) && localInvoiceSaleOrderIds.has(oid)) return true;
-        return orderIsDeliveryDoneForProgress(order, saleIdToPickState, qtyDoneMap, backendDeliveredSet);
+        return orderIsDeliveryDoneForProgress(
+          order,
+          saleIdToPickState,
+          qtyDoneMap,
+          backendDeliveredSet,
+          pendingCheckoutSaleOrderIds
+        );
       }
 
       // Dashboard top indicators:
@@ -280,11 +294,13 @@ export default function DashboardScreen({ navigation }) {
         if (String(order?.state || '') === 'cancel') continue;
         const orderId = Number(order?.id);
         if (!Number.isFinite(orderId)) continue;
+        if (pendingCheckoutSaleOrderIds.has(orderId)) continue;
         const deliveryDone = orderIsDeliveryDoneForProgress(
           order,
           saleIdToPickState,
           qtyDoneMap,
-          backendDeliveredSet
+          backendDeliveredSet,
+          pendingCheckoutSaleOrderIds
         );
         const isInvoiced =
           String(order?.invoice_status || '').toLowerCase() === 'invoiced' ||
@@ -341,6 +357,9 @@ export default function DashboardScreen({ navigation }) {
             const sid = Number(soKey);
             if (Number.isFinite(sid) && Number(sum) > 0) deliveredOrderIds.add(sid);
           }
+          for (const id of pendingCheckoutSaleOrderIds) {
+            deliveredOrderIds.delete(id);
+          }
 
           const deliveredQtyByProductId = {};
           for (const line of allOrderLines || []) {
@@ -392,6 +411,7 @@ export default function DashboardScreen({ navigation }) {
       setPaymentSplitsByOrderId({});
       setOrderSyncStats({ pendingOrders: 0, localCompleted: 0, syncedCompleted: 0 });
       setBackendQtyDeliveredOrderIds(new Set());
+      setPendingCheckoutOrderIds(new Set());
       setStockCards([]);
       setProductIdToImageUri({});
     } finally {
@@ -631,9 +651,21 @@ export default function DashboardScreen({ navigation }) {
   const deliveredTodayOrders = useMemo(
     () =>
       todayOrdersForDashboard.filter((o) =>
-        orderIsDeliveryDoneForProgress(o, pickingStateBySaleId, qtyDoneBySaleId, backendQtyDeliveredOrderIds)
+        orderIsDeliveryDoneForProgress(
+          o,
+          pickingStateBySaleId,
+          qtyDoneBySaleId,
+          backendQtyDeliveredOrderIds,
+          pendingCheckoutOrderIds
+        )
       ),
-    [todayOrdersForDashboard, pickingStateBySaleId, qtyDoneBySaleId, backendQtyDeliveredOrderIds]
+    [
+      todayOrdersForDashboard,
+      pickingStateBySaleId,
+      qtyDoneBySaleId,
+      backendQtyDeliveredOrderIds,
+      pendingCheckoutOrderIds,
+    ]
   );
 
   const todayOrderLinesForDashboard = useMemo(() => {
@@ -787,7 +819,8 @@ export default function DashboardScreen({ navigation }) {
         o,
         chartPickingStateBySaleId,
         chartQtyDoneBySaleId,
-        backendQtyDeliveredOrderIds
+        backendQtyDeliveredOrderIds,
+        pendingCheckoutOrderIds
       );
       if (isDone) byPartner[key].delivered += qty;
       else byPartner[key].pending += qty;
@@ -800,6 +833,7 @@ export default function DashboardScreen({ navigation }) {
     chartPickingStateBySaleId,
     chartQtyDoneBySaleId,
     backendQtyDeliveredOrderIds,
+    pendingCheckoutOrderIds,
     appLanguage,
   ]);
 

@@ -36,14 +36,15 @@ export async function upsertProducts(rows) {
         ? {
           id: r.id ?? (Array.isArray(r.product_id) ? r.product_id[0] : r.product_id),
           name: r.name ?? (Array.isArray(r.product_id) ? r.product_id[1] : null),
+          type: r.type ?? null,
           image_1920: r.image_1920 ?? null,
         }
         : odooRel(r);
       const id = num(product.id);
       if (id === 0) continue;
       await tx.runAsync(
-        `INSERT OR REPLACE INTO products (id, name, list_price, image_1920, updated_at) VALUES (?, ?, ?, ?, ?)`,
-        [id, empty(product.name), num(product.list_price), empty(product.image_1920), now]
+        `INSERT OR REPLACE INTO products (id, name, list_price, type, image_1920, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+        [id, empty(product.name), num(product.list_price), empty(product.type), empty(product.image_1920), now]
       );
     }
   });
@@ -59,12 +60,16 @@ export async function getProductById(id) {
 export async function getAllProductsForInvoice() {
   const db = await getDb();
   const rows = await db.getAllAsync(
-    'SELECT id, name, list_price FROM products ORDER BY name COLLATE NOCASE ASC, id ASC'
+    `SELECT id, name, list_price, type
+     FROM products
+     WHERE LOWER(COALESCE(type, '')) = 'consu'
+     ORDER BY name COLLATE NOCASE ASC, id ASC`
   );
   return (rows || []).map((r) => ({
     id: r.id,
     name: r.name ?? '',
     list_price: num(r.list_price),
+    type: r.type ?? '',
   }));
 }
 

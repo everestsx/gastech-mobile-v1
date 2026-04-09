@@ -4,7 +4,7 @@
  */
 import { callOdoo } from './index.service';
 
-const PRODUCT_FIELDS = ['id', 'name', 'list_price', 'qty_available', 'image_1920'];
+const PRODUCT_FIELDS = ['id', 'name', 'list_price', 'qty_available', 'type', 'image_1920'];
 const PRODUCT_LIMIT = 500;
 
 /**

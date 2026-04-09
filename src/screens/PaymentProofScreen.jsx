@@ -8,6 +8,8 @@ import {
   Image,
   ActivityIndicator,
   Alert,
+  Modal,
+  Pressable,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
@@ -16,6 +18,12 @@ import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
 import * as offlineAttachmentsDb from '../database/offlineAttachments.js';
+import * as saleOrdersDb from '../database/saleOrders.js';
+import * as localInvoicesDb from '../database/localInvoices.js';
+import * as localPaymentsDb from '../database/localPayments.js';
+import * as stockPickingsDb from '../database/stockPickings.js';
+import * as syncQueueDb from '../database/syncQueue.js';
+import { getSaleOrderDetailsFromDB } from '../services/sync.service';
 import { empty } from '../database/dbHelpers.js';
 import { runSync } from '../services/sync.service';
 import { clearCheckoutResume } from '../services/checkoutResume.service';
@@ -29,6 +37,7 @@ export default function PaymentProofScreen({ route, navigation }) {
   const soId = Number(saleOrderId);
   const [photos, setPhotos] = useState([]);
   const [saving, setSaving] = useState(false);
+  const [confirmVisible, setConfirmVisible] = useState(false);
 
   const canComplete = !creditProofRequired || photos.length > 0;
 
@@ -60,6 +69,73 @@ export default function PaymentProofScreen({ route, navigation }) {
     }
   }, [photos, soId]);
 
+  const releaseHeldQueueItemsAndFinalizeLocal = useCallback(async () => {
+    const pendingPayment = await syncQueueDb.getPendingPaymentItemBySaleOrderId(soId);
+    const pendingDelivery = await syncQueueDb.getPendingDeliveryItemBySaleOrderId(soId);
+    const paymentPayload = pendingPayment?.payload || {};
+
+    if (pendingPayment?.id != null) {
+      const next = { ...paymentPayload };
+      delete next.holdUntilComplete;
+      await syncQueueDb.updateQueueItemPayload(pendingPayment.id, next);
+    }
+    if (pendingDelivery?.id != null) {
+      const next = { ...(pendingDelivery.payload || {}) };
+      delete next.holdUntilPayment;
+      await syncQueueDb.updateQueueItemPayload(pendingDelivery.id, next);
+
+      const pickings = Array.isArray(next.pickings) ? next.pickings : [];
+      if (pickings.length > 0) {
+        for (const p of pickings) {
+          if (p?.pickingId != null) {
+            await stockPickingsDb.updatePickingStateLocal(Number(p.pickingId), 'done');
+          }
+        }
+      } else if (next.pickingId != null) {
+        await stockPickingsDb.updatePickingStateLocal(Number(next.pickingId), 'done');
+      }
+    }
+
+    const data = await getSaleOrderDetailsFromDB(soId);
+    const orderInfo = data?.order || {};
+    const existingLocalInv = await localInvoicesDb.getLocalInvoiceBySaleOrderId(soId);
+    const invoiceNumber =
+      paymentPayload.invoiceNumber || existingLocalInv?.invoice_number || `INV-${soId}`;
+    const total = Number(paymentPayload.total ?? orderInfo.amount_total ?? 0) || 0;
+    const untaxed = Number(orderInfo.amount_untaxed ?? total) || 0;
+    const tax = Number(orderInfo.amount_tax ?? 0) || 0;
+
+    const invoiceId = await localInvoicesDb.upsertLocalInvoice({
+      sale_order_id: soId,
+      invoice_number: invoiceNumber,
+      amount_total: total,
+      amount_untaxed: untaxed,
+      amount_tax: tax,
+      state: 'posted',
+      customer_signature_data: existingLocalInv?.customer_signature_data ?? '',
+      driver_signature_data: existingLocalInv?.driver_signature_data ?? '',
+    });
+
+    const payments = Array.isArray(paymentPayload.payments) ? paymentPayload.payments : [];
+    const paymentRows = payments.map((p) => ({
+      sale_order_id: soId,
+      payment_type: String(p?.type || '').toLowerCase() === 'check' ? 'cheque' : String(p?.type || '').toLowerCase(),
+      amount: Number(p?.amount || 0),
+      journal_id: p?.journalId ?? null,
+      check_number: String(p?.type || '').toLowerCase() === 'check' ? empty(p?.checkNumber || paymentPayload?.checkNumber) : '',
+      bank_name: String(p?.type || '').toLowerCase() === 'check' ? empty(paymentPayload?.chequeBankName) : '',
+    }));
+    await localPaymentsDb.replacePaymentsForInvoice(invoiceId, paymentRows);
+
+    const cash = paymentRows.reduce((s, r) => s + (r.payment_type === 'cash' ? Number(r.amount || 0) : 0), 0);
+    const cheque = paymentRows.reduce((s, r) => s + (r.payment_type === 'cheque' ? Number(r.amount || 0) : 0), 0);
+    const credit = paymentRows.reduce((s, r) => s + (r.payment_type === 'credit' ? Number(r.amount || 0) : 0), 0);
+    const primary = credit > 0 ? 'credit' : cheque > 0 ? 'cheque' : 'cash';
+    await saleOrdersDb.updateSaleOrderPaymentTypeLocal(soId, primary, credit);
+    await saleOrdersDb.updateSaleOrderAmountsFromLines(soId);
+    await saleOrdersDb.updateSaleOrderInvoiceStatusLocal(soId, 'invoiced');
+  }, [soId]);
+
   const handleComplete = useCallback(async () => {
     if (!Number.isFinite(soId) || soId <= 0) {
       Alert.alert('Error', 'Missing order.');
@@ -72,6 +148,7 @@ export default function PaymentProofScreen({ route, navigation }) {
     setSaving(true);
     try {
       await persistPhotos();
+      await releaseHeldQueueItemsAndFinalizeLocal();
       await clearCheckoutResume(soId);
       runSync().catch((e) => console.warn('[PaymentProof] sync', e?.message ?? e));
       navigation.reset({
@@ -83,7 +160,7 @@ export default function PaymentProofScreen({ route, navigation }) {
     } finally {
       setSaving(false);
     }
-  }, [soId, creditProofRequired, photos.length, persistPhotos, navigation]);
+  }, [soId, creditProofRequired, photos.length, persistPhotos, releaseHeldQueueItemsAndFinalizeLocal, navigation]);
 
   const styles = useMemo(
     () =>
@@ -190,6 +267,27 @@ export default function PaymentProofScreen({ route, navigation }) {
         primaryBtnDisabled: { opacity: 0.45 },
         primaryBtnText: { color: '#fff', fontSize: 17, fontWeight: '800' },
         meta: { fontSize: 13, color: colors.textSecondary, textAlign: 'center', marginTop: spacing.sm },
+        confirmBackdrop: {
+          flex: 1,
+          backgroundColor: 'rgba(0,0,0,0.55)',
+          justifyContent: 'center',
+          padding: spacing.lg,
+        },
+        confirmCard: {
+          backgroundColor: colors.surface,
+          borderRadius: borderRadius.xl,
+          padding: spacing.lg,
+          borderWidth: 1,
+          borderColor: colors.border,
+        },
+        confirmTitle: { fontSize: 20, fontWeight: '800', color: colors.text, textAlign: 'center' },
+        confirmText: { marginTop: spacing.sm, fontSize: 14, color: colors.textSecondary, textAlign: 'center', lineHeight: 21 },
+        confirmActions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.lg },
+        confirmBtn: { flex: 1, paddingVertical: 13, borderRadius: borderRadius.md, alignItems: 'center', justifyContent: 'center' },
+        confirmBtnKeep: { backgroundColor: colors.background, borderWidth: 1, borderColor: colors.border },
+        confirmBtnYes: { backgroundColor: colors.primary },
+        confirmBtnKeepText: { fontSize: 15, fontWeight: '700', color: colors.textSecondary },
+        confirmBtnYesText: { fontSize: 15, fontWeight: '800', color: '#fff' },
       }),
     [colors, insets.bottom, creditProofRequired]
   );
@@ -300,7 +398,10 @@ export default function PaymentProofScreen({ route, navigation }) {
       <View style={styles.footer}>
         <TouchableOpacity
           style={[styles.primaryBtn, !canComplete && styles.primaryBtnDisabled]}
-          onPress={() => void handleComplete()}
+          onPress={() => {
+            if (!canComplete || saving) return;
+            setConfirmVisible(true);
+          }}
           disabled={saving || !canComplete}
           activeOpacity={0.88}
         >
@@ -319,6 +420,40 @@ export default function PaymentProofScreen({ route, navigation }) {
           </Text>
         ) : null}
       </View>
+      <Modal
+        visible={confirmVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setConfirmVisible(false)}
+      >
+        <Pressable style={styles.confirmBackdrop} onPress={() => setConfirmVisible(false)}>
+          <Pressable style={styles.confirmCard} onPress={(e) => e.stopPropagation()}>
+            <Text style={styles.confirmTitle}>Complete this order?</Text>
+            <Text style={styles.confirmText}>
+              Once completed, delivery and invoice are finalized. You can no longer edit this order flow.
+            </Text>
+            <View style={styles.confirmActions}>
+              <TouchableOpacity
+                style={[styles.confirmBtn, styles.confirmBtnKeep]}
+                onPress={() => setConfirmVisible(false)}
+                activeOpacity={0.85}
+              >
+                <Text style={styles.confirmBtnKeepText}>Keep order</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.confirmBtn, styles.confirmBtnYes]}
+                onPress={() => {
+                  setConfirmVisible(false);
+                  void handleComplete();
+                }}
+                activeOpacity={0.85}
+              >
+                <Text style={styles.confirmBtnYesText}>Yes, complete</Text>
+              </TouchableOpacity>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }

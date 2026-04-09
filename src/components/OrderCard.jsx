@@ -183,8 +183,8 @@ export default function OrderCard({
 
   function getOrderStatusLabel() {
     if (String(order?.state) === 'cancel') return 'Cancelled';
-    if (checkoutResumePhase === 'payment_proof') return 'Add payment photo';
-    if (checkoutResumePhase === 'invoice') return 'Finish invoice';
+    if (checkoutResumePhase === 'payment_proof') return 'Order pending';
+    if (checkoutResumePhase === 'invoice') return 'Order pending';
     if (isDelivered) return 'Delivered';
     if (String(order?.invoice_status) === 'invoiced') return 'Invoiced';
     return 'To Deliver';

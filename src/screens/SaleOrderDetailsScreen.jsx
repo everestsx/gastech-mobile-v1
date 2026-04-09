@@ -692,20 +692,22 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
         if (pid == null) return;
         qtyDoneByProductId[pid] = (qtyDoneByProductId[pid] || 0) + (Number(ml.qty_done) || 0);
       });
+      const deliveryDone = ((picking?.state || '') + '').toLowerCase() === 'done';
       setLines(
         (data.lines || []).map((l) => {
           const pid = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
           const savedDone = pid != null ? qtyDoneByProductId[pid] : null;
           const demand = Number(l.product_uom_qty ?? 0) || 0;
+          // Before delivery is finalized, always show latest edited/saved demand qty
+          // so users can re-open Modify and continue editing flexibly.
           const initial =
-            savedDone != null && savedDone > 0 ? savedDone : demand;
+            deliveryDone && savedDone != null && savedDone > 0 ? savedDone : demand;
           return { ...l, newQty: String(initial) };
         })
       );
       const imageMap = await productsDb.getProductImageUriMap();
       setProductIdToImageUri(imageMap || {});
       setQtyChanged(false);
-      const deliveryDone = ((picking?.state || '') + '').toLowerCase() === 'done';
       setIsDeliveryDone(deliveryDone);
       setIsDelivered(data.order?.invoice_status === 'invoiced');
 
@@ -1246,7 +1248,7 @@ const handleProceedToPayment = useCallback(async () => {
       total: total ?? order.amount_total,
       subtotal,
       tax,
-      deliveryDone: true,
+      deliveryDone: isDeliveryDone === true,
       deliveryPayload,
       invoiceLineQtys,
     });
@@ -1634,7 +1636,7 @@ const handleProceedToPayment = useCallback(async () => {
                   total: computedTotal,
                   subtotal: computedSubtotal,
                   tax: computedTax,
-                  deliveryDone: true,
+                  deliveryDone: isDeliveryDone === true,
                   invoiceLineQtys,
                 });
               } else {

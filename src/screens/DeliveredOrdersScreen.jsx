@@ -34,6 +34,10 @@ import * as localPaymentsDb from '../database/localPayments.js';
 import * as deliveryQtyDb from '../database/deliveryQty.js';
 import OrderCard from '../components/OrderCard';
 import SyncHeaderBadge from '../components/SyncHeaderBadge';
+import {
+  getCheckoutResumeMap,
+  pendingCheckoutSaleOrderIdsFromResumeMap,
+} from '../services/checkoutResume.service';
 
 const TAB_CASH = 'cash';
 const TAB_CHEQUE = 'cheque';
@@ -134,6 +138,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
   const [qtyDoneBySaleId, setQtyDoneBySaleId] = useState({});
   const [qtyDoneBySaleAndProduct, setQtyDoneBySaleAndProduct] = useState({});
   const [backendQtyDeliveredOrderIds, setBackendQtyDeliveredOrderIds] = useState(() => new Set());
+  const [pendingCheckoutOrderIds, setPendingCheckoutOrderIds] = useState(() => new Set());
   const [journals, setJournals] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedDate, setSelectedDate] = useState(() => {
@@ -156,9 +161,15 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
   const deliveredOrders = useMemo(
     () =>
       orders.filter((o) =>
-        orderIsDeliveryDoneForProgress(o, pickingStateBySaleId, qtyDoneBySaleId, backendQtyDeliveredOrderIds)
+        orderIsDeliveryDoneForProgress(
+          o,
+          pickingStateBySaleId,
+          qtyDoneBySaleId,
+          backendQtyDeliveredOrderIds,
+          pendingCheckoutOrderIds
+        )
       ),
-    [orders, pickingStateBySaleId, qtyDoneBySaleId, backendQtyDeliveredOrderIds]
+    [orders, pickingStateBySaleId, qtyDoneBySaleId, backendQtyDeliveredOrderIds, pendingCheckoutOrderIds]
   );
 
   const searchFieldLabels = { customer: 'Customer', orderId: 'Order ID' };
@@ -403,10 +414,12 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
     try {
       const user = await getUserSession();
       const vehicleId = user?.isAdmin === false ? user.vehicleId : null;
-      const [data, cachedCustomers] = await Promise.all([
+      const [data, cachedCustomers, resumeMap] = await Promise.all([
         getCachedOrders(vehicleId),
         customerId != null ? getCachedCustomers() : Promise.resolve([]),
+        getCheckoutResumeMap(),
       ]);
+      setPendingCheckoutOrderIds(pendingCheckoutSaleOrderIdsFromResumeMap(resumeMap));
       const all = Array.isArray(data) ? data : [];
       const dateStr = formatDate(selectedDate);
       let list = all.filter((o) => {
@@ -502,6 +515,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
       setQtyDoneBySaleId({});
       setQtyDoneBySaleAndProduct({});
       setBackendQtyDeliveredOrderIds(new Set());
+      setPendingCheckoutOrderIds(new Set());
     } finally {
       setLoading(false);
     }

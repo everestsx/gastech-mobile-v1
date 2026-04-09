@@ -131,6 +131,15 @@ function safeDisplay(val) {
   return s === '' || s.toLowerCase() === 'false' ? '—' : s;
 }
 
+function shouldAlwaysShowInvoiceCatalogRow(productName) {
+  const name = String(productName || '').toLowerCase();
+  if (!name) return true;
+  // Keep "new issue" and "empty cylinder" products hidden unless ordered on this invoice.
+  if (name.includes('new issue')) return false;
+  if (name.includes('empty') && name.includes('cylinder')) return false;
+  return true;
+}
+
 function formatPrintedDateTime(value = new Date()) {
   const d = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(d.getTime())) return new Date().toLocaleString('en-LK');
@@ -1595,21 +1604,24 @@ export default function InvoiceScreen({ route, navigation }) {
             }
           }
 
-          const catalogRows = allProducts.map((p) => {
-            const existing = byProductId.get(Number(p.id));
-            if (existing) return existing;
-            return {
-              id: `catalog-${p.id}`,
-              order_id: [Number(saleOrderId), null],
-              product_id: [Number(p.id), p.name || '—'],
-              name: p.name || '',
-              product_uom_qty: 0,
-              price_unit: Number(p.list_price) || 0,
-              price_subtotal: 0,
-              price_total: 0,
-              qty_delivered: 0,
-            };
-          });
+          const catalogRows = allProducts
+            .map((p) => {
+              const existing = byProductId.get(Number(p.id));
+              if (existing) return existing;
+              if (!shouldAlwaysShowInvoiceCatalogRow(p?.name)) return null;
+              return {
+                id: `catalog-${p.id}`,
+                order_id: [Number(saleOrderId), null],
+                product_id: [Number(p.id), p.name || '—'],
+                name: p.name || '',
+                product_uom_qty: 0,
+                price_unit: Number(p.list_price) || 0,
+                price_subtotal: 0,
+                price_total: 0,
+                qty_delivered: 0,
+              };
+            })
+            .filter(Boolean);
 
           const catalogProductIds = new Set(allProducts.map((p) => Number(p.id)).filter((n) => Number.isFinite(n) && n > 0));
           const nonCatalogRows = rawLines.filter((line) => {
@@ -1698,47 +1710,6 @@ export default function InvoiceScreen({ route, navigation }) {
   useEffect(() => {
     loadInvoice();
   }, [loadInvoice]);
-
-  const persistCapturedSignatures = useCallback(
-    async (rawCust, rawDrv) => {
-      const norm = (raw) => {
-        if (raw == null || typeof raw !== 'string') return '';
-        const s = raw.trim();
-        if (s === '' || s === '[object Object]') return '';
-        return s;
-      };
-      const custSig = norm(rawCust);
-      const drvSig = norm(rawDrv);
-      const existing = await localInvoicesDb.getLocalInvoiceBySaleOrderId(saleOrderId);
-      if (!existing) {
-        setShowSignatureCaptureModal(false);
-        navigation.setParams({ promptSignatures: false });
-        return;
-      }
-      await localInvoicesDb.upsertLocalInvoice({
-        sale_order_id: Number(saleOrderId),
-        invoice_number: existing.invoice_number,
-        amount_total: existing.amount_total,
-        amount_untaxed: existing.amount_untaxed,
-        amount_tax: existing.amount_tax,
-        state: existing.state || 'posted',
-        customer_signature_data: custSig,
-        driver_signature_data: drvSig,
-      });
-      setLocalCustomerSig(custSig || null);
-      setLocalDriverSig(drvSig || null);
-      setShowSignatureCaptureModal(false);
-      setCaptureCustomerSig(null);
-      setCaptureDriverSig(null);
-      setCaptureCustomerSaved(false);
-      setCaptureDriverSaved(false);
-      setSignatureCaptureStep('customer');
-      captureCustomerRef.current?.clearSignature();
-      captureDriverRef.current?.clearSignature();
-      navigation.setParams({ promptSignatures: false });
-    },
-    [saleOrderId, navigation]
-  );
 
   useEffect(() => {
     if (loading) return;
@@ -2191,6 +2162,77 @@ export default function InvoiceScreen({ route, navigation }) {
     displaySubtotal,
     displayTax,
   ]);
+
+  /** Persist signatures even when no local invoice row yet (invoice row is finalized later on payment proof complete). */
+  const persistCapturedSignatures = useCallback(
+    async (rawCust, rawDrv) => {
+      const norm = (raw) => {
+        if (raw == null || typeof raw !== 'string') return '';
+        const s = raw.trim();
+        if (s === '' || s === '[object Object]') return '';
+        return s;
+      };
+      const custSig = norm(rawCust);
+      const drvSig = norm(rawDrv);
+      const existing = await localInvoicesDb.getLocalInvoiceBySaleOrderId(saleOrderId);
+
+      let invNumber = existing?.invoice_number ?? invoiceNumber ?? null;
+      if (invNumber == null || String(invNumber).trim() === '') {
+        try {
+          invNumber = await getOrAssignInvoiceNumber(saleOrderId);
+          setInvoiceNumber(invNumber);
+        } catch (_) {
+          invNumber = `INV-${saleOrderId}`;
+        }
+      }
+
+      const amountTotal =
+        existing?.amount_total != null && existing.amount_total !== ''
+          ? Number(existing.amount_total)
+          : Number(displayTotal) || Number(order?.amount_total) || 0;
+      const amountUntaxed =
+        existing?.amount_untaxed != null && existing.amount_untaxed !== ''
+          ? Number(existing.amount_untaxed)
+          : Number(displaySubtotal) || Number(order?.amount_untaxed) || amountTotal;
+      const amountTax =
+        existing?.amount_tax != null && existing.amount_tax !== ''
+          ? Number(existing.amount_tax)
+          : Number(displayTax) || Number(order?.amount_tax) || 0;
+
+      await localInvoicesDb.upsertLocalInvoice({
+        sale_order_id: Number(saleOrderId),
+        invoice_number: String(invNumber),
+        amount_total: amountTotal,
+        amount_untaxed: amountUntaxed,
+        amount_tax: amountTax,
+        state: existing?.state || 'posted',
+        customer_signature_data: custSig,
+        driver_signature_data: drvSig,
+      });
+      setLocalCustomerSig(custSig || null);
+      setLocalDriverSig(drvSig || null);
+      setShowSignatureCaptureModal(false);
+      setCaptureCustomerSig(null);
+      setCaptureDriverSig(null);
+      setCaptureCustomerSaved(false);
+      setCaptureDriverSaved(false);
+      setSignatureCaptureStep('customer');
+      captureCustomerRef.current?.clearSignature();
+      captureDriverRef.current?.clearSignature();
+      navigation.setParams({ promptSignatures: false });
+    },
+    [
+      saleOrderId,
+      navigation,
+      invoiceNumber,
+      displayTotal,
+      displaySubtotal,
+      displayTax,
+      order?.amount_total,
+      order?.amount_untaxed,
+      order?.amount_tax,
+    ]
+  );
 
   const navigateToProceedPayment = useCallback(() => {
     navigation.navigate('ProceedPayment', {

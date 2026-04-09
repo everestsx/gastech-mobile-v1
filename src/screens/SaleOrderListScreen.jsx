@@ -77,8 +77,8 @@ export default function SaleOrderListScreen({ route, navigation }) {
         if (checkoutResumeMap[rid]?.invoiceParams) return true;
         const inv = String(o.invoice_status || '').toLowerCase() === 'invoiced';
         const st = String(o.pickingState || '').toLowerCase();
-        const q = Number(o.qtyDoneSum) || 0;
-        return !(inv || st === 'done' || st === 'cancel' || q > 0);
+        // Do not treat qty_done > 0 as delivered before explicit completion.
+        return !(inv || st === 'done' || st === 'cancel');
       }),
     [orders, checkoutResumeMap]
   );
@@ -321,6 +321,17 @@ export default function SaleOrderListScreen({ route, navigation }) {
       enriched.sort((a, b) => {
         const d = listPriority(a) - listPriority(b);
         if (d !== 0) return d;
+        const ra = resumeForSort[String(a.id)];
+        const rb = resumeForSort[String(b.id)];
+        const hasA = Boolean(ra?.invoiceParams);
+        const hasB = Boolean(rb?.invoiceParams);
+        if (hasA && hasB) {
+          const ta = Number(ra.updatedAt) || 0;
+          const tb = Number(rb.updatedAt) || 0;
+          if (ta !== tb) return tb - ta;
+        } else if (hasA !== hasB) {
+          return hasA ? -1 : 1;
+        }
         return String(a.name || '').localeCompare(String(b.name || ''));
       });
       setOrders(enriched);
@@ -375,19 +386,7 @@ export default function SaleOrderListScreen({ route, navigation }) {
   };
 
   const onOrderPress = (order) => {
-    const entry = checkoutResumeMap[String(order.id)];
-    if (entry?.invoiceParams) {
-      if (entry.phase === 'payment_proof') {
-        navigation.navigate('PaymentProof', {
-          saleOrderId: order.id,
-          creditProofRequired: entry.invoiceParams.creditProofRequired === true,
-          orderName: entry.invoiceParams.orderName,
-        });
-        return;
-      }
-      navigation.navigate('InvoiceScreen', entry.invoiceParams);
-      return;
-    }
+    // Pending checkout: open order details (modify / proceed) — not straight to invoice; banner can resume invoice/proof.
     navigation.navigate('SaleOrderDetails', { saleOrderId: order.id });
   };
 

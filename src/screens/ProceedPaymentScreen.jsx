@@ -13,7 +13,6 @@ import {
   Platform,
   Keyboard,
 } from 'react-native';
-import { CommonActions } from '@react-navigation/native';
 import { useHeaderHeight } from '@react-navigation/elements';
 import { setCheckoutResumeFromPayment } from '../services/checkoutResume.service';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -21,13 +20,9 @@ import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { useSync } from '../context/SyncContext';
 import { spacing, borderRadius } from '../constants/theme';
-import { getCachedJournals, getSaleOrderDetailsFromDB, getDeliveryDataFromDB, getUserSession, getLastSyncTime } from '../services/sync.service';
+import { getCachedJournals, getSaleOrderDetailsFromDB, getUserSession, getLastSyncTime } from '../services/sync.service';
 import { getVehicleJournalsByLicensePlate } from '../services/vehicle.service';
-import * as saleOrdersDb from '../database/saleOrders.js';
 import * as syncQueueDb from '../database/syncQueue.js';
-import * as stockPickingsDb from '../database/stockPickings.js';
-import * as localInvoicesDb from '../database/localInvoices.js';
-import * as localPaymentsDb from '../database/localPayments.js';
 
 import { JOURNAL_CODE_CASH, JOURNAL_CODE_CHEQUE } from '../constants/journals';
 import { SRI_LANKA_BANKS } from '../constants/sriLankaBanks';
@@ -55,7 +50,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   const insets = useSafeAreaInsets();
   const headerHeight = useHeaderHeight();
   const { setHideSyncIndicator } = useSync();
-  const { saleOrderId, total, subtotal, tax, deliveryDone, deliveryPayload, invoiceLineQtys } = route.params || {};
+  const { saleOrderId, total, subtotal, tax, deliveryPayload, invoiceLineQtys } = route.params || {};
   const orderTotal = Number(total) || 0;
   // Keep payments consistent with 2-decimal currency precision to avoid tiny float remainders
   // turning a fully-paid order into a "partial" one.
@@ -340,38 +335,15 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           deliveryPayload.pickingId != null);
 
       if (needsDeliverySync) {
-        const releasedPayload = { ...deliveryPayload };
-        delete releasedPayload.holdUntilPayment;
+        // Keep delivery held until the user confirms "Complete order" on PaymentProof.
+        const heldPayload = { ...deliveryPayload, holdUntilPayment: true };
         const existingDelivery = await syncQueueDb.getPendingDeliveryItemBySaleOrderId(soId);
         if (existingDelivery) {
-          await syncQueueDb.updateQueueItemPayload(existingDelivery.id, releasedPayload);
+          await syncQueueDb.updateQueueItemPayload(existingDelivery.id, heldPayload);
         } else {
-          await syncQueueDb.enqueue(syncQueueDb.ACTION_DELIVERY, releasedPayload);
-        }
-        if (Array.isArray(deliveryPayload.pickings) && deliveryPayload.pickings.length > 0) {
-          for (const b of deliveryPayload.pickings) {
-            if (b?.pickingId != null) {
-              await stockPickingsDb.updatePickingStateLocal(Number(b.pickingId), 'done');
-            }
-          }
-        } else if (deliveryPayload.pickingId != null) {
-          await stockPickingsDb.updatePickingStateLocal(Number(deliveryPayload.pickingId), 'done');
-        }
-      } else if (deliveryDone) {
-        /** Avoid enqueuing an empty delivery payload — Odoo cannot validate zero-qty moves and invoice stays blocked. */
-        const pending = await syncQueueDb.getPendingDeliveryItemBySaleOrderId(soId);
-        if (!pending) {
-          const { picking } = await getDeliveryDataFromDB(saleOrderId);
-          if (picking?.id != null) {
-            await stockPickingsDb.updatePickingStateLocal(Number(picking.id), 'done');
-          }
-          console.warn(
-            '[ProceedPayment] deliveryDone but no deliveryPayload with move/qty data — sync delivery from the sale order screen before paying, or pull to refresh and retry.'
-          );
+          await syncQueueDb.enqueue(syncQueueDb.ACTION_DELIVERY, heldPayload);
         }
       }
-
-      await saleOrdersDb.updateSaleOrderInvoiceStatusLocal(saleOrderId, 'invoiced');
 
       const payments = [];
       const paymentSplit = { cash: 0, check: 0, credit: 0 };
@@ -421,6 +393,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         checkNumber: needsCheck ? empty(checkNumberTrimmed) : '',
         driverEmployeeId: driverEmployeeId != null && Number.isFinite(driverEmployeeId) ? driverEmployeeId : 0,
         porterEmployeeIds: Array.isArray(porterEmployeeIds) ? porterEmployeeIds : [],
+        holdUntilComplete: true,
       };
       const existingPending = await syncQueueDb.getPendingPaymentItemBySaleOrderId(soId);
       if (existingPending) {
@@ -430,39 +403,6 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         await syncQueueDb.enqueue(syncQueueDb.ACTION_PAYMENT, queuePayload);
         console.log(`[Payment] Enqueued payment for SO ${saleOrderId}.`);
       }
-
-      const primaryPaymentType = needsCredit ? 'credit' : needsCheck ? 'cheque' : 'cash';
-      const creditAmountForDb =
-        primaryPaymentType === 'credit' ? Number(paymentSplit.credit ?? orderTotalRounded) || 0 : 0;
-      await saleOrdersDb.updateSaleOrderPaymentTypeLocal(saleOrderId, primaryPaymentType, creditAmountForDb);
-
-      const amountUntaxed = orderInfo.amount_untaxed != null ? Number(orderInfo.amount_untaxed) : orderTotal;
-      const amountTax = orderInfo.amount_tax != null ? Number(orderInfo.amount_tax) : 0;
-      const invoiceId = await localInvoicesDb.upsertLocalInvoice({
-        sale_order_id: soId,
-        invoice_number: invoiceNumber,
-        amount_total: orderTotalRounded,
-        amount_untaxed: amountUntaxed,
-        amount_tax: amountTax,
-        state: 'posted',
-        customer_signature_data: custSig,
-        driver_signature_data: drvSig,
-      });
-      const paymentRows = payments.map((p) => ({
-        sale_order_id: num(soId),
-        payment_type: empty(p.type === 'check' ? 'cheque' : p.type),
-        amount: num(p.amount),
-        journal_id: sqliteIntegerFkOrNull(p.journalId),
-        check_number: p.type === 'check' ? empty(p.checkNumber || checkNumberTrimmed) : '',
-        bank_name: p.type === 'check' ? empty(selectedLocalBank?.name) : '',
-      }));
-      console.log('========= REPLACE PAYMENTS FOR INVOICE =========');
-      console.log('invoiceId', invoiceId);
-      console.log('paymentRows', paymentRows);
-      console.log('===============================================');
-      // TODO: Credit Journal ID is not being set
-      await localPaymentsDb.replacePaymentsForInvoice(invoiceId, paymentRows);
-      await saleOrdersDb.updateSaleOrderAmountsFromLines(soId);
 
       const creditProofRequired = needsCredit && creditAmountNum > 0;
       const invoiceNavParams = {
@@ -487,18 +427,9 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         orderName: empty(orderName),
       };
       await setCheckoutResumeFromPayment(soId, invoiceNavParams);
-      navigation.dispatch(
-        CommonActions.reset({
-          index: 1,
-          routes: [
-            { name: 'MainTabs' },
-            {
-              name: 'InvoiceScreen',
-              params: invoiceNavParams,
-            },
-          ],
-        })
-      );
+      // Keep checkout stack reversible until the print step.
+      // Invoice -> back now returns to Payment (and then Order Details).
+      navigation.navigate('InvoiceScreen', invoiceNavParams);
     } catch (err) {
       console.error(err);
       Alert.alert('Payment could not be saved', userFacingPaymentError(err));

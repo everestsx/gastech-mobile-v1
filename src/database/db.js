@@ -121,6 +121,7 @@ async function runMigrations(db) {
       id INTEGER PRIMARY KEY,
       name TEXT,
       list_price REAL,
+      type TEXT,
       image_1920 TEXT,
       updated_at TEXT
     );
@@ -533,6 +534,20 @@ async function runMigrations(db) {
       console.warn('[Migration] products list_price:', e);
     }
     await db.runAsync('PRAGMA user_version = 21');
+  }
+
+  // Migration 22: Store Odoo product type on local products table (invoice catalog filter by goods only)
+  if (current < 22) {
+    try {
+      const info = await db.getAllAsync('PRAGMA table_info(products)');
+      const names = new Set((info || []).map((c) => c.name));
+      if (!names.has('type')) {
+        await db.runAsync('ALTER TABLE products ADD COLUMN type TEXT');
+      }
+    } catch (e) {
+      console.warn('[Migration] products type:', e);
+    }
+    await db.runAsync('PRAGMA user_version = 22');
   }
 }
 

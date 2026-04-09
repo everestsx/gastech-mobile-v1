@@ -59,3 +59,16 @@ export async function getCheckoutResumeEntry(saleOrderId) {
 export async function getCheckoutResumeMap() {
   return readMap();
 }
+
+/** Sale order ids with checkout in progress (invoice / payment proof not completed). */
+export function pendingCheckoutSaleOrderIdsFromResumeMap(map) {
+  const s = new Set();
+  if (!map || typeof map !== 'object') return s;
+  for (const [k, v] of Object.entries(map)) {
+    if (v?.invoiceParams) {
+      const n = Number(k);
+      if (Number.isFinite(n)) s.add(n);
+    }
+  }
+  return s;
+}

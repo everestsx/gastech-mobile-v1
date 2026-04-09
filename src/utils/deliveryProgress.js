@@ -19,14 +19,23 @@ export function mergePickingStateBySaleIdFromRows(pickings) {
 /**
  * Delivery-complete for UI: invoiced, picking done/cancel, any qty_done on move lines, or any Odoo qty_delivered on SO lines.
  * @param {Set<number>} [saleOrderIdsWithBackendQtyDelivered] - from DB after sync (partial delivery from backend without local move lines yet).
+ * @param {Set<number>} [pendingCheckoutSaleOrderIds] - checkout not completed; never treat as delivered for lists/dashboard.
  */
 export function orderIsDeliveryDoneForProgress(
   order,
   pickingStateBySaleIdMap,
   qtyDoneBySaleIdMap,
-  saleOrderIdsWithBackendQtyDelivered
+  saleOrderIdsWithBackendQtyDelivered,
+  pendingCheckoutSaleOrderIds
 ) {
   const oid = Number(order?.id);
+  if (
+    pendingCheckoutSaleOrderIds instanceof Set &&
+    Number.isFinite(oid) &&
+    pendingCheckoutSaleOrderIds.has(oid)
+  ) {
+    return false;
+  }
   if (
     saleOrderIdsWithBackendQtyDelivered instanceof Set &&
     Number.isFinite(oid) &&
