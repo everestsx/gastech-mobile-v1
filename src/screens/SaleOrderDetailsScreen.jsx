@@ -1381,7 +1381,7 @@ const handleProceedToPayment = useCallback(async () => {
                         onHandStock === 0 && { color: colors.error || '#c00' },
                       ]}
                     >
-                      On hand: {onHandStock}
+                      Available : {onHandStock}
                     </Text>
                   </View>
                 )}
