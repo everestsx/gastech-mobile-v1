@@ -78,20 +78,46 @@ async function getAsyncStorage() {
   if (!_asyncStorage) _asyncStorage = (await import('@react-native-async-storage/async-storage')).default;
   return _asyncStorage;
 }
+/** In-flight sync runner; concurrent callers await the same promise. */
+let _runSyncPromise = null;
+
+function sanitizeUserSessionForStorage(user) {
+  const src = user && typeof user === 'object' ? user : {};
+  const out = { ...src };
+  // Keep session lightweight and stable for AsyncStorage.
+  // Image payloads are optional for UI and can make session retrieval unreliable on some devices.
+  if (typeof out.driverImageBase64 === 'string' && out.driverImageBase64.length > 0) {
+    out.driverImageBase64 = null;
+  }
+  if (Array.isArray(out.selectedPorters)) {
+    out.selectedPorters = out.selectedPorters.map((p) => {
+      if (!p || typeof p !== 'object') return p;
+      const clone = { ...p };
+      if (typeof clone.imageBase64 === 'string' && clone.imageBase64.length > 0) {
+        clone.imageBase64 = null;
+      }
+      return clone;
+    });
+  }
+  return out;
+}
 
 export async function getUserSession() {
   try {
     const storage = await getAsyncStorage();
     const raw = await storage.getItem(KEYS.USER);
-    return raw ? JSON.parse(raw) : null;
-  } catch {
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch (e) {
+    console.warn(`${LOG_TAG} getUserSession parse/read failed`, e?.message ?? e);
     return null;
   }
 }
 
 export async function saveUserSession(user) {
   const storage = await getAsyncStorage();
-  await storage.setItem(KEYS.USER, JSON.stringify(user));
+  const safeUser = sanitizeUserSessionForStorage(user);
+  await storage.setItem(KEYS.USER, JSON.stringify(safeUser));
 }
 
 /** Next local midnight (12:00 AM) as ISO string — session is valid until then. */
@@ -1603,7 +1629,7 @@ async function getSyncDateFieldSetting() {
 
 // ---------- Sync: pull from Odoo and store in SQLite ----------
 
-export async function runSync() {
+async function runSyncInternal() {
   if (_syncStateListener) _syncStateListener(true);
   log('start', new Date().toISOString());
   const result = { customers: 0, orders: 0, orderLines: 0, pickings: 0, moves: 0, moveLines: 0, journals: 0, routes: 0, vehicles: 0, vehicleWarehouses: 0, vehicleInventories: 0, error: null };
@@ -1612,10 +1638,12 @@ export async function runSync() {
 
   try {
     if (isLoggingOut) {
+      log('stop', 'logout in progress');
       return { error: 'Logout in progress' };
     }
     const session = await getUserSession();
     if (!session) {
+      log('stop', 'no active session');
       return { error: 'No active session' };
     }
     await processSyncQueue();
@@ -1955,6 +1983,24 @@ export async function runSync() {
     return result;
   } finally {
     if (_syncStateListener) _syncStateListener(false);
+  }
+}
+
+/**
+ * Public sync entrypoint with concurrency guard.
+ * Prevents overlapping sync runs (from app-state, login, and screen triggers)
+ * that can cause transient empty reads while writes are still in progress.
+ */
+export async function runSync() {
+  if (_runSyncPromise) {
+    log('skip', 'already running; awaiting in-flight sync');
+    return _runSyncPromise;
+  }
+  _runSyncPromise = runSyncInternal();
+  try {
+    return await _runSyncPromise;
+  } finally {
+    _runSyncPromise = null;
   }
 }
 

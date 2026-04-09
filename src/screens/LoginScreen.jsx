@@ -212,7 +212,11 @@ export default function LoginScreen({ navigation }) {
       if (licensePlate) {
         await fetchAndStoreVehicleJournals(licensePlate);
       }
-      runSync().catch(() => {});
+      try {
+        await runSync();
+      } catch (syncErr) {
+        console.warn('[Login] initial runSync failed', syncErr?.message ?? syncErr);
+      }
       resetLoginFlow();
       setPassword('');
       navigation.replace('Main');

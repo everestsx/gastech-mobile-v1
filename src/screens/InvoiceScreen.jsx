@@ -2075,33 +2075,61 @@ export default function InvoiceScreen({ route, navigation }) {
     );
   }, [invoiceVisibleLines]);
 
+  const hasLineBasedTotals = (invoiceVisibleLines?.length || 0) > 0;
+
   const displaySubtotal = useMemo(() => {
     if ((previewBeforePayment || fromProceedPayment) && routeSubtotalParam != null) {
       const n = Number(routeSubtotalParam);
       if (Number.isFinite(n)) return n;
     }
+    // Keep subtotal aligned with displayed line rows (including extra qty adjustments).
+    if (hasLineBasedTotals) return computedSubtotal;
     return (order?.amount_untaxed != null && order.amount_untaxed !== 0)
       ? order.amount_untaxed
       : computedSubtotal;
-  }, [previewBeforePayment, fromProceedPayment, routeSubtotalParam, order?.amount_untaxed, computedSubtotal]);
+  }, [
+    previewBeforePayment,
+    fromProceedPayment,
+    routeSubtotalParam,
+    hasLineBasedTotals,
+    computedSubtotal,
+    order?.amount_untaxed,
+  ]);
 
   const displayTax = useMemo(() => {
     if ((previewBeforePayment || fromProceedPayment) && routeTaxParam != null) {
       const n = Number(routeTaxParam);
       if (Number.isFinite(n)) return n;
     }
+    if (hasLineBasedTotals) return computedTax;
     return (order?.amount_tax != null && order.amount_tax !== 0)
       ? order.amount_tax
       : computedTax;
-  }, [previewBeforePayment, fromProceedPayment, routeTaxParam, order?.amount_tax, computedTax]);
+  }, [
+    previewBeforePayment,
+    fromProceedPayment,
+    routeTaxParam,
+    hasLineBasedTotals,
+    computedTax,
+    order?.amount_tax,
+  ]);
 
   const displayTotal = useMemo(() => {
     if ((previewBeforePayment || fromProceedPayment) && routeTotalParam != null) {
       const n = Number(routeTotalParam);
       if (Number.isFinite(n)) return n;
     }
+    if (hasLineBasedTotals) return displaySubtotal + displayTax;
     return order?.amount_total ?? routeTotalParam ?? (displaySubtotal + displayTax);
-  }, [previewBeforePayment, fromProceedPayment, routeTotalParam, order?.amount_total, displaySubtotal, displayTax]);
+  }, [
+    previewBeforePayment,
+    fromProceedPayment,
+    routeTotalParam,
+    hasLineBasedTotals,
+    order?.amount_total,
+    displaySubtotal,
+    displayTax,
+  ]);
 
   const navigateToProceedPayment = useCallback(() => {
     navigation.navigate('ProceedPayment', {
