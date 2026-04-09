@@ -42,8 +42,8 @@ export async function upsertProducts(rows) {
       const id = num(product.id);
       if (id === 0) continue;
       await tx.runAsync(
-        `INSERT OR REPLACE INTO products (id, name, image_1920, updated_at) VALUES (?, ?, ?, ?)`,
-        [id, empty(product.name), empty(product.image_1920), now]
+        `INSERT OR REPLACE INTO products (id, name, list_price, image_1920, updated_at) VALUES (?, ?, ?, ?, ?)`,
+        [id, empty(product.name), num(product.list_price), empty(product.image_1920), now]
       );
     }
   });
@@ -52,7 +52,20 @@ export async function upsertProducts(rows) {
 export async function getProductById(id) {
   const db = await getDb();
   const row = await db.getFirstAsync('SELECT * FROM products WHERE id = ?', [id]);
-  return row ? { id: row.id, name: row.name, image_1920: row.image_1920 } : null;
+  return row ? { id: row.id, name: row.name, list_price: row.list_price, image_1920: row.image_1920 } : null;
+}
+
+/** Full product list for catalog-style invoice rows (all products with unit price). */
+export async function getAllProductsForInvoice() {
+  const db = await getDb();
+  const rows = await db.getAllAsync(
+    'SELECT id, name, list_price FROM products ORDER BY name COLLATE NOCASE ASC, id ASC'
+  );
+  return (rows || []).map((r) => ({
+    id: r.id,
+    name: r.name ?? '',
+    list_price: num(r.list_price),
+  }));
 }
 
 /** @returns {Promise<Record<number, string>>} Map product id -> name for display (e.g. sale order cards). */

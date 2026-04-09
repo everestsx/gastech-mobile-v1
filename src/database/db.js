@@ -120,6 +120,7 @@ async function runMigrations(db) {
     CREATE TABLE IF NOT EXISTS products (
       id INTEGER PRIMARY KEY,
       name TEXT,
+      list_price REAL,
       image_1920 TEXT,
       updated_at TEXT
     );
@@ -518,6 +519,20 @@ async function runMigrations(db) {
       console.warn('[Migration] sale_order_lines qty_delivered:', e);
     }
     await db.runAsync('PRAGMA user_version = 20');
+  }
+
+  // Migration 21: Store Odoo product list_price on local products table (catalog invoice rows)
+  if (current < 21) {
+    try {
+      const info = await db.getAllAsync('PRAGMA table_info(products)');
+      const names = new Set((info || []).map((c) => c.name));
+      if (!names.has('list_price')) {
+        await db.runAsync('ALTER TABLE products ADD COLUMN list_price REAL');
+      }
+    } catch (e) {
+      console.warn('[Migration] products list_price:', e);
+    }
+    await db.runAsync('PRAGMA user_version = 21');
   }
 }
 

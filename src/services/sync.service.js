@@ -46,6 +46,7 @@ export function setSyncCompleteListener(fn) {
 let _processSyncQueuePromise = null;
 const KEYS = {
   USER: '@gastech_user',
+  USER_MEDIA: '@gastech_user_media',
   LAST_SYNC: '@gastech_last_sync',
   LAST_VEHICLE_ID: '@gastech_last_vehicle_id',
   SYNC_PERIOD: '@gastech_sync_period',
@@ -84,8 +85,6 @@ let _runSyncPromise = null;
 function sanitizeUserSessionForStorage(user) {
   const src = user && typeof user === 'object' ? user : {};
   const out = { ...src };
-  // Keep session lightweight and stable for AsyncStorage.
-  // Image payloads are optional for UI and can make session retrieval unreliable on some devices.
   if (typeof out.driverImageBase64 === 'string' && out.driverImageBase64.length > 0) {
     out.driverImageBase64 = null;
   }
@@ -102,12 +101,60 @@ function sanitizeUserSessionForStorage(user) {
   return out;
 }
 
+function extractUserSessionMedia(user) {
+  const src = user && typeof user === 'object' ? user : {};
+  return {
+    driverImageBase64: typeof src.driverImageBase64 === 'string' ? src.driverImageBase64 : null,
+    selectedPorters: Array.isArray(src.selectedPorters)
+      ? src.selectedPorters
+        .map((p) => {
+          if (!p || typeof p !== 'object') return null;
+          return {
+            id: p.id ?? null,
+            imageBase64: typeof p.imageBase64 === 'string' ? p.imageBase64 : null,
+          };
+        })
+        .filter((p) => p != null)
+      : [],
+  };
+}
+
 export async function getUserSession() {
   try {
     const storage = await getAsyncStorage();
-    const raw = await storage.getItem(KEYS.USER);
+    const [raw, rawMedia] = await Promise.all([
+      storage.getItem(KEYS.USER),
+      storage.getItem(KEYS.USER_MEDIA),
+    ]);
     if (!raw) return null;
-    return JSON.parse(raw);
+    const user = JSON.parse(raw);
+    if (rawMedia) {
+      try {
+        const media = JSON.parse(rawMedia);
+        if (media && typeof media === 'object') {
+          if (typeof media.driverImageBase64 === 'string' && media.driverImageBase64.length > 0) {
+            user.driverImageBase64 = media.driverImageBase64;
+          }
+          if (Array.isArray(media.selectedPorters) && Array.isArray(user.selectedPorters)) {
+            const mediaById = new Map(
+              media.selectedPorters
+                .filter((p) => p && p.id != null)
+                .map((p) => [String(p.id), p])
+            );
+            user.selectedPorters = user.selectedPorters.map((porter) => {
+              const mediaPorter = mediaById.get(String(porter?.id));
+              if (mediaPorter?.imageBase64) {
+                return { ...porter, imageBase64: mediaPorter.imageBase64 };
+              }
+              return porter;
+            });
+          }
+        }
+      } catch (_) {
+        /* ignore media merge issues */
+      }
+    }
+    return user;
   } catch (e) {
     console.warn(`${LOG_TAG} getUserSession parse/read failed`, e?.message ?? e);
     return null;
@@ -117,7 +164,10 @@ export async function getUserSession() {
 export async function saveUserSession(user) {
   const storage = await getAsyncStorage();
   const safeUser = sanitizeUserSessionForStorage(user);
-  await storage.setItem(KEYS.USER, JSON.stringify(safeUser));
+  await storage.multiSet([
+    [KEYS.USER, JSON.stringify(safeUser)],
+    [KEYS.USER_MEDIA, JSON.stringify(extractUserSessionMedia(user))],
+  ]);
 }
 
 /** Next local midnight (12:00 AM) as ISO string — session is valid until then. */
@@ -155,7 +205,7 @@ export async function getLastVehicleId() {
 
 export async function logout() {
   const storage = await getAsyncStorage();
-  await storage.multiRemove([KEYS.USER, KEYS.LAST_SYNC]);
+  await storage.multiRemove([KEYS.USER, KEYS.USER_MEDIA, KEYS.LAST_SYNC]);
 }
 
 // ---------- Local reads (from SQLite) ----------

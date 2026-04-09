@@ -94,7 +94,8 @@ public class RongtaNativeModule extends ReactContextBaseJavaModule {
     }
 
     /**
-     * Establishes a fresh SPP connection to the paired printer. Call from JS before printing so the
+     * Establishes a fresh SPP connection to the paired printer. Call from JS before
+     * printing so the
      * socket is ready; always disconnects any previous session first.
      */
     @SuppressLint("MissingPermission")
@@ -247,11 +248,13 @@ public class RongtaNativeModule extends ReactContextBaseJavaModule {
                 BitmapSetting bitmapSetting = createThermalBitmapSetting(limitDots);
 
                 if (isPdf(payloadBytes)) {
-                    // Init printer + default code page + alignment (same as printText) to avoid stray
-                    // characters before the bitmap and to center raster output where the firmware supports it.
-                    cmd.append(new byte[]{0x1B, 0x40});
-                    cmd.append(new byte[]{0x1B, 0x74, 0x00});
-                    cmd.append(new byte[]{0x1B, 0x61, (byte) resolveTextAlign(printer)});
+                    // Init printer + default code page + alignment (same as printText) to avoid
+                    // stray
+                    // characters before the bitmap and to center raster output where the firmware
+                    // supports it.
+                    cmd.append(new byte[] { 0x1B, 0x40 });
+                    cmd.append(new byte[] { 0x1B, 0x74, 0x00 });
+                    cmd.append(new byte[] { 0x1B, 0x61, (byte) resolveTextAlign(printer) });
                     appendOptionalHeaderLogo(cmd, bitmapSetting, printer, limitDots);
                     appendPdfPagesAsBitmaps(
                             cmd, bitmapSetting, payloadBytes, limitDots, rasterTargetWidthPx(limitDots));
@@ -317,13 +320,13 @@ public class RongtaNativeModule extends ReactContextBaseJavaModule {
 
                 Cmd cmd = new EscFactory().create();
                 // ESC @ (initialize) + ESC t 0 (code page default)
-                cmd.append(new byte[]{0x1B, 0x40});
-                cmd.append(new byte[]{0x1B, 0x74, 0x00});
+                cmd.append(new byte[] { 0x1B, 0x40 });
+                cmd.append(new byte[] { 0x1B, 0x74, 0x00 });
                 // ESC a n alignment. Default center so receipt starts centered on wide paper.
                 int align = resolveTextAlign(printer);
-                cmd.append(new byte[]{0x1B, 0x61, (byte) align});
+                cmd.append(new byte[] { 0x1B, 0x61, (byte) align });
                 // Small initial feed so the first line doesn't get cut off.
-                cmd.append(new byte[]{0x0A, 0x0A});
+                cmd.append(new byte[] { 0x0A, 0x0A });
                 cmd.append(textPayload.getBytes(StandardCharsets.UTF_8));
                 cmd.append("\r\n\r\n".getBytes(StandardCharsets.UTF_8));
                 cmd.append(cmd.getAllCutCmd());
@@ -347,8 +350,10 @@ public class RongtaNativeModule extends ReactContextBaseJavaModule {
     }
 
     /**
-     * Reuses an existing connection when the address matches; otherwise closes the previous SPP
-     * session before opening a new one (required when switching printers or after errors).
+     * Reuses an existing connection when the address matches; otherwise closes the
+     * previous SPP
+     * session before opening a new one (required when switching printers or after
+     * errors).
      */
     @SuppressLint("MissingPermission")
     private void connectIfNeeded(String address) throws Exception {
@@ -369,7 +374,8 @@ public class RongtaNativeModule extends ReactContextBaseJavaModule {
     }
 
     /**
-     * Prefer a {@code file://} URI from JS (Expo Print) so large PDFs are not truncated on the RN bridge.
+     * Prefer a {@code file://} URI from JS (Expo Print) so large PDFs are not
+     * truncated on the RN bridge.
      * Falls back to raw/base64 or data-URL base64 strings.
      */
     private byte[] decodePrintPayload(String base64OrFileUri) throws IOException {
@@ -393,8 +399,7 @@ public class RongtaNativeModule extends ReactContextBaseJavaModule {
                 return readStreamFully(in);
             }
         }
-        String cleanBase64 =
-                trimmed.contains(",") ? trimmed.substring(trimmed.indexOf(',') + 1) : trimmed;
+        String cleanBase64 = trimmed.contains(",") ? trimmed.substring(trimmed.indexOf(',') + 1) : trimmed;
         cleanBase64 = cleanBase64.replaceAll("\\s+", "");
         return Base64.decode(cleanBase64, Base64.DEFAULT);
     }
@@ -416,7 +421,8 @@ public class RongtaNativeModule extends ReactContextBaseJavaModule {
     }
 
     /**
-     * PDFs from some pipelines start with a UTF-8 BOM or whitespace; {@link PdfRenderer} needs a file
+     * PDFs from some pipelines start with a UTF-8 BOM or whitespace;
+     * {@link PdfRenderer} needs a file
      * beginning with "%PDF".
      */
     private static byte[] stripLeadingNonPdfPrefix(byte[] bytes) {
@@ -469,8 +475,10 @@ public class RongtaNativeModule extends ReactContextBaseJavaModule {
         try {
             if (printer != null && printer.hasKey("textAlign") && !printer.isNull("textAlign")) {
                 String align = printer.getString("textAlign");
-                if ("left".equalsIgnoreCase(align)) return 0;
-                if ("right".equalsIgnoreCase(align)) return 2;
+                if ("left".equalsIgnoreCase(align))
+                    return 0;
+                if ("right".equalsIgnoreCase(align))
+                    return 2;
             }
         } catch (Exception ignored) {
         }
@@ -478,7 +486,8 @@ public class RongtaNativeModule extends ReactContextBaseJavaModule {
     }
 
     /**
-     * Library default is {@link BmpPrintMode#MODE_MULTI_COLOR} which dithers lightly; thermal receipts
+     * Library default is {@link BmpPrintMode#MODE_MULTI_COLOR} which dithers
+     * lightly; thermal receipts
      * need {@link BmpPrintMode#MODE_SINGLE_COLOR} for solid blacks.
      */
     private static BitmapSetting createThermalBitmapSetting(int limitDots) {
@@ -492,13 +501,20 @@ public class RongtaNativeModule extends ReactContextBaseJavaModule {
         return Math.min(MAX_PRINT_WIDTH_DOTS * 2, Math.max(limitDots * 2, 384));
     }
 
-    /** Matches JS invoice layout (104mm wide PDF). Used to convert mm tail margin to pixels. */
+    /**
+     * Matches JS invoice layout (104mm wide PDF). Used to convert mm tail margin to
+     * pixels.
+     */
     private static final float RECEIPT_PAPER_WIDTH_MM = 104f;
-    /** Target tear margin (~10mm). Kept modest — ESC d “lines” are large on many heads. */
+    /**
+     * Target tear margin (~10mm). Kept modest — ESC d “lines” are large on many
+     * heads.
+     */
     private static final float BOTTOM_PRINT_MARGIN_MM = 10f;
 
     /**
-     * Removes blank rows from the bottom of the receipt bitmap (tall PDF pages with little content
+     * Removes blank rows from the bottom of the receipt bitmap (tall PDF pages with
+     * little content
      * would otherwise print a long white tail before cut).
      */
     private static Bitmap trimTrailingWhiteRows(Bitmap src) {
@@ -510,8 +526,7 @@ public class RongtaNativeModule extends ReactContextBaseJavaModule {
         final int threshold = 250;
         int[] row = new int[w];
         int bottom = h - 1;
-        outer:
-        for (; bottom >= 0; bottom--) {
+        outer: for (; bottom >= 0; bottom--) {
             src.getPixels(row, 0, w, 0, bottom, w, 1);
             for (int x = 0; x < w; x++) {
                 int c = row[x];
@@ -535,7 +550,10 @@ public class RongtaNativeModule extends ReactContextBaseJavaModule {
         return out;
     }
 
-    /** Removes blank rows from the top (first PDF page often has extra white from @page/body). */
+    /**
+     * Removes blank rows from the top (first PDF page often has extra white
+     * from @page/body).
+     */
     private static Bitmap trimLeadingWhiteRows(Bitmap src) {
         int w = src.getWidth();
         int h = src.getHeight();
@@ -545,8 +563,7 @@ public class RongtaNativeModule extends ReactContextBaseJavaModule {
         final int threshold = 250;
         int[] row = new int[w];
         int top = 0;
-        outer:
-        for (; top < h; top++) {
+        outer: for (; top < h; top++) {
             src.getPixels(row, 0, w, 0, top, w, 1);
             for (int x = 0; x < w; x++) {
                 int c = row[x];
@@ -568,16 +585,19 @@ public class RongtaNativeModule extends ReactContextBaseJavaModule {
     }
 
     /**
-     * Physical feed before cut. Previously ESC d + many LFs were both sent; each stacks and one
-     * “line” can be several mm, which produced ~8–10 cm of blank. Use a single small ESC d only.
+     * Physical feed before cut. Previously ESC d + many LFs were both sent; each
+     * stacks and one
+     * “line” can be several mm, which produced ~8–10 cm of blank. Use a single
+     * small ESC d only.
      */
     private static void appendTailPaperFeedBeforeCut(Cmd cmd, int limitWidthDots) {
         int w = Math.max(MIN_PRINT_WIDTH_DOTS, limitWidthDots);
         float ratio = BOTTOM_PRINT_MARGIN_MM / RECEIPT_PAPER_WIDTH_MM;
-        // ~25 dot-units per ESC line heuristic → n in a tight band (about 10–15 mm total feed).
+        // ~25 dot-units per ESC line heuristic → n in a tight band (about 10–15 mm
+        // total feed).
         int n = Math.round(w * ratio / 25f);
         n = Math.max(3, Math.min(7, n));
-        cmd.append(new byte[]{0x1B, 0x64, (byte) n});
+        cmd.append(new byte[] { 0x1B, 0x64, (byte) n });
     }
 
     private static Bitmap decodeOptionalHeaderLogoPng(ReadableMap printer) {
@@ -600,7 +620,10 @@ public class RongtaNativeModule extends ReactContextBaseJavaModule {
         }
     }
 
-    /** Grayscale + stronger contrast/lightness so light taglines survive 1-bit thermal dither. */
+    /**
+     * Grayscale + stronger contrast/lightness so light taglines survive 1-bit
+     * thermal dither.
+     */
     private static Bitmap enhanceLogoForThermal(Bitmap src) {
         if (src == null) {
             return null;
@@ -619,10 +642,10 @@ public class RongtaNativeModule extends ReactContextBaseJavaModule {
         ColorMatrix contrastMat = new ColorMatrix();
         contrastMat.set(
                 new float[] {
-                    contrast, 0, 0, 0, translate,
-                    0, contrast, 0, 0, translate,
-                    0, 0, contrast, 0, translate,
-                    0, 0, 0, 1, 0
+                        contrast, 0, 0, 0, translate,
+                        0, contrast, 0, 0, translate,
+                        0, 0, contrast, 0, translate,
+                        0, 0, 0, 1, 0
                 });
         cm.postConcat(contrastMat);
         ColorMatrix boost = new ColorMatrix();
@@ -635,11 +658,14 @@ public class RongtaNativeModule extends ReactContextBaseJavaModule {
         return out;
     }
 
-    /** Pixels darker than this (luminance) count as logo ink for trimming/cropping. */
+    /**
+     * Pixels darker than this (luminance) count as logo ink for trimming/cropping.
+     */
     private static final int LOGO_CONTENT_LUMA_THRESHOLD = 248;
 
     /**
-     * Crops empty margins so the actual mark + tagline can be scaled and padded to the paper center.
+     * Crops empty margins so the actual mark + tagline can be scaled and padded to
+     * the paper center.
      * If crop would remove almost nothing, returns the original bitmap.
      */
     private static Bitmap trimLogoContentBounds(Bitmap src) {
@@ -665,10 +691,14 @@ public class RongtaNativeModule extends ReactContextBaseJavaModule {
                 int b = c & 0xff;
                 int luma = (r * 30 + g * 59 + b * 11) / 100;
                 if (luma < LOGO_CONTENT_LUMA_THRESHOLD) {
-                    if (x < minX) minX = x;
-                    if (x > maxX) maxX = x;
-                    if (y < minY) minY = y;
-                    if (y > maxY) maxY = y;
+                    if (x < minX)
+                        minX = x;
+                    if (x > maxX)
+                        maxX = x;
+                    if (y < minY)
+                        minY = y;
+                    if (y > maxY)
+                        maxY = y;
                 }
             }
         }
@@ -694,8 +724,10 @@ public class RongtaNativeModule extends ReactContextBaseJavaModule {
     }
 
     /**
-     * Scales logo to fit within thermal width & max height, then centers it on a white strip of width
-     * {@code targetWxPx} so it prints centered (graphic was often left-heavy in the source asset).
+     * Scales logo to fit within thermal width & max height, then centers it on a
+     * white strip of width
+     * {@code targetWxPx} so it prints centered (graphic was often left-heavy in the
+     * source asset).
      */
     private static Bitmap scaleAndCenterLogoOnWidth(Bitmap src, int targetWxPx, int maxH) {
         if (src == null || targetWxPx <= 0) {
@@ -745,12 +777,11 @@ public class RongtaNativeModule extends ReactContextBaseJavaModule {
     }
 
     private void appendOptionalHeaderLogo(Cmd cmd, BitmapSetting bitmapSetting, ReadableMap printer, int limitDots) {
-        boolean hasHeaderKey =
-                printer != null
-                        && printer.hasKey("headerLogoBase64")
-                        && !printer.isNull("headerLogoBase64")
-                        && printer.getString("headerLogoBase64") != null
-                        && !printer.getString("headerLogoBase64").trim().isEmpty();
+        boolean hasHeaderKey = printer != null
+                && printer.hasKey("headerLogoBase64")
+                && !printer.isNull("headerLogoBase64")
+                && printer.getString("headerLogoBase64") != null
+                && !printer.getString("headerLogoBase64").trim().isEmpty();
         Bitmap decoded = decodeOptionalHeaderLogoPng(printer);
         if (decoded == null) {
             if (hasHeaderKey) {
@@ -766,8 +797,9 @@ public class RongtaNativeModule extends ReactContextBaseJavaModule {
         Bitmap sized = limitHeaderLogoHeight(centered, maxLogoH);
         try {
             appendBitmapEsc(cmd, bitmapSetting, sized);
-            // One LF: minimal gap between native logo and PDF raster (multiple LFs stack visibly).
-            cmd.append(new byte[]{0x0A});
+            // One LF: minimal gap between native logo and PDF raster (multiple LFs stack
+            // visibly).
+            cmd.append(new byte[] { 0x0A });
         } finally {
             sized.recycle();
         }
@@ -796,7 +828,8 @@ public class RongtaNativeModule extends ReactContextBaseJavaModule {
     }
 
     /**
-     * HTML from Expo Print is rendered to PDF. Each PDF page is rasterized and appended so
+     * HTML from Expo Print is rendered to PDF. Each PDF page is rasterized and
+     * appended so
      * multi-page receipts print in full without merging into one huge bitmap.
      */
     private void appendPdfPagesAsBitmaps(
@@ -811,8 +844,7 @@ public class RongtaNativeModule extends ReactContextBaseJavaModule {
             try (FileOutputStream fos = new FileOutputStream(temp)) {
                 fos.write(pdfBytes);
             }
-            try (ParcelFileDescriptor pfd =
-                            ParcelFileDescriptor.open(temp, ParcelFileDescriptor.MODE_READ_ONLY);
+            try (ParcelFileDescriptor pfd = ParcelFileDescriptor.open(temp, ParcelFileDescriptor.MODE_READ_ONLY);
                     PdfRenderer renderer = new PdfRenderer(pfd)) {
                 int pageCount = renderer.getPageCount();
                 if (pageCount < 1) {
@@ -833,19 +865,22 @@ public class RongtaNativeModule extends ReactContextBaseJavaModule {
                         if (trimmed != noTopGap) {
                             noTopGap.recycle();
                         }
+                        Bitmap enhanced = enhanceReceiptBitmapForThermal(trimmed);
                         try {
-                            appendBitmapEsc(cmd, bitmapSetting, trimmed);
+                            appendBitmapEsc(cmd, bitmapSetting, enhanced);
                             if (i < pageCount - 1) {
                                 cmd.append("\n".getBytes(StandardCharsets.UTF_8));
                             }
                         } finally {
-                            trimmed.recycle();
+                            if (enhanced != null) {
+                                enhanced.recycle();
+                            }
                         }
                     }
                 }
             }
         } finally {
-            //noinspection ResultOfMethodCallIgnored
+            // noinspection ResultOfMethodCallIgnored
             temp.delete();
         }
     }
@@ -869,6 +904,48 @@ public class RongtaNativeModule extends ReactContextBaseJavaModule {
         new Canvas(bmp).drawColor(Color.WHITE);
         page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_PRINT);
         return bmp;
+    }
+
+    /**
+     * Boosts page contrast for thermal text so receipts print darker when
+     * speed/density
+     * cannot be changed from printer settings.
+     */
+    private static Bitmap enhanceReceiptBitmapForThermal(Bitmap src) {
+        if (src == null) {
+            return null;
+        }
+        int w = src.getWidth();
+        int h = src.getHeight();
+        if (w <= 0 || h <= 0) {
+            return src;
+        }
+
+        Bitmap out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(out);
+
+        ColorMatrix gray = new ColorMatrix();
+        gray.setSaturation(0f);
+
+        float contrast = 1.34f;
+        float translate = (-0.5f * contrast + 0.5f) * 255f;
+        ColorMatrix contrastMat = new ColorMatrix();
+        contrastMat.set(new float[] {
+                contrast, 0, 0, 0, translate - 10f,
+                0, contrast, 0, 0, translate - 10f,
+                0, 0, contrast, 0, translate - 10f,
+                0, 0, 0, 1, 0
+        });
+        gray.postConcat(contrastMat);
+
+        Paint paint = new Paint();
+        paint.setFilterBitmap(false);
+        paint.setDither(false);
+        paint.setColorFilter(new ColorMatrixColorFilter(gray));
+
+        canvas.drawBitmap(src, 0, 0, paint);
+        src.recycle();
+        return out;
     }
 
     private static boolean isPdf(byte[] bytes) {

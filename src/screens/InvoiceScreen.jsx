@@ -31,6 +31,7 @@ import { formatAmount } from '../utils/format';
 import * as localPaymentsDb from '../database/localPayments.js';
 import * as localInvoicesDb from '../database/localInvoices.js';
 import * as offlineAttachmentsDb from '../database/offlineAttachments.js';
+import * as productsDb from '../database/products.js';
 import { callOdoo } from '../services/index.service';
 import { findBluetoothPrinters, printPdfFileToRongta } from '../services/printerService';
 import SyncHeaderBadge from '../components/SyncHeaderBadge';
@@ -307,7 +308,7 @@ function buildInvoiceHtml(
       .map(
         (l, i) => {
           const productName = getProductDisplayName(l.product_id?.[1] ?? '—').replace(/</g, '&lt;').substring(0, 42);
-          const lineSub = Number(l.price_subtotal) || 0;
+          const lineSub = (Number(l.product_uom_qty) || 0) * (Number(l.price_unit) || 0);
           return `<tr>
             <td style="padding:4px 2px;border:1px solid #000;font-size:10px">${i + 1}</td>
             <td style="padding:4px 2px;border:1px solid #000;font-size:10px">${productName}</td>
@@ -319,9 +320,16 @@ function buildInvoiceHtml(
       )
       .join('') || '<tr><td colspan="5" style="padding:4px;text-align:center;font-size:10px;border:1px solid #000">No line items</td></tr>';
 
-  const amountUntaxed = (order?.amount_untaxed != null && order.amount_untaxed !== 0) ? order.amount_untaxed : computedUntaxed;
-  const amountTax = (order?.amount_tax != null && order.amount_tax !== 0) ? order.amount_tax : computedTax;
-  const amountTotal = order?.amount_total ?? (amountUntaxed + amountTax);
+  const hasLineTotals = Array.isArray(lines) && lines.length > 0;
+  const amountUntaxed = hasLineTotals
+    ? computedUntaxed
+    : ((order?.amount_untaxed != null && order.amount_untaxed !== 0) ? order.amount_untaxed : computedUntaxed);
+  const amountTax = hasLineTotals
+    ? computedTax
+    : ((order?.amount_tax != null && order.amount_tax !== 0) ? order.amount_tax : computedTax);
+  const amountTotal = hasLineTotals
+    ? (amountUntaxed + amountTax)
+    : (order?.amount_total ?? (amountUntaxed + amountTax));
   const amountInWords = formatAmountInWords(amountTotal);
 
   const logoImg = omitLogoBlock
@@ -691,11 +699,16 @@ function buildInvoicePlainText(
   });
   const computedUntaxed = lineAmounts.reduce((s, a) => s + a.sub, 0);
   const computedTax = lineAmounts.reduce((s, a) => s + a.tax, 0);
-  const amountUntaxed =
-    order?.amount_untaxed != null && order.amount_untaxed !== 0 ? order.amount_untaxed : computedUntaxed;
-  const amountTax =
-    order?.amount_tax != null && order.amount_tax !== 0 ? order.amount_tax : computedTax;
-  const amountTotal = order?.amount_total ?? (amountUntaxed + amountTax);
+  const hasLineTotals = Array.isArray(lines) && lines.length > 0;
+  const amountUntaxed = hasLineTotals
+    ? computedUntaxed
+    : (order?.amount_untaxed != null && order.amount_untaxed !== 0 ? order.amount_untaxed : computedUntaxed);
+  const amountTax = hasLineTotals
+    ? computedTax
+    : (order?.amount_tax != null && order.amount_tax !== 0 ? order.amount_tax : computedTax);
+  const amountTotal = hasLineTotals
+    ? (amountUntaxed + amountTax)
+    : (order?.amount_total ?? (amountUntaxed + amountTax));
 
   const w = PLAIN_WIDTH;
   const parts = [
@@ -727,7 +740,7 @@ function buildInvoicePlainText(
     const desc = String(getProductDisplayName(l.product_id?.[1] ?? '—')).slice(0, 24).padEnd(24, ' ');
     const qty = String(Number(l.product_uom_qty ?? 0)).padStart(4, ' ');
     const unit = thermalMoney(l.price_unit ?? 0).padStart(8, ' ');
-    const total = thermalMoney(l.price_total ?? 0).padStart(9, ' ');
+    const total = thermalMoney((Number(l.product_uom_qty) || 0) * (Number(l.price_unit) || 0)).padStart(9, ' ');
     parts.push(`${idx} ${desc}${qty} ${unit} ${total}`.slice(0, w));
   });
   if (!lines?.length) parts.push('(No line items)'.slice(0, w));
@@ -918,21 +931,32 @@ export default function InvoiceScreen({ route, navigation }) {
   const [order, setOrder] = useState(null);
   const [lines, setLines] = useState([]);
 
+  const effectiveInvoiceQtyRows = useMemo(() => {
+    if (Array.isArray(invoiceLineQtys) && invoiceLineQtys.length > 0) return invoiceLineQtys;
+    const delivered = deliveryPayload?.saleOrderLineDeliveredUpdates;
+    if (!Array.isArray(delivered) || delivered.length === 0) return [];
+    return delivered.map((u) => ({
+      lineId: u?.lineId,
+      qty: Number(u?.qty_delivered ?? 0),
+    }));
+  }, [invoiceLineQtys, deliveryPayload]);
+
+  const hasInvoiceQtyOverrides = effectiveInvoiceQtyRows.length > 0;
+
   const qtyByLineId = useMemo(() => {
     const m = {};
-    for (const row of invoiceLineQtys || []) {
-      if (row?.lineId != null) m[row.lineId] = Number(row.qty) || 0;
+    for (const row of effectiveInvoiceQtyRows || []) {
+      if (row?.lineId != null) m[String(row.lineId)] = Number(row.qty) || 0;
     }
     return m;
-  }, [invoiceLineQtys]);
+  }, [effectiveInvoiceQtyRows]);
 
-  /** Preview / post-payment invoice: show qtys from delivery without changing loaded SO line records. */
+  /** Apply explicit invoice qty overrides whenever provided (from delivery/payment flow). */
   const displayLines = useMemo(() => {
-    const useQtyOverride =
-      invoiceLineQtys?.length > 0 && (previewBeforePayment || fromProceedPayment);
+    const useQtyOverride = hasInvoiceQtyOverrides;
     if (!useQtyOverride) return lines;
     return lines.map((l) => {
-      const q = qtyByLineId[l.id];
+      const q = qtyByLineId[String(l.id)];
       if (q === undefined) return { ...l };
       const origQ = Number(l.product_uom_qty) || 0;
       if (origQ > 0) {
@@ -945,13 +969,10 @@ export default function InvoiceScreen({ route, navigation }) {
       const tax = lineTaxAtQuantity(l, q);
       return { ...l, product_uom_qty: q, price_subtotal, price_total: price_subtotal + tax };
     });
-  }, [lines, previewBeforePayment, fromProceedPayment, invoiceLineQtys, qtyByLineId]);
+  }, [lines, hasInvoiceQtyOverrides, qtyByLineId]);
 
-  /** Omit cancelled / zero-qty lines from invoice table, print, and line-based totals. */
-  const invoiceVisibleLines = useMemo(
-    () => (displayLines || []).filter((l) => (Number(l.product_uom_qty) || 0) > 0),
-    [displayLines]
-  );
+  /** Keep all line rows in invoice output, including zero-qty products requested by stakeholders. */
+  const invoiceVisibleLines = useMemo(() => displayLines || [], [displayLines]);
 
   const [invoiceNumber, setInvoiceNumber] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -1561,7 +1582,47 @@ export default function InvoiceScreen({ route, navigation }) {
       setInvoiceNumber(invNo);
       const data = await getSaleOrderDetailsFromDB(saleOrderId);
       setOrder(data.order);
-      setLines(data.lines ?? []);
+      const rawLines = data.lines ?? [];
+      let nextLines = rawLines;
+      try {
+        const allProducts = await productsDb.getAllProductsForInvoice();
+        if (Array.isArray(allProducts) && allProducts.length > 0) {
+          const byProductId = new Map();
+          for (const line of rawLines) {
+            const pid = Array.isArray(line?.product_id) ? Number(line.product_id[0]) : Number(line?.product_id);
+            if (Number.isFinite(pid) && pid > 0 && !byProductId.has(pid)) {
+              byProductId.set(pid, line);
+            }
+          }
+
+          const catalogRows = allProducts.map((p) => {
+            const existing = byProductId.get(Number(p.id));
+            if (existing) return existing;
+            return {
+              id: `catalog-${p.id}`,
+              order_id: [Number(saleOrderId), null],
+              product_id: [Number(p.id), p.name || '—'],
+              name: p.name || '',
+              product_uom_qty: 0,
+              price_unit: Number(p.list_price) || 0,
+              price_subtotal: 0,
+              price_total: 0,
+              qty_delivered: 0,
+            };
+          });
+
+          const catalogProductIds = new Set(allProducts.map((p) => Number(p.id)).filter((n) => Number.isFinite(n) && n > 0));
+          const nonCatalogRows = rawLines.filter((line) => {
+            const pid = Array.isArray(line?.product_id) ? Number(line.product_id[0]) : Number(line?.product_id);
+            return !(Number.isFinite(pid) && pid > 0 && catalogProductIds.has(pid));
+          });
+
+          nextLines = [...catalogRows, ...nonCatalogRows];
+        }
+      } catch (e) {
+        console.warn('[InvoiceScreen] could not load product catalog rows', e?.message ?? e);
+      }
+      setLines(nextLines);
       const split = await localPaymentsDb.getPaymentSplitBySaleOrderId(saleOrderId);
       setLocalPaymentSplit(split || { cash: 0, cheque: 0, credit: 0 });
       const paymentRows = await localPaymentsDb.getLocalPaymentsBySaleOrderId(saleOrderId);
@@ -1839,7 +1900,7 @@ export default function InvoiceScreen({ route, navigation }) {
     try {
       const recomputeTotalsFromLines =
         previewBeforePayment ||
-        (fromProceedPayment && Array.isArray(invoiceLineQtys) && invoiceLineQtys.length > 0);
+        (Array.isArray(invoiceLineQtys) && invoiceLineQtys.length > 0);
       const orderForPrint = recomputeTotalsFromLines
         ? (() => {
             const sub = invoiceVisibleLines.reduce((s, l) => s + (Number(l.price_subtotal) || 0), 0);
@@ -2061,7 +2122,7 @@ export default function InvoiceScreen({ route, navigation }) {
     invoiceLineQtys,
   ]);
 
-  /** Subtotal from visible lines only (excludes zero-qty / cancelled lines). */
+  /** Subtotal from current invoice rows (zero-qty rows naturally add 0). */
   const computedSubtotal = useMemo(() => {
     if (!invoiceVisibleLines?.length) return 0;
     return invoiceVisibleLines.reduce((sum, l) => sum + (Number(l.price_subtotal) || 0), 0);
@@ -2287,8 +2348,8 @@ export default function InvoiceScreen({ route, navigation }) {
             <Text style={[styles.th, styles.thTotal]}>Total</Text>
           </View>
           {(invoiceVisibleLines || []).map((line, index) => {
-            const lineTotal = Number(line.price_total) || 0;
             const lineUnitPrice = Number(line.price_unit) || 0;
+            const lineTotal = (Number(line.product_uom_qty) || 0) * lineUnitPrice;
             return (
               <View
                 key={line.id}
