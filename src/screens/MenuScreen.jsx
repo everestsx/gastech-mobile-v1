@@ -10,6 +10,7 @@ import {
   Image,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import * as Updates from 'expo-updates';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
 import {
@@ -29,6 +30,7 @@ export default function MenuScreen({ navigation }) {
   const { colors } = useTheme();
   const { clearPrinter } = usePrinterConnection();
   const [syncing, setSyncing] = useState(false);
+  const [checkingAppUpdate, setCheckingAppUpdate] = useState(false);
   const [lastSync, setLastSync] = useState(null);
   const [user, setUser] = useState(null);
   const [alertConfig, setAlertConfig] = useState({
@@ -128,6 +130,69 @@ export default function MenuScreen({ navigation }) {
         },
       ]
     );
+  };
+
+  const fetchAndPromptApplyUpdate = async () => {
+    setCheckingAppUpdate(true);
+    try {
+      await Updates.fetchUpdateAsync();
+      showAlert('Update ready', 'The latest update has been downloaded. Restart the app now?', [
+        { text: 'Later', style: 'cancel', onPress: hideAlert },
+        {
+          text: 'Restart now',
+          onPress: async () => {
+            hideAlert();
+            try {
+              await Updates.reloadAsync();
+            } catch (e) {
+              showAlert('Restart failed', e?.message || 'Please close and reopen the app.');
+            }
+          },
+        },
+      ]);
+    } catch (e) {
+      showAlert('Update failed', e?.message || 'Could not download update. Try again.');
+    } finally {
+      setCheckingAppUpdate(false);
+    }
+  };
+
+  const handleCheckAppUpdate = async () => {
+    if (checkingAppUpdate) return;
+    if (!Updates.isEnabled) {
+      showAlert(
+        'Updates unavailable',
+        'This app build does not support OTA updates. Install an EAS-built update-enabled APK first.'
+      );
+      return;
+    }
+    setCheckingAppUpdate(true);
+    try {
+      const result = await Updates.checkForUpdateAsync();
+      if (!result?.isAvailable) {
+        showAlert('Up to date', 'You are already on the latest app update.');
+        return;
+      }
+      showAlert('Update available', 'A newer app update is available. Download now?', [
+        { text: 'Later', style: 'cancel', onPress: hideAlert },
+        {
+          text: 'Update now',
+          onPress: () => {
+            hideAlert();
+            void fetchAndPromptApplyUpdate();
+          },
+        },
+      ]);
+    } catch (e) {
+      const msg = String(e?.message || e || '');
+      if (/development mode|dev mode|expo go/i.test(msg)) {
+        showAlert('Updates unavailable', 'OTA updates work only in installed release/internal builds, not Expo Go/dev mode.');
+      } else {
+        showAlert('Update check failed', e?.message || 'Could not check for updates.');
+      }
+    } finally {
+      setCheckingAppUpdate(false);
+    }
   };
 
   const handleLogout = () => {
@@ -267,7 +332,7 @@ export default function MenuScreen({ navigation }) {
         activeOpacity={0.8}
       >
         <Ionicons name="document-text-outline" size={24} color={colors.primary} />
-        <Text style={[styles.menuItemText, { color: colors.text }]}>My Invoices</Text>
+        <Text style={[styles.menuItemText, { color: colors.text }]}>My Invoicessssssss</Text>
         <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
       </TouchableOpacity>
 
@@ -278,6 +343,23 @@ export default function MenuScreen({ navigation }) {
       >
         <Ionicons name="time-outline" size={24} color={colors.primary} />
         <Text style={[styles.menuItemText, { color: colors.text }]}>Sync History</Text>
+        <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={[styles.menuItem, { backgroundColor: colors.surface, borderColor: colors.border }]}
+        onPress={handleCheckAppUpdate}
+        activeOpacity={0.8}
+        disabled={checkingAppUpdate}
+      >
+        {checkingAppUpdate ? (
+          <ActivityIndicator size="small" color={colors.primary} />
+        ) : (
+          <Ionicons name="cloud-download-outline" size={24} color={colors.primary} />
+        )}
+        <Text style={[styles.menuItemText, { color: colors.text }]}>
+          {checkingAppUpdate ? 'Checking updates...' : 'Check app update'}
+        </Text>
         <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
       </TouchableOpacity>
 

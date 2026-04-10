@@ -4,6 +4,12 @@
     "name": "GasTechMobile",
     "slug": "GasTechMobile",
     "version": "1.0.0",
+    "runtimeVersion": "1.0.0",
+    "updates": {
+      "url": "https://u.expo.dev/bb96e252-1de6-4f12-8336-e6080d4fc109",
+      "checkAutomatically": "ON_LOAD",
+      "fallbackToCacheTimeout": 0
+    },
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -58,7 +64,7 @@
     },
     "extra": {
       "eas": {
-        "projectId": "bb96e252-1de6-4f12-8336-e6080d4fc109"
+        "projectId": "af65ddf8-bf52-4856-9eff-cd08773a7bab"
       }
     }
   }
