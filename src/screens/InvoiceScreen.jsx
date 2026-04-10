@@ -24,7 +24,7 @@ import { useSync } from '../context/SyncContext';
 import { usePrinterConnection } from '../context/PrinterConnectionContext';
 import { spacing, borderRadius } from '../constants/theme';
 import { INVOICE_LOGO_PNG_BASE64 } from '../constants/invoiceLogoBase64';
-import { getSaleOrderDetailsFromDB, runSync } from '../services/sync.service';
+import { getSaleOrderDetailsFromDB, getUserSession, runSync } from '../services/sync.service';
 import { getOrAssignInvoiceNumber } from '../utils/invoiceNumber';
 import { getProductDisplayName } from '../utils/productDisplay';
 import { formatAmount } from '../utils/format';
@@ -267,6 +267,15 @@ function buildInvoiceHtml(
         day: 'numeric',
       })
     : new Date().toLocaleDateString('en-LK');
+  const invoiceTime = invoiceDateSource && !Number.isNaN(invoiceDateSource.getTime())
+    ? invoiceDateSource.toLocaleTimeString('en-LK', {
+        hour: '2-digit',
+        minute: '2-digit',
+      })
+    : new Date().toLocaleTimeString('en-LK', {
+        hour: '2-digit',
+        minute: '2-digit',
+      });
   const customerName = safeDisplay(resolveInvoiceCustomerDisplayName(order, partyInfo, appLanguage)).replace(
     /</g,
     '&lt;'
@@ -288,6 +297,20 @@ function buildInvoiceHtml(
   const supplierName = safeDisplay(partyInfo?.supplierName || 'GasTech').replace(/</g, '&lt;');
   const supplierPhone = safeDisplay(partyInfo?.supplierPhone || '—').replace(/</g, '&lt;');
   const supplierAddress = safeDisplay(partyInfo?.supplierAddress || '—').replace(/</g, '&lt;');
+  const salesPersonName = safeDisplay(
+    partyInfo?.salesPersonName ||
+      order?.driver_name ||
+      order?.driverName ||
+      order?.sales_person_name ||
+      order?.salesperson_name
+  ).replace(/</g, '&lt;');
+  const vehicleNumberPlate = safeDisplay(
+    partyInfo?.vehiclePlate ||
+      order?.license_plate ||
+      order?.vehicle_plate ||
+      order?.vehicle_name ||
+      (Array.isArray(order?.vehicle_id) ? order.vehicle_id[1] : null)
+  ).replace(/</g, '&lt;');
   const supplierAddressMultiline = supplierAddress
     .split(',')
     .map((s) => s.trim())
@@ -543,8 +566,13 @@ function buildInvoiceHtml(
   <div class="title">Tax Invoice</div>
 
   <div class="top-row">
-    <div class="info-cell">Date of Invoice: ${date}</div>
+    <div class="info-cell">Date of Invoice: ${date}<br/>Time of Invoice: ${invoiceTime}</div>
     <div class="info-cell">Tax Invoice No.: ${invNo}</div>
+  </div>
+
+  <div class="top-row">
+    <div class="info-cell">Sales Person: ${salesPersonName}</div>
+    <div class="info-cell">Vehicle Number Plate: ${vehicleNumberPlate}</div>
   </div>
 
   <div class="info-box">
@@ -691,6 +719,10 @@ function buildInvoicePlainText(
 ) {
   const appLanguage = printOptions.appLanguage || 'en';
   const isoDate = formatPlainISODate(order);
+  const invoiceTime = resolveInvoiceDateSource(order).toLocaleTimeString('en-LK', {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
   const printedAt = formatPrintedDateTime();
   const customerName = safeDisplay(resolveInvoiceCustomerDisplayName(order, partyInfo, appLanguage));
   const streetPart = safeDisplay(order?.street || order?.partner_street || order?.partner_address);
@@ -711,6 +743,20 @@ function buildInvoicePlainText(
   const supplierName = safeDisplay(partyInfo?.supplierName || 'GasTech');
   const supplierPhone = safeDisplay(partyInfo?.supplierPhone || '—');
   const supplierAddress = safeDisplay(partyInfo?.supplierAddress || '—');
+  const salesPersonName = safeDisplay(
+    partyInfo?.salesPersonName ||
+      order?.driver_name ||
+      order?.driverName ||
+      order?.sales_person_name ||
+      order?.salesperson_name
+  );
+  const vehicleNumberPlate = safeDisplay(
+    partyInfo?.vehiclePlate ||
+      order?.license_plate ||
+      order?.vehicle_plate ||
+      order?.vehicle_name ||
+      (Array.isArray(order?.vehicle_id) ? order.vehicle_id[1] : null)
+  );
   const invNo = invoiceNumber ?? order?.name ?? '—';
 
   const lineAmounts = (lines || []).map((l) => {
@@ -738,6 +784,9 @@ function buildInvoicePlainText(
     dashLine(),
     lineLR('Invoice No.', invNo, w),
     lineLR('Date of Invoice', isoDate, w),
+    lineLR('Time of Invoice', invoiceTime, w),
+    lineLR('Sales Person', salesPersonName, w),
+    lineLR('Vehicle No. Plate', vehicleNumberPlate, w),
     dashLine(),
     lineLR('Supplier Name', supplierName, w),
     supplierTinSafe ? lineLR('Supplier TIN', supplierTinSafe, w) : null,
@@ -1660,8 +1709,22 @@ export default function InvoiceScreen({ route, navigation }) {
       setLocalCustomerSig(localInv?.customer_signature_data ?? null);
       setLocalDriverSig(localInv?.driver_signature_data ?? null);
 
+      const sessionUser = await getUserSession().catch(() => null);
       // Fetch supplier(company) and customer details for printed invoice.
-      let nextPartyInfo = {};
+      let nextPartyInfo = {
+        salesPersonName:
+          sessionUser?.driverName ||
+          data?.order?.driver_name ||
+          data?.order?.driverName ||
+          null,
+        vehiclePlate:
+          sessionUser?.licensePlate ||
+          data?.order?.license_plate ||
+          data?.order?.vehicle_plate ||
+          data?.order?.vehicle_name ||
+          (Array.isArray(data?.order?.vehicle_id) ? data.order.vehicle_id[1] : null) ||
+          null,
+      };
       try {
         const companyRows = await callOdoo('res.company', 'read', [[1]], {
           fields: ['name', 'phone', 'vat', 'partner_id'],
@@ -1689,6 +1752,7 @@ export default function InvoiceScreen({ route, navigation }) {
         const customer = Array.isArray(customerRows) ? customerRows[0] : null;
 
         nextPartyInfo = {
+          ...nextPartyInfo,
           supplierName: company?.name || null,
           supplierPhone: company?.phone || null,
           supplierTin: company?.vat || null,
@@ -1702,7 +1766,7 @@ export default function InvoiceScreen({ route, navigation }) {
           customerCity: customer?.city || null,
         };
       } catch (_) {
-        nextPartyInfo = {};
+        // Keep session-derived salesperson/vehicle details even if partner/company fetch fails.
       }
       setPartyInfo(nextPartyInfo);
     } catch (_) {
@@ -2357,6 +2421,20 @@ export default function InvoiceScreen({ route, navigation }) {
     month: 'short',
     day: 'numeric',
   });
+  const invoiceTime = resolveInvoiceDateSource(order).toLocaleTimeString('en-LK', {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+  const salesPersonName = safeDisplay(
+    partyInfo?.salesPersonName || order?.driver_name || order?.driverName
+  );
+  const vehicleNumberPlate = safeDisplay(
+    partyInfo?.vehiclePlate ||
+      order?.license_plate ||
+      order?.vehicle_plate ||
+      order?.vehicle_name ||
+      (Array.isArray(order?.vehicle_id) ? order.vehicle_id[1] : null)
+  );
 
   return (
     <ScrollView
@@ -2374,7 +2452,15 @@ export default function InvoiceScreen({ route, navigation }) {
         </View>
         <View style={styles.metaRow}>
           <Text style={styles.metaLabel}>Date</Text>
-          <Text style={styles.metaValue}>{invoiceDate}</Text>
+          <Text style={styles.metaValue}>{invoiceDate}{'\n'}{invoiceTime}</Text>
+        </View>
+        <View style={styles.metaRow}>
+          <Text style={styles.metaLabel}>Sales Person</Text>
+          <Text style={styles.metaValue}>{salesPersonName}</Text>
+        </View>
+        <View style={styles.metaRow}>
+          <Text style={styles.metaLabel}>Vehicle Number Plate</Text>
+          <Text style={styles.metaValue}>{vehicleNumberPlate}</Text>
         </View>
         <View style={styles.metaRow}>
           <Text style={styles.metaLabel}>Customer</Text>
