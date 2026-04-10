@@ -54,6 +54,24 @@ const KEYS = {
   SYNC_INTERVAL: '@gastech_sync_interval',
 };
 
+const KEY_POST_LOGIN_SYNC_OK = '@gastech_post_login_sync_ok';
+
+/** After a successful login sync, Dashboard shows a one-time success dialog. */
+export async function setPostLoginSyncSuccessPending() {
+  const storage = await getAsyncStorage();
+  await storage.setItem(KEY_POST_LOGIN_SYNC_OK, '1');
+}
+
+export async function consumePostLoginSyncSuccessPending() {
+  const storage = await getAsyncStorage();
+  const v = await storage.getItem(KEY_POST_LOGIN_SYNC_OK);
+  if (v === '1') {
+    await storage.removeItem(KEY_POST_LOGIN_SYNC_OK);
+    return true;
+  }
+  return false;
+}
+
 const SYNC_INTERVAL_MAP = {
   '1min': 1 * 60 * 1000,
   '5min': 5 * 60 * 1000,
@@ -444,7 +462,10 @@ function paymentTypeFromJournal(journalId, codeMap = {}, detailsMap = {}) {
   const code = (details && details.code ? details.code : (codeMap && id != null ? (codeMap[id] ?? codeMap[Number(id)] ?? codeMap[String(id)]) : '')).toString().toUpperCase().trim();
   if (code === 'CSH2' || code.startsWith('CHQL')) return 'cheque';
   if (code === 'CSH1' || code.startsWith('CSHL')) return 'cash';
-  // Unknown journal → treat as Credit (no payment journal identified)
+  // Broader name hints (custom / localized Odoo journals)
+  if (nameLower.includes('cheque') || nameLower.includes('checkbook') || /\bchk\b/.test(nameLower)) return 'cheque';
+  if (nameLower.includes('cash') || nameLower.includes('counter') || nameLower.includes('petty')) return 'cash';
+  // Unknown journal: caller may fold amount into cash for paid invoices (cross-device parity)
   return null;
 }
 
@@ -469,10 +490,18 @@ export async function refreshPaymentTypesFromOdoo(syncedOrders, options = {}) {
     if (o.name && o.id != null) orderNameToId[String(o.name).trim()] = o.id;
   });
   try {
-    const { getInvoicesByOrigins, getPaymentsByInvoiceIds, updateInvoiceIncotermLocation } = await import('./invoice.service');
+    const {
+      getInvoicesForPaymentRefresh,
+      getPaymentsByInvoiceIds,
+      updateInvoiceIncotermLocation,
+    } = await import('./invoice.service');
     const localInvoicesDb = await import('../database/localInvoices.js');
-    // Step 1: Get invoices by sale order (invoice_origin = order name)
-    const invoices = await getInvoicesByOrigins(orderNames);
+    const saleOrderIds = (syncedOrders || [])
+      .filter((o) => String(o.invoice_status || '').toLowerCase() === 'invoiced' && o.id != null)
+      .map((o) => Number(o.id))
+      .filter((id) => Number.isFinite(id) && id > 0);
+    // Step 1: Invoices by invoice_origin plus sale.order.invoice_ids (covers origin mismatch on a fresh device)
+    const invoices = await getInvoicesForPaymentRefresh(orderNames, saleOrderIds);
     if (!invoices?.length) {
       log('refresh', 'no invoices returned from Odoo for invoiced orders');
       return;
@@ -534,11 +563,22 @@ export async function refreshPaymentTypesFromOdoo(syncedOrders, options = {}) {
         const pms = invoiceIdToPayments[inv.id] || [];
         let cashSum = 0;
         let chequeSum = 0;
+        let otherSum = 0;
         for (const pm of pms) {
           const amt = Number(pm.amount) || 0;
           const type = paymentTypeFromJournal(pm.journal_id, {}, journalDetailsMap);
           if (type === 'cash') cashSum += amt;
           else if (type === 'cheque') chequeSum += amt;
+          else otherSum += amt;
+        }
+        if (pms.length === 0) {
+          const ps = String(inv.payment_state || '').toLowerCase();
+          if (ps === 'paid') {
+            orderNameToSplit[origin] = { cash: invTotal, cheque: 0, credit: 0 };
+            continue;
+          }
+        } else if (otherSum > 0) {
+          cashSum += otherSum;
         }
         const paid = cashSum + chequeSum;
         const creditAmount = Math.max(0, invTotal - paid);
@@ -546,11 +586,7 @@ export async function refreshPaymentTypesFromOdoo(syncedOrders, options = {}) {
       }
     }
 
-    // Invoiced orders that had no invoice in response: full amount as credit
-    for (const n of orderNames) {
-      const key = String(n).trim();
-      if (key && !orderNameToSplit[key]) orderNameToSplit[key] = { cash: 0, cheque: 0, credit: 0 };
-    }
+    // Do not write placeholder {0,0,0} splits — that forces "Credit" in the UI when Odoo data was incomplete
 
     // Primary type for tab: whichever has max amount (tie: cheque > cash > credit)
     function primaryTypeFromSplit(split) {
@@ -599,20 +635,27 @@ export async function getCollectionTotalsFromOdoo(orderNames) {
     return { cashTotal: 0, chequeTotal: 0, creditTotal: 0 };
   }
   try {
-    const { getInvoicesByOrigins, getPaymentsByInvoiceIds } = await import('./invoice.service');
-    const invoices = await getInvoicesByOrigins(orderNames);
+    const {
+      getInvoicesForPaymentRefresh,
+      getPaymentsByInvoiceIds,
+      searchSaleOrderIdsByNames,
+    } = await import('./invoice.service');
+    const soIds = await searchSaleOrderIdsByNames(orderNames);
+    const invoices = await getInvoicesForPaymentRefresh(orderNames, soIds);
     if (!invoices?.length) return { cashTotal: 0, chequeTotal: 0, creditTotal: 0 };
 
     let cashTotal = 0;
     let chequeTotal = 0;
     let creditTotal = 0;
     const paidInvoiceIds = [];
+    const paidAmountByInvoiceId = {};
 
     for (const inv of invoices) {
       const state = (inv.payment_state || '').toLowerCase();
       const amount = Number(inv.amount_total) || 0;
       if (state === 'paid') {
         paidInvoiceIds.push(inv.id);
+        paidAmountByInvoiceId[inv.id] = amount;
       } else {
         creditTotal += amount;
       }
@@ -625,12 +668,36 @@ export async function getCollectionTotalsFromOdoo(orderNames) {
         .filter((jid) => jid != null);
       const { getJournalDetailsByIds } = await import('./journal.service.js');
       const journalDetailsMap = journalIds.length > 0 ? await getJournalDetailsByIds(journalIds) : {};
+      const invoiceIdToPayments = {};
       for (const pm of payments || []) {
-        const amount = Number(pm.amount) || 0;
-        const type = paymentTypeFromJournal(pm.journal_id, {}, journalDetailsMap);
-        if (type === 'cash') cashTotal += amount;
-        else if (type === 'cheque') chequeTotal += amount;
-        else creditTotal += amount; // unknown journal → Credit
+        const invIds = Array.isArray(pm.reconciled_invoice_ids) ? pm.reconciled_invoice_ids : [];
+        invIds.forEach((id) => {
+          const invId = Array.isArray(id) ? id[0] : id;
+          if (invId == null) return;
+          if (!invoiceIdToPayments[invId]) invoiceIdToPayments[invId] = [];
+          invoiceIdToPayments[invId].push(pm);
+        });
+      }
+      for (const invId of paidInvoiceIds) {
+        const invTotal = paidAmountByInvoiceId[invId] || 0;
+        const pms = invoiceIdToPayments[invId] || [];
+        if (pms.length === 0) {
+          cashTotal += invTotal;
+          continue;
+        }
+        let c = 0;
+        let q = 0;
+        let o = 0;
+        for (const pm of pms) {
+          const amt = Number(pm.amount) || 0;
+          const type = paymentTypeFromJournal(pm.journal_id, {}, journalDetailsMap);
+          if (type === 'cash') c += amt;
+          else if (type === 'cheque') q += amt;
+          else o += amt;
+        }
+        if (o > 0) c += o;
+        cashTotal += c;
+        chequeTotal += q;
       }
     }
 

@@ -25,6 +25,7 @@ import {
   getCachedVehicles,
   getLastVehicleId,
   runSync,
+  setPostLoginSyncSuccessPending,
   saveUserSession,
   saveLastVehicleId,
   syncVehiclesOnly,
@@ -213,7 +214,10 @@ export default function LoginScreen({ navigation }) {
         await fetchAndStoreVehicleJournals(licensePlate);
       }
       try {
-        await runSync();
+        const syncResult = await runSync();
+        if (syncResult && !syncResult.error) {
+          await setPostLoginSyncSuccessPending();
+        }
       } catch (syncErr) {
         console.warn('[Login] initial runSync failed', syncErr?.message ?? syncErr);
       }

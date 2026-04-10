@@ -371,9 +371,101 @@ export const getInvoicesByOrigins = (orderNames) => {
     "account.move",
     "search_read",
     [domain],
-    { fields: ["id", "name", "invoice_origin", "payment_state", "amount_total"], limit: 500 }
+    {
+      fields: ["id", "name", "invoice_origin", "payment_state", "amount_total", "amount_residual"],
+      limit: 500,
+    }
   );
 };
+
+const READ_CHUNK = 80;
+
+/** Resolve sale.order ids for a batch of order names (for collection totals / payment refresh). */
+export async function searchSaleOrderIdsByNames(orderNames) {
+  const names = Array.isArray(orderNames)
+    ? [...new Set(orderNames.map((n) => String(n || "").trim()).filter(Boolean))]
+    : [];
+  if (names.length === 0) return [];
+  const ids = [];
+  for (let i = 0; i < names.length; i += READ_CHUNK) {
+    const chunk = names.slice(i, i + READ_CHUNK);
+    const rows = await callOdoo("sale.order", "search_read", [[["name", "in", chunk]]], {
+      fields: ["id", "name"],
+      limit: READ_CHUNK,
+    });
+    for (const r of rows || []) {
+      const id = Number(r.id);
+      if (Number.isFinite(id) && id > 0) ids.push(id);
+    }
+  }
+  return ids;
+}
+
+/**
+ * Merge invoices found by invoice_origin with those linked on sale.order.invoice_ids.
+ * Fixes new devices when origin text does not match SO name (formatting / localization) so payments still resolve.
+ * @param {string[]} orderNames - sale order names (e.g. S00185)
+ * @param {number[]} saleOrderIds - sale.order database ids for invoiced orders
+ * @returns {Promise<Array<{ id: number, name?: string, invoice_origin: string, payment_state?: string, amount_total?: number, amount_residual?: number }>>}
+ */
+export async function getInvoicesForPaymentRefresh(orderNames, saleOrderIds) {
+  const names = Array.isArray(orderNames) ? [...new Set(orderNames.map((n) => String(n || "").trim()).filter(Boolean))] : [];
+  const soIds = [...new Set((saleOrderIds || []).map((id) => Number(id)).filter((n) => Number.isFinite(n) && n > 0))];
+
+  const byOrigin = names.length ? await getInvoicesByOrigins(names) : [];
+  const map = new Map();
+  for (const inv of byOrigin || []) {
+    if (inv?.id != null) map.set(Number(inv.id), { ...inv });
+  }
+
+  const invIdToSoName = {};
+  for (let i = 0; i < soIds.length; i += READ_CHUNK) {
+    const chunk = soIds.slice(i, i + READ_CHUNK);
+    const rows = await callOdoo("sale.order", "read", [chunk], {
+      fields: ["id", "name", "invoice_ids"],
+    });
+    for (const so of rows || []) {
+      const nm = String(so.name || "").trim();
+      for (const iid of normalizeSaleOrderInvoiceIds(so.invoice_ids)) {
+        if (!invIdToSoName[iid]) invIdToSoName[iid] = nm;
+      }
+    }
+  }
+
+  const missingIds = Object.keys(invIdToSoName)
+    .map(Number)
+    .filter((id) => Number.isFinite(id) && id > 0 && !map.has(id));
+
+  for (let i = 0; i < missingIds.length; i += READ_CHUNK) {
+    const chunk = missingIds.slice(i, i + READ_CHUNK);
+    const moves = await callOdoo("account.move", "read", [chunk], {
+      fields: ["id", "name", "invoice_origin", "payment_state", "amount_total", "amount_residual", "move_type"],
+    });
+    for (const m of moves || []) {
+      if ((m.move_type || "") !== "out_invoice") continue;
+      const fallbackName = invIdToSoName[m.id] || "";
+      const originRaw = m.invoice_origin != null ? String(m.invoice_origin).trim() : "";
+      const invoice_origin = originRaw || fallbackName;
+      map.set(Number(m.id), {
+        id: m.id,
+        name: m.name,
+        invoice_origin,
+        payment_state: m.payment_state,
+        amount_total: m.amount_total,
+        amount_residual: m.amount_residual,
+      });
+    }
+  }
+
+  for (const inv of map.values()) {
+    if (!inv.invoice_origin || !String(inv.invoice_origin).trim()) {
+      const fill = invIdToSoName[inv.id];
+      if (fill) inv.invoice_origin = fill;
+    }
+  }
+
+  return Array.from(map.values()).filter((inv) => inv.invoice_origin && String(inv.invoice_origin).trim());
+}
 
 /** Get payments linked to given invoice ids (reconciled). */
 export const getPaymentsByInvoiceIds = (invoiceIds) => {

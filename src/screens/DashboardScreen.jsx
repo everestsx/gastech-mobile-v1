@@ -37,6 +37,7 @@ import {
   getOrderLineTotalsFromDB,
   getPickingsBySaleIdsFromDB,
   getOrderLinesByOrderIdsFromDB,
+  consumePostLoginSyncSuccessPending,
 } from '../services/sync.service';
 import * as localPaymentsDb from '../database/localPayments.js';
 import * as localInvoicesDb from '../database/localInvoices.js';
@@ -201,6 +202,31 @@ export default function DashboardScreen({ navigation }) {
   const [routeOverrideId, setRouteOverrideId] = useState(null);
   const [routePickerVisible, setRoutePickerVisible] = useState(false);
   const [profileModal, setProfileModal] = useState(null);
+  const [postLoginSyncModalVisible, setPostLoginSyncModalVisible] = useState(false);
+
+  const postLoginSyncCopy = useMemo(() => {
+    const map = {
+      en: {
+        title: "You're all synced",
+        subtitle:
+          'Orders, deliveries, and payment breakdown are up to date on this device.',
+        button: 'Great',
+      },
+      ta: {
+        title: 'ஒத்திசைவு முடிந்தது',
+        subtitle:
+          'இந்த சாதனத்தில் ஆர்டர்கள், விநியோகம் மற்றும் கட்டண விவரங்கள் புதுப்பிக்கப்பட்டன.',
+        button: 'சரி',
+      },
+      si: {
+        title: 'සමමුහුර්තය අවසන්',
+        subtitle:
+          'මෙම උපාංගයෙන් ඇණවුම්, බෙදාහැරීම් සහ ගෙවීම් විස්තර යාවත්කාලීනයි.',
+        button: 'හරි',
+      },
+    };
+    return map[appLanguage] || map.en;
+  }, [appLanguage]);
 
   const toggleCollectionCard = useCallback((key) => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
@@ -455,12 +481,22 @@ export default function DashboardScreen({ navigation }) {
 
   // Load on mount and every time screen gains focus (e.g. after login or tab switch)
   useEffect(() => {
+    const tryPostLoginBanner = () => {
+      void (async () => {
+        try {
+          const show = await consumePostLoginSyncSuccessPending();
+          if (show) setPostLoginSyncModalVisible(true);
+        } catch (_) {}
+      })();
+    };
     const unsub = navigation.addListener?.('focus', () => {
       loadData();
       loadSyncStatus();
+      tryPostLoginBanner();
     });
     loadData();
     loadSyncStatus();
+    tryPostLoginBanner();
     return () => unsub?.();
   }, [loadData, loadSyncStatus, navigation]);
 
@@ -1265,6 +1301,30 @@ export default function DashboardScreen({ navigation }) {
           alignItems: 'center',
         },
         modalCloseBtnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
+        syncSuccessAccent: {
+          width: 72,
+          height: 72,
+          borderRadius: 36,
+          backgroundColor: colors.primary + '18',
+          alignItems: 'center',
+          justifyContent: 'center',
+          alignSelf: 'center',
+          marginBottom: spacing.md,
+        },
+        syncSuccessTitle: {
+          fontSize: 20,
+          fontWeight: '800',
+          color: colors.text,
+          textAlign: 'center',
+          marginBottom: spacing.sm,
+        },
+        syncSuccessSubtitle: {
+          fontSize: 14,
+          lineHeight: 21,
+          color: colors.textSecondary,
+          textAlign: 'center',
+          marginBottom: spacing.lg,
+        },
       }),
     [colors]
   );
@@ -1867,6 +1927,30 @@ export default function DashboardScreen({ navigation }) {
             </ScrollView>
             <TouchableOpacity style={styles.modalCloseBtn} onPress={() => setRoutePickerVisible(false)} activeOpacity={0.88}>
               <Text style={styles.modalCloseBtnText}>Close</Text>
+            </TouchableOpacity>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <Modal
+        visible={postLoginSyncModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setPostLoginSyncModalVisible(false)}
+      >
+        <Pressable style={styles.modalBackdrop} onPress={() => setPostLoginSyncModalVisible(false)}>
+          <Pressable style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.syncSuccessAccent}>
+              <Ionicons name="cloud-done" size={40} color={colors.primary} />
+            </View>
+            <Text style={styles.syncSuccessTitle}>{postLoginSyncCopy.title}</Text>
+            <Text style={styles.syncSuccessSubtitle}>{postLoginSyncCopy.subtitle}</Text>
+            <TouchableOpacity
+              style={styles.modalCloseBtn}
+              onPress={() => setPostLoginSyncModalVisible(false)}
+              activeOpacity={0.88}
+            >
+              <Text style={styles.modalCloseBtnText}>{postLoginSyncCopy.button}</Text>
             </TouchableOpacity>
           </Pressable>
         </Pressable>

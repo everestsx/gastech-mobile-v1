@@ -24,7 +24,7 @@ import { useSync } from '../context/SyncContext';
 import { usePrinterConnection } from '../context/PrinterConnectionContext';
 import { spacing, borderRadius } from '../constants/theme';
 import { INVOICE_LOGO_PNG_BASE64 } from '../constants/invoiceLogoBase64';
-import { getSaleOrderDetailsFromDB, runSync } from '../services/sync.service';
+import { getSaleOrderDetailsFromDB, getUserSession, runSync } from '../services/sync.service';
 import { getOrAssignInvoiceNumber } from '../utils/invoiceNumber';
 import { getProductDisplayName } from '../utils/productDisplay';
 import { formatAmount } from '../utils/format';
@@ -149,6 +149,19 @@ function formatPrintedDateTime(value = new Date()) {
     day: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
+    second: '2-digit',
+  });
+}
+
+/** 24h time for invoice header (e.g. 22:48:27). */
+function formatInvoiceTimeOnly(value = new Date()) {
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleTimeString('en-GB', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
   });
 }
 
@@ -259,6 +272,24 @@ function buildInvoiceHtml(
 ) {
   const omitLogoBlock = printOptions.omitLogoBlock === true;
   const appLanguage = printOptions.appLanguage || 'en';
+  const generatedAtRaw =
+    printOptions.invoiceGeneratedAt instanceof Date
+      ? printOptions.invoiceGeneratedAt
+      : printOptions.invoiceGeneratedAt
+        ? new Date(printOptions.invoiceGeneratedAt)
+        : new Date();
+  const timeOfInvoiceStr = formatInvoiceTimeOnly(generatedAtRaw).replace(/</g, '&lt;');
+  const salesRepNameOnly = safeDisplay(printOptions.salesRepName || '').replace(/</g, '&lt;');
+  const driverIdRaw = printOptions.salesRepDriverId;
+  const driverIdStr =
+    driverIdRaw != null && String(driverIdRaw).trim() !== '' ? String(driverIdRaw).trim().replace(/</g, '&lt;') : '';
+  const salesRepDisplay =
+    salesRepNameOnly !== '—'
+      ? driverIdStr
+        ? `${salesRepNameOnly} (${driverIdStr})`
+        : salesRepNameOnly
+      : '—';
+  const vehicleNumberDisplay = safeDisplay(printOptions.vehicleNumber || '').replace(/</g, '&lt;');
   const invoiceDateSource = resolveInvoiceDateSource(order);
   const date = invoiceDateSource && !Number.isNaN(invoiceDateSource.getTime())
     ? invoiceDateSource.toLocaleDateString('en-LK', {
@@ -535,6 +566,49 @@ function buildInvoiceHtml(
     .payment { margin-top: 4px; padding: 4px; font-size: 10px; text-align: center; }
     .footer { margin-top: 6px; font-size: 10px; color: #333; text-align: center; }
     .powered { margin-top: 2px; font-size: 10px; font-style: italic; color: #111; text-align: center; }
+    table.hdr-grid {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 0 0 4px 0;
+      font-size: 10px;
+      border: 1px solid #000;
+    }
+    table.hdr-grid td {
+      border: 1px solid #000;
+      padding: 4px 6px;
+      vertical-align: top;
+      text-align: left;
+      width: 50%;
+      box-sizing: border-box;
+    }
+    table.hdr-grid td[colspan="2"] {
+      width: 100%;
+    }
+    .hdr-label {
+      font-size: 8px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+      margin-bottom: 3px;
+      color: #000;
+      line-height: 1.2;
+    }
+    .hdr-value {
+      font-size: 10px;
+      font-weight: 600;
+      line-height: 1.3;
+      word-break: break-word;
+    }
+    .party-stack { margin-top: 2px; }
+    .party-stack .party-line {
+      font-size: 10px;
+      font-weight: 400;
+      line-height: 1.35;
+      margin-bottom: 2px;
+      word-break: break-word;
+    }
+    .party-stack .party-line:last-child { margin-bottom: 0; }
+    .party-stack .party-name { font-weight: 700; }
   </style>
 </head>
 <body class="${omitLogoBlock ? 'thermal-native-invoice' : ''}">
@@ -542,32 +616,64 @@ function buildInvoiceHtml(
   ${logoImg}
   <div class="title">Tax Invoice</div>
 
-  <div class="top-row">
-    <div class="info-cell">Date of Invoice: ${date}</div>
-    <div class="info-cell">Tax Invoice No.: ${invNo}</div>
-  </div>
-
-  <div class="info-box">
-  <div class="two-col">
-    <div class="col">
-      <div class="field"><span class="label">Supplier's TIN:</span> ${hasSupplierTin ? supplierTinSafe : '—'}</div>
-      <div class="field"><span class="label">Supplier's Name:</span> ${supplierName}</div>
-      <div class="field"><span class="label">Address:</span> ${supplierAddressMultiline}</div>
-      <div class="field"><span class="label">Telephone No:</span> ${supplierPhone}</div>
-    </div>
-    <div class="col">
-      <div class="field"><span class="label">Purchaser's TIN:</span> ${hasPurchaserTin ? purchaserTinSafe : '—'}</div>
-      <div class="field"><span class="label">Purchaser's Name:</span> ${customerName}</div>
-      <div class="field"><span class="label">Address:</span> ${customerAddressMultiline}</div>
-      <div class="field"><span class="label">Telephone No:</span> ${customerPhone}</div>
-    </div>
-  </div>
-  </div>
-
-  <div class="top-row">
-    <div class="info-cell">Date of Delivery: ${date}</div>
-    <div class="info-cell">Place of Supply: ${cityPart !== '—' ? cityPart.replace(/</g, '&lt;') : '—'}</div>
-  </div>
+  <table class="hdr-grid" role="presentation">
+    <tr>
+      <td>
+        <div class="hdr-label">Date of invoice</div>
+        <div class="hdr-value">${date}</div>
+      </td>
+      <td>
+        <div class="hdr-label">Tax invoice no.</div>
+        <div class="hdr-value">${invNo}</div>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <div class="hdr-label">Time of invoice</div>
+        <div class="hdr-value">${timeOfInvoiceStr}</div>
+      </td>
+      <td>
+        <div class="hdr-label">Vehicle no.</div>
+        <div class="hdr-value">${vehicleNumberDisplay}</div>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <div class="hdr-label">Sales rep (driver)</div>
+        <div class="hdr-value">${salesRepDisplay}</div>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <div class="hdr-label">Supplier</div>
+        <div class="party-stack">
+          <div class="party-line party-name">${supplierName}</div>
+          <div class="party-line">TIN: ${hasSupplierTin ? supplierTinSafe : '—'}</div>
+          <div class="party-line">${supplierAddressMultiline}</div>
+          <div class="party-line">${supplierPhone}</div>
+        </div>
+      </td>
+      <td>
+        <div class="hdr-label">Purchaser</div>
+        <div class="party-stack">
+          <div class="party-line party-name">${customerName}</div>
+          <div class="party-line">TIN: ${hasPurchaserTin ? purchaserTinSafe : '—'}</div>
+          <div class="party-line">${customerAddressMultiline}</div>
+          <div class="party-line">${customerPhone}</div>
+        </div>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <div class="hdr-label">Date of delivery</div>
+        <div class="hdr-value">${date}</div>
+      </td>
+      <td>
+        <div class="hdr-label">Place of supply</div>
+        <div class="hdr-value">${cityPart !== '—' ? cityPart.replace(/</g, '&lt;') : '—'}</div>
+      </td>
+    </tr>
+  </table>
 
   <table>
     <thead>
@@ -576,7 +682,7 @@ function buildInvoiceHtml(
         <th>Description</th>
         <th>Qty</th>
         <th>Unit Price</th>
-        <th>Amount Excluding VAT</th>
+        <th>Amt Excl. VAT</th>
       </tr>
     </thead>
     <tbody>${rows}</tbody>
@@ -691,7 +797,21 @@ function buildInvoicePlainText(
 ) {
   const appLanguage = printOptions.appLanguage || 'en';
   const isoDate = formatPlainISODate(order);
-  const printedAt = formatPrintedDateTime();
+  const genPlain =
+    printOptions.invoiceGeneratedAt instanceof Date
+      ? printOptions.invoiceGeneratedAt
+      : printOptions.invoiceGeneratedAt
+        ? new Date(printOptions.invoiceGeneratedAt)
+        : new Date();
+  const timePlain = formatInvoiceTimeOnly(genPlain);
+  const salesRepPlain = safeDisplay(printOptions.salesRepName || '—');
+  const vehiclePlain = safeDisplay(printOptions.vehicleNumber || '—');
+  const driverIdPlain =
+    printOptions.salesRepDriverId != null && String(printOptions.salesRepDriverId).trim() !== ''
+      ? String(printOptions.salesRepDriverId).trim()
+      : '';
+  const salesRepLine =
+    salesRepPlain !== '—' ? (driverIdPlain ? `${salesRepPlain} (${driverIdPlain})` : salesRepPlain) : '—';
   const customerName = safeDisplay(resolveInvoiceCustomerDisplayName(order, partyInfo, appLanguage));
   const streetPart = safeDisplay(order?.street || order?.partner_street || order?.partner_address);
   const cityPart = safeDisplay(partyInfo?.customerCity || order?.city);
@@ -736,20 +856,25 @@ function buildInvoicePlainText(
     centerPlainLine('GasTech', w),
     centerPlainLine('TAX INVOICE', w),
     dashLine(),
-    lineLR('Invoice No.', invNo, w),
-    lineLR('Date of Invoice', isoDate, w),
+    lineLR('Tax Inv No', String(invNo).slice(0, 22), w),
+    lineLR('Inv Date', isoDate, w),
+    lineLR('Inv Time', timePlain, w),
+    lineLR('Vehicle', vehiclePlain, w),
+    lineLR('Sales rep', String(salesRepLine).slice(0, 36), w),
     dashLine(),
-    lineLR('Supplier Name', supplierName, w),
-    supplierTinSafe ? lineLR('Supplier TIN', supplierTinSafe, w) : null,
-    ...wrapPlainLines(`Address: ${supplierAddress}`, w),
-    lineLR('Telephone No.', supplierPhone, w),
-    lineLR('Date of Delivery', isoDate, w),
+    centerPlainLine('SUPPLIER', w),
+    ...wrapPlainLines(supplierName, w),
+    lineLR('TIN', supplierTinSafe || '—', w),
+    ...wrapPlainLines(supplierAddress, w),
+    lineLR('Tel', supplierPhone, w),
     dashLine(),
-    lineLR('Customer Name', customerName, w),
-    purchaserTinSafe ? lineLR('Customer TIN', purchaserTinSafe, w) : null,
-    ...wrapPlainLines(`Address: ${[custStreet, cityPart].filter((s) => s && s !== '—').join(', ') || '—'}`, w),
-    lineLR('Telephone No.', customerPhone, w),
-    lineLR('Place of Supply', cityPart !== '—' ? cityPart : '—', w),
+    centerPlainLine('PURCHASER', w),
+    ...wrapPlainLines(customerName, w),
+    lineLR('TIN', purchaserTinSafe || '—', w),
+    ...wrapPlainLines([custStreet, cityPart].filter((s) => s && s !== '—').join(', ') || '—', w),
+    lineLR('Tel', customerPhone, w),
+    lineLR('Deliv Date', isoDate, w),
+    lineLR('Place', cityPart !== '—' ? cityPart.slice(0, 38) : '—', w),
     dashLine(),
     // 48-column table header (matches invoice structure better).
     'No Description                  Qty   Unit      Total',
@@ -799,7 +924,6 @@ function buildInvoicePlainText(
   }
 
   parts.push(dashLine());
-  parts.push(lineLR('Printed At', printedAt, w));
   parts.push('Driver Sign  : __________________');
   parts.push('Customer Sign: __________________');
   parts.push(centerPlainLine('Thank you for your business', w));
@@ -1900,6 +2024,18 @@ export default function InvoiceScreen({ route, navigation }) {
       const resolvedChequeBankName = chequeBankName || selectedBankName || localChequeMeta.bankName || null;
       const resolvedChequeNumber = checkNumber || localChequeMeta.checkNumber || null;
       const logoB64ForNative = extractRawBase64FromDataUri(logoForPrint);
+      const user = await getUserSession();
+      const vehicleNo =
+        (user?.licensePlate && String(user.licensePlate).trim()) ||
+        (user?.vehicleName && String(user.vehicleName).trim()) ||
+        '';
+      const printSessionOpts = {
+        appLanguage,
+        invoiceGeneratedAt: new Date(),
+        salesRepName: user?.driverName && String(user.driverName).trim() ? user.driverName : '',
+        salesRepDriverId: user?.driverId != null ? user.driverId : '',
+        vehicleNumber: vehicleNo,
+      };
       const htmlForThermal = buildInvoiceHtml(
         orderForPrint,
         invoiceVisibleLines,
@@ -1915,7 +2051,7 @@ export default function InvoiceScreen({ route, navigation }) {
         supplierTin,
         purchaserTin,
         partyInfo,
-        { omitLogoBlock: true, appLanguage }
+        { ...printSessionOpts, omitLogoBlock: true }
       );
       const htmlForSystem = buildInvoiceHtml(
         orderForPrint,
@@ -1932,7 +2068,7 @@ export default function InvoiceScreen({ route, navigation }) {
         supplierTin,
         purchaserTin,
         partyInfo,
-        { appLanguage }
+        printSessionOpts
       );
 
       if (rongtaReady && thermalConnected && thermalPrinter?.address) {

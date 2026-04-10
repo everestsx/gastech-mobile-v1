@@ -186,6 +186,18 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
     return deliveredOrders.filter((o) => o.partner_id?.[0] === customerId);
   }, [deliveredOrders, customerId]);
 
+  /** Stable digest so tab counts / filters refresh when Odoo-synced payment columns change on the same order list. */
+  const deliveredPaymentDigest = useMemo(
+    () =>
+      deliveredOrdersForCustomer
+        .map(
+          (o) =>
+            `${o.id}:${o.amount_cash ?? ''}:${o.amount_cheque ?? ''}:${o.amount_credit ?? ''}:${o.payment_type ?? ''}:${o.paymentSplit ? `${o.paymentSplit.cash}|${o.paymentSplit.cheque}|${o.paymentSplit.credit}` : ''}`
+        )
+        .join(';'),
+    [deliveredOrdersForCustomer]
+  );
+
   /** Each order appears in exactly one tab: by payment amounts (cash / cheque / credit), highest amount wins. */
   const filteredOrders = useMemo(() => {
     const base =
@@ -195,7 +207,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
             (o) => getPrimaryPaymentType(o.paymentSplit, o.payment_type) === activeTab
           );
     return base;
-  }, [deliveredOrdersForCustomer, activeTab]);
+  }, [deliveredOrdersForCustomer, activeTab, deliveredPaymentDigest]);
 
   const ordersFilteredBySearch = useMemo(() => {
     const q = (searchQuery || '').trim().toLowerCase();
@@ -225,7 +237,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
       ).length,
       [TAB_ALL]: deliveredOrdersForCustomer.length,
     }),
-    [deliveredOrdersForCustomer]
+    [deliveredOrdersForCustomer, deliveredPaymentDigest]
   );
 
   const styles = useMemo(
