@@ -332,7 +332,7 @@ export default function MenuScreen({ navigation }) {
         activeOpacity={0.8}
       >
         <Ionicons name="document-text-outline" size={24} color={colors.primary} />
-        <Text style={[styles.menuItemText, { color: colors.text }]}>My Invoicessssssss</Text>
+        <Text style={[styles.menuItemText, { color: colors.text }]}>My Invoices</Text>
         <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
       </TouchableOpacity>
 
