@@ -165,16 +165,6 @@ function formatInvoiceIssueTime(value = new Date()) {
   });
 }
 
-/** Printed line: `Driver name - vehicle no` (vehicle omitted if missing). */
-function buildSalesRepVehicleLine(rep, vehicle) {
-  const r = safeDisplay(rep || '');
-  const v = safeDisplay(vehicle || '');
-  if (r === '—' && v === '—') return '—';
-  if (v === '—') return r;
-  if (r === '—') return v;
-  return `${r} - ${v}`;
-}
-
 /** Prefer delivery date for invoice printing; fall back to order/creation dates only when missing. */
 function resolveInvoiceDateSource(order) {
   const raw =
@@ -289,9 +279,8 @@ function buildInvoiceHtml(
         ? new Date(printOptions.invoiceGeneratedAt)
         : new Date();
   const invoiceIssueTimeStr = String(formatInvoiceIssueTime(generatedAtRaw)).replace(/</g, '&lt;');
-  const salesRepVehicleLine = String(
-    buildSalesRepVehicleLine(printOptions.salesRepName, printOptions.vehicleNumber)
-  ).replace(/</g, '&lt;');
+  const driverNameDisplay = safeDisplay(printOptions.salesRepName || '').replace(/</g, '&lt;');
+  const vehicleNoDisplay = safeDisplay(printOptions.vehicleNumber || '').replace(/</g, '&lt;');
   const invoiceDateSource = resolveInvoiceDateSource(order);
   const date = invoiceDateSource && !Number.isNaN(invoiceDateSource.getTime())
     ? invoiceDateSource.toLocaleDateString('en-LK', {
@@ -300,6 +289,7 @@ function buildInvoiceHtml(
         day: 'numeric',
       })
     : new Date().toLocaleDateString('en-LK');
+  const dateOfInvoiceWithTime = `${date}, ${invoiceIssueTimeStr}`.replace(/</g, '&lt;');
   const customerName = safeDisplay(resolveInvoiceCustomerDisplayName(order, partyInfo, appLanguage)).replace(
     /</g,
     '&lt;'
@@ -468,6 +458,19 @@ function buildInvoiceHtml(
     .top-row .info-cell:first-child {
       border-right: 1px solid #000;
     }
+    .top-row .info-cell .invoice-meta-stack {
+      margin-top: 3px;
+    }
+    .top-row .info-cell .invoice-meta-stack .field {
+      margin-bottom: 2px;
+      font-weight: 400;
+    }
+    .top-row .info-cell .invoice-meta-stack .field:last-child {
+      margin-bottom: 0;
+    }
+    .top-row .info-cell .invoice-meta-stack .label {
+      font-weight: 400;
+    }
     .info-box {
       border: 1px solid #000;
       margin-bottom: 4px;
@@ -568,16 +571,6 @@ function buildInvoiceHtml(
     .payment { margin-top: 4px; padding: 4px; font-size: 10px; text-align: center; }
     .footer { margin-top: 6px; font-size: 10px; color: #333; text-align: center; }
     .powered { margin-top: 2px; font-size: 10px; font-style: italic; color: #111; text-align: center; }
-    .invoice-context {
-      border: 1px solid #000;
-      margin-bottom: 4px;
-      padding: 4px 6px;
-      font-size: 10px;
-      line-height: 1.35;
-    }
-    .invoice-context .ctx-line { margin-bottom: 3px; word-break: break-word; }
-    .invoice-context .ctx-line:last-child { margin-bottom: 0; }
-    .invoice-context .ctx-label { font-weight: 700; }
   </style>
 </head>
 <body class="${omitLogoBlock ? 'thermal-native-invoice' : ''}">
@@ -587,14 +580,13 @@ function buildInvoiceHtml(
 
   <div class="top-row">
     <div class="info-cell">
-      <div>Date of Invoice: ${date}</div>
-      <div style="margin-top:3px"><span class="ctx-label">Invoice time:</span> ${invoiceIssueTimeStr}</div>
+      <div>Date of Invoice: ${dateOfInvoiceWithTime}</div>
+      <div class="invoice-meta-stack">
+        <div class="field"><span class="label">Driver name:</span> ${driverNameDisplay}</div>
+        <div class="field"><span class="label">Vehicle no.:</span> ${vehicleNoDisplay}</div>
+      </div>
     </div>
     <div class="info-cell">Tax Invoice No.: ${invNo}</div>
-  </div>
-
-  <div class="invoice-context">
-    <div class="ctx-line"><span class="ctx-label">Sales rep:</span> ${salesRepVehicleLine}</div>
   </div>
 
   <div class="info-box">
@@ -748,10 +740,8 @@ function buildInvoicePlainText(
         ? new Date(printOptions.invoiceGeneratedAt)
         : new Date();
   const issueTimePlain = formatInvoiceIssueTime(genPlain);
-  const salesRepVehiclePlain = buildSalesRepVehicleLine(
-    printOptions.salesRepName,
-    printOptions.vehicleNumber
-  );
+  const driverNamePlain = safeDisplay(printOptions.salesRepName || '—');
+  const vehicleNoPlain = safeDisplay(printOptions.vehicleNumber || '—');
   const customerName = safeDisplay(resolveInvoiceCustomerDisplayName(order, partyInfo, appLanguage));
   const streetPart = safeDisplay(order?.street || order?.partner_street || order?.partner_address);
   const cityPart = safeDisplay(partyInfo?.customerCity || order?.city);
@@ -797,9 +787,9 @@ function buildInvoicePlainText(
     centerPlainLine('TAX INVOICE', w),
     dashLine(),
     lineLR('Invoice No.', invNo, w),
-    lineLR('Date of Invoice', isoDate, w),
-    lineLR('Invoice time', issueTimePlain, w),
-    lineLR('Sales rep', salesRepVehiclePlain, w),
+    lineLR('Date of Invoice', `${isoDate} ${issueTimePlain}`, w),
+    lineLR('Driver name', driverNamePlain, w),
+    lineLR('Vehicle no.', vehicleNoPlain, w),
     dashLine(),
     lineLR('Supplier Name', supplierName, w),
     supplierTinSafe ? lineLR('Supplier TIN', supplierTinSafe, w) : null,
