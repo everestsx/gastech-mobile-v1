@@ -152,6 +152,19 @@ function formatPrintedDateTime(value = new Date()) {
   });
 }
 
+/** Prefer delivery date for invoice printing; fall back to order/creation dates only when missing. */
+function resolveInvoiceDateSource(order) {
+  const raw =
+    order?.commitment_date ||
+    order?.delivery_date ||
+    order?.date_order ||
+    order?.create_date ||
+    order?.date;
+  const parsed = raw ? new Date(raw) : null;
+  if (parsed && !Number.isNaN(parsed.getTime())) return parsed;
+  return new Date();
+}
+
 function convertIntegerToWords(value) {
   const ones = [
     '',
@@ -246,10 +259,9 @@ function buildInvoiceHtml(
 ) {
   const omitLogoBlock = printOptions.omitLogoBlock === true;
   const appLanguage = printOptions.appLanguage || 'en';
-  const orderDateRaw = order?.date_order || order?.create_date || order?.date;
-  const orderDateParsed = orderDateRaw ? new Date(orderDateRaw) : null;
-  const date = orderDateParsed && !Number.isNaN(orderDateParsed.getTime())
-    ? orderDateParsed.toLocaleDateString('en-LK', {
+  const invoiceDateSource = resolveInvoiceDateSource(order);
+  const date = invoiceDateSource && !Number.isNaN(invoiceDateSource.getTime())
+    ? invoiceDateSource.toLocaleDateString('en-LK', {
         year: 'numeric',
         month: 'short',
         day: 'numeric',
@@ -653,7 +665,7 @@ function wrapPlainLines(text, w = PLAIN_WIDTH) {
 }
 
 function formatPlainISODate(order) {
-  const d = order?.date_order ? new Date(order.date_order) : new Date();
+  const d = resolveInvoiceDateSource(order);
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
@@ -2340,13 +2352,11 @@ export default function InvoiceScreen({ route, navigation }) {
     );
   }
 
-  const invoiceDate = order?.date_order
-    ? new Date(order.date_order).toLocaleDateString('en-LK', {
-        year: 'numeric',
-        month: 'short',
-        day: 'numeric',
-      })
-    : new Date().toLocaleDateString('en-LK');
+  const invoiceDate = resolveInvoiceDateSource(order).toLocaleDateString('en-LK', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  });
 
   return (
     <ScrollView

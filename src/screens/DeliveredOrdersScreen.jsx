@@ -44,6 +44,13 @@ const TAB_CHEQUE = 'cheque';
 const TAB_CREDIT = 'credit';
 const TAB_ALL = 'all';
 
+function normalizePaymentType(rawType) {
+  const t = String(rawType || '').toLowerCase().trim();
+  if (t === 'check') return TAB_CHEQUE;
+  if (t === TAB_CASH || t === TAB_CHEQUE || t === TAB_CREDIT) return t;
+  return '';
+}
+
 function formatDate(d) {
   const year = d.getFullYear();
   const month = String(d.getMonth() + 1).padStart(2, '0');
@@ -113,15 +120,15 @@ function buildDisplayDeliveredQtyByProduct(moveMap, orderLines, isInvoiced) {
  */
 function getPrimaryPaymentType(paymentSplit, fallbackPaymentType) {
   const cash = Number(paymentSplit?.cash) || 0;
-  const cheque = Number(paymentSplit?.cheque) || 0;
+  const cheque = Number(paymentSplit?.cheque ?? paymentSplit?.check) || 0;
   const credit = Number(paymentSplit?.credit) || 0;
   if (!paymentSplit || (cash === 0 && cheque === 0 && credit === 0)) {
-    const t = (fallbackPaymentType || '').toLowerCase().trim();
-    if (t === 'cash' || t === 'cheque' || t === 'credit') return t;
+    const t = normalizePaymentType(fallbackPaymentType);
+    if (t) return t;
     return TAB_CREDIT;
   }
   const max = Math.max(cash, cheque, credit);
-  if (max === 0) return (fallbackPaymentType || '').toLowerCase().trim() || TAB_CREDIT;
+  if (max === 0) return normalizePaymentType(fallbackPaymentType) || TAB_CREDIT;
   if (cheque === max) return TAB_CHEQUE;
   if (cash === max) return TAB_CASH;
   return TAB_CREDIT;
@@ -466,15 +473,21 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
       // Backend sync can store amount_cash, amount_cheque, amount_credit (split); else use local split or payment_type + amount_total
       const syntheticSplit = (o) => {
         const split = getSplit(o);
-        if (split && (Number(split.cash) || Number(split.cheque) || Number(split.credit))) return split;
+        if (split && (Number(split.cash) || Number(split.cheque ?? split.check) || Number(split.credit))) {
+          return {
+            cash: Number(split.cash) || 0,
+            cheque: Number(split.cheque ?? split.check) || 0,
+            credit: Number(split.credit) || 0,
+          };
+        }
         const sc = Number(o.amount_cash) || 0;
         const sq = Number(o.amount_cheque) || 0;
         const sr = Number(o.amount_credit) || 0;
         if (sc > 0 || sq > 0 || sr > 0)
           return { cash: sc, cheque: sq, credit: sr };
-        const pt = (o.payment_type || '').toLowerCase();
+        const pt = normalizePaymentType(o.payment_type);
         const amt = Number(o.amount_total) || 0;
-        if (amt <= 0 || (pt !== 'cash' && pt !== 'cheque' && pt !== 'credit')) return split || null;
+        if (amt <= 0 || !pt) return split || null;
         return {
           cash: pt === 'cash' ? amt : 0,
           cheque: pt === 'cheque' ? amt : 0,

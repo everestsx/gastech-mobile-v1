@@ -116,6 +116,13 @@ function safePercentDisplay(part, total) {
   return Math.min(100, Math.max(0, Math.round((p / t) * 100)));
 }
 
+function normalizePaymentType(rawType) {
+  const t = String(rawType || '').toLowerCase().trim();
+  if (t === 'check') return 'cheque';
+  if (t === 'cash' || t === 'cheque' || t === 'credit') return t;
+  return '';
+}
+
 /** Local calendar YYYY-MM-DD (avoid UTC day-shift from toISOString()). */
 function formatLocalYyyyMmDd(d) {
   if (!(d instanceof Date) || Number.isNaN(d.getTime())) return '';
@@ -705,32 +712,38 @@ export default function DashboardScreen({ navigation }) {
   // Collection totals: local split first; else synced amounts (amount_cash/amount_cheque/amount_credit); else payment_type + amount_total
   const cashTotal = deliveredTodayOrders.reduce((s, o) => {
     const split = getSplitForOrder(o);
-    if (split && (split.cash > 0 || split.cheque > 0 || split.credit > 0)) return s + (Number(split.cash) || 0);
+    if (split && (Number(split.cash) > 0 || Number(split.cheque ?? split.check) > 0 || Number(split.credit) > 0)) {
+      return s + (Number(split.cash) || 0);
+    }
     const sc = Number(o.amount_cash) || 0;
     const sq = Number(o.amount_cheque) || 0;
     const sr = Number(o.amount_credit) || 0;
     if (sc > 0 || sq > 0 || sr > 0) return s + sc;
-    const pt = (o.payment_type || '').toLowerCase().trim();
+    const pt = normalizePaymentType(o.payment_type);
     return s + (pt === 'cash' ? orderMoneyTotal(o) : 0);
   }, 0);
   const chequeTotal = deliveredTodayOrders.reduce((s, o) => {
     const split = getSplitForOrder(o);
-    if (split && (split.cash > 0 || split.cheque > 0 || split.credit > 0)) return s + (Number(split.cheque) || 0);
+    if (split && (Number(split.cash) > 0 || Number(split.cheque ?? split.check) > 0 || Number(split.credit) > 0)) {
+      return s + (Number(split.cheque ?? split.check) || 0);
+    }
     const sc = Number(o.amount_cash) || 0;
     const sq = Number(o.amount_cheque) || 0;
     const sr = Number(o.amount_credit) || 0;
     if (sc > 0 || sq > 0 || sr > 0) return s + sq;
-    const pt = (o.payment_type || '').toLowerCase().trim();
+    const pt = normalizePaymentType(o.payment_type);
     return s + (pt === 'cheque' ? orderMoneyTotal(o) : 0);
   }, 0);
   const creditTotal = deliveredTodayOrders.reduce((s, o) => {
     const split = getSplitForOrder(o);
-    if (split && (split.cash > 0 || split.cheque > 0 || split.credit > 0)) return s + (Number(split.credit) || 0);
+    if (split && (Number(split.cash) > 0 || Number(split.cheque ?? split.check) > 0 || Number(split.credit) > 0)) {
+      return s + (Number(split.credit) || 0);
+    }
     const sc = Number(o.amount_cash) || 0;
     const sq = Number(o.amount_cheque) || 0;
     const sr = Number(o.amount_credit) || 0;
     if (sc > 0 || sq > 0 || sr > 0) return s + sr;
-    const pt = (o.payment_type || '').toLowerCase().trim();
+    const pt = normalizePaymentType(o.payment_type);
     // Do not treat unknown/empty payment_type as full credit (fresh device after sync was inflating credit).
     return s + (pt === 'credit' ? orderMoneyTotal(o) : 0);
   }, 0);
