@@ -7,6 +7,32 @@ function kgMatchesCanonical(parsedKg, canonicalKg) {
   return Math.abs(parsedKg - canonicalKg) < 0.051;
 }
 
+function normalizeName(raw) {
+  return String(raw || '').toLowerCase().trim();
+}
+
+function looksLikeEmptyCylinder(rawName) {
+  return /\bempty\b/.test(normalizeName(rawName));
+}
+
+function looksLikeGasCylinder(rawName) {
+  const normalized = normalizeName(rawName);
+  if (!normalized) return false;
+  if (looksLikeEmptyCylinder(normalized)) return false;
+  return /\bgas\b/.test(normalized);
+}
+
+function scoreCanonicalRowForDisplay(rowName, row) {
+  const isGas = looksLikeGasCylinder(rowName);
+  const isEmpty = looksLikeEmptyCylinder(rowName);
+  const hasProductId = row?.product_id != null;
+  if (isGas) return 4;
+  if (!isEmpty && hasProductId) return 3;
+  if (!isEmpty) return 2;
+  if (hasProductId) return 1;
+  return 0;
+}
+
 /**
  * Map a product name to one of DEFAULT_GAS_CYLINDER_KG_SIZES, or null if not a listed size.
  * @param {string} rawName
@@ -30,9 +56,17 @@ export function canonicalGasKgFromProductName(rawName) {
 export function indexRowsByCanonicalGasKg(rows, getName) {
   const map = new Map();
   for (const row of rows || []) {
-    const c = canonicalGasKgFromProductName(getName(row));
+    const rowName = getName(row);
+    const c = canonicalGasKgFromProductName(rowName);
     if (c == null) continue;
-    if (!map.has(c)) map.set(c, row);
+    if (!map.has(c)) {
+      map.set(c, row);
+      continue;
+    }
+    const existing = map.get(c);
+    const existingScore = scoreCanonicalRowForDisplay(getName(existing), existing);
+    const candidateScore = scoreCanonicalRowForDisplay(rowName, row);
+    if (candidateScore > existingScore) map.set(c, row);
   }
   return map;
 }

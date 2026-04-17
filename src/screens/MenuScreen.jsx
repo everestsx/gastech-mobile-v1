@@ -383,7 +383,7 @@ export default function MenuScreen({ navigation }) {
         <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
       </TouchableOpacity>
 
-      {/* <TouchableOpacity
+      <TouchableOpacity
         style={[styles.menuItem, { backgroundColor: colors.surface, borderColor: colors.border }]}
         onPress={() => navigation.navigate('QRGenerator')}
         activeOpacity={0.8}
@@ -391,7 +391,7 @@ export default function MenuScreen({ navigation }) {
         <Ionicons name="qr-code-outline" size={24} color={colors.primary} />
         <Text style={[styles.menuItemText, { color: colors.text }]}>Customer QR Generator</Text>
         <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
-      </TouchableOpacity> */}
+      </TouchableOpacity>
 
       <Text style={[styles.lastSync, { color: colors.textSecondary }]}>
         {lastSync

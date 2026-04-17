@@ -41,39 +41,91 @@ export default function QrGenerateScreen({ navigation }) {
     () =>
       StyleSheet.create({
         container: { flex: 1, backgroundColor: colors.background, padding: 16 },
-        header: { flexDirection: "row", alignItems: "center", marginTop: 20 },
-        headerTitle: { fontSize: 22, fontWeight: "700", color: colors.primary, marginLeft: 12 },
-        input: {
+        header: { flexDirection: "row", alignItems: "center", marginTop: 8 },
+        headerTitle: { fontSize: 22, fontWeight: "800", color: colors.primary, marginLeft: 12 },
+        subtitle: {
+          fontSize: 13,
+          lineHeight: 20,
+          color: colors.textSecondary,
+          marginTop: 12,
+          marginBottom: 14,
+        },
+        sectionCard: {
           backgroundColor: colors.surface,
-          fontSize: 16,
-          paddingVertical: 10,
-          paddingHorizontal: 14,
-          borderRadius: 10,
+          borderWidth: 1,
+          borderColor: colors.border,
+          borderRadius: 16,
+          padding: 14,
+          marginBottom: 14,
+        },
+        sectionTitle: {
+          fontSize: 15,
+          fontWeight: "700",
           color: colors.text,
           marginBottom: 10,
         },
-        suggestionBox: { maxHeight: 160, marginBottom: 10 },
-        suggestionItem: {
-          backgroundColor: colors.primary,
-          padding: 12,
-          borderRadius: 10,
-          marginBottom: 6,
+        input: {
+          backgroundColor: colors.background,
+          fontSize: 16,
+          paddingVertical: 12,
+          paddingHorizontal: 14,
+          borderRadius: 12,
+          color: colors.text,
+          borderWidth: 1,
+          borderColor: colors.border,
         },
-        suggestionText: { color: "#fff", fontSize: 16 },
+        suggestionBox: { maxHeight: 220, marginTop: 10 },
+        suggestionItem: {
+          backgroundColor: colors.background,
+          paddingVertical: 12,
+          paddingHorizontal: 12,
+          borderRadius: 12,
+          marginBottom: 6,
+          borderWidth: 1,
+          borderColor: colors.border,
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "space-between",
+        },
+        suggestionText: { color: colors.text, fontSize: 15, fontWeight: "600", flex: 1 },
+        selectedBadge: {
+          marginTop: 10,
+          borderRadius: 12,
+          borderWidth: 1,
+          borderColor: colors.primary + "55",
+          backgroundColor: colors.primary + "12",
+          paddingVertical: 10,
+          paddingHorizontal: 12,
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 8,
+        },
+        selectedBadgeText: { flex: 1, fontSize: 14, color: colors.text, fontWeight: "600" },
         button: {
           backgroundColor: colors.primary,
-          paddingVertical: 14,
+          paddingVertical: 13,
           paddingHorizontal: 16,
           borderRadius: 12,
           alignItems: "center",
-          marginTop: 12,
+          marginTop: 2,
+          flexDirection: "row",
+          justifyContent: "center",
+          gap: 8,
         },
         buttonDisabled: { backgroundColor: colors.textSecondary, opacity: 0.6 },
         buttonText: { color: "#fff", fontWeight: "600", fontSize: 16 },
-        qrWrapper: { marginTop: 30, alignItems: "center" },
-        qrBox: {
+        qrWrapper: {
+          marginTop: 4,
+          alignItems: "center",
           backgroundColor: colors.surface,
-          padding: 20,
+          borderWidth: 1,
+          borderColor: colors.border,
+          borderRadius: 20,
+          padding: 16,
+        },
+        qrBox: {
+          backgroundColor: "#fff",
+          padding: 16,
           borderRadius: 20,
           elevation: 4,
         },
@@ -93,6 +145,13 @@ export default function QrGenerateScreen({ navigation }) {
           alignItems: "center",
         },
         placeholderText: { fontSize: 16, color: colors.textSecondary },
+        helperText: {
+          marginTop: 10,
+          fontSize: 12,
+          lineHeight: 18,
+          color: colors.textSecondary,
+          textAlign: "center",
+        },
       }),
     [colors]
   );
@@ -124,7 +183,7 @@ export default function QrGenerateScreen({ navigation }) {
 
     setFiltered(
       customers.filter((c) =>
-        c.name.toLowerCase().includes(text.toLowerCase())
+        String(c?.name || "").toLowerCase().includes(text.toLowerCase())
       )
     );
   };
@@ -187,72 +246,91 @@ export default function QrGenerateScreen({ navigation }) {
           contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 200 }}
           showsVerticalScrollIndicator={false}
         >
-      {/* ---------------- HEADER ---------------- */}
-      <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigation.goBack()}>
-          <Ionicons name="arrow-back" size={28} color={colors.primary} />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>QR Generator</Text>
-      </View>
-
-      {/* ---------------- SEARCH ---------------- */}
-      <TextInput
-        style={styles.input}
-        placeholder="Search customer..."
-        placeholderTextColor={colors.textSecondary}
-        value={search}
-        onChangeText={onSearch}
-        returnKeyType="search"
-        blurOnSubmit
-        onSubmitEditing={() => Keyboard.dismiss()}
-      />
-
-      {filtered.length > 0 && (
-        <FlatList
-          data={filtered}
-          keyExtractor={(item) => item.id.toString()}
-          style={styles.suggestionBox}
-          scrollEnabled={false}
-          keyboardShouldPersistTaps="handled"
-          renderItem={({ item }) => (
-            <TouchableOpacity
-              style={styles.suggestionItem}
-              onPress={() => selectCustomer(item)}
-            >
-              <Text style={styles.suggestionText}>{item.name}</Text>
+          <View style={styles.header}>
+            <TouchableOpacity onPress={() => navigation.goBack()}>
+              <Ionicons name="arrow-back" size={28} color={colors.primary} />
             </TouchableOpacity>
-          )}
-        />
-      )}
-
-      {/* ---------------- GENERATE BUTTON ---------------- */}
-      <TouchableOpacity
-        style={[styles.button, !selectedCustomer && styles.buttonDisabled]}
-        disabled={!selectedCustomer}
-        onPress={generateQR}
-      >
-        <Text style={styles.buttonText}>Generate QR</Text>
-      </TouchableOpacity>
-
-      {/* ---------------- GENERATED QR ---------------- */}
-      <View style={styles.qrWrapper}>
-        {isQrGenerated && selectedCustomer ? (
-          <>
-            <View style={styles.qrBox}>
-              <QRCode value={qrValue} size={220} ref={qrRef} />
-            </View>
-            <Text style={styles.customerName}>{selectedCustomer.name}</Text>
-
-            <TouchableOpacity style={styles.button} onPress={downloadQR}>
-              <Text style={styles.buttonText}>Download QR</Text>
-            </TouchableOpacity>
-          </>
-        ) : (
-          <View style={styles.qrPlaceholder}>
-            <Text style={styles.placeholderText}>QR Code Preview</Text>
+            <Text style={styles.headerTitle}>Customer QR Generator</Text>
           </View>
-        )}
-      </View>
+          <Text style={styles.subtitle}>
+            Search and select a customer, then generate a clean QR code for quick counter scanning.
+          </Text>
+
+          <View style={styles.sectionCard}>
+            <Text style={styles.sectionTitle}>1) Choose Customer</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Type customer name..."
+              placeholderTextColor={colors.textSecondary}
+              value={search}
+              onChangeText={onSearch}
+              returnKeyType="search"
+              blurOnSubmit
+              onSubmitEditing={() => Keyboard.dismiss()}
+            />
+
+            {filtered.length > 0 && (
+              <FlatList
+                data={filtered}
+                keyExtractor={(item) => item.id.toString()}
+                style={styles.suggestionBox}
+                scrollEnabled={false}
+                keyboardShouldPersistTaps="handled"
+                renderItem={({ item }) => (
+                  <TouchableOpacity
+                    style={styles.suggestionItem}
+                    onPress={() => selectCustomer(item)}
+                  >
+                    <Text style={styles.suggestionText}>{item.name}</Text>
+                    <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
+                  </TouchableOpacity>
+                )}
+              />
+            )}
+
+            {selectedCustomer ? (
+              <View style={styles.selectedBadge}>
+                <Ionicons name="person-circle-outline" size={20} color={colors.primary} />
+                <Text style={styles.selectedBadgeText}>{selectedCustomer.name}</Text>
+                <Ionicons name="checkmark-circle" size={18} color={colors.success || "#16a34a"} />
+              </View>
+            ) : null}
+          </View>
+
+          <TouchableOpacity
+            style={[styles.button, !selectedCustomer && styles.buttonDisabled]}
+            disabled={!selectedCustomer}
+            onPress={generateQR}
+          >
+            <Ionicons name="qr-code-outline" size={20} color="#fff" />
+            <Text style={styles.buttonText}>Generate QR</Text>
+          </TouchableOpacity>
+
+          <View style={styles.qrWrapper}>
+            {isQrGenerated && selectedCustomer ? (
+              <>
+                <View style={styles.qrBox}>
+                  <QRCode value={qrValue} size={220} ref={qrRef} />
+                </View>
+                <Text style={styles.customerName}>{selectedCustomer.name}</Text>
+
+                <TouchableOpacity style={styles.button} onPress={downloadQR}>
+                  <Ionicons name="download-outline" size={20} color="#fff" />
+                  <Text style={styles.buttonText}>Download QR</Text>
+                </TouchableOpacity>
+                <Text style={styles.helperText}>Saved as PNG in your gallery for printing or sharing.</Text>
+              </>
+            ) : (
+              <>
+                <View style={styles.qrPlaceholder}>
+                  <Ionicons name="qr-code-outline" size={44} color={colors.textSecondary} />
+                </View>
+                <Text style={styles.helperText}>
+                  QR preview appears here after selecting a customer and tapping Generate.
+                </Text>
+              </>
+            )}
+          </View>
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
