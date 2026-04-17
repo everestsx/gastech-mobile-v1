@@ -427,9 +427,11 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         orderName: empty(orderName),
       };
       await setCheckoutResumeFromPayment(soId, invoiceNavParams);
-      // Keep checkout stack reversible until the print step.
-      // Invoice -> back now returns to Payment (and then Order Details).
-      navigation.navigate('InvoiceScreen', invoiceNavParams);
+      navigation.navigate('EmptyCylinderCollection', {
+        saleOrderId,
+        invoiceLineQtys,
+        invoiceNavParams,
+      });
     } catch (err) {
       console.error(err);
       Alert.alert('Payment could not be saved', userFacingPaymentError(err));

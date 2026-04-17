@@ -25,7 +25,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
 import { dashboardConfig } from '../constants/dashboardConfig';
-import { getGasTypeBlueColor } from '../utils/productDisplay';
+import { getGasTypeBlueColor, parseKgFromProductName } from '../utils/productDisplay';
 import { buildDefaultGasDashboardStockCards } from '../utils/defaultGasStock';
 import { getLocalizedCustomerNameFromOrder } from '../utils/customerDisplayName';
 import {
@@ -196,6 +196,7 @@ export default function DashboardScreen({ navigation }) {
   // Stock overview (local lorry stock) computed from vehicle_inventories.
   const [stockCards, setStockCards] = useState([]);
   const [productIdToImageUri, setProductIdToImageUri] = useState({});
+  const [emptyCollectedByKg, setEmptyCollectedByKg] = useState({});
 
   // Collection cards: tap to expand one (shows full amount), tap again to collapse
   const [expandedCollectionCard, setExpandedCollectionCard] = useState(null);
@@ -281,6 +282,25 @@ export default function DashboardScreen({ navigation }) {
       setQtyDoneBySaleId(qtyDoneMap || {});
       setTodayOrderLines(orderLines || []);
       setPaymentSplitsByOrderId(splits || {});
+      try {
+        const paymentPayloadMap = orderIds.length
+          ? await syncQueueDb.getLatestPaymentPayloadMapBySaleOrderIds(orderIds)
+          : {};
+        const nextEmptyByKg = {};
+        for (const soId of orderIds) {
+          const payload = paymentPayloadMap?.[Number(soId)]?.payload || {};
+          const entries = Array.isArray(payload?.emptyCylinderEntries) ? payload.emptyCylinderEntries : [];
+          for (const entry of entries) {
+            const kg = Number(entry?.kg);
+            const qty = Number(entry?.emptyCollectedQty) || 0;
+            if (!Number.isFinite(kg) || qty <= 0) continue;
+            nextEmptyByKg[kg] = (nextEmptyByKg[kg] || 0) + qty;
+          }
+        }
+        setEmptyCollectedByKg(nextEmptyByKg);
+      } catch (_) {
+        setEmptyCollectedByKg({});
+      }
 
       const saleIdToPickState = mergePickingStateBySaleIdFromRows(pickings);
 
@@ -447,6 +467,7 @@ export default function DashboardScreen({ navigation }) {
       setPendingCheckoutOrderIds(new Set());
       setStockCards([]);
       setProductIdToImageUri({});
+      setEmptyCollectedByKg({});
     } finally {
       setLoading(false);
     }
@@ -1536,6 +1557,9 @@ export default function DashboardScreen({ navigation }) {
                 const gasImageSource = backendImageUri ? { uri: backendImageUri } : getGasImageByProductName(productLabel);
                 const deliveredQty =
                   s.product_id != null ? Number(deliveredQtyByProductId[s.product_id]) || 0 : 0;
+                const cardKg = parseKgFromProductName(productLabel);
+                const emptyCollectedQty =
+                  cardKg != null ? Number(emptyCollectedByKg[cardKg]) || 0 : 0;
 
                 return (
                   <TouchableOpacity
@@ -1592,6 +1616,13 @@ export default function DashboardScreen({ navigation }) {
                     </Text>
                     <Text style={{ fontSize: 18, fontWeight: '900', color: deliveredQty > 0 ? '#16a34a' : colors.textSecondary, marginTop: 4 }}>
                       {deliveredQty.toLocaleString('en-IN')}
+                    </Text>
+                    <View style={{ height: 6 }} />
+                    <Text style={{ fontSize: 12, color: colors.textSecondary, fontWeight: '800' }}>
+                      Empty Collected
+                    </Text>
+                    <Text style={{ fontSize: 18, fontWeight: '900', color: emptyCollectedQty > 0 ? '#0f766e' : colors.textSecondary, marginTop: 4 }}>
+                      {emptyCollectedQty.toLocaleString('en-IN')}
                     </Text>
                   </TouchableOpacity>
                 );

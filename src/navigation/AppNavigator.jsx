@@ -15,6 +15,7 @@ import SaleOrderListScreen from '../screens/SaleOrderListScreen';
 import DeliveredOrdersScreen from '../screens/DeliveredOrdersScreen';
 import SaleOrderDetailsScreen from '../screens/SaleOrderDetailsScreen';
 import ProceedPaymentScreen from '../screens/ProceedPaymentScreen';
+import EmptyCylinderCollectionScreen from '../screens/EmptyCylinderCollectionScreen';
 import InvoiceScreen from '../screens/InvoiceScreen';
 import PaymentProofScreen from '../screens/PaymentProofScreen';
 import QrGenerateScreen from '../screens/QrGenerateScreen';
@@ -204,6 +205,11 @@ function MainStackScreen() {
         name="ProceedPayment"
         component={ProceedPaymentScreen}
         options={{ ...headerScreenOptions, title: 'Payment' }}
+      />
+      <MainStack.Screen
+        name="EmptyCylinderCollection"
+        component={EmptyCylinderCollectionScreen}
+        options={{ ...headerScreenOptions, title: 'Empty Cylinders' }}
       />
       <MainStack.Screen
         name="InvoiceScreen"

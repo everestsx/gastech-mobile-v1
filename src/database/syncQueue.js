@@ -167,6 +167,39 @@ export async function getPaymentSyncedAtForSaleOrder(saleOrderId) {
   return null;
 }
 
+/** Latest payment payload by sale order id from both pending and synced queue items. */
+export async function getLatestPaymentPayloadMapBySaleOrderIds(saleOrderIds) {
+  if (!Array.isArray(saleOrderIds) || saleOrderIds.length === 0) return {};
+  const wanted = new Set(
+    saleOrderIds
+      .map((id) => Number(id))
+      .filter((id) => Number.isFinite(id))
+  );
+  if (wanted.size === 0) return {};
+  const db = await getDb();
+  const rows = await db.getAllAsync(
+    `SELECT id, payload
+     FROM sync_queue
+     WHERE action_type = ?`,
+    [ACTION_PAYMENT]
+  );
+  const bySaleOrderId = {};
+  for (const row of rows || []) {
+    const payload = safeParseJson(row.payload, {});
+    const soIdRaw = payload.saleOrderId ?? payload.sale_order_id;
+    const soId = Number(soIdRaw);
+    if (!Number.isFinite(soId) || !wanted.has(soId)) continue;
+    const existing = bySaleOrderId[soId];
+    if (!existing || Number(row.id) > Number(existing.queueId)) {
+      bySaleOrderId[soId] = {
+        queueId: Number(row.id),
+        payload,
+      };
+    }
+  }
+  return bySaleOrderId;
+}
+
 function safeParseJson(str, fallback) {
   if (str == null || str === '') return fallback;
   try {

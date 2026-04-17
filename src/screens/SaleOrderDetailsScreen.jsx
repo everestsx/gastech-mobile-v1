@@ -41,6 +41,7 @@ import { spacing, borderRadius } from '../constants/theme';
 import { getProductDisplayName, getGasSizeFromProductName } from '../utils/productDisplay';
 import { getLocalizedCustomerNameFromOrder } from '../utils/customerDisplayName';
 import { getProductImageSource } from '../utils/gasImage';
+import { isNewIssueName } from '../utils/cylinderCatalog';
 import { lineTaxAtQuantity } from '../utils/orderLineTax.js';
 import { getCheckoutResumeEntry } from '../services/checkoutResume.service';
 
@@ -1300,6 +1301,8 @@ const handleProceedToPayment = useCallback(async () => {
       : (lineSubtotal > 0 ? lineSubtotal : unitPrice * (Number.isNaN(qtyNum) ? 0 : qtyNum));
     const productName = item.product_id?.[1] ?? item.name ?? '';
     const gasSize = getGasSizeFromProductName(productName);
+    const isNewIssueLine = isNewIssueName(productName);
+    const issuePrefix = isNewIssueLine ? 'New Issue ' : '';
     const gasAccent =
       gasSize && GAS_SIZE_COLORS[gasSize.size] ? GAS_SIZE_COLORS[gasSize.size] : FALLBACK_ACCENT;
     const productId = item.product_id != null && Array.isArray(item.product_id) ? item.product_id[0] : item.product_id;
@@ -1336,7 +1339,7 @@ const handleProceedToPayment = useCallback(async () => {
                       <>
                         <View style={[styles.lineGasSwatch, { backgroundColor: gasAccent }]} />
                         <Text style={styles.lineProductName} numberOfLines={1}>
-                          {gasSize.kg} kg ×
+                          {issuePrefix}{gasSize.kg} kg ×
                         </Text>
                       </>
                     ) : (
@@ -1401,7 +1404,7 @@ const handleProceedToPayment = useCallback(async () => {
                 <Text style={styles.lineProductName} numberOfLines={2}>
                   {gasSize ? (
                     <>
-                      {gasSize.kg} kg ×{' '}
+                      {issuePrefix}{gasSize.kg} kg ×{' '}
                       <Text style={styles.lineQtyValue}>{item.newQty} units</Text>
                     </>
                   ) : (

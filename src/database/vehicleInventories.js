@@ -114,11 +114,12 @@ export async function updateVehicleInventoryQuantity(vehicleId, productId, newQu
   console.log(`[DB Update] Setting vehicle ${vehicleId}, product ${productId} to quantity ${newQuantity} (marking as locally modified)`);
   await db.runAsync(
     `UPDATE vehicle_inventories 
-     SET available_quantity = ?, 
+     SET quantity = ?,
+         available_quantity = ?, 
          updated_at = datetime('now'),
          is_locally_modified = 1
      WHERE vehicle_id = ? AND product_id = ?`,
-    [newQuantity, vehicleId, productId]
+    [newQuantity, newQuantity, vehicleId, productId]
   );
 }
 
@@ -127,11 +128,12 @@ export async function updateVehicleInventoryQuantityByLocation(locationId, produ
   console.log(`[DB Update] Setting location ${locationId}, product ${productId} to quantity ${newQuantity} (marking as locally modified)`);
   await db.runAsync(
     `UPDATE vehicle_inventories 
-     SET available_quantity = ?, 
+     SET quantity = ?,
+         available_quantity = ?, 
          updated_at = datetime('now'),
          is_locally_modified = 1
      WHERE location_id = ? AND product_id = ?`,
-    [newQuantity, locationId, productId]
+    [newQuantity, newQuantity, locationId, productId]
   );
 }
 

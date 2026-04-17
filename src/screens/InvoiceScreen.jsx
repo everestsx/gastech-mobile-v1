@@ -990,6 +990,7 @@ export default function InvoiceScreen({ route, navigation }) {
     openPaymentProofAfterPrint: routeOpenPaymentProofAfterPrint,
     creditProofRequired: routeCreditProofRequired,
     orderName: routeOrderName,
+    emptyCylinderEntries: routeEmptyCylinderEntries,
   } = route.params ?? {};
 
   const fromProceedPayment = routeFromProceedPayment === true;
@@ -2405,6 +2406,15 @@ export default function InvoiceScreen({ route, navigation }) {
 
   const hasCreditPayment = (effectivePaymentSplit?.credit ?? 0) > 0 || paymentType === 'credit';
   const evidenceRequired = !previewBeforePayment && hasCreditPayment;
+  const emptyCollectionLabel = useMemo(() => {
+    const rows = Array.isArray(routeEmptyCylinderEntries) ? routeEmptyCylinderEntries : [];
+    if (rows.length === 0) return '';
+    const parts = rows
+      .filter((r) => Number(r?.emptyCollectedQty) > 0)
+      .map((r) => `${Number(r.kg)}kg: ${Number(r.emptyCollectedQty)}`);
+    if (parts.length === 0) return 'Empty collected: 0';
+    return `Empty collected: ${parts.join(' • ')}`;
+  }, [routeEmptyCylinderEntries]);
 
   if (loading) {
     return (
@@ -2506,6 +2516,11 @@ export default function InvoiceScreen({ route, navigation }) {
         <View style={styles.paymentBadge}>
           <Text style={styles.paymentText}>Payment: {paymentLabel}</Text>
         </View>
+        {emptyCollectionLabel ? (
+          <View style={styles.paymentBadge}>
+            <Text style={styles.paymentText}>{emptyCollectionLabel}</Text>
+          </View>
+        ) : null}
         {previewBeforePayment ? (
           <TouchableOpacity
             style={[styles.printBtn, { marginTop: spacing.md }]}
