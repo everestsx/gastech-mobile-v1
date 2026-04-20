@@ -33,7 +33,12 @@ import {
 } from '../services/sync.service';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { fetchAndStoreVehicleJournals } from '../services/vehicle.service';
-import { getDriverByBarcode, getPortersEmployees, odooImageToUri } from '../services/employee.service';
+import {
+  getDriverByBarcode,
+  getPortersEmployeesOfflineFirst,
+  refreshPortersEmployeesCache,
+  odooImageToUri,
+} from '../services/employee.service';
 
 
 
@@ -158,9 +163,18 @@ export default function LoginScreen({ navigation }) {
     setSelectedPorterIds([]);
     setPorterSearchQuery('');
     try {
-      const list = await getPortersEmployees();
-      setPortersList(Array.isArray(list) ? list : []);
-      if (!list?.length) {
+      // Fast path: load cached list first (offline-first), then refresh cache in background.
+      const list = await getPortersEmployeesOfflineFirst();
+      const normalized = Array.isArray(list) ? list : [];
+      setPortersList(normalized);
+      setPortersLoading(false);
+
+      const refreshed = await refreshPortersEmployeesCache();
+      if (Array.isArray(refreshed) && refreshed.length > 0) {
+        setPortersList(refreshed);
+      }
+
+      if (!normalized.length && !(Array.isArray(refreshed) && refreshed.length > 0)) {
         showAlert('No porters', 'None on file. Ask your office to check the porter list in GasTech.', [
           { text: 'OK', onPress: hideAlert },
         ]);

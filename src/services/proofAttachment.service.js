@@ -189,6 +189,32 @@ export async function createProofAttachment(saleOrderId, base64Data, filename = 
  * API 2 — Post message to sale order chatter with attachment_ids (ids from API 1).
  * Odoo: sale.order message_post([sale_order_id], body=..., attachment_ids=[1305], message_type, subtype_xmlid).
  */
+/**
+ * Build plain-text chatter body for empty-cylinder adjustments (posted with payment sync).
+ * @param {Array<{ kg: number, defaultEmptyQty?: number, emptyCollectedQty: number }>} entries
+ * @param {string} driverReason - preset + optional detail from driver
+ */
+export function buildEmptyCylinderChatterBody(entries, driverReason) {
+  const lines = [];
+  lines.push('Empty cylinders — mobile delivery');
+  lines.push(SEP);
+  const rows = Array.isArray(entries) ? entries : [];
+  for (const e of rows) {
+    const kg = Number(e.kg);
+    if (!Number.isFinite(kg)) continue;
+    const expected = Number(e.defaultEmptyQty ?? e.expectedQty ?? 0) || 0;
+    const collected = Number(e.emptyCollectedQty) || 0;
+    const diff = Math.round((collected - expected) * 1000) / 1000;
+    let delta = 'match';
+    if (diff > 0.0001) delta = `+${diff} extra`;
+    else if (diff < -0.0001) delta = `${diff} fewer`;
+    lines.push(`${kg} kg — expected ${expected}, collected ${collected} (${delta})`);
+  }
+  lines.push(SEP);
+  lines.push(`Driver note: ${String(driverReason || '').trim() || '—'}`);
+  return lines.join('\n');
+}
+
 export async function postPaymentProofToChatterWithAttachmentIds(saleOrderId, options = {}) {
   const resId = typeof saleOrderId === 'number' ? saleOrderId : parseInt(saleOrderId, 10);
   if (Number.isNaN(resId)) throw new Error('Invalid sale order id for chatter');

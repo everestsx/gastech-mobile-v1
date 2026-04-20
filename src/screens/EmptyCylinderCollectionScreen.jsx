@@ -8,8 +8,11 @@ import {
   TextInput,
   ActivityIndicator,
   Alert,
+  Modal,
+  Pressable,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
 import { getSaleOrderDetailsFromDB, getVehicleLocationId, getCachedVehicleInventoryByLocation } from '../services/sync.service';
@@ -17,8 +20,10 @@ import * as syncQueueDb from '../database/syncQueue.js';
 import * as vehicleInventoriesDb from '../database/vehicleInventories.js';
 import * as productsDb from '../database/products.js';
 import { setCheckoutResumeFromPayment } from '../services/checkoutResume.service';
+import { buildEmptyCylinderChatterBody } from '../services/proofAttachment.service';
 import {
   canonicalKgFromName,
+  findEmptyCylinderProductIdForKg,
   isEmptyCylinderName,
   isGasCylinderName,
   isNewIssueName,
@@ -34,8 +39,20 @@ function qtyByLineIdMap(rows) {
   return m;
 }
 
+function qtyClose(a, b) {
+  return Math.abs(Number(a) - Number(b)) < 0.0001;
+}
+
+const REASON_PRESETS = [
+  'Will collect next time',
+  'Pending empty collection',
+  'Customer will return later',
+];
+const DEFAULT_MATCHED_EMPTY_NOTE = 'All empty cylinders were collected as per the delivered gas quantity.';
+
 export default function EmptyCylinderCollectionScreen({ route, navigation }) {
   const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
   const {
     saleOrderId,
     invoiceNavParams,
@@ -45,6 +62,9 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [reasonModalVisible, setReasonModalVisible] = useState(false);
+  const [selectedReasonText, setSelectedReasonText] = useState(REASON_PRESETS[0]);
+  const [customReasonText, setCustomReasonText] = useState('');
 
   const loadDefaults = useCallback(async () => {
     setLoading(true);
@@ -96,6 +116,13 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
         }
       }
 
+      for (const [, entry] of byKg) {
+        if (entry.emptyProductId == null) {
+          const fromCatalog = findEmptyCylinderProductIdForKg(productMap, entry.kg);
+          if (fromCatalog != null) entry.emptyProductId = fromCatalog;
+        }
+      }
+
       const prepared = Array.from(byKg.values())
         .map((entry) => {
           const autoEmpty = Math.max(0, Math.round((entry.deliveredGasQty - entry.newIssueQty) * 1000) / 1000);
@@ -117,6 +144,11 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
     void loadDefaults();
   }, [loadDefaults]);
 
+  const hasAdjustment = useMemo(
+    () => rows.some((r) => !qtyClose(r.emptyQty, r.defaultEmptyQty)),
+    [rows]
+  );
+
   const totalCollected = useMemo(
     () => rows.reduce((sum, r) => sum + (Number(r.emptyQty) || 0), 0),
     [rows]
@@ -129,6 +161,7 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
       prev.map((r) => (r.kg === kg ? { ...r, emptyQty: nextNum } : r))
     );
   }, []);
+
   const changeQtyBy = useCallback((kg, delta) => {
     setRows((prev) =>
       prev.map((r) => {
@@ -138,170 +171,291 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
       })
     );
   }, []);
-  const resetToDefault = useCallback((kg) => {
+
+  const resetToSuggested = useCallback((kg) => {
     setRows((prev) =>
       prev.map((r) => (r.kg === kg ? { ...r, emptyQty: Number(r.defaultEmptyQty) || 0 } : r))
     );
   }, []);
 
-  const handleContinue = useCallback(async () => {
-    setSaving(true);
-    try {
-      const details = await getSaleOrderDetailsFromDB(saleOrderId);
-      const order = details?.order || {};
-      const vehicleId = order?.vehicle_id != null
-        ? (Array.isArray(order.vehicle_id) ? order.vehicle_id[0] : order.vehicle_id)
-        : null;
-      const locationId = vehicleId != null ? await getVehicleLocationId(vehicleId) : null;
+  const buildEntriesPayload = useCallback(() => {
+    return rows.map((r) => ({
+      kg: Number(r.kg),
+      deliveredGasQty: Number(r.deliveredGasQty) || 0,
+      newIssueQty: Number(r.newIssueQty) || 0,
+      emptyCollectedQty: Number(r.emptyQty) || 0,
+      defaultEmptyQty: Number(r.defaultEmptyQty) || 0,
+      emptyProductId: r.emptyProductId != null ? Number(r.emptyProductId) : null,
+    }));
+  }, [rows]);
 
-      const emptyCylinderEntries = rows.map((r) => ({
-        kg: Number(r.kg),
-        deliveredGasQty: Number(r.deliveredGasQty) || 0,
-        newIssueQty: Number(r.newIssueQty) || 0,
-        emptyCollectedQty: Number(r.emptyQty) || 0,
-        emptyProductId: r.emptyProductId != null ? Number(r.emptyProductId) : null,
-      }));
+  const persistAndNavigate = useCallback(
+    async (emptyCylinderChatterBody) => {
+      setSaving(true);
+      try {
+        const details = await getSaleOrderDetailsFromDB(saleOrderId);
+        const order = details?.order || {};
+        const vehicleId = order?.vehicle_id != null
+          ? (Array.isArray(order.vehicle_id) ? order.vehicle_id[0] : order.vehicle_id)
+          : null;
+        const locationId = vehicleId != null ? await getVehicleLocationId(vehicleId) : null;
 
-      if (locationId != null) {
-        const inventory = await getCachedVehicleInventoryByLocation(locationId);
-        const byProductId = {};
-        const inventoryQueueUpdates = [];
-        for (const item of inventory || []) {
-          const pid = item?.product_id != null ? Number(item.product_id) : null;
-          if (!Number.isFinite(pid)) continue;
-          byProductId[pid] = Number(item.quantity ?? item.available_quantity) || 0;
-        }
-        for (const row of emptyCylinderEntries) {
-          if (row.emptyProductId == null || row.emptyCollectedQty <= 0) continue;
-          const current = Number(byProductId[row.emptyProductId]) || 0;
-          const nextQty = Math.max(0, current + Number(row.emptyCollectedQty));
-          await vehicleInventoriesDb.updateVehicleInventoryQuantityByLocation(
-            Number(locationId),
-            Number(row.emptyProductId),
-            nextQty
-          );
-          inventoryQueueUpdates.push({
-            productId: Number(row.emptyProductId),
-            quantityUsed: -Math.abs(Number(row.emptyCollectedQty) || 0),
-            newQuantity: nextQty,
-          });
-        }
-        if (inventoryQueueUpdates.length > 0) {
-          await syncQueueDb.enqueue(syncQueueDb.ACTION_INVENTORY_UPDATE, {
-            saleOrderId: Number(saleOrderId),
-            vehicleId: Number(vehicleId),
-            locationId: Number(locationId),
-            updates: inventoryQueueUpdates,
-          });
-        }
-      }
+        const emptyCylinderEntries = buildEntriesPayload();
 
-      const pendingPayment = await syncQueueDb.getPendingPaymentItemBySaleOrderId(Number(saleOrderId));
-      if (pendingPayment?.id != null) {
-        const nextPayload = {
-          ...(pendingPayment.payload || {}),
+        if (locationId != null) {
+          const inventory = await getCachedVehicleInventoryByLocation(locationId);
+          const byProductId = {};
+          const inventoryQueueUpdates = [];
+          for (const item of inventory || []) {
+            const pid = item?.product_id != null ? Number(item.product_id) : null;
+            if (!Number.isFinite(pid)) continue;
+            byProductId[pid] = Number(item.quantity ?? item.available_quantity) || 0;
+          }
+          for (const row of emptyCylinderEntries) {
+            if (row.emptyProductId == null || row.emptyCollectedQty <= 0) continue;
+            const current = Number(byProductId[row.emptyProductId]) || 0;
+            const nextQty = Math.max(0, current + Number(row.emptyCollectedQty));
+            const emptyName = (await productsDb.getProductById(Number(row.emptyProductId)))?.name || '';
+            await vehicleInventoriesDb.upsertVehicleInventoryQuantityByLocation(
+              Number(locationId),
+              Number(vehicleId),
+              Number(row.emptyProductId),
+              emptyName,
+              nextQty
+            );
+            inventoryQueueUpdates.push({
+              productId: Number(row.emptyProductId),
+              quantityUsed: -Math.abs(Number(row.emptyCollectedQty) || 0),
+              newQuantity: nextQty,
+            });
+          }
+          if (inventoryQueueUpdates.length > 0) {
+            await syncQueueDb.enqueue(syncQueueDb.ACTION_INVENTORY_UPDATE, {
+              saleOrderId: Number(saleOrderId),
+              vehicleId: Number(vehicleId),
+              locationId: Number(locationId),
+              updates: inventoryQueueUpdates,
+            });
+          }
+        }
+
+        const pendingPayment = await syncQueueDb.getPendingPaymentItemBySaleOrderId(Number(saleOrderId));
+        if (pendingPayment?.id != null) {
+          const base = { ...(pendingPayment.payload || {}), emptyCylinderEntries };
+          if (emptyCylinderChatterBody && String(emptyCylinderChatterBody).trim()) {
+            base.emptyCylinderChatterBody = String(emptyCylinderChatterBody).trim();
+          } else {
+            delete base.emptyCylinderChatterBody;
+          }
+          await syncQueueDb.updateQueueItemPayload(pendingPayment.id, base);
+        }
+
+        await setCheckoutResumeFromPayment(Number(saleOrderId), {
+          ...(invoiceNavParams || {}),
           emptyCylinderEntries,
-        };
-        await syncQueueDb.updateQueueItemPayload(pendingPayment.id, nextPayload);
+          ...(emptyCylinderChatterBody && String(emptyCylinderChatterBody).trim()
+            ? { emptyCylinderChatterBody: String(emptyCylinderChatterBody).trim() }
+            : {}),
+        });
+
+        navigation.replace('InvoiceScreen', {
+          ...(invoiceNavParams || {}),
+          emptyCylinderEntries,
+          ...(emptyCylinderChatterBody && String(emptyCylinderChatterBody).trim()
+            ? { emptyCylinderChatterBody: String(emptyCylinderChatterBody).trim() }
+            : {}),
+        });
+      } catch (e) {
+        Alert.alert('Error', e?.message || 'Could not save empty cylinder details.');
+      } finally {
+        setSaving(false);
       }
+    },
+    [buildEntriesPayload, invoiceNavParams, navigation, saleOrderId]
+  );
 
-      await setCheckoutResumeFromPayment(Number(saleOrderId), {
-        ...(invoiceNavParams || {}),
-        emptyCylinderEntries,
-      });
-
-      navigation.replace('InvoiceScreen', {
-        ...(invoiceNavParams || {}),
-        emptyCylinderEntries,
-      });
-    } catch (e) {
-      Alert.alert('Error', e?.message || 'Could not save empty cylinder details.');
-    } finally {
-      setSaving(false);
+  const onPressConfirm = useCallback(() => {
+    if (hasAdjustment) {
+      setSelectedReasonText(REASON_PRESETS[0]);
+      setCustomReasonText('');
+      setReasonModalVisible(true);
+      return;
     }
-  }, [invoiceNavParams, navigation, rows, saleOrderId]);
+    void persistAndNavigate(DEFAULT_MATCHED_EMPTY_NOTE);
+  }, [hasAdjustment, persistAndNavigate]);
 
-  const styles = useMemo(() => StyleSheet.create({
-    container: { flex: 1, backgroundColor: colors.background },
-    content: { padding: spacing.md, paddingBottom: spacing.xl * 2 },
-    title: { fontSize: 22, fontWeight: '800', color: colors.text, marginBottom: 6 },
-    subtitle: { fontSize: 13, lineHeight: 19, color: colors.textSecondary, marginBottom: spacing.md },
-    card: {
-      backgroundColor: colors.surface,
-      borderWidth: 1,
-      borderColor: colors.border,
-      borderRadius: borderRadius.lg,
-      padding: spacing.md,
-      marginBottom: spacing.sm,
-    },
-    cardTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-    cardTitle: { fontSize: 16, fontWeight: '700', color: colors.text },
-    meta: { fontSize: 12, color: colors.textSecondary, marginTop: 6 },
-    qtyInputWrap: {
-      marginTop: spacing.sm,
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 8,
-    },
-    qtyButton: {
-      width: 38,
-      height: 38,
-      borderRadius: 19,
-      borderWidth: 1,
-      borderColor: colors.border,
-      backgroundColor: colors.background,
-      alignItems: 'center',
-      justifyContent: 'center',
-    },
-    qtyInput: {
-      minWidth: 110,
-      borderWidth: 1,
-      borderColor: colors.border,
-      backgroundColor: colors.background,
-      borderRadius: borderRadius.md,
-      paddingVertical: 8,
-      paddingHorizontal: 10,
-      color: colors.text,
-      fontSize: 16,
-      fontWeight: '700',
-      textAlign: 'right',
-    },
-    resetBtn: {
-      marginTop: spacing.sm,
-      alignSelf: 'flex-start',
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 6,
-      paddingHorizontal: 10,
-      paddingVertical: 6,
-      borderRadius: borderRadius.md,
-      borderWidth: 1,
-      borderColor: colors.border,
-      backgroundColor: colors.background,
-    },
-    resetBtnText: { fontSize: 12, fontWeight: '700', color: colors.textSecondary },
-    summary: {
-      marginTop: spacing.sm,
-      marginBottom: spacing.md,
-      padding: spacing.md,
-      borderRadius: borderRadius.md,
-      backgroundColor: colors.primary + '14',
-      borderWidth: 1,
-      borderColor: colors.primary + '33',
-    },
-    summaryText: { fontSize: 14, fontWeight: '700', color: colors.text },
-    cta: {
-      marginTop: spacing.sm,
-      backgroundColor: colors.primary,
-      borderRadius: borderRadius.md,
-      minHeight: 50,
-      alignItems: 'center',
-      justifyContent: 'center',
-      flexDirection: 'row',
-      gap: 8,
-    },
-    ctaText: { color: '#fff', fontSize: 16, fontWeight: '700' },
-  }), [colors]);
+  const onConfirmReason = useCallback(() => {
+    const selected = String(selectedReasonText || '').trim();
+    const custom = String(customReasonText || '').trim();
+    const typedReason = custom ? `${selected}. ${custom}` : selected;
+    if (!selected) {
+      Alert.alert('Reason required', 'Please select a reason.');
+      return;
+    }
+    const body = buildEmptyCylinderChatterBody(buildEntriesPayload(), typedReason);
+    setReasonModalVisible(false);
+    void persistAndNavigate(body);
+  }, [buildEntriesPayload, customReasonText, persistAndNavigate, selectedReasonText]);
+
+  const styles = useMemo(
+    () =>
+      StyleSheet.create({
+        container: { flex: 1, backgroundColor: colors.background },
+        content: { padding: spacing.md, paddingBottom: spacing.md },
+        hero: {
+          borderRadius: borderRadius.lg,
+          padding: spacing.md,
+          marginBottom: spacing.md,
+          backgroundColor: colors.primary + '18',
+          borderWidth: 1,
+          borderColor: colors.primary + '44',
+        },
+        heroIcon: { marginBottom: 6 },
+        title: { fontSize: 20, fontWeight: '800', color: colors.text, marginBottom: 2 },
+        heroText: { fontSize: 13, lineHeight: 18, color: colors.textSecondary },
+        cardsWrap: { gap: spacing.sm },
+        card: {
+          backgroundColor: colors.surface,
+          borderWidth: 1,
+          borderColor: colors.border,
+          borderRadius: borderRadius.lg,
+          padding: spacing.sm + 2,
+        },
+        cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.sm },
+        sizeLabel: { fontSize: 16, fontWeight: '800', color: colors.text },
+        gasRow: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          marginBottom: 6,
+          paddingVertical: 6,
+          paddingHorizontal: 10,
+          borderRadius: borderRadius.md,
+          backgroundColor: colors.background,
+        },
+        gasLabel: { fontSize: 13, color: colors.textSecondary, fontWeight: '600' },
+        gasVal: { fontSize: 16, fontWeight: '800', color: colors.text },
+        sectionLabel: { fontSize: 11, fontWeight: '700', color: colors.textSecondary, marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.4 },
+        qtyRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 2 },
+        qtyBtn: {
+          width: 40,
+          height: 40,
+          borderRadius: 20,
+          borderWidth: 1,
+          borderColor: colors.border,
+          backgroundColor: colors.background,
+          alignItems: 'center',
+          justifyContent: 'center',
+        },
+        qtyInput: {
+          flex: 1,
+          minWidth: 80,
+          borderWidth: 1,
+          borderColor: colors.border,
+          backgroundColor: colors.background,
+          borderRadius: borderRadius.md,
+          paddingVertical: 8,
+          paddingHorizontal: 12,
+          color: colors.text,
+          fontSize: 18,
+          fontWeight: '800',
+          textAlign: 'center',
+        },
+        suggested: { fontSize: 12, color: colors.textSecondary, marginTop: 6 },
+        resetLink: { flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start', marginTop: 10, paddingVertical: 4 },
+        resetLinkText: { fontSize: 13, fontWeight: '700', color: colors.primary },
+        summary: {
+          marginTop: spacing.xs,
+          marginBottom: spacing.sm,
+          padding: spacing.sm + 2,
+          borderRadius: borderRadius.md,
+          backgroundColor: colors.surface,
+          borderWidth: 1,
+          borderColor: colors.border,
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+        },
+        summaryLabel: { fontSize: 13, color: colors.textSecondary, fontWeight: '600' },
+        summaryVal: { fontSize: 18, fontWeight: '900', color: colors.primary },
+        footerBar: {
+          borderTopWidth: 1,
+          borderTopColor: colors.border,
+          backgroundColor: colors.background,
+          paddingHorizontal: spacing.md,
+          paddingTop: spacing.sm,
+        },
+        cta: {
+          backgroundColor: colors.primary,
+          borderRadius: borderRadius.md,
+          minHeight: 52,
+          alignItems: 'center',
+          justifyContent: 'center',
+          flexDirection: 'row',
+          gap: 10,
+        },
+        ctaText: { color: '#fff', fontSize: 16, fontWeight: '800' },
+        hint: { fontSize: 12, color: colors.textSecondary, textAlign: 'center', marginTop: 6, lineHeight: 16 },
+        modalWrap: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'center', alignItems: 'center' },
+        modalCard: {
+          backgroundColor: colors.surface,
+          borderRadius: borderRadius.xl,
+          width: '90%',
+          paddingHorizontal: spacing.md,
+          paddingTop: spacing.md,
+          maxHeight: '80%',
+        },
+        modalTitle: { fontSize: 18, fontWeight: '800', color: colors.text, marginBottom: 4 },
+        modalSub: { fontSize: 13, color: colors.textSecondary, lineHeight: 18, marginBottom: spacing.sm },
+        reasonOption: {
+          borderWidth: 1,
+          borderColor: colors.border,
+          borderRadius: borderRadius.md,
+          paddingVertical: 12,
+          paddingHorizontal: spacing.md,
+          marginBottom: spacing.xs,
+          backgroundColor: colors.background,
+        },
+        reasonOptionOn: {
+          borderColor: colors.primary,
+          backgroundColor: colors.primary + '12',
+        },
+        reasonOptionText: { fontSize: 14, color: colors.text, fontWeight: '700' },
+        customLabel: { fontSize: 13, fontWeight: '700', color: colors.text, marginTop: spacing.xs, marginBottom: 6 },
+        customInput: {
+          borderWidth: 1,
+          borderColor: colors.border,
+          borderRadius: borderRadius.md,
+          paddingVertical: 10,
+          paddingHorizontal: spacing.md,
+          minHeight: 56,
+          color: colors.text,
+          fontSize: 14,
+          textAlignVertical: 'top',
+          backgroundColor: colors.background,
+        },
+        modalActions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm, marginBottom: spacing.md },
+        modalBtnSecondary: {
+          flex: 1,
+          paddingVertical: 14,
+          borderRadius: borderRadius.md,
+          borderWidth: 1,
+          borderColor: colors.border,
+          alignItems: 'center',
+          backgroundColor: colors.background,
+        },
+        modalBtnPrimary: {
+          flex: 1,
+          paddingVertical: 14,
+          borderRadius: borderRadius.md,
+          alignItems: 'center',
+          backgroundColor: colors.primary,
+        },
+        modalBtnSecondaryText: { fontSize: 16, fontWeight: '700', color: colors.text },
+        modalBtnPrimaryText: { fontSize: 16, fontWeight: '800', color: '#fff' },
+      }),
+    [colors]
+  );
 
   if (loading) {
     return (
@@ -312,51 +466,137 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
   }
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-      <Text style={styles.title}>Empty Cylinder Collection</Text>
-      <Text style={styles.subtitle}>
-        Default values are auto-calculated from delivered gas quantity. Adjust only if the collected empty count is different.
-      </Text>
-
-      {rows.map((row) => (
-        <View style={styles.card} key={String(row.kg)}>
-          <View style={styles.cardTop}>
-            <Text style={styles.cardTitle}>{labelFromKg(row.kg)}</Text>
-            <Ionicons name="cube-outline" size={18} color={colors.primary} />
+    <View style={styles.container}>
+      <ScrollView
+        style={{ flex: 1 }}
+        contentContainerStyle={[styles.content, { paddingBottom: spacing.lg + 72 }]}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+      >
+        <View style={styles.hero}>
+          <View style={styles.heroIcon}>
+            <Ionicons name="swap-vertical-outline" size={32} color={colors.primary} />
           </View>
-          <Text style={styles.meta}>Delivered gas: {row.deliveredGasQty}</Text>
-          <Text style={styles.meta}>New issue: {row.newIssueQty}</Text>
-          <Text style={styles.meta}>Default empty: {row.defaultEmptyQty}</Text>
-          <View style={styles.qtyInputWrap}>
-            <Text style={[styles.meta, { marginTop: 0, fontWeight: '700' }]}>Empty collected</Text>
-            <TouchableOpacity style={styles.qtyButton} onPress={() => changeQtyBy(row.kg, -1)} activeOpacity={0.8}>
-              <Ionicons name="remove" size={18} color={colors.primary} />
-            </TouchableOpacity>
-            <TextInput
-              style={styles.qtyInput}
-              value={String(row.emptyQty)}
-              onChangeText={(text) => setQty(row.kg, text)}
-              keyboardType="decimal-pad"
-            />
-            <TouchableOpacity style={styles.qtyButton} onPress={() => changeQtyBy(row.kg, 1)} activeOpacity={0.8}>
-              <Ionicons name="add" size={18} color={colors.primary} />
-            </TouchableOpacity>
-          </View>
-          <TouchableOpacity style={styles.resetBtn} onPress={() => resetToDefault(row.kg)} activeOpacity={0.8}>
-            <Ionicons name="refresh-outline" size={14} color={colors.textSecondary} />
-            <Text style={styles.resetBtnText}>Reset to default</Text>
-          </TouchableOpacity>
+          <Text style={styles.title}>Empty cylinders</Text>
+          <Text style={styles.heroText}>
+            Enter collected empty cylinders for this order.
+          </Text>
         </View>
-      ))}
 
-      <View style={styles.summary}>
-        <Text style={styles.summaryText}>Total empty cylinders collected: {totalCollected}</Text>
+        <View style={styles.cardsWrap}>
+          {rows.map((row) => {
+            const adjusted = !qtyClose(row.emptyQty, row.defaultEmptyQty);
+            return (
+              <View style={styles.card} key={String(row.kg)}>
+                <View style={styles.cardHeader}>
+                  <Text style={styles.sizeLabel}>{labelFromKg(row.kg)}</Text>
+                  {adjusted ? (
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                      <Ionicons name="alert-circle" size={16} color="#b45309" />
+                      <Text style={{ fontSize: 12, fontWeight: '700', color: '#b45309' }}>Changed</Text>
+                    </View>
+                  ) : null}
+                </View>
+
+                <View style={styles.gasRow}>
+                  <Text style={styles.gasLabel}>Gas delivered</Text>
+                  <Text style={styles.gasVal}>{Number(row.deliveredGasQty) || 0}</Text>
+                </View>
+
+                <Text style={styles.sectionLabel}>Empties collected</Text>
+                <View style={styles.qtyRow}>
+                  <TouchableOpacity style={styles.qtyBtn} onPress={() => changeQtyBy(row.kg, -1)} activeOpacity={0.85}>
+                    <Ionicons name="remove" size={22} color={colors.primary} />
+                  </TouchableOpacity>
+                  <TextInput
+                    style={styles.qtyInput}
+                    value={String(row.emptyQty)}
+                    onChangeText={(text) => setQty(row.kg, text)}
+                    keyboardType="decimal-pad"
+                    selectTextOnFocus
+                  />
+                  <TouchableOpacity style={styles.qtyBtn} onPress={() => changeQtyBy(row.kg, 1)} activeOpacity={0.85}>
+                    <Ionicons name="add" size={22} color={colors.primary} />
+                  </TouchableOpacity>
+                </View>
+                <Text style={styles.suggested}>
+                  Suggested: {Number(row.defaultEmptyQty) || 0}
+                </Text>
+                <TouchableOpacity style={styles.resetLink} onPress={() => resetToSuggested(row.kg)} activeOpacity={0.8}>
+                  <Ionicons name="refresh" size={16} color={colors.primary} />
+                  <Text style={styles.resetLinkText}>Use suggested</Text>
+                </TouchableOpacity>
+              </View>
+            );
+          })}
+        </View>
+
+        <View style={styles.summary}>
+          <Text style={styles.summaryLabel}>Total empties collected</Text>
+          <Text style={styles.summaryVal}>{totalCollected.toLocaleString('en-IN')}</Text>
+        </View>
+      </ScrollView>
+
+      <View style={[styles.footerBar, { paddingBottom: Math.max(insets.bottom, spacing.md) }]}>
+        <TouchableOpacity style={styles.cta} onPress={() => void onPressConfirm()} disabled={saving} activeOpacity={0.88}>
+          {saving ? <ActivityIndicator color="#fff" /> : <Ionicons name="checkmark-circle" size={24} color="#fff" />}
+          <Text style={styles.ctaText}>Continue</Text>
+        </TouchableOpacity>
+        <Text style={styles.hint}>
+          {hasAdjustment
+            ? 'You changed quantity, so reason is required.'
+            : 'Continue to invoice.'}
+        </Text>
       </View>
 
-      <TouchableOpacity style={styles.cta} onPress={() => void handleContinue()} disabled={saving} activeOpacity={0.85}>
-        {saving ? <ActivityIndicator color="#fff" /> : <Ionicons name="arrow-forward-circle-outline" size={22} color="#fff" />}
-        <Text style={styles.ctaText}>Continue to invoice</Text>
-      </TouchableOpacity>
-    </ScrollView>
+      <Modal visible={reasonModalVisible} animationType="slide" transparent onRequestClose={() => setReasonModalVisible(false)}>
+        <Pressable style={styles.modalWrap} onPress={() => setReasonModalVisible(false)}>
+          <Pressable style={[styles.modalCard, { paddingBottom: Math.max(insets.bottom, spacing.md) }]} onPress={(e) => e.stopPropagation()}>
+            <Text style={styles.modalTitle}>Reason for change</Text>
+            <Text style={styles.modalSub}>
+              Select a reason.
+            </Text>
+
+            {REASON_PRESETS.map((reason) => {
+              const on = selectedReasonText === reason;
+              return (
+                <TouchableOpacity
+                  key={reason}
+                  style={[styles.reasonOption, on && styles.reasonOptionOn]}
+                  onPress={() => setSelectedReasonText(reason)}
+                  activeOpacity={0.88}
+                >
+                  <Text style={styles.reasonOptionText}>{reason}</Text>
+                </TouchableOpacity>
+              );
+            })}
+
+            <Text style={styles.customLabel}>Custom message (optional)</Text>
+            <TextInput
+              style={styles.customInput}
+              placeholder="Type your custom reason..."
+              placeholderTextColor={colors.textSecondary}
+              value={customReasonText}
+              onChangeText={setCustomReasonText}
+              multiline
+            />
+
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                style={styles.modalBtnSecondary}
+                onPress={() => {
+                  setReasonModalVisible(false);
+                }}
+              >
+                <Text style={styles.modalBtnSecondaryText}>Back</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.modalBtnPrimary} onPress={onConfirmReason}>
+                <Text style={styles.modalBtnPrimaryText}>Save and continue</Text>
+              </TouchableOpacity>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+    </View>
   );
 }

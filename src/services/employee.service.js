@@ -3,8 +3,11 @@ import { callOdoo, callOdooJson2 } from "./index.service";
 
 /** Fields safe for portal-style users; do not include `barcode` (requires HR Officer in many DBs). */
 const EMPLOYEE_READ_FIELDS = ["id", "name", "image_1920", "mobile_phone", "work_phone"];
+const EMPLOYEE_READ_FIELDS_LIGHT = ["id", "name", "mobile_phone", "work_phone"];
 
 const CONTEXT = { lang: "en_US" };
+const PORTERS_CACHE_KEY = "@gastech_porters_cache_v1";
+const PORTERS_CACHE_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
 
 const SEARCH_OPTS = {
   fields: EMPLOYEE_READ_FIELDS,
@@ -25,8 +28,8 @@ function isAccessLikeError(err) {
 /**
  * search_read on hr.employee: try JSON-RPC execute_kw, then JSON 2 (same pattern as commission).
  */
-async function employeeSearchRead(domain, { limit = 500 } = {}) {
-  const opts = { fields: EMPLOYEE_READ_FIELDS, limit, context: CONTEXT };
+async function employeeSearchRead(domain, { limit = 500, fields = EMPLOYEE_READ_FIELDS } = {}) {
+  const opts = { fields, limit, context: CONTEXT };
   try {
     const rows = await callOdoo("hr.employee", "search_read", [domain], opts);
     return Array.isArray(rows) ? rows : [];
@@ -34,11 +37,57 @@ async function employeeSearchRead(domain, { limit = 500 } = {}) {
     if (!isAccessLikeError(e)) throw e;
     const result = await callOdooJson2("hr.employee", "search_read", {
       domain,
-      fields: EMPLOYEE_READ_FIELDS,
+      fields,
       limit,
     });
     return Array.isArray(result) ? result : [];
   }
+}
+
+let _asyncStorage;
+async function getAsyncStorage() {
+  if (!_asyncStorage) _asyncStorage = (await import("@react-native-async-storage/async-storage")).default;
+  return _asyncStorage;
+}
+
+async function readPortersCache() {
+  try {
+    const storage = await getAsyncStorage();
+    const raw = await storage.getItem(PORTERS_CACHE_KEY);
+    if (!raw) return { rows: [], isFresh: false };
+    const parsed = JSON.parse(raw);
+    const rows = Array.isArray(parsed?.rows) ? parsed.rows : [];
+    const savedAt = Number(parsed?.savedAt) || 0;
+    const isFresh = Date.now() - savedAt <= PORTERS_CACHE_TTL_MS;
+    return { rows, isFresh };
+  } catch {
+    return { rows: [], isFresh: false };
+  }
+}
+
+async function writePortersCache(rows) {
+  try {
+    const storage = await getAsyncStorage();
+    await storage.setItem(
+      PORTERS_CACHE_KEY,
+      JSON.stringify({ savedAt: Date.now(), rows: Array.isArray(rows) ? rows : [] })
+    );
+  } catch {
+    // cache write is best-effort
+  }
+}
+
+function mergePortersPreferCachedImages(cachedRows, nextRows) {
+  const cachedById = new Map(
+    (Array.isArray(cachedRows) ? cachedRows : [])
+      .filter((p) => p && p.id != null)
+      .map((p) => [String(p.id), p])
+  );
+  return (Array.isArray(nextRows) ? nextRows : []).map((p) => {
+    const prev = cachedById.get(String(p?.id));
+    if (p?.imageBase64 || !prev?.imageBase64) return p;
+    return { ...p, imageBase64: prev.imageBase64 };
+  });
 }
 
 /**
@@ -91,6 +140,55 @@ export const getPortersEmployees = () =>
   employeeSearchRead([["department_id.name", "=", "Porters"]], { limit: 500 }).then((rows) =>
     rows.map((r) => normalizeEmployee(r)).filter(Boolean)
   );
+
+/** Faster porter list without image blobs (used for quick initial load). */
+export const getPortersEmployeesFast = () =>
+  employeeSearchRead([["department_id.name", "=", "Porters"]], {
+    limit: 500,
+    fields: EMPLOYEE_READ_FIELDS_LIGHT,
+  }).then((rows) =>
+    rows.map((r) => normalizeEmployee(r)).filter(Boolean)
+  );
+
+/**
+ * Offline-first porter fetch:
+ * - returns cached list immediately when available
+ * - refreshes from server when cache is stale or missing
+ */
+export const getPortersEmployeesOfflineFirst = async () => {
+  const cached = await readPortersCache();
+  if (cached.rows.length > 0) {
+    return cached.rows;
+  }
+  try {
+    const fast = await getPortersEmployeesFast();
+    if (fast.length > 0) {
+      const merged = mergePortersPreferCachedImages(cached.rows, fast);
+      await writePortersCache(merged);
+      return merged;
+    }
+    return cached.rows;
+  } catch (e) {
+    if (cached.rows.length > 0) return cached.rows;
+    throw e;
+  }
+};
+
+/** Optional background refresh; does not throw. */
+export const refreshPortersEmployeesCache = async () => {
+  try {
+    const fresh = await getPortersEmployees();
+    if (fresh.length > 0) {
+      const cached = await readPortersCache();
+      const merged = mergePortersPreferCachedImages(cached.rows, fresh);
+      await writePortersCache(merged);
+      return merged;
+    }
+    return [];
+  } catch {
+    return [];
+  }
+};
 
 /**
  * Find a driver by the code they enter (often stored in Odoo `barcode` on the employee).

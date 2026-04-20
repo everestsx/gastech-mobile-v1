@@ -138,6 +138,45 @@ export async function updateVehicleInventoryQuantityByLocation(locationId, produ
 }
 
 /**
+ * Like updateVehicleInventoryQuantityByLocation but INSERTs a row when this product has no quant row locally yet
+ * (e.g. empty cylinders collected before any empty stock existed on the lorry).
+ */
+export async function upsertVehicleInventoryQuantityByLocation(
+  locationId,
+  vehicleId,
+  productId,
+  productName,
+  newQuantity
+) {
+  const db = await getDb();
+  const existing = await db.getFirstAsync(
+    `SELECT id FROM vehicle_inventories WHERE location_id = ? AND product_id = ?`,
+    [locationId, productId]
+  );
+  if (existing?.id != null) {
+    await updateVehicleInventoryQuantityByLocation(locationId, productId, newQuantity);
+    return;
+  }
+  const syntheticId = -(Math.abs(Number(productId)) + Math.abs(Number(locationId)) * 100000);
+  console.log(
+    `[DB Insert] New inventory row location ${locationId}, product ${productId} qty ${newQuantity} (synthetic id ${syntheticId})`
+  );
+  await db.runAsync(
+    `INSERT OR REPLACE INTO vehicle_inventories (id, location_id, vehicle_id, product_id, product_name, quantity, available_quantity, updated_at, is_locally_modified)
+     VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), 1)`,
+    [
+      syntheticId,
+      locationId,
+      vehicleId,
+      productId,
+      empty(productName),
+      newQuantity,
+      newQuantity,
+    ]
+  );
+}
+
+/**
  * Clear the locally modified flag for a specific inventory item.
  * Call this after successfully pushing the inventory update to Odoo.
  */

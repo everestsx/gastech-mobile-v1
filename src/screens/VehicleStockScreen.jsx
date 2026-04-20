@@ -53,8 +53,6 @@ function orderDateToLocalDay(value) {
   return Number.isNaN(parsed.getTime()) ? '' : formatLocalYyyyMmDd(parsed);
 }
 
-const LOGO_SIZE = 48;
-
 function StockCard({ item, colors, cardWidth, isLeft, productImageUri, deliveredQty, emptyCollectedQty, emptyOnHandQty }) {
   const rawName = item.product_name || `Product ${item.product_id || ''}`.trim() || '—';
   const name = formatProductName(rawName);
@@ -72,11 +70,10 @@ function StockCard({ item, colors, cardWidth, isLeft, productImageUri, delivered
     <View
       style={[
         styles.card,
-        { backgroundColor: colors.surface, borderColor: lowStock ? colors.error : accentColor, borderWidth: lowStock ? 2 : 2.5, width: cardWidth },
+        { backgroundColor: colors.surface, borderColor: lowStock ? colors.error : colors.border, borderWidth: 1, width: cardWidth },
         isLeft && { marginRight: CARD_GAP },
       ]}
     >
-      <View style={[styles.cardAccent, { backgroundColor: lowStock ? colors.error : accentColor }]} />
       <View style={styles.cardContent}>
         <View style={styles.cardIconWrap}>
           {logoSource ? (
@@ -92,34 +89,39 @@ function StockCard({ item, colors, cardWidth, isLeft, productImageUri, delivered
         <Text style={[styles.cardProductName, { color: colors.text }]} numberOfLines={2}>
           {name}
         </Text>
-        <View style={styles.stockRowsWrap}>
-          <View style={styles.stockRow}>
-            <Text style={[styles.stockRowLabel, { color: colors.textSecondary }]}>On Hand Stock</Text>
-            <Text style={[styles.stockRowValue, { color: colors.text }]}>{onHand}</Text>
+        <Text style={[styles.stockAvailableLabel, { color: colors.textSecondary }]}>Stock Available</Text>
+        <Text style={[styles.stockAvailableValue, { color: colors.text }]}>{onHand}</Text>
+        <View style={styles.statStrip}>
+          <View style={styles.statCell}>
+            <View style={styles.statHead}>
+              <Ionicons name="bus-outline" size={18} color="#315cbf" />
+              <Ionicons name="arrow-up" size={12} color="#315cbf" />
+            </View>
+            <Text style={styles.statLabel}>Ordered: {ordered}</Text>
           </View>
-          <View style={styles.stockRow}>
-            <Text style={[styles.stockRowLabel, { color: colors.textSecondary }]}>Ordered Stock</Text>
-            <Text style={[styles.stockRowValue, { color: colors.text }]}>{ordered}</Text>
+          <View style={[styles.statCell, styles.statCellMid]}>
+            <View style={styles.statHead}>
+              <Ionicons name="cube-outline" size={18} color="#8b5e2b" />
+              <Ionicons name="arrow-up" size={12} color="#8b5e2b" />
+            </View>
+            <Text style={styles.statLabel}>Extra: {extra}</Text>
           </View>
-          <View style={styles.stockRow}>
-            <Text style={[styles.stockRowLabel, { color: colors.textSecondary }]}>Extra Stock</Text>
-            <Text style={[styles.stockRowValue, { color: colors.text }]}>{extra}</Text>
+          <View style={styles.statCell}>
+            <View style={styles.statHead}>
+              <Ionicons name="people-outline" size={18} color="#15803d" />
+              <Ionicons name="checkmark-circle" size={12} color="#15803d" />
+            </View>
+            <Text style={[styles.statLabel, { color: '#15803d' }]}>Delivered: {delivered}</Text>
           </View>
-          <View style={styles.stockRow}>
-            <Text style={[styles.stockRowLabel, { color: colors.textSecondary }]}>Delivered</Text>
-            <Text style={[styles.stockRowValue, { color: delivered > 0 ? '#16a34a' : colors.textSecondary }]}>{delivered}</Text>
+        </View>
+        <View style={styles.emptyRowsWrap}>
+          <View style={styles.emptyRow}>
+            <Text style={styles.emptyLabel}>Empty Collected</Text>
+            <Text style={[styles.emptyValue, { color: '#0f766e' }]}>{Number(emptyCollectedQty) || 0}</Text>
           </View>
-          <View style={styles.stockRow}>
-            <Text style={[styles.stockRowLabel, { color: colors.textSecondary }]}>Empty Collected</Text>
-            <Text style={[styles.stockRowValue, { color: (Number(emptyCollectedQty) || 0) > 0 ? '#0f766e' : colors.textSecondary }]}>
-              {Number(emptyCollectedQty) || 0}
-            </Text>
-          </View>
-          <View style={styles.stockRow}>
-            <Text style={[styles.stockRowLabel, { color: colors.textSecondary }]}>Empty Stock</Text>
-            <Text style={[styles.stockRowValue, { color: colors.text }]}>
-              {Number(emptyOnHandQty) || 0}
-            </Text>
+          <View style={styles.emptyRow}>
+            <Text style={styles.emptyLabel}>Empty Stock</Text>
+            <Text style={styles.emptyValue}>{Number(emptyOnHandQty) || 0}</Text>
           </View>
         </View>
         <View style={[styles.badge, { backgroundColor: lowStock ? colors.error + '20' : accentColor + '20' }]}>
@@ -141,51 +143,96 @@ const styles = StyleSheet.create({
     elevation: 2,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 4,
-  },
-  cardAccent: {
-    height: 4,
-    width: '100%',
+    shadowOpacity: 0.06,
+    shadowRadius: 3,
   },
   cardContent: {
-    padding: spacing.md,
+    padding: spacing.sm + 2,
   },
   cardIconWrap: {
-    marginBottom: spacing.sm,
+    marginBottom: 6,
+    width: 44,
+    height: 44,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#eef2ff',
   },
   productLogo: {
-    width: LOGO_SIZE,
-    height: LOGO_SIZE,
+    width: 32,
+    height: 32,
   },
   cardProductName: {
     fontSize: 15,
     fontWeight: '700',
-    marginBottom: spacing.sm,
-    minHeight: 40,
+    marginBottom: 4,
+    minHeight: 34,
   },
-  stockRowsWrap: {
-    marginBottom: spacing.sm,
-    gap: 4,
+  stockAvailableLabel: {
+    fontSize: 13,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.2,
   },
-  stockRow: {
+  stockAvailableValue: {
+    fontSize: 49,
+    fontWeight: '900',
+    lineHeight: 52,
+    marginBottom: 4,
+  },
+  statStrip: {
+    flexDirection: 'row',
+    backgroundColor: '#e8effa',
+    borderRadius: 0,
+    overflow: 'hidden',
+    marginBottom: 10,
+    marginHorizontal: -10,
+    paddingHorizontal: 2,
+  },
+  statCell: {
+    flex: 1,
+    paddingVertical: 5,
+    paddingHorizontal: 2,
+    alignItems: 'center',
+  },
+  statCellMid: {
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
+    borderColor: '#c8d7ef',
+  },
+  statHead: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    gap: 2,
+    marginBottom: 1,
   },
-  stockRowLabel: {
-    fontSize: 12,
+  statLabel: {
+    fontSize: 10,
+    color: '#1f2937',
     fontWeight: '600',
   },
-  stockRowValue: {
-    fontSize: 15,
+  emptyRowsWrap: {
+    marginBottom: spacing.sm,
+    gap: 5,
+  },
+  emptyRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  emptyLabel: {
+    fontSize: 12,
+    color: '#374151',
+  },
+  emptyValue: {
+    fontSize: 14,
     fontWeight: '800',
   },
   badge: {
     alignSelf: 'flex-start',
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 4,
-    borderRadius: borderRadius.sm,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 14,
   },
   badgeText: {
     fontSize: 12,
@@ -475,7 +522,6 @@ useEffect(() => {
           ))
         ) : !hasVehicle ? (
           <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border, width: cardWidth * 2 + CARD_GAP, marginBottom: CARD_GAP }]}>
-            <View style={[styles.cardAccent, { backgroundColor: colors.border }]} />
             <View style={styles.cardContent}>
               <View style={styles.cardIconWrap}>
                 <Ionicons name="cube-outline" size={28} color={colors.textSecondary} />
