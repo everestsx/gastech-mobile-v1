@@ -40,3 +40,24 @@ export function canonicalKgFromName(raw) {
 export function labelFromKg(kg) {
   return `${kg} kg`;
 }
+
+/**
+ * Resolve empty-cylinder product id for a canonical kg from a product id → name map (e.g. products table / Odoo catalog).
+ * Used when vehicle stock has no quant row yet for empties but the product exists in the catalog.
+ * @param {Record<number, string>} productIdToName
+ * @param {number} kg
+ * @returns {number | null}
+ */
+export function findEmptyCylinderProductIdForKg(productIdToName, kg) {
+  const target = canonicalKg(kg);
+  if (target == null) return null;
+  const entries = productIdToName && typeof productIdToName === 'object' ? Object.entries(productIdToName) : [];
+  for (const [pidStr, rawName] of entries) {
+    const pid = Number(pidStr);
+    if (!Number.isFinite(pid)) continue;
+    if (!isEmptyCylinderName(rawName)) continue;
+    const c = canonicalKgFromName(rawName);
+    if (c != null && Math.abs(c - target) < 0.051) return pid;
+  }
+  return null;
+}

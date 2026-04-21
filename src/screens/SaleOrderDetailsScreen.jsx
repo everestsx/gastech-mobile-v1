@@ -620,7 +620,20 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
 
     console.log('[Inventory Update] Starting update for vehicle:', vehicleId, 'location:', locationId);
 
+    /**
+     * Baseline must match what the UI uses for limits ("on hand" = stock.quant quantity).
+     * Using only available_quantity was wrong: it is often 0 when stock is reserved, which made
+     * (0 - delivered) and wiped lorry stock in the local DB / Odoo sync.
+     */
+    const baselineOnLorry = (productId) =>
+      clampNonNegativeStock(
+        productIdToOnHand[productId] ?? productIdToAvailable[productId] ?? 0
+      );
+
     try {
+      /** Per product: remaining after all lines (handles multiple lines for same product). */
+      const remainingByProduct = new Map();
+
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
         const qtyUsed = effectiveQtys[i] != null ? Number(effectiveQtys[i]) : Number(line.newQty);
@@ -628,47 +641,52 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
 
         if (productId == null || qtyUsed <= 0) continue;
 
-        const currentStock = clampNonNegativeStock(productIdToAvailable[productId] ?? 0);
-        const newStock = Math.max(0, currentStock - qtyUsed);
+        const pid = Number(productId);
+        if (!remainingByProduct.has(pid)) {
+          remainingByProduct.set(pid, baselineOnLorry(pid));
+        }
+        const prev = remainingByProduct.get(pid);
+        const newStock = Math.max(0, prev - qtyUsed);
+        remainingByProduct.set(pid, newStock);
 
-        console.log(`[Inventory Update] Product ${productId}: ${currentStock} - ${qtyUsed} = ${newStock}`);
-
-
-        await vehicleInventoriesDb.updateVehicleInventoryQuantityByLocation(
-          locationId,
-          productId,
-          newStock
-        );
-
-        const allInventory = await vehicleInventoriesDb.getVehicleInventoryByLocationId(locationId);
-        console.log('[Inventory Update] Full inventory after update:', JSON.stringify(allInventory));
-
-        const verifyItem = allInventory.find(inv =>
-          (inv.product_id === productId || inv.id === productId)
-        );
-        console.log(`[Inventory Update] Verified new stock:`, verifyItem?.available_quantity);
+        console.log(`[Inventory Update] Product ${pid}: ${prev} - ${qtyUsed} → running ${newStock}`);
       }
 
-      await syncQueueDb.enqueue(syncQueueDb.ACTION_INVENTORY_UPDATE, {
+      for (const [pid, newStock] of remainingByProduct) {
+        await vehicleInventoriesDb.updateVehicleInventoryQuantityByLocation(
+          locationId,
+          pid,
+          newStock
+        );
+      }
+
+      const allInventory = await vehicleInventoriesDb.getVehicleInventoryByLocationId(locationId);
+      console.log('[Inventory Update] Full inventory after update:', JSON.stringify(allInventory));
+
+      const inventoryPayload = {
+        saleOrderId: Number(order.id),
         vehicleId,
         locationId,
-        updates: lines.map((line, i) => {
-          const productId = Array.isArray(line.product_id) ? line.product_id[0] : line.product_id;
-          const qtyUsed = effectiveQtys[i] != null ? Number(effectiveQtys[i]) : Number(line.newQty);
-          return {
-            productId,
-            quantityUsed: qtyUsed,
-            newQuantity: Math.max(0, clampNonNegativeStock(productIdToAvailable[productId] ?? 0) - qtyUsed)
-          };
-        }).filter(u => u.productId != null)
-      });
+        updates: Array.from(remainingByProduct.entries()).map(([productId, newQuantity]) => ({
+          productId,
+          quantityUsed: baselineOnLorry(productId) - newQuantity,
+          newQuantity,
+        })),
+      };
+      const existingInventoryUpdate =
+        await syncQueueDb.getPendingInventoryUpdateItemBySaleOrderId(Number(order.id));
+      if (existingInventoryUpdate?.id != null) {
+        await syncQueueDb.updateQueueItemPayload(existingInventoryUpdate.id, inventoryPayload);
+      } else {
+        await syncQueueDb.enqueue(syncQueueDb.ACTION_INVENTORY_UPDATE, inventoryPayload);
+      }
 
       console.log('[Inventory Update] Complete - enqueued for sync');
     } catch (error) {
       console.error('[Inventory Update] Failed:', error);
       throw new Error('Failed to update vehicle inventory');
     }
-  }, [order, lines, productIdToAvailable]);
+  }, [order, lines, productIdToAvailable, productIdToOnHand]);
   const loadDetails = useCallback(async () => {
     setLoading(true);
     try {

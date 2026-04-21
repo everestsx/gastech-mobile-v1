@@ -54,7 +54,7 @@ import * as saleOrderLinesDb from '../database/saleOrderLines.js';
 import DeliveryProgressBarChart from '../components/DeliveryProgressBarChart';
 import SyncHeaderBadge from '../components/SyncHeaderBadge';
 import { useSync } from '../context/SyncContext';
-import { odooImageToUri } from '../services/employee.service';
+import { odooImageToUri, getPortersEmployees } from '../services/employee.service';
 import {
   mergePickingStateBySaleIdFromRows,
   orderIsDeliveryDoneForProgress,
@@ -250,7 +250,32 @@ export default function DashboardScreen({ navigation }) {
         getUserSession(),
         getCachedRoutes(),
       ]);
-      const user = userData || null;
+      let user = userData || null;
+      if (user && Array.isArray(user.selectedPorters) && user.selectedPorters.length > 0) {
+        const needImages = user.selectedPorters.some((p) => !p?.imageBase64);
+        if (needImages) {
+          try {
+            const withImages = await getPortersEmployees();
+            if (Array.isArray(withImages) && withImages.length) {
+              const byId = new Map(withImages.map((p) => [Number(p.id), p]));
+              user = {
+                ...user,
+                selectedPorters: user.selectedPorters.map((p) => {
+                  const full = byId.get(Number(p?.id));
+                  if (!full) return p;
+                  return {
+                    ...p,
+                    imageBase64: p.imageBase64 || full.imageBase64,
+                    phone: (p.phone && String(p.phone).trim()) ? p.phone : (full.phone || ''),
+                  };
+                }),
+              };
+            }
+          } catch (e) {
+            console.warn('[Dashboard] porter avatar hydrate failed', e?.message ?? e);
+          }
+        }
+      }
       setUser(user);
       setRoutes(Array.isArray(routesData) ? routesData : []);
       const vehicleId = user?.isAdmin === false ? user.vehicleId : null;

@@ -1090,47 +1090,47 @@ async function processSyncQueue() {
             continue;
           }
 
-          const { callOdoo } = await import('./index.service.js');
+          const { setQuantQuantityAtLocation, adjustQuantQuantityAtLocation } = await import('./vehicleInventory.service.js');
           for (const u of updates) {
             const productId = u?.productId != null ? Number(u.productId) : null;
             if (productId == null) continue;
+            const inc = Number(u?.incrementQuantity);
             const targetQty = Number(u?.newQuantity);
-            if (Number.isFinite(targetQty)) {
-              try {
-                const quantRows = await callOdoo(
-                  'stock.quant',
-                  'search_read',
-                  [[
-                    ['location_id', '=', locationId],
-                    ['product_id', '=', productId],
-                  ]],
-                  { fields: ['id', 'quantity'], limit: 1 }
-                );
-                const quantId = Array.isArray(quantRows) && quantRows[0]?.id != null
-                  ? Number(quantRows[0].id)
-                  : null;
-                if (quantId != null) {
-                  try {
-                    await callOdoo('stock.quant', 'write', [[quantId], { quantity: targetQty }]);
-                    log('queue', `inventory upload: quant ${quantId} quantity=${targetQty}`);
-                  } catch (writeErr) {
-                    // Fallback for backends where direct quantity write is restricted.
-                    await callOdoo('stock.quant', 'write', [[quantId], { inventory_quantity: targetQty }]);
-                    await callOdoo('stock.quant', 'action_apply_inventory', [[quantId]]);
-                    log(
-                      'queue',
-                      `inventory upload fallback: quant ${quantId} inventory_quantity=${targetQty} (${String(writeErr?.message || writeErr).slice(0, 90)})`
-                    );
-                  }
+            try {
+              if (Number.isFinite(inc) && inc !== 0) {
+                const result = await adjustQuantQuantityAtLocation(locationId, productId, inc);
+                if (result?.ok) {
+                  log(
+                    'queue',
+                    `inventory upload (delta): location=${locationId} product=${productId} delta=${inc} → qty=${result.targetQty ?? '?'}` +
+                      (result.created ? ' (quant created)' : result.quantId != null ? ` quantId=${result.quantId}` : '')
+                  );
                 } else {
-                  log('queue', `inventory upload skipped: quant not found at location=${locationId}, product=${productId}`);
+                  logWarn(
+                    'queue inventory_update upload',
+                    new Error(`loc=${locationId} product=${productId}: adjustQuantQuantityAtLocation failed`)
+                  );
                 }
-              } catch (invErr) {
-                logWarn(
-                  'queue inventory_update upload',
-                  new Error(`loc=${locationId} product=${productId}: ${String(invErr?.message || invErr).slice(0, 160)}`)
-                );
+              } else if (Number.isFinite(targetQty)) {
+                const result = await setQuantQuantityAtLocation(locationId, productId, targetQty);
+                if (result?.ok) {
+                  log(
+                    'queue',
+                    `inventory upload: location=${locationId} product=${productId} quantity=${targetQty}` +
+                      (result.created ? ' (quant created)' : result.quantId != null ? ` quantId=${result.quantId}` : '')
+                  );
+                } else {
+                  logWarn(
+                    'queue inventory_update upload',
+                    new Error(`loc=${locationId} product=${productId}: setQuantQuantityAtLocation failed`)
+                  );
+                }
               }
+            } catch (invErr) {
+              logWarn(
+                'queue inventory_update upload',
+                new Error(`loc=${locationId} product=${productId}: ${String(invErr?.message || invErr).slice(0, 160)}`)
+              );
             }
             await vehicleInventoriesDb.clearLocalModificationFlagByLocation(locationId, productId);
           }
@@ -1562,6 +1562,19 @@ async function processSyncQueue() {
                 }
               }
             }
+            const emptyCylinderNote = (p.emptyCylinderChatterBody || p.emptyCylinderChatterNote || '').trim();
+            if (emptyCylinderNote) {
+              try {
+                await postPaymentProofToChatterWithAttachmentIds(soId, {
+                  body: emptyCylinderNote,
+                  attachmentIds: [],
+                });
+                log('queue', `empty cylinder note message_post SO ${soId}`);
+              } catch (emptyChatterErr) {
+                logWarn('queue payment empty-cylinder chatter', emptyChatterErr);
+              }
+            }
+
             chatterPostedInThisRun.add(soId);
             log('queue', `chatter posted to SO ${soId}${isPartialPayment ? ` (${paymentsForMessage.length} messages)` : ` (${attachmentIds.length} images)`}`);
           } catch (chatterErr) {
@@ -2213,11 +2226,10 @@ export async function clearAllTables() {
       console.log(`[DB] Clearing ${table}...`);
       await db.runAsync(`DELETE FROM ${table}`);
     }
-
-    isLoggingOut = false;
     return true;
   } catch (error) {
-    isLoggingOut = false;
     return false;
+  } finally {
+    setIsLoggingOut(false);
   }
 }
