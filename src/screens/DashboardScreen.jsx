@@ -22,6 +22,7 @@ if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { useTranslation } from 'react-i18next';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
 import { dashboardConfig } from '../constants/dashboardConfig';
@@ -151,6 +152,7 @@ function getGasImageByProductName(productName) {
 }
 
 export default function DashboardScreen({ navigation }) {
+  const { t } = useTranslation();
   const insets = useSafeAreaInsets();
   const { syncCompleteTimestamp } = useSync();
   const {
@@ -1452,7 +1454,7 @@ export default function DashboardScreen({ navigation }) {
           </View>
           <View style={styles.headerButtons}>
               <View style={styles.lastSyncedBlock}>
-                <Text style={styles.lastSyncedLabel}>Last Synced</Text>
+                <Text style={styles.lastSyncedLabel}>{t("dashboard.lastSynced")}</Text>
                 <Text style={styles.lastSyncTimeText} numberOfLines={1}>
                   {lastSyncTime
                     ? new Date(lastSyncTime).toLocaleString('en-IN', {
@@ -1525,7 +1527,7 @@ export default function DashboardScreen({ navigation }) {
               activeOpacity={0.8}
             >
               <Ionicons name="calendar-outline" size={20} color="#fff" />
-              <Text style={styles.dailyVisitBtnTopText}>Visit</Text>
+              <Text style={styles.dailyVisitBtnTopText}>{t("dashboard.visit")}</Text>
             </TouchableOpacity> */}
             </View>
           </View>
@@ -1605,21 +1607,21 @@ export default function DashboardScreen({ navigation }) {
                     </View>
                     <View style={{ height: 6 }} />
                     <Text style={{ fontSize: 12, color: colors.textSecondary, fontWeight: '800' }}>
-                      On Hand Stock
+                      {t('dashboard.onHandStock', 'On Hand Stock')}
                     </Text>
                     <Text style={{ fontSize: 18, fontWeight: '900', color: isOut ? '#dc2626' : '#3b82f6', marginTop: 4 }}>
                       {(Number(s.total) || 0).toLocaleString('en-IN')}
                     </Text>
                     <View style={{ height: 6 }} />
                     <Text style={{ fontSize: 12, color: colors.textSecondary, fontWeight: '800' }}>
-                      Delivered
+                      {t('dashboard.delivered', 'Delivered')}
                     </Text>
                     <Text style={{ fontSize: 18, fontWeight: '900', color: deliveredQty > 0 ? '#16a34a' : colors.textSecondary, marginTop: 4 }}>
                       {deliveredQty.toLocaleString('en-IN')}
                     </Text>
                     <View style={{ height: 6 }} />
                     <Text style={{ fontSize: 12, color: colors.textSecondary, fontWeight: '800' }}>
-                      Empty Collected
+                      {t('dashboard.emptyCollected', 'Empty Collected')}
                     </Text>
                     <Text style={{ fontSize: 18, fontWeight: '900', color: emptyCollectedQty > 0 ? '#0f766e' : colors.textSecondary, marginTop: 4 }}>
                       {emptyCollectedQty.toLocaleString('en-IN')}
@@ -1629,14 +1631,14 @@ export default function DashboardScreen({ navigation }) {
               })
             ) : (
               <View style={{ paddingVertical: spacing.md }}>
-                <Text style={{ color: colors.textSecondary }}>No stock data available.</Text>
+                <Text style={{ color: colors.textSecondary }}>{t('dashboard.noStockDataAvailable', 'No stock data available.')}</Text>
               </View>
             )}
           </ScrollView>
         </View>
 
         {/* 3. Collection today - Cash, Cheque, Credit (tap to expand / tap again to collapse) */}
-        <Text style={styles.collectionSectionLabel}>Sales Today</Text>
+        <Text style={styles.collectionSectionLabel}>{t("dashboard.salesToday")}</Text>
         <View style={styles.collectionRow}>
           <TouchableOpacity
             activeOpacity={0.8}
@@ -1660,7 +1662,7 @@ export default function DashboardScreen({ navigation }) {
                 >
                   {expandedCollectionCard === 'cash' ? formatCurrency(cashTotalDisplay) : formatShort(cashTotalDisplay)}
                 </Text>
-                <Text style={[styles.collectionLabel, expandedCollectionCard === 'cash' && styles.collectionLabelExpanded]}>CASH</Text>
+                <Text style={[styles.collectionLabel, expandedCollectionCard === 'cash' && styles.collectionLabelExpanded]}>{t("dashboard.cash", "CASH")}</Text>
                 <Text style={[styles.collectionPct, expandedCollectionCard === 'cash' && styles.collectionPctExpanded, { color: colors.cash ?? '#059669' }]}>
                   ( {cashPctDisplay}%)
                 </Text>
@@ -1689,7 +1691,7 @@ export default function DashboardScreen({ navigation }) {
                 >
                   {expandedCollectionCard === 'cheque' ? formatCurrency(chequeTotalDisplay) : formatShort(chequeTotalDisplay)}
                 </Text>
-                <Text style={[styles.collectionLabel, expandedCollectionCard === 'cheque' && styles.collectionLabelExpanded]}>CHEQUE</Text>
+                <Text style={[styles.collectionLabel, expandedCollectionCard === 'cheque' && styles.collectionLabelExpanded]}>{t("dashboard.cheque", "CHEQUE")}</Text>
                 <Text style={[styles.collectionPct, expandedCollectionCard === 'cheque' && styles.collectionPctExpanded, { color: colors.cheque ?? '#d97706' }]}>
                   ( {chequePctDisplay}%)
                 </Text>
@@ -1718,7 +1720,7 @@ export default function DashboardScreen({ navigation }) {
                 >
                   {expandedCollectionCard === 'credit' ? formatCurrency(creditTotalDisplay) : formatShort(creditTotalDisplay)}
                 </Text>
-                <Text style={[styles.collectionLabel, expandedCollectionCard === 'credit' && styles.collectionLabelExpanded]}>CREDIT</Text>
+                <Text style={[styles.collectionLabel, expandedCollectionCard === 'credit' && styles.collectionLabelExpanded]}>{t("dashboard.credit", "CREDIT")}</Text>
                 <Text style={[styles.collectionPct, expandedCollectionCard === 'credit' && styles.collectionPctExpanded, { color: colors.credit ?? '#6366f1' }]}>
                   ( {creditPctDisplay}%)
                 </Text>
@@ -1740,7 +1742,7 @@ export default function DashboardScreen({ navigation }) {
               <Text style={[styles.shopsGasValue, { color: colors.primary }]}>{shopsCompleted}</Text>
               <Text style={[styles.shopsGasTarget, { color: colors.textSecondary }]}>/{totalShopsToday}</Text>
             </View>
-            <Text style={styles.shopsGasLabel}>ORDERS COMPLETED</Text>
+            <Text style={styles.shopsGasLabel}>{t("dashboard.ordersCompleted", "ORDERS COMPLETED")}</Text>
             <Text style={styles.shopsGasPct}>{shopsPct}% Complete</Text>
           </TouchableOpacity>
           <TouchableOpacity
@@ -1754,7 +1756,7 @@ export default function DashboardScreen({ navigation }) {
               </Text>
               <Text style={[styles.shopsGasTarget, { color: colors.textSecondary }]}>/{totalGasInOrders.toLocaleString('en-IN')}</Text>
             </View>
-            <Text style={styles.shopsGasLabel}>GAS DELIVERED</Text>
+            <Text style={styles.shopsGasLabel}>{t("dashboard.gasDelivered", "GAS DELIVERED")}</Text>
             <Text style={styles.shopsGasPct}>{gasPct}% Complete</Text>
           </TouchableOpacity>
         </View>
@@ -1816,7 +1818,7 @@ export default function DashboardScreen({ navigation }) {
                   onPress={() => setShowChartDatePicker(false)}
                   style={{ paddingVertical: 4, paddingHorizontal: 8 }}
                 >
-                  <Text style={{ fontSize: 15, fontWeight: '600', color: colors.primary }}>Done</Text>
+                  <Text style={{ fontSize: 15, fontWeight: '600', color: colors.primary }}>{t("dashboard.done", "Done")}</Text>
                 </TouchableOpacity>
               )}
             </View>
@@ -1825,7 +1827,7 @@ export default function DashboardScreen({ navigation }) {
       </View>
       {crewPorters.length > 0 && (
           <View style={styles.crewSectionWrap}>
-            <Text style={styles.crewSectionLabel}>Porters on shift</Text>
+            <Text style={styles.crewSectionLabel}>{t("dashboard.portersOnShift", "Porters on shift")}</Text>
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
@@ -1876,7 +1878,7 @@ export default function DashboardScreen({ navigation }) {
           onPress={() => navigation.navigate('MyCommissions')}
         >
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-            <Text style={styles.commissionTitle}>YOUR COMMISSION TODAY</Text>
+            <Text style={styles.commissionTitle}>{t("dashboard.yourCommissionToday", "YOUR COMMISSION TODAY")}</Text>
             <Ionicons name="chevron-forward" size={20} color="#fff" />
           </View>
           <Text style={styles.commissionAmount}>
@@ -1901,7 +1903,7 @@ export default function DashboardScreen({ navigation }) {
                     <View style={styles.actionIconWrap}>
                       <Ionicons name="add" size={32} color={colors.primary} />
                     </View>
-                    <Text style={styles.actionLabel}>Create Sales Order</Text>
+                    <Text style={styles.actionLabel}>{t("dashboard.createSalesOrder", "Create Sales Order")}</Text>
                   </TouchableOpacity>
               )}
               {showReturnOrder && (
@@ -1913,7 +1915,7 @@ export default function DashboardScreen({ navigation }) {
                     <View style={styles.actionIconWrap}>
                       <Ionicons name="return-down-back-outline" size={28} color={colors.primary} />
                     </View>
-                    <Text style={styles.actionLabel}>Return Order</Text>
+                    <Text style={styles.actionLabel}>{t("dashboard.returnOrder", "Return Order")}</Text>
                   </TouchableOpacity>
               )}
             </View>
@@ -1923,7 +1925,7 @@ export default function DashboardScreen({ navigation }) {
       <Modal visible={routePickerVisible} transparent animationType="fade" onRequestClose={() => setRoutePickerVisible(false)}>
         <Pressable style={styles.modalBackdrop} onPress={() => setRoutePickerVisible(false)}>
           <Pressable style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
-            <Text style={styles.modalTitle}>Choose route</Text>
+            <Text style={styles.modalTitle}>{t("dashboard.chooseRoute", "Choose route")}</Text>
             <Text style={styles.modalSubtitle}>
               Pick a route to filter your list, or Recommended for today's usual route.
             </Text>
@@ -1935,7 +1937,7 @@ export default function DashboardScreen({ navigation }) {
                   setRoutePickerVisible(false);
                 }}
               >
-                <Text style={styles.routePickName}>Recommended (today)</Text>
+                <Text style={styles.routePickName}>{t("dashboard.recommendedToday", "Recommended (today)")}</Text>
                 {routeOverrideId === null ? <Ionicons name="checkmark-circle" size={22} color={colors.primary} /> : null}
               </TouchableOpacity>
               {routesInVehicleTodayPicker.map((r) => {
@@ -1957,7 +1959,7 @@ export default function DashboardScreen({ navigation }) {
               })}
             </ScrollView>
             <TouchableOpacity style={styles.modalCloseBtn} onPress={() => setRoutePickerVisible(false)} activeOpacity={0.88}>
-              <Text style={styles.modalCloseBtnText}>Close</Text>
+              <Text style={styles.modalCloseBtnText}>{t("settings.close", "Close")}</Text>
             </TouchableOpacity>
           </Pressable>
         </Pressable>
@@ -2022,7 +2024,7 @@ export default function DashboardScreen({ navigation }) {
                   )}
                 </View>
                 <TouchableOpacity style={styles.modalCloseBtn} onPress={() => setProfileModal(null)} activeOpacity={0.88}>
-                  <Text style={styles.modalCloseBtnText}>Close</Text>
+                  <Text style={styles.modalCloseBtnText}>{t("settings.close", "Close")}</Text>
                 </TouchableOpacity>
               </>
             ) : null}

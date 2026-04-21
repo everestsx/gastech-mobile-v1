@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, ActivityIndicator, Dimensions } from 'react-native';
 import Svg, { Defs, LinearGradient, Stop, Rect } from 'react-native-svg';
@@ -44,6 +45,7 @@ function SplashGradientBg() {
 }
 
 export default function SplashScreenComponent({ navigation }) {
+  const { t } = useTranslation();
   const [ready, setReady] = useState(false);
   const insets = useSafeAreaInsets();
 
@@ -90,8 +92,8 @@ export default function SplashScreenComponent({ navigation }) {
           <View style={styles.logoCard}>
             <AppLogo size={200} useImage />
           </View>
-          <Text style={styles.brand}>GasTech</Text>
-          <Text style={styles.tagline}>Smart cylinder delivery</Text>
+          <Text style={styles.brand}>{t('splash.gasTech', 'GasTech')}</Text>
+          <Text style={styles.tagline}>{t('splash.smartCylinderDelivery', 'Smart cylinder delivery')}</Text>
           <ActivityIndicator size="large" color={SPLASH.glow} style={styles.spinner} />
         </View>
       </View>

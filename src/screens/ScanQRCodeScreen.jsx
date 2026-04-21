@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import React, { useState, useCallback, useMemo } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
@@ -36,6 +37,7 @@ async function getTodayOrderForCustomer(customerId, syncDateField) {
 }
 
 export default function ScanQRCodeScreen({ navigation, route }) {
+  const { t } = useTranslation();
   const { colors, syncDateField } = useTheme();
   const returnTo = route?.params?.returnTo ?? null;
   const scanContext = route?.params?.scanContext ?? null;
@@ -245,7 +247,7 @@ export default function ScanQRCodeScreen({ navigation, route }) {
   if (!permission) {
     return (
       <View style={styles.center}>
-        <Text style={styles.text}>Checking camera…</Text>
+        <Text style={styles.text}>{t('scanqrcode.checkingCamera', 'Checking camera…')}</Text>
       </View>
     );
   }
@@ -253,9 +255,9 @@ export default function ScanQRCodeScreen({ navigation, route }) {
   if (!permission.granted) {
     return (
       <View style={styles.center}>
-        <Text style={styles.text}>Camera permission is required to scan customer QR codes.</Text>
+        <Text style={styles.text}>{t('scanqrcode.cameraPermissionIsRequiredToScanCustomerQRCodes', 'Camera permission is required to scan customer QR codes.')}</Text>
         <TouchableOpacity style={styles.btn} onPress={requestPermission}>
-          <Text style={styles.btnText}>Grant permission</Text>
+          <Text style={styles.btnText}>{t('scanqrcode.grantPermission', 'Grant permission')}</Text>
         </TouchableOpacity>
       </View>
     );
@@ -275,7 +277,7 @@ export default function ScanQRCodeScreen({ navigation, route }) {
         {resolving && (
           <View style={styles.resolvingWrap}>
             <ActivityIndicator size="large" color="#fff" />
-            <Text style={styles.hint}>Looking up customer…</Text>
+            <Text style={styles.hint}>{t('scanqrcode.lookingUpCustomer', 'Looking up customer…')}</Text>
           </View>
         )}
         {scanned && !resolving && (
@@ -284,7 +286,7 @@ export default function ScanQRCodeScreen({ navigation, route }) {
             onPress={() => setScanned(false)}
           >
             <Ionicons name="scan-outline" size={24} color="#fff" />
-            <Text style={styles.rescanText}>Tap to scan again</Text>
+            <Text style={styles.rescanText}>{t('scanqrcode.tapToScanAgain', 'Tap to scan again')}</Text>
           </TouchableOpacity>
         )}
       </View>

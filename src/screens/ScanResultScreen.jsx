@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import React, { useMemo } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -13,6 +14,7 @@ import { spacing, borderRadius } from '../constants/theme';
  * Rich, centered layout with icon and primary action.
  */
 export default function ScanResultScreen({ route, navigation }) {
+  const { t } = useTranslation();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const { type = 'error', customerName = '', message: customMessage = '', ref: refCode = '' } = route?.params ?? {};
@@ -135,7 +137,7 @@ export default function ScanResultScreen({ route, navigation }) {
         <Text style={styles.title}>{title}</Text>
         <Text style={styles.message}>{message}</Text>
         <TouchableOpacity style={styles.btn} onPress={onBack} activeOpacity={0.8}>
-          <Text style={styles.btnText}>Back to Orders</Text>
+          <Text style={styles.btnText}>{t('scanresult.backToOrders', 'Back to Orders')}</Text>
         </TouchableOpacity>
       </View>
     </View>

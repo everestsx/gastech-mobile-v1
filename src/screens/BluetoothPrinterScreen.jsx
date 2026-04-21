@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import {
   View,
@@ -18,6 +19,7 @@ import { spacing, borderRadius } from '../constants/theme';
 import { findBluetoothPrinters } from '../services/printerService';
 
 export default function BluetoothPrinterScreen() {
+  const { t } = useTranslation();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const {
@@ -169,7 +171,7 @@ export default function BluetoothPrinterScreen() {
     return (
       <ScrollView style={styles.container} contentContainerStyle={styles.content}>
         <View style={styles.card}>
-          <Text style={styles.title}>Bluetooth printer</Text>
+          <Text style={styles.title}>{t('bluetoothprinter.bluetoothPrinter', 'Bluetooth printer')}</Text>
           <Text style={styles.sub}>
             Rongta Bluetooth printing runs on Android in a dev build or your release APK (native module). On
             iOS or Expo Go, use the system print dialog from the invoice screen instead.
@@ -182,7 +184,7 @@ export default function BluetoothPrinterScreen() {
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <View style={styles.card}>
-        <Text style={styles.title}>Bluetooth Rongta printer</Text>
+        <Text style={styles.title}>{t('bluetoothprinter.bluetoothRongtaPrinter', 'Bluetooth Rongta printer')}</Text>
         <Text style={styles.sub}>
           Pair the printer in Android Settings → Bluetooth, then choose it here and connect. Your choice is
           saved on this device and works offline for printing after connection.
@@ -214,7 +216,7 @@ export default function BluetoothPrinterScreen() {
               onPress={() => clearPrinter().catch(() => {})}
               activeOpacity={0.85}
             >
-              <Text style={[styles.btnText, styles.btnTextMuted]}>Clear</Text>
+              <Text style={[styles.btnText, styles.btnTextMuted]}>{t('bluetoothprinter.clear', 'Clear')}</Text>
             </TouchableOpacity>
           ) : null}
         </View>
@@ -251,7 +253,7 @@ export default function BluetoothPrinterScreen() {
         <View style={styles.modalBackdrop}>
           <View style={styles.modalSheet}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Paired Bluetooth printers</Text>
+              <Text style={styles.modalTitle}>{t('bluetoothprinter.pairedBluetoothPrinters', 'Paired Bluetooth printers')}</Text>
               <TouchableOpacity
                 onPress={() => {
                   if (connectingThermal) return;
@@ -272,7 +274,7 @@ export default function BluetoothPrinterScreen() {
               ) : (
                 <Ionicons name="refresh" size={20} color={colors.primary} />
               )}
-              <Text style={styles.btnText}>Refresh list</Text>
+              <Text style={styles.btnText}>{t('bluetoothprinter.refreshList', 'Refresh list')}</Text>
             </TouchableOpacity>
             <FlatList
               data={pairedPrinterRows}

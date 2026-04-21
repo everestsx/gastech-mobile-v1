@@ -2,10 +2,12 @@ import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
+import { useTranslation } from 'react-i18next';
 import { colors, spacing, borderRadius } from '../constants/theme';
 import { runSync, getLastSyncTime, getUserSession, logout, getSyncIntervalMinutes } from '../services/sync.service';
 
 export default function DrawerContent({ navigation }) {
+  const { t } = useTranslation();
   const [syncing, setSyncing] = useState(false);
   const [lastSync, setLastSync] = useState(null);
   const [user, setUser] = useState(null);
@@ -34,9 +36,15 @@ export default function DrawerContent({ navigation }) {
       const result = await runSync();
       await refreshLastSync();
       if (result.error) {
-        Alert.alert('Sync failed', result.error);
+        Alert.alert(t('drawer.syncFailed', 'Sync failed'), result.error);
       } else {
-        Alert.alert('Sync done', `${result.customers} customers · ${result.orders} orders`);
+        Alert.alert(
+          t('drawer.syncDone', 'Sync done'),
+          t('drawer.syncDoneMessage', '{{customers}} customers · {{orders}} orders', {
+            customers: result.customers,
+            orders: result.orders,
+          })
+        );
       }
     } finally {
       setSyncing(false);
@@ -44,10 +52,10 @@ export default function DrawerContent({ navigation }) {
   };
 
   const handleLogout = () => {
-    Alert.alert('Log out', 'Are you sure?', [
-      { text: 'Cancel', style: 'cancel' },
+    Alert.alert(t('menu.logOut', 'Log out'), t('drawer.areYouSure', 'Are you sure?'), [
+      { text: t('drawer.cancel', 'Cancel'), style: 'cancel' },
       {
-        text: 'Log out',
+        text: t('menu.logOut', 'Log out'),
         style: 'destructive',
         onPress: async () => {
           await logout();
@@ -64,10 +72,10 @@ export default function DrawerContent({ navigation }) {
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.title}>Gas Cylinder Delivery</Text>
+        <Text style={styles.title}>{t('drawer.title', 'Gas Cylinder Delivery')}</Text>
         {user?.driverName ? (
           <Text style={styles.user} numberOfLines={1}>
-            Driver: {user.driverName}
+            {t('drawer.driver', 'Driver')}: {user.driverName}
           </Text>
         ) : null}
         {user?.username ? (
@@ -92,17 +100,17 @@ export default function DrawerContent({ navigation }) {
           <Ionicons name="sync-outline" size={24} color="#fff" />
         )}
         <Text style={styles.syncText}>
-          {syncing ? 'Syncing...' : 'Sync data'}
+          {syncing ? t('drawer.syncing', 'Syncing...') : t('drawer.syncData', 'Sync data')}
         </Text>
       </TouchableOpacity>
 
       <Text style={styles.lastSync}>
         {lastSync
-          ? `Last sync: ${lastSync.toLocaleString()}`
-          : 'Not synced yet'}
+          ? t('drawer.lastSync', 'Last sync: {{date}}', { date: lastSync.toLocaleString() })
+          : t('drawer.notSyncedYet', 'Not synced yet')}
       </Text>
       <Text style={styles.hint}>
-        Auto-sync runs every {intervalMin} minutes when app is open.
+        {t('drawer.autoSyncHint', 'Auto-sync runs every {{interval}} minutes when app is open.', { interval: intervalMin })}
       </Text>
 
       <TouchableOpacity
@@ -111,7 +119,7 @@ export default function DrawerContent({ navigation }) {
         activeOpacity={0.8}
       >
         <Ionicons name="log-out-outline" size={22} color={colors.error} />
-        <Text style={styles.logoutText}>Log out</Text>
+        <Text style={styles.logoutText}>{t('menu.logOut', 'Log out')}</Text>
       </TouchableOpacity>
     </View>
   );

@@ -1,0 +1,227 @@
+{
+  "bluetoothprinter": {
+    "bluetoothPrinter": "Bluetooth printer",
+    "bluetoothRongtaPrinter": "Bluetooth Rongta printer",
+    "clear": "Clear",
+    "pairedBluetoothPrinters": "Paired Bluetooth printers",
+    "refreshList": "Refresh list"
+  },
+  "customers": {
+    "noCustomersYet": "No customers yet",
+    "syncFromMenuToLoadCustomers": "Sync from Menu to load customers"
+  },
+  "dailyvisit": {
+    "showingOneCustomerTapToShowAll": "Showing one customer — tap to show all",
+    "done": "Done"
+  },
+  "deliveredorders": {
+    "done": "Done",
+    "clear": "Clear",
+    "customerName": "Customer name",
+    "orderID": "Order ID",
+    "all": "All",
+    "cash": "Cash",
+    "cheque": "Cheque",
+    "credit": "Credit"
+  },
+  "emptycylindercollection": {
+    "emptyCylinderCollection": "Empty Cylinder Collection",
+    "emptyCollected": "Empty collected",
+    "resetToDefault": "Reset to default",
+    "continueToInvoice": "Continue to invoice"
+  },
+  "home": {
+    "welcomeToMyApp": "Welcome to My App",
+    "Dashboard": "📊 Dashboard",
+    "QRGenerator": "🔲 QR Generator",
+    "SalesOrders": "🛒 Sales Orders"
+  },
+  "invoice": {
+    "0ScaleIndex": "0 && scaleIndex",
+    "noLineItems": "No line items",
+    "gasTech": "GasTech",
+    "taxInvoice": "Tax Invoice",
+    "driverName": "Driver name:",
+    "vehicleNo": "Vehicle no.:",
+    "supplierSTIN": "Supplier's TIN:",
+    "supplierSName": "Supplier's Name:",
+    "address": "Address",
+    "telephoneNo": "Telephone No:",
+    "purchaserSTIN": "Purchaser's TIN:",
+    "purchaserSName": "Purchaser's Name:",
+    "no": "No",
+    "description": "Description",
+    "qty": "Qty",
+    "unitPrice": "Unit Price",
+    "amountExcludingVAT": "Amount Excluding VAT",
+    "totalValueOfSupply": "Total Value of Supply:",
+    "vATAmount18": "VAT Amount (18%):",
+    "totalAmountIncludingVAT": "Total Amount including VAT:",
+    "totalAmountInWords": "Total Amount in words:",
+    "modeOfPayment": "Mode of Payment:",
+    "bankCheque": "Bank (Cheque):",
+    "chequeNo": "Cheque No.:",
+    "thankYouForYourBusiness": "Thank you for your business",
+    "driverSignature": "Driver signature",
+    "customerSignature": "Customer signature",
+    "gasTechYourTrustedBusinessPartner": "GasTech – Your Trusted Business Partner",
+    "poweredByEverestsxCom": "Powered by everestsx.com",
+    "invoiceNo": "Invoice No.",
+    "date": "Date",
+    "customer": "Customer",
+    "product": "Product",
+    "total": "Total",
+    "subtotal": "Subtotal",
+    "vAT": "VAT",
+    "proceedToPayment": "Proceed to payment",
+    "close": "Close",
+    "bluetoothPrinter": "Bluetooth printer",
+    "connectNow": "Connect now",
+    "clearSavedPrinter": "Clear saved printer",
+    "fullBluetoothSettings": "Full Bluetooth settings",
+    "pairedDevices": "Paired devices",
+    "refreshList": "Refresh list",
+    "printInvoice": "Print invoice",
+    "printing": "Printing…",
+    "rePrint": "Re-print",
+    "continueWithoutPrinting": "Continue without printing",
+    "signToConfirmDelivery": "Sign to confirm delivery",
+    "clear": "Clear",
+    "saveSignatures": "Save signatures",
+    "deliveryPhotos": "Delivery photos",
+    "PrevLength": "(prev.length",
+    "takePhoto": "Take photo",
+    "choosePhoto": "Choose photo",
+    "skip": "Skip",
+    "connectToPrinter": "Connect to printer"
+  },
+  "localinvoices": {
+    "invoices": "Invoices",
+    "invoiceDate": "Invoice date",
+    "order": "Order",
+    "customer": "Customer",
+    "total": "Total"
+  },
+  "login": {
+    "deliveryTerminal": "Delivery Terminal",
+    "authorizedDistributorPortal": "Authorized Distributor Portal",
+    "vehicleID": "Vehicle ID",
+    "noVehiclesFound": "No vehicles found.",
+    "driverPin": "Driver pin",
+    "login": "Login",
+    "signedInAsDriver": "Signed in as driver",
+    "ifThisIsYouContinueToPickPortersForThisVehicle": "If this is you, continue to pick porters for this vehicle.",
+    "back": "Back",
+    "continue": "Continue",
+    "whoSOnThisShift": "Who's on this shift?",
+    "tapToSelect": "Tap to select",
+    "goToDashboard": "Go to dashboard",
+    "yourDriverPin": "Your driver pin",
+    "searchByNameOrCode": "Search by name or code"
+  },
+  "mycommission": {
+    "loadingCommissionHistory": "Loading commission history…",
+    "dailyCommissionHistory": "Daily commission history",
+    "gasDelivered": "Gas delivered",
+    "commissionRate": "Commission rate",
+    "calculation": "Calculation",
+    "totalCommission": "Total commission"
+  },
+  "paymentproof": {
+    "missingOrder": "Missing order.",
+    "goBack": "Go back",
+    "paymentProof": "Payment proof",
+    "PLength": "(p.length",
+    "takePhoto": "Take photo",
+    "gallery": "Gallery",
+    "completePayment": "Complete payment",
+    "completeThisOrder": "Complete this order?",
+    "keepOrder": "Keep order",
+    "yesComplete": "Yes, complete"
+  },
+  "placeholder": {
+    "comingSoon": "Coming soon"
+  },
+  "proceedpayment": {
+    "subTotal": "Sub total",
+    "vAT18": "VAT (18%)",
+    "paymentTotal": "Payment total",
+    "totalAmount": "Total Amount",
+    "paymentMethod": "Payment method",
+    "cash": "Cash",
+    "cheque": "Cheque",
+    "credit": "Credit",
+    "amountPaid": "Amount Paid",
+    "rs": "Rs.",
+    "chooseBank": "Choose Bank",
+    "loading": "Loading…",
+    "changeBank": "Change bank",
+    "chequeNumber": "Cheque number",
+    "confirmPayment": "Confirm Payment",
+    "searchBank": "Search bank...",
+    "check": "Check #"
+  },
+  "qrgenerate": {
+    "customerQRGenerator": "Customer QR Generator",
+    "1ChooseCustomer": "1) Choose Customer",
+    "generateQR": "Generate QR",
+    "downloadQR": "Download QR",
+    "savedAsPNGInYourGalleryForPrintingOrSharing": "Saved as PNG in your gallery for printing or sharing.",
+    "typeCustomerName": "Type customer name..."
+  },
+  "saleorderdetails": {
+    "unitPrice": "Unit price",
+    "lineTotal": "Line total",
+    "orderNotFound": "Order not found",
+    "thisOrderHasBeenCancelled": "This order has been cancelled.",
+    "tapToContinue": "Tap to continue.",
+    "order": "Order",
+    "orderLines": "Order lines",
+    "save": "Save",
+    "modifyOrder": "Modify Order",
+    "noLineItems": "No line items",
+    "subTotal": "Sub Total",
+    "vAT18": "VAT (18%)",
+    "proceedToPayment": "Proceed to payment",
+    "cancelOrder": "Cancel order",
+    "cancelThisOrder": "Cancel this order?",
+    "keepOrder": "Keep order",
+    "continue": "Continue",
+    "reasonForCancellation": "Reason for cancellation",
+    "loadingReasons": "Loading reasons…"
+  },
+  "saleorderlist": {
+    "done": "Done",
+    "customerName": "Customer name",
+    "orderID": "Order ID"
+  },
+  "scanqrcode": {
+    "checkingCamera": "Checking camera…",
+    "cameraPermissionIsRequiredToScanCustomerQRCodes": "Camera permission is required to scan customer QR codes.",
+    "grantPermission": "Grant permission",
+    "lookingUpCustomer": "Looking up customer…",
+    "tapToScanAgain": "Tap to scan again"
+  },
+  "scanresult": {
+    "backToOrders": "Back to Orders"
+  },
+  "splash": {
+    "gasTech": "GasTech",
+    "smartCylinderDelivery": "Smart cylinder delivery"
+  },
+  "synchistory": {
+    "noSyncHistoryYet": "No sync history yet"
+  },
+  "vehiclestock": {
+    "onHandStock": "On Hand Stock",
+    "orderedStock": "Ordered Stock",
+    "extraStock": "Extra Stock",
+    "delivered": "Delivered",
+    "emptyCollected": "Empty Collected",
+    "emptyStock": "Empty Stock",
+    "loadingVehicleStock": "Loading vehicle stock…",
+    "itemWiseStock": "Item-wise stock",
+    "noVehicleInSession": "No vehicle in session",
+    "logInWithAVehicleToSeeLorryStock": "Log in with a vehicle to see lorry stock."
+  }
+}

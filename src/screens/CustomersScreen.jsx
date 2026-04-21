@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import React, { useCallback, useEffect, useState, useMemo } from 'react';
 import {
   View,
@@ -16,6 +17,7 @@ import { getCustomersByVehicleRoute } from '@/src/database/partners';
 import { getLocalizedCustomerName } from '../utils/customerDisplayName';
 
 export default function CustomersScreen({ navigation }) {
+  const { t } = useTranslation();
   const { colors, appLanguage } = useTheme();
   const [customers, setCustomers] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -174,8 +176,8 @@ export default function CustomersScreen({ navigation }) {
       ListEmptyComponent={
         <View style={styles.empty}>
           <Ionicons name="people-outline" size={48} color={colors.textSecondary} />
-          <Text style={styles.emptyText}>No customers yet</Text>
-          <Text style={styles.emptyHint}>Sync from Menu to load customers</Text>
+          <Text style={styles.emptyText}>{t('customers.noCustomersYet', 'No customers yet')}</Text>
+          <Text style={styles.emptyHint}>{t('customers.syncFromMenuToLoadCustomers', 'Sync from Menu to load customers')}</Text>
         </View>
       }
     />

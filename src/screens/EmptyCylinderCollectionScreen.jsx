@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
@@ -35,6 +36,7 @@ function qtyByLineIdMap(rows) {
 }
 
 export default function EmptyCylinderCollectionScreen({ route, navigation }) {
+  const { t } = useTranslation();
   const { colors } = useTheme();
   const {
     saleOrderId,
@@ -313,7 +315,7 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-      <Text style={styles.title}>Empty Cylinder Collection</Text>
+      <Text style={styles.title}>{t('emptycylindercollection.emptyCylinderCollection', 'Empty Cylinder Collection')}</Text>
       <Text style={styles.subtitle}>
         Default values are auto-calculated from delivered gas quantity. Adjust only if the collected empty count is different.
       </Text>
@@ -328,7 +330,7 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
           <Text style={styles.meta}>New issue: {row.newIssueQty}</Text>
           <Text style={styles.meta}>Default empty: {row.defaultEmptyQty}</Text>
           <View style={styles.qtyInputWrap}>
-            <Text style={[styles.meta, { marginTop: 0, fontWeight: '700' }]}>Empty collected</Text>
+            <Text style={[styles.meta, { marginTop: 0, fontWeight: '700' }]}>{t('emptycylindercollection.emptyCollected', 'Empty collected')}</Text>
             <TouchableOpacity style={styles.qtyButton} onPress={() => changeQtyBy(row.kg, -1)} activeOpacity={0.8}>
               <Ionicons name="remove" size={18} color={colors.primary} />
             </TouchableOpacity>
@@ -344,7 +346,7 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
           </View>
           <TouchableOpacity style={styles.resetBtn} onPress={() => resetToDefault(row.kg)} activeOpacity={0.8}>
             <Ionicons name="refresh-outline" size={14} color={colors.textSecondary} />
-            <Text style={styles.resetBtnText}>Reset to default</Text>
+            <Text style={styles.resetBtnText}>{t('emptycylindercollection.resetToDefault', 'Reset to default')}</Text>
           </TouchableOpacity>
         </View>
       ))}
@@ -355,7 +357,7 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
 
       <TouchableOpacity style={styles.cta} onPress={() => void handleContinue()} disabled={saving} activeOpacity={0.85}>
         {saving ? <ActivityIndicator color="#fff" /> : <Ionicons name="arrow-forward-circle-outline" size={22} color="#fff" />}
-        <Text style={styles.ctaText}>Continue to invoice</Text>
+        <Text style={styles.ctaText}>{t('emptycylindercollection.continueToInvoice', 'Continue to invoice')}</Text>
       </TouchableOpacity>
     </ScrollView>
   );

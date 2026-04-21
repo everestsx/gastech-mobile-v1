@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
 import { useHeaderHeight } from '@react-navigation/elements';
@@ -77,6 +78,7 @@ function clampNonNegativeStock(n) {
   return Math.max(0, x);
 }
 export default function SaleOrderDetailsScreen({ route, navigation }) {
+  const { t } = useTranslation();
   const { colors, appLanguage } = useTheme();
   const insets = useSafeAreaInsets();
   const headerHeight = useHeaderHeight();
@@ -1419,11 +1421,11 @@ const handleProceedToPayment = useCallback(async () => {
 
             <View style={styles.lineUnitPriceRow}>
               <View>
-                  <Text style={styles.lineUnitPriceLabel}>Unit price</Text>
+                  <Text style={styles.lineUnitPriceLabel}>{t('saleorderdetails.unitPrice', 'Unit price')}</Text>
                   <Text style={styles.lineUnitPriceValue}>{formatCurrency(unitPrice)}</Text>
               </View>
               <View>
-                  <Text style={styles.lineTotalLabel}>Line total</Text>
+                  <Text style={styles.lineTotalLabel}>{t('saleorderdetails.lineTotal', 'Line total')}</Text>
                   <Text style={styles.lineTotalValue}>{formatCurrency(displayLineTotal)}</Text>
               </View>
             </View>
@@ -1445,7 +1447,7 @@ const handleProceedToPayment = useCallback(async () => {
   if (!order) {
     return (
       <View style={styles.center}>
-        <Text style={styles.errorText}>Order not found</Text>
+        <Text style={styles.errorText}>{t('saleorderdetails.orderNotFound', 'Order not found')}</Text>
       </View>
     );
   }
@@ -1470,7 +1472,7 @@ const handleProceedToPayment = useCallback(async () => {
         {orderIsCancelled && (
           <View style={styles.cancelBanner}>
             <Ionicons name="close-circle-outline" size={18} color={colors.error || '#c00'} />
-            <Text style={styles.cancelBannerText}>This order has been cancelled.</Text>
+            <Text style={styles.cancelBannerText}>{t('saleorderdetails.thisOrderHasBeenCancelled', 'This order has been cancelled.')}</Text>
           </View>
         )}
 
@@ -1497,7 +1499,7 @@ const handleProceedToPayment = useCallback(async () => {
                   ? 'Payment proof not finished'
                   : 'Invoice step not finished'}
               </Text>
-              <Text style={styles.checkoutResumeBannerSub}>Tap to continue.</Text>
+              <Text style={styles.checkoutResumeBannerSub}>{t('saleorderdetails.tapToContinue', 'Tap to continue.')}</Text>
             </View>
             <Ionicons name="chevron-forward" size={22} color={colors.primary} />
           </TouchableOpacity>
@@ -1509,7 +1511,7 @@ const handleProceedToPayment = useCallback(async () => {
                   <View style={{ flex: 1 }}>
                       {(order.name || order.id) && (
                           <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: 4 }}>
-                              <Text style={[styles.customerLabel, { marginBottom: 0 }]}>Order</Text>
+                              <Text style={[styles.customerLabel, { marginBottom: 0 }]}>{t('saleorderdetails.order', 'Order')}</Text>
                               <Text style={[styles.customerName, { fontSize: 15 }]} numberOfLines={1}>
                                   {order.name ?? `#${order.id}`}
                               </Text>
@@ -1559,7 +1561,7 @@ const handleProceedToPayment = useCallback(async () => {
 
         {/* Order lines: title (left) + Modify / Update (right) */}
         <View style={styles.orderLinesHeaderRow}>
-          <Text style={styles.sectionTitle}>Order lines</Text>
+          <Text style={styles.sectionTitle}>{t('saleorderdetails.orderLines', 'Order lines')}</Text>
           {!isDelivered && (
             modifyEnabled ? (
               <TouchableOpacity
@@ -1571,7 +1573,7 @@ const handleProceedToPayment = useCallback(async () => {
                 {updating ? (
                   <ActivityIndicator size="small" color={colors.primary} />
                 ) : (
-                  <Text style={[styles.modifyUpdateBtnText]}>Save</Text>
+                  <Text style={[styles.modifyUpdateBtnText]}>{t('saleorderdetails.save', 'Save')}</Text>
                 )}
               </TouchableOpacity>
             ) : (
@@ -1580,14 +1582,14 @@ const handleProceedToPayment = useCallback(async () => {
                 onPress={() => setModifyEnabled(true)}
                 activeOpacity={0.8}
               >
-                <Text style={styles.modifyUpdateBtnText}>Modify Order</Text>
+                <Text style={styles.modifyUpdateBtnText}>{t('saleorderdetails.modifyOrder', 'Modify Order')}</Text>
               </TouchableOpacity>
             )
           )}
         </View>
         {lines.length === 0 ? (
           <View style={styles.emptyLines}>
-            <Text style={styles.emptyText}>No line items</Text>
+            <Text style={styles.emptyText}>{t('saleorderdetails.noLineItems', 'No line items')}</Text>
           </View>
         ) : (
           lines.map((item) => (
@@ -1598,13 +1600,13 @@ const handleProceedToPayment = useCallback(async () => {
           {/* Gross Total: Subtotal (sum price_subtotal), Tax (sum of line tax), Total */}
           <View style={styles.grossTotalCard}>
           <View style={styles.grossRow}>
-            <Text style={styles.grossLabel}>Sub Total</Text>
+            <Text style={styles.grossLabel}>{t('saleorderdetails.subTotal', 'Sub Total')}</Text>
             <Text style={styles.grossValue}>
               {formatCurrency(computedSubtotal)}
             </Text>
           </View>
           <View style={styles.grossRow}>
-            <Text style={styles.grossLabel}>VAT (18%)</Text>
+            <Text style={styles.grossLabel}>{t('saleorderdetails.vAT18', 'VAT (18%)')}</Text>
             <Text style={styles.grossValue}>
               {formatCurrency(computedTax)}
             </Text>
@@ -1650,7 +1652,7 @@ const handleProceedToPayment = useCallback(async () => {
             activeOpacity={0.8}
           >
             <Ionicons name="card-outline" size={22} color="#fff" />
-            <Text style={styles.payBtnText}>Proceed to payment</Text>
+            <Text style={styles.payBtnText}>{t('saleorderdetails.proceedToPayment', 'Proceed to payment')}</Text>
           </TouchableOpacity>
 
           {!orderIsCancelled && (
@@ -1661,7 +1663,7 @@ const handleProceedToPayment = useCallback(async () => {
               activeOpacity={0.8}
             >
               <Ionicons name="close-circle-outline" size={20} color={colors.error || '#c00'} />
-              <Text style={styles.cancelBtnText}>Cancel order</Text>
+              <Text style={styles.cancelBtnText}>{t('saleorderdetails.cancelOrder', 'Cancel order')}</Text>
             </TouchableOpacity>
           )}
         </View>
@@ -1681,7 +1683,7 @@ const handleProceedToPayment = useCallback(async () => {
             <View style={styles.cancelConfirmIconWrap}>
               <Ionicons name="warning-outline" size={28} color={colors.error || '#dc2626'} />
             </View>
-            <Text style={styles.cancelConfirmTitle}>Cancel this order?</Text>
+            <Text style={styles.cancelConfirmTitle}>{t('saleorderdetails.cancelThisOrder', 'Cancel this order?')}</Text>
             <Text style={styles.cancelConfirmMessage}>
               The order will be closed and taken off your delivery list. If the customer still needs a delivery, they will need a new order. You can&apos;t undo this step.
             </Text>
@@ -1696,14 +1698,14 @@ const handleProceedToPayment = useCallback(async () => {
                 onPress={() => setShowCancelConfirmModal(false)}
                 activeOpacity={0.85}
               >
-                <Text style={styles.cancelConfirmBtnTextSecondary}>Keep order</Text>
+                <Text style={styles.cancelConfirmBtnTextSecondary}>{t('saleorderdetails.keepOrder', 'Keep order')}</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.cancelConfirmBtn, styles.cancelConfirmBtnPrimary]}
                 onPress={openCancelReasonModal}
                 activeOpacity={0.85}
               >
-                <Text style={styles.cancelConfirmBtnTextPrimary}>Continue</Text>
+                <Text style={styles.cancelConfirmBtnTextPrimary}>{t('saleorderdetails.continue', 'Continue')}</Text>
               </TouchableOpacity>
             </View>
           </Pressable>
@@ -1721,7 +1723,7 @@ const handleProceedToPayment = useCallback(async () => {
             <View style={styles.cancelModalHeaderIcon}>
               <Ionicons name="clipboard-outline" size={22} color={colors.primary} />
             </View>
-            <Text style={styles.cancelModalTitle}>Reason for cancellation</Text>
+            <Text style={styles.cancelModalTitle}>{t('saleorderdetails.reasonForCancellation', 'Reason for cancellation')}</Text>
             <Text style={styles.cancelModalHint}>
               Tap the reason that fits best. The order will be closed and removed from your list.
             </Text>
@@ -1730,7 +1732,7 @@ const handleProceedToPayment = useCallback(async () => {
               {cancelReasonsLoading ? (
                 <View style={{ paddingVertical: spacing.md, alignItems: 'center' }}>
                   <ActivityIndicator size="small" color={colors.primary} />
-                  <Text style={{ marginTop: 8, color: colors.textSecondary }}>Loading reasons…</Text>
+                  <Text style={{ marginTop: 8, color: colors.textSecondary }}>{t('saleorderdetails.loadingReasons', 'Loading reasons…')}</Text>
                 </View>
               ) : (
                 <ScrollView
@@ -1775,7 +1777,7 @@ const handleProceedToPayment = useCallback(async () => {
                 onPress={() => setShowCancelModal(false)}
                 activeOpacity={0.8}
               >
-                <Text style={styles.cancelModalBtnTextSecondary}>Keep order</Text>
+                <Text style={styles.cancelModalBtnTextSecondary}>{t('saleorderdetails.keepOrder', 'Keep order')}</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.cancelModalBtn, styles.cancelModalBtnPrimary]}
@@ -1786,7 +1788,7 @@ const handleProceedToPayment = useCallback(async () => {
                 {canceling ? (
                   <ActivityIndicator color="#fff" size="small" />
                 ) : (
-                  <Text style={styles.cancelModalBtnTextPrimary}>Cancel order</Text>
+                  <Text style={styles.cancelModalBtnTextPrimary}>{t('saleorderdetails.cancelOrder', 'Cancel order')}</Text>
                 )}
               </TouchableOpacity>
             </View>

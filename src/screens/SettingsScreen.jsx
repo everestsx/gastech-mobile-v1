@@ -11,6 +11,7 @@ import {
   Image,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useTranslation } from 'react-i18next';
 import { useTheme } from '../context/ThemeContext';
 import { getUserSession } from '../services/sync.service';
 import { odooImageToUri } from '../services/employee.service';
@@ -34,6 +35,7 @@ export default function SettingsScreen({ navigation }) {
     appLanguage,
     setAppLanguage,
   } = useTheme();
+  const { t } = useTranslation();
   const [user, setUser] = useState(null);
   const [showSyncPeriodModal, setShowSyncPeriodModal] = useState(false);
   const [showSyncDateFieldModal, setShowSyncDateFieldModal] = useState(false);
@@ -57,6 +59,38 @@ export default function SettingsScreen({ navigation }) {
       {right}
     </View>
   );
+
+  const syncPeriodLabel = syncPeriod === '7days'
+    ? t('settings.syncPeriodOptions.last7Days', 'Last 7 days')
+    : syncPeriod === '30days'
+      ? t('settings.syncPeriodOptions.last30Days', 'Last 30 days')
+      : syncPeriod === '90days'
+        ? t('settings.syncPeriodOptions.last90Days', 'Last 90 days')
+        : syncPeriod === '1year'
+          ? t('settings.syncPeriodOptions.last1Year', 'Last year')
+          : t('settings.syncPeriodOptions.allTime', 'All time');
+
+  const syncIntervalLabel = syncInterval === '5min'
+    ? t('settings.syncTimeOptions.fiveMinutes', '5 minutes')
+    : syncInterval === '10min'
+      ? t('settings.syncTimeOptions.tenMinutes', '10 minutes')
+      : syncInterval === '30min'
+        ? t('settings.syncTimeOptions.thirtyMinutes', '30 minutes')
+        : syncInterval === '1hour'
+          ? t('settings.syncTimeOptions.oneHour', '1 hour')
+          : syncInterval === '2hour'
+            ? t('settings.syncTimeOptions.twoHours', '2 hours')
+            : t('settings.syncTimeOptions.oneMinute', '1 minute');
+
+  const syncDateFieldLabel = syncDateField === 'delivery_date'
+    ? t('settings.syncDateOptions.deliveryDate', 'Delivery date')
+    : t('settings.syncDateOptions.creationDate', 'Creation date');
+
+  const languageLabel = appLanguage === 'ta'
+    ? t('settings.languageNames.tamil', 'Tamil')
+    : appLanguage === 'si'
+      ? t('settings.languageNames.sinhala', 'Sinhala')
+      : t('settings.languageNames.english', 'English');
 
   return (
     <ScrollView
@@ -93,7 +127,7 @@ export default function SettingsScreen({ navigation }) {
       </View>
 
       {/* Theme */}
-      {sectionTitle('Appearance')}
+      {sectionTitle(t('settings.appearance'))}
       <View style={[styles.row, { backgroundColor: colors.surface, borderColor: colors.border }]}>
         <View style={styles.rowLeft}>
           <Ionicons
@@ -101,7 +135,7 @@ export default function SettingsScreen({ navigation }) {
             size={22}
             color={colors.primary}
           />
-          <Text style={[styles.rowLabel, { color: colors.text }]}>Dark mode</Text>
+          <Text style={[styles.rowLabel, { color: colors.text }]}>{t('settings.darkMode')}</Text>
         </View>
         <Switch
           value={theme === 'dark'}
@@ -111,7 +145,7 @@ export default function SettingsScreen({ navigation }) {
         />
       </View>
 
-      {sectionTitle('Language')}
+      {sectionTitle(t('settings.language'))}
       <TouchableOpacity
         style={[styles.row, { backgroundColor: colors.surface, borderColor: colors.border }]}
         onPress={() => setShowLanguageModal(true)}
@@ -119,22 +153,22 @@ export default function SettingsScreen({ navigation }) {
       >
         <View style={styles.rowLeft}>
           <Ionicons name="language-outline" size={22} color={colors.primary} />
-          <Text style={[styles.rowLabel, { color: colors.text }]}>App language</Text>
+          <Text style={[styles.rowLabel, { color: colors.text }]}>{t('settings.appLanguage')}</Text>
         </View>
         <View style={styles.rowRight}>
           <Text style={[styles.syncPeriodValue, { color: colors.textSecondary }]}>
-            {appLanguage === 'ta' ? 'Tamil' : appLanguage === 'si' ? 'Sinhala' : 'English'}
+            {languageLabel}
           </Text>
           <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} style={{ marginLeft: 8 }} />
         </View>
       </TouchableOpacity>
 
       {/* Dashboard cards */}
-      {sectionTitle('Dashboard')}
+      {sectionTitle(t('dashboard.title'))}
       <View style={[styles.row, { backgroundColor: colors.surface, borderColor: colors.border }]}>
         <View style={styles.rowLeft}>
           <Ionicons name="cart-outline" size={22} color={colors.primary} />
-          <Text style={[styles.rowLabel, { color: colors.text }]}>Show Create Sales Order card</Text>
+          <Text style={[styles.rowLabel, { color: colors.text }]}>{t('dashboard.showCreateSalesOrder')}</Text>
         </View>
         <Switch
           value={showCreateSalesOrder}
@@ -146,7 +180,7 @@ export default function SettingsScreen({ navigation }) {
       <View style={[styles.row, { backgroundColor: colors.surface, borderColor: colors.border }]}>
         <View style={styles.rowLeft}>
           <Ionicons name="return-down-back-outline" size={22} color={colors.primary} />
-          <Text style={[styles.rowLabel, { color: colors.text }]}>Show Return Order card</Text>
+          <Text style={[styles.rowLabel, { color: colors.text }]}>{t('dashboard.showReturnOrder')}</Text>
         </View>
         <Switch
           value={showReturnOrder}
@@ -157,7 +191,7 @@ export default function SettingsScreen({ navigation }) {
       </View>
 
       {/* Sync Settings */}
-      {sectionTitle('Sync')}
+      {sectionTitle(t('settings.sync'))}
       <TouchableOpacity
         style={[styles.row, { backgroundColor: colors.surface, borderColor: colors.border }]}
         onPress={() => setShowSyncPeriodModal(true)}
@@ -165,12 +199,10 @@ export default function SettingsScreen({ navigation }) {
       >
         <View style={styles.rowLeft}>
           <Ionicons name="cloud-download-outline" size={22} color={colors.primary} />
-          <Text style={[styles.rowLabel, { color: colors.text }]}>Sync Period</Text>
+          <Text style={[styles.rowLabel, { color: colors.text }]}>{t('settings.syncPeriod')}</Text>
         </View>
         <View style={styles.rowRight}>
-          <Text style={[styles.syncPeriodValue, { color: colors.textSecondary }]}>
-            {syncPeriod === '7days' ? 'Last 7 days' : syncPeriod === '30days' ? 'Last 30 days' : syncPeriod === '90days' ? 'Last 90 days' : syncPeriod === '1year' ? 'Last year' : 'All time'}
-          </Text>
+          <Text style={[styles.syncPeriodValue, { color: colors.textSecondary }]}>{syncPeriodLabel}</Text>
           <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} style={{ marginLeft: 8 }} />
         </View>
       </TouchableOpacity>
@@ -182,22 +214,10 @@ export default function SettingsScreen({ navigation }) {
       >
         <View style={styles.rowLeft}>
           <Ionicons name="time-outline" size={22} color={colors.primary} />
-          <Text style={[styles.rowLabel, { color: colors.text }]}>Sync Time</Text>
+          <Text style={[styles.rowLabel, { color: colors.text }]}>{t('settings.syncTime')}</Text>
         </View>
         <View style={styles.rowRight}>
-          <Text style={[styles.syncPeriodValue, { color: colors.textSecondary }]}>
-            {syncInterval === '5min'
-              ? '5 minutes'
-              : syncInterval === '10min'
-                ? '10 minutes'
-              : syncInterval === '30min'
-                ? '30 minutes'
-                : syncInterval === '1hour'
-                  ? '1 hour'
-                  : syncInterval === '2hour'
-                    ? '2 hours'
-                    : '1 minute'}
-          </Text>
+          <Text style={[styles.syncPeriodValue, { color: colors.textSecondary }]}>{syncIntervalLabel}</Text>
           <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} style={{ marginLeft: 8 }} />
         </View>
       </TouchableOpacity>
@@ -209,12 +229,10 @@ export default function SettingsScreen({ navigation }) {
       >
         <View style={styles.rowLeft}>
           <Ionicons name="funnel-outline" size={22} color={colors.primary} />
-          <Text style={[styles.rowLabel, { color: colors.text }]}>Sync Date Field</Text>
+          <Text style={[styles.rowLabel, { color: colors.text }]}>{t('settings.syncDateField')}</Text>
         </View>
         <View style={styles.rowRight}>
-          <Text style={[styles.syncPeriodValue, { color: colors.textSecondary }]}>
-            {syncDateField === 'delivery_date' ? 'Delivery date' : 'Creation date'}
-          </Text>
+          <Text style={[styles.syncPeriodValue, { color: colors.textSecondary }]}>{syncDateFieldLabel}</Text>
           <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} style={{ marginLeft: 8 }} />
         </View>
       </TouchableOpacity>
@@ -227,13 +245,13 @@ export default function SettingsScreen({ navigation }) {
       >
         <View style={styles.modalOverlay}>
           <View style={[styles.modalContent, { backgroundColor: colors.surface }]}>
-            <Text style={[styles.modalTitle, { color: colors.text }]}>Select Sync Period</Text>
+            <Text style={[styles.modalTitle, { color: colors.text }]}>{t('settings.syncPeriod')}</Text>
             {[
-              { label: 'Last 7 days', value: '7days' },
-              { label: 'Last 30 days', value: '30days' },
-              { label: 'Last 90 days', value: '90days' },
-              { label: 'Last 1 year', value: '1year' },
-              { label: 'All time', value: 'all' },
+              { label: t('settings.syncPeriodOptions.last7Days', 'Last 7 days'), value: '7days' },
+              { label: t('settings.syncPeriodOptions.last30Days', 'Last 30 days'), value: '30days' },
+              { label: t('settings.syncPeriodOptions.last90Days', 'Last 90 days'), value: '90days' },
+              { label: t('settings.syncPeriodOptions.last1Year', 'Last 1 year'), value: '1year' },
+              { label: t('settings.syncPeriodOptions.allTime', 'All time'), value: 'all' },
             ].map((option) => (
               <TouchableOpacity
                 key={option.value}
@@ -257,7 +275,7 @@ export default function SettingsScreen({ navigation }) {
               onPress={() => setShowSyncPeriodModal(false)}
               activeOpacity={0.7}
             >
-              <Text style={[styles.modalCloseBtnText, { color: colors.primary }]}>Close</Text>
+              <Text style={[styles.modalCloseBtnText, { color: colors.primary }]}>{t('settings.close')}</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -271,14 +289,14 @@ export default function SettingsScreen({ navigation }) {
       >
         <View style={styles.modalOverlay}>
           <View style={[styles.modalContent, { backgroundColor: colors.surface }]}>
-            <Text style={[styles.modalTitle, { color: colors.text }]}>Select Sync Time</Text>
+            <Text style={[styles.modalTitle, { color: colors.text }]}>{t('settings.syncTime')}</Text>
             {[
-              { label: '1 minute', value: '1min' },
-              { label: '5 minutes', value: '5min' },
-              { label: '10 minutes', value: '10min' },
-              { label: '30 minutes', value: '30min' },
-              { label: '1 hour', value: '1hour' },
-              { label: '2 hours', value: '2hour' },
+              { label: t('settings.syncTimeOptions.oneMinute', '1 minute'), value: '1min' },
+              { label: t('settings.syncTimeOptions.fiveMinutes', '5 minutes'), value: '5min' },
+              { label: t('settings.syncTimeOptions.tenMinutes', '10 minutes'), value: '10min' },
+              { label: t('settings.syncTimeOptions.thirtyMinutes', '30 minutes'), value: '30min' },
+              { label: t('settings.syncTimeOptions.oneHour', '1 hour'), value: '1hour' },
+              { label: t('settings.syncTimeOptions.twoHours', '2 hours'), value: '2hour' },
             ].map((option) => (
               <TouchableOpacity
                 key={option.value}
@@ -302,7 +320,7 @@ export default function SettingsScreen({ navigation }) {
               onPress={() => setShowSyncIntervalModal(false)}
               activeOpacity={0.7}
             >
-              <Text style={[styles.modalCloseBtnText, { color: colors.primary }]}>Close</Text>
+              <Text style={[styles.modalCloseBtnText, { color: colors.primary }]}>{t('settings.close')}</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -316,11 +334,11 @@ export default function SettingsScreen({ navigation }) {
       >
         <View style={styles.modalOverlay}>
           <View style={[styles.modalContent, { backgroundColor: colors.surface }]}>
-            <Text style={[styles.modalTitle, { color: colors.text }]}>App language</Text>
+            <Text style={[styles.modalTitle, { color: colors.text }]}>{t('settings.appLanguage')}</Text>
             {[
-              { label: 'English', value: 'en' },
-              { label: 'Tamil', value: 'ta' },
-              { label: 'Sinhala', value: 'si' },
+              { label: t('settings.languageNames.english', 'English'), value: 'en' },
+              { label: t('settings.languageNames.tamil', 'Tamil'), value: 'ta' },
+              { label: t('settings.languageNames.sinhala', 'Sinhala'), value: 'si' },
             ].map((option) => (
               <TouchableOpacity
                 key={option.value}
@@ -342,7 +360,7 @@ export default function SettingsScreen({ navigation }) {
               onPress={() => setShowLanguageModal(false)}
               activeOpacity={0.7}
             >
-              <Text style={[styles.modalCloseBtnText, { color: colors.primary }]}>Close</Text>
+              <Text style={[styles.modalCloseBtnText, { color: colors.primary }]}>{t('settings.close')}</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -356,7 +374,7 @@ export default function SettingsScreen({ navigation }) {
       >
         <View style={styles.modalOverlay}>
           <View style={[styles.modalContent, { backgroundColor: colors.surface }]}>
-            <Text style={[styles.modalTitle, { color: colors.text }]}>Select Sync Date Field</Text>
+            <Text style={[styles.modalTitle, { color: colors.text }]}>{t('settings.syncDateField')}</Text>
             {[
               { label: 'Creation date', value: 'creation_date' },
               { label: 'Delivery date', value: 'delivery_date' },
@@ -383,48 +401,48 @@ export default function SettingsScreen({ navigation }) {
               onPress={() => setShowSyncDateFieldModal(false)}
               activeOpacity={0.7}
             >
-              <Text style={[styles.modalCloseBtnText, { color: colors.primary }]}>Close</Text>
+              <Text style={[styles.modalCloseBtnText, { color: colors.primary }]}>{t('settings.close')}</Text>
             </TouchableOpacity>
           </View>
         </View>
       </Modal>
 
       {/* Common app features (placeholders) */}
-      {sectionTitle('App')}
+      {sectionTitle(t('settings.app'))}
       <TouchableOpacity
         style={[styles.menuRow, { backgroundColor: colors.surface, borderColor: colors.border }]}
-        onPress={() => Alert.alert('Notifications', 'Not available yet.')}
+        onPress={() => Alert.alert(t('settings.notifications', 'Notifications'), t('settings.notAvailableYet', 'Not available yet.'))}
         activeOpacity={0.8}
       >
         <Ionicons name="notifications-outline" size={22} color={colors.primary} />
-        <Text style={[styles.menuRowText, { color: colors.text }]}>Notifications</Text>
+        <Text style={[styles.menuRowText, { color: colors.text }]}>{t('settings.notifications')}</Text>
         <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
       </TouchableOpacity>
       <TouchableOpacity
         style={[styles.menuRow, { backgroundColor: colors.surface, borderColor: colors.border }]}
-        onPress={() => Alert.alert('About', 'GasTech Delivery v1.0')}
+        onPress={() => Alert.alert(t('settings.about', 'About'), t('settings.aboutMessage', 'GasTech Delivery v1.0'))}
         activeOpacity={0.8}
       >
         <Ionicons name="information-circle-outline" size={22} color={colors.primary} />
-        <Text style={[styles.menuRowText, { color: colors.text }]}>About</Text>
+        <Text style={[styles.menuRowText, { color: colors.text }]}>{t('settings.about')}</Text>
         <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
       </TouchableOpacity>
       <TouchableOpacity
         style={[styles.menuRow, { backgroundColor: colors.surface, borderColor: colors.border }]}
-        onPress={() => Alert.alert('Help', 'Support options are not available yet.')}
+        onPress={() => Alert.alert(t('settings.help', 'Help & Support'), t('settings.helpMessage', 'Support options are not available yet.'))}
         activeOpacity={0.8}
       >
         <Ionicons name="help-circle-outline" size={22} color={colors.primary} />
-        <Text style={[styles.menuRowText, { color: colors.text }]}>Help & Support</Text>
+        <Text style={[styles.menuRowText, { color: colors.text }]}>{t('settings.help')}</Text>
         <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
       </TouchableOpacity>
       <TouchableOpacity
         style={[styles.menuRow, { backgroundColor: colors.surface, borderColor: colors.border }]}
-        onPress={() => Alert.alert('Privacy', 'Privacy policy is not available yet.')}
+        onPress={() => Alert.alert(t('settings.privacy', 'Privacy'), t('settings.privacyMessage', 'Privacy policy is not available yet.'))}
         activeOpacity={0.8}
       >
         <Ionicons name="shield-checkmark-outline" size={22} color={colors.primary} />
-        <Text style={[styles.menuRowText, { color: colors.text }]}>Privacy</Text>
+        <Text style={[styles.menuRowText, { color: colors.text }]}>{t('settings.privacy')}</Text>
         <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
       </TouchableOpacity>
 

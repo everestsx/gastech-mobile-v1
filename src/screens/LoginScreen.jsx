@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
 
 import CustomAlert from '../components/CustomAlert';
@@ -44,6 +45,7 @@ const LANGUAGE_OPTIONS = [
 ];
 
 export default function LoginScreen({ navigation }) {
+  const { t } = useTranslation();
   const { colors, appLanguage, setAppLanguage } = useTheme();
   const insets = useSafeAreaInsets();
   const [vehicles, setVehicles] = useState([]);
@@ -691,7 +693,7 @@ export default function LoginScreen({ navigation }) {
               <View
                   style={styles.dropdownWrapper}
               >
-                <Text style={styles.inputLabel}>Vehicle ID</Text>
+                <Text style={styles.inputLabel}>{t('login.vehicleID', 'Vehicle ID')}</Text>
 
                 <TouchableOpacity
                     ref={dropdownRef}
@@ -727,7 +729,7 @@ export default function LoginScreen({ navigation }) {
                           showsVerticalScrollIndicator={false}
                           ListEmptyComponent={
                             <View style={{ padding: 20, alignItems: 'center' }}>
-                              <Text style={{ color: colors.textSecondary }}>No vehicles found.</Text>
+                              <Text style={{ color: colors.textSecondary }}>{t('login.noVehiclesFound', 'No vehicles found.')}</Text>
                             </View>
                           }
                           renderItem={({ item }) => {
@@ -767,12 +769,12 @@ export default function LoginScreen({ navigation }) {
                   </TouchableOpacity>
                 </Modal>
               </View>
-              <Text style={styles.inputLabel}>Driver pin</Text>
+              <Text style={styles.inputLabel}>{t('login.driverPin', 'Driver pin')}</Text>
               <View style={styles.inputGroup}>
                 <Ionicons name="key-outline" size={20} color={colors.primary} style={{ marginRight: 12 }} />
                 <TextInput
                     style={{ flex: 1, fontSize: 16, color: colors.text }}
-                    placeholder="Your driver pin"
+                    placeholder={t('login.yourDriverPin', 'Your driver pin')}
                     placeholderTextColor={colors.textSecondary}
                     secureTextEntry={!showPassword}
                     value={password}
@@ -799,7 +801,7 @@ export default function LoginScreen({ navigation }) {
                       <ActivityIndicator color="#fff" />
                     </View>
                 ) : (
-                    <Text style={styles.loginBtnText}>Login</Text>
+                    <Text style={styles.loginBtnText}>{t('login.login', 'Login')}</Text>
                 )}
               </TouchableOpacity>
             </View>
@@ -878,8 +880,8 @@ export default function LoginScreen({ navigation }) {
         <Modal visible={loginPhase === 'driverReview'} transparent animationType="fade">
           <View style={styles.modalOverlay}>
             <View style={styles.modalCard}>
-              <Text style={styles.modalTitle}>Signed in as driver</Text>
-              <Text style={styles.modalSubtitle}>If this is you, continue to pick porters for this vehicle.</Text>
+              <Text style={styles.modalTitle}>{t('login.signedInAsDriver', 'Signed in as driver')}</Text>
+              <Text style={styles.modalSubtitle}>{t('login.ifThisIsYouContinueToPickPortersForThisVehicle', 'If this is you, continue to pick porters for this vehicle.')}</Text>
               <View style={styles.driverAvatarWrap}>
                 {matchedDriver && odooImageToUri(matchedDriver.imageBase64) ? (
                   <Image
@@ -906,10 +908,10 @@ export default function LoginScreen({ navigation }) {
                   }}
                   activeOpacity={0.85}
                 >
-                  <Text style={styles.modalBtnSecondaryText}>Back</Text>
+                  <Text style={styles.modalBtnSecondaryText}>{t('login.back', 'Back')}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={styles.modalBtnPrimary} onPress={openPorterSelection} activeOpacity={0.85}>
-                  <Text style={styles.modalBtnPrimaryText}>Continue</Text>
+                  <Text style={styles.modalBtnPrimaryText}>{t('login.continue', 'Continue')}</Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -923,7 +925,7 @@ export default function LoginScreen({ navigation }) {
             keyboardVerticalOffset={Platform.OS === 'ios' ? 40 : 0}
           >
             <View style={[styles.modalCard, { paddingBottom: spacing.md, maxHeight: '92%' }]}>
-              <Text style={styles.modalTitle}>Who's on this shift?</Text>
+              <Text style={styles.modalTitle}>{t('login.whoSOnThisShift', 'Who\'s on this shift?')}</Text>
               <Text style={styles.modalSubtitle}>
                 Tap names to add or remove. Selected people show above the list.
               </Text>
@@ -932,7 +934,7 @@ export default function LoginScreen({ navigation }) {
                   <Ionicons name="search" size={22} color={colors.primary} />
                   <TextInput
                     style={styles.porterSearchInput}
-                    placeholder="Search by name or code"
+                    placeholder={t('login.searchByNameOrCode', 'Search by name or code')}
                     placeholderTextColor={colors.textSecondary}
                     value={porterSearchQuery}
                     onChangeText={setPorterSearchQuery}
@@ -1067,7 +1069,7 @@ export default function LoginScreen({ navigation }) {
                                 Selected — tap to remove
                               </Text>
                             ) : (
-                              <Text style={{ fontSize: 11, color: colors.textSecondary, marginTop: 4 }}>Tap to select</Text>
+                              <Text style={{ fontSize: 11, color: colors.textSecondary, marginTop: 4 }}>{t('login.tapToSelect', 'Tap to select')}</Text>
                             )}
                           </View>
                           <View style={[styles.porterCheck, on && styles.porterCheckOn]}>
@@ -1085,7 +1087,7 @@ export default function LoginScreen({ navigation }) {
                   onPress={() => setLoginPhase('driverReview')}
                   activeOpacity={0.85}
                 >
-                  <Text style={styles.modalBtnSecondaryText}>Back</Text>
+                  <Text style={styles.modalBtnSecondaryText}>{t('login.back', 'Back')}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={[styles.modalBtnPrimary, loading && { opacity: 0.7 }]}
@@ -1096,7 +1098,7 @@ export default function LoginScreen({ navigation }) {
                   {loading ? (
                     <ActivityIndicator color="#fff" />
                   ) : (
-                    <Text style={styles.modalBtnPrimaryText}>Go to dashboard</Text>
+                    <Text style={styles.modalBtnPrimaryText}>{t('login.goToDashboard', 'Go to dashboard')}</Text>
                   )}
                 </TouchableOpacity>
               </View>

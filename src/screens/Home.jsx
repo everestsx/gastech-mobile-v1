@@ -1,17 +1,19 @@
+import { useTranslation } from 'react-i18next';
 import React from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from 'react-native';
 
 export default function HomeScreen({ navigation }) {
+  const { t } = useTranslation();
   return (
     <ScrollView style={styles.container} contentContainerStyle={{ alignItems: 'center' }}>
-      <Text style={styles.title}>Welcome to My App</Text>
+      <Text style={styles.title}>{t('home.welcomeToMyApp', 'Welcome to My App')}</Text>
 
       <TouchableOpacity
         style={styles.card}
         onPress={() => navigation.navigate('dashboard')}
         activeOpacity={0.7}
       >
-        <Text style={styles.cardText}>📊 Dashboard</Text>
+        <Text style={styles.cardText}>{t('home.Dashboard', '📊 Dashboard')}</Text>
       </TouchableOpacity>
 
       <TouchableOpacity
@@ -19,7 +21,7 @@ export default function HomeScreen({ navigation }) {
         onPress={() => {navigation.navigate('QrGenerate'),console.log("hellow")}}
         activeOpacity={0.7}
       >
-        <Text style={styles.cardText}>🔲 QR Generator</Text>
+        <Text style={styles.cardText}>{t('home.QRGenerator', '🔲 QR Generator')}</Text>
       </TouchableOpacity>
 
       <TouchableOpacity
@@ -28,7 +30,7 @@ export default function HomeScreen({ navigation }) {
         // onPress={() =>  console.log("Sale order list")}
         activeOpacity={0.7}
       >
-        <Text style={styles.cardText}>🛒 Sales Orders</Text>
+        <Text style={styles.cardText}>{t('home.SalesOrders', '🛒 Sales Orders')}</Text>
       </TouchableOpacity>
     </ScrollView>
   );

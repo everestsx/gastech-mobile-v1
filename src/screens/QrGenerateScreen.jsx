@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import { StatusBar } from "expo-status-bar";
 import { useEffect, useRef, useState, useMemo } from "react";
 import {
@@ -26,6 +27,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { getCustomers } from "../services/customer.service";
 
 export default function QrGenerateScreen({ navigation }) {
+  const { t } = useTranslation();
   const { colors, isDark } = useTheme();
   const insets = useSafeAreaInsets();
   const [customers, setCustomers] = useState([]);
@@ -250,17 +252,17 @@ export default function QrGenerateScreen({ navigation }) {
             <TouchableOpacity onPress={() => navigation.goBack()}>
               <Ionicons name="arrow-back" size={28} color={colors.primary} />
             </TouchableOpacity>
-            <Text style={styles.headerTitle}>Customer QR Generator</Text>
+            <Text style={styles.headerTitle}>{t('qrgenerate.customerQRGenerator', 'Customer QR Generator')}</Text>
           </View>
           <Text style={styles.subtitle}>
             Search and select a customer, then generate a clean QR code for quick counter scanning.
           </Text>
 
           <View style={styles.sectionCard}>
-            <Text style={styles.sectionTitle}>1) Choose Customer</Text>
+            <Text style={styles.sectionTitle}>{t('qrgenerate.1ChooseCustomer', '1) Choose Customer')}</Text>
             <TextInput
               style={styles.input}
-              placeholder="Type customer name..."
+              placeholder={t('qrgenerate.typeCustomerName', 'Type customer name...')}
               placeholderTextColor={colors.textSecondary}
               value={search}
               onChangeText={onSearch}
@@ -303,7 +305,7 @@ export default function QrGenerateScreen({ navigation }) {
             onPress={generateQR}
           >
             <Ionicons name="qr-code-outline" size={20} color="#fff" />
-            <Text style={styles.buttonText}>Generate QR</Text>
+            <Text style={styles.buttonText}>{t('qrgenerate.generateQR', 'Generate QR')}</Text>
           </TouchableOpacity>
 
           <View style={styles.qrWrapper}>
@@ -316,9 +318,9 @@ export default function QrGenerateScreen({ navigation }) {
 
                 <TouchableOpacity style={styles.button} onPress={downloadQR}>
                   <Ionicons name="download-outline" size={20} color="#fff" />
-                  <Text style={styles.buttonText}>Download QR</Text>
+                  <Text style={styles.buttonText}>{t('qrgenerate.downloadQR', 'Download QR')}</Text>
                 </TouchableOpacity>
-                <Text style={styles.helperText}>Saved as PNG in your gallery for printing or sharing.</Text>
+                <Text style={styles.helperText}>{t('qrgenerate.savedAsPNGInYourGalleryForPrintingOrSharing', 'Saved as PNG in your gallery for printing or sharing.')}</Text>
               </>
             ) : (
               <>

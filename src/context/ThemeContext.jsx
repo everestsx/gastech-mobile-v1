@@ -1,6 +1,8 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getThemeColors } from '../constants/theme';
+import i18n, { initI18n } from '../i18n';
+
 
 const STORAGE_KEYS = {
   THEME: '@gastech_theme',
@@ -60,6 +62,8 @@ export function ThemeProvider({ children }) {
       if (savedLang && ['en', 'ta', 'si'].includes(savedLang)) {
         setAppLanguageState(savedLang);
       }
+      // Initialize i18n with saved language or default
+      await initI18n(savedLang || 'en');
     } catch (_) {}
     setReady(true);
   }, []);
@@ -116,6 +120,7 @@ export function ThemeProvider({ children }) {
   const setAppLanguage = useCallback(async (value) => {
     const next = ['en', 'ta', 'si'].includes(value) ? value : 'en';
     setAppLanguageState(next);
+    i18n.changeLanguage(next);
     try {
       await AsyncStorage.setItem(STORAGE_KEYS.APP_LANGUAGE, next);
     } catch (_) {}

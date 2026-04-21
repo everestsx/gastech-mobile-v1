@@ -5,6 +5,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { useTranslation } from 'react-i18next';
 import { useSync } from '../context/SyncContext';
 import { colors } from '../constants/theme';
 import SplashScreen from '../screens/SplashScreen';
@@ -51,6 +52,7 @@ const Tab = createBottomTabNavigator();
 const MainStack = createNativeStackNavigator();
 
 function MainTabs() {
+  const { t } = useTranslation();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const tabBarHeight = 60;
@@ -75,7 +77,7 @@ function MainTabs() {
         name="Dashboard"
         component={DashboardScreen}
         options={{
-          tabBarLabel: 'Home',
+          tabBarLabel: t('navigation.home', 'Home'),
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="home-outline" size={size} color={color} />
           ),
@@ -85,7 +87,7 @@ function MainTabs() {
         name="Orders"
         component={SaleOrderListScreen}
         options={{
-          tabBarLabel: 'Orders',
+          tabBarLabel: t('navigation.orders', 'Orders'),
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="cart-outline" size={size} color={color} />
           ),
@@ -95,7 +97,7 @@ function MainTabs() {
         name="DeliveredOrders"
         component={DeliveredOrdersScreen}
         options={{
-          tabBarLabel: 'Delivered',
+          tabBarLabel: t('navigation.delivered', 'Delivered'),
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="checkmark-done-outline" size={size} color={color} />
           ),
@@ -115,7 +117,7 @@ function MainTabs() {
         name="Menu"
         component={MenuScreen}
         options={{
-          tabBarLabel: 'Menu',
+          tabBarLabel: t('navigation.menu', 'Menu'),
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="menu-outline" size={size} color={color} />
           ),
@@ -126,6 +128,7 @@ function MainTabs() {
 }
 
 function MainStackScreen() {
+  const { t } = useTranslation();
   const { colors } = useTheme();
   const headerOrange = colors.primary ?? '#6366f1';
   const headerScreenOptions = {
@@ -140,7 +143,7 @@ function MainStackScreen() {
     },
     headerTintColor: '#fff',
     headerTitleStyle: { fontWeight: '700', fontSize: 18 },
-    headerBackTitle: 'Back',
+    headerBackTitle: t('navigation.back', 'Back'),
     headerShadowVisible: true,
     headerRight: () => <SyncHeaderBadge variant="header" />,
   };
@@ -159,67 +162,67 @@ function MainStackScreen() {
       <MainStack.Screen
         name="Customers"
         component={CustomersScreen}
-        options={{ ...headerScreenOptions, title: 'My Customers' }}
+        options={{ ...headerScreenOptions, title: t('navigation.myCustomers', 'My Customers') }}
       />
       <MainStack.Screen
         name="DailyVisit"
         component={DailyVisitScreen}
-        options={{ ...headerScreenOptions, title: 'Daily Visit' }}
+        options={{ ...headerScreenOptions, title: t('navigation.dailyVisit', 'Daily Visit') }}
       />
       <MainStack.Screen
         name="MyStocks"
         component={VehicleStockScreen}
-        options={{ ...headerScreenOptions, title: 'My Stocks' }}
+        options={{ ...headerScreenOptions, title: t('navigation.myStocks', 'My Stocks') }}
       />
       <MainStack.Screen
         name="MyCommissions"
         component={MyCommissionScreen}
-        options={{ ...headerScreenOptions, title: 'My Commissions' }}
+        options={{ ...headerScreenOptions, title: t('navigation.myCommissions', 'My Commissions') }}
       />
       <MainStack.Screen
         name="SyncHistory"
         component={SyncHistoryScreen}
-        options={{ ...headerScreenOptions, title: 'Sync History' }}
+        options={{ ...headerScreenOptions, title: t('navigation.syncHistory', 'Sync History') }}
       />
       <MainStack.Screen
         name="LocalInvoices"
         component={LocalInvoicesScreen}
-        options={{ ...headerScreenOptions, title: 'My Invoices' }}
+        options={{ ...headerScreenOptions, title: t('navigation.myInvoices', 'My Invoices') }}
       />
       <MainStack.Screen
         name="Settings"
         component={SettingsScreen}
-        options={{ ...headerScreenOptions, title: 'Settings' }}
+        options={{ ...headerScreenOptions, title: t('navigation.settings', 'Settings') }}
       />
       <MainStack.Screen
         name="BluetoothPrinter"
         component={BluetoothPrinterScreen}
-        options={{ ...headerScreenOptions, title: 'Bluetooth printer' }}
+        options={{ ...headerScreenOptions, title: t('navigation.bluetoothPrinter', 'Bluetooth printer') }}
       />
       <MainStack.Screen
         name="SaleOrderDetails"
         component={SaleOrderDetailsScreen}
-        options={{ ...headerScreenOptions, title: 'Order Details' }}
+        options={{ ...headerScreenOptions, title: t('navigation.orderDetails', 'Order Details') }}
       />
       <MainStack.Screen
         name="ProceedPayment"
         component={ProceedPaymentScreen}
-        options={{ ...headerScreenOptions, title: 'Payment' }}
+        options={{ ...headerScreenOptions, title: t('navigation.payment', 'Payment') }}
       />
       <MainStack.Screen
         name="EmptyCylinderCollection"
         component={EmptyCylinderCollectionScreen}
-        options={{ ...headerScreenOptions, title: 'Empty Cylinders' }}
+        options={{ ...headerScreenOptions, title: t('navigation.emptyCylinders', 'Empty Cylinders') }}
       />
       <MainStack.Screen
         name="InvoiceScreen"
         component={InvoiceScreen}
-        options={{ ...headerScreenOptions, title: 'Invoice' }}
+        options={{ ...headerScreenOptions, title: t('navigation.invoice', 'Invoice') }}
       />
       <MainStack.Screen
         name="PaymentProof"
         component={PaymentProofScreen}
-        options={{ ...headerScreenOptions, title: 'Payment proof', headerBackVisible: false }}
+        options={{ ...headerScreenOptions, title: t('navigation.paymentProof', 'Payment proof'), headerBackVisible: false }}
       />
       <MainStack.Screen
         name="ScanQRCode"
@@ -229,12 +232,12 @@ function MainStackScreen() {
       <MainStack.Screen
         name="ScanResult"
         component={ScanResultScreen}
-        options={{ ...headerScreenOptions, title: 'Scan result' }}
+        options={{ ...headerScreenOptions, title: t('navigation.scanResult', 'Scan result') }}
       />
       <MainStack.Screen
         name="QRGenerator"
         component={QrGenerateScreen}
-        options={{ ...headerScreenOptions, title: 'Customer QR Generator' }}
+        options={{ ...headerScreenOptions, title: t('navigation.customerQRGenerator', 'Customer QR Generator') }}
       />
     </MainStack.Navigator>
   );

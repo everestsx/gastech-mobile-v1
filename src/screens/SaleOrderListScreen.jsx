@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import {
   View,
@@ -48,6 +49,7 @@ function isToday(d) {
 }
 
 export default function SaleOrderListScreen({ route, navigation }) {
+  const { t } = useTranslation();
   const { colors, syncDateField } = useTheme();
   const insets = useSafeAreaInsets();
   const customerId = route?.params?.customerId ?? null;
@@ -468,7 +470,7 @@ export default function SaleOrderListScreen({ route, navigation }) {
       )}
       {showPicker && Platform.OS === 'ios' && (
         <TouchableOpacity style={styles.doneDateBtn} onPress={() => setShowPicker(false)}>
-          <Text style={styles.doneDateText}>Done</Text>
+          <Text style={styles.doneDateText}>{t('saleorderlist.done', 'Done')}</Text>
         </TouchableOpacity>
       )}
 
@@ -511,7 +513,7 @@ export default function SaleOrderListScreen({ route, navigation }) {
                 activeOpacity={0.7}
               >
                 <Ionicons name="person-outline" size={20} color={colors.primary} />
-                <Text style={styles.dropdownItemText}>Customer name</Text>
+                <Text style={styles.dropdownItemText}>{t('saleorderlist.customerName', 'Customer name')}</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.dropdownItem}
@@ -519,7 +521,7 @@ export default function SaleOrderListScreen({ route, navigation }) {
                 activeOpacity={0.7}
               >
                 <Ionicons name="document-text-outline" size={20} color={colors.primary} />
-                <Text style={styles.dropdownItemText}>Order ID</Text>
+                <Text style={styles.dropdownItemText}>{t('saleorderlist.orderID', 'Order ID')}</Text>
               </TouchableOpacity>
             </View>
           </View>

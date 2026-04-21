@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import {
   View,
@@ -47,6 +48,7 @@ function formatDate(dateStr) {
 }
 
 export default function MyCommissionScreen({ navigation }) {
+  const { t } = useTranslation();
   const { colors } = useTheme();
   const [user, setUser] = useState(null);
   const [plan, setPlan] = useState(null);
@@ -155,7 +157,7 @@ export default function MyCommissionScreen({ navigation }) {
     return (
       <View style={[styles.centered, { backgroundColor: colors.background }]}>
         <ActivityIndicator size="large" color={colors.primary} />
-        <Text style={[styles.loadingText, { color: colors.textSecondary }]}>Loading commission history…</Text>
+        <Text style={[styles.loadingText, { color: colors.textSecondary }]}>{t('mycommission.loadingCommissionHistory', 'Loading commission history…')}</Text>
       </View>
     );
   }
@@ -169,7 +171,7 @@ export default function MyCommissionScreen({ navigation }) {
       }
     >
       <View style={styles.header}>
-        <Text style={[styles.headerTitle, { color: colors.text }]}>Daily commission history</Text>
+        <Text style={[styles.headerTitle, { color: colors.text }]}>{t('mycommission.dailyCommissionHistory', 'Daily commission history')}</Text>
         <Text style={[styles.headerSub, { color: colors.textSecondary }]}>
           Tap a day to see gas delivered and calculation
         </Text>
@@ -212,20 +214,20 @@ export default function MyCommissionScreen({ navigation }) {
               {isExpanded && (
                 <View style={[styles.expanded, { borderTopColor: colors.border }]}>
                   <View style={styles.row}>
-                    <Text style={[styles.label, { color: colors.textSecondary }]}>Gas delivered</Text>
+                    <Text style={[styles.label, { color: colors.textSecondary }]}>{t('mycommission.gasDelivered', 'Gas delivered')}</Text>
                     <Text style={[styles.value, { color: colors.text }]}>
                       {Number(day.totalGas).toLocaleString('en-IN', { maximumFractionDigits: 2 })} units
                     </Text>
                   </View>
                   <View style={styles.row}>
-                    <Text style={[styles.label, { color: colors.textSecondary }]}>Commission rate</Text>
+                    <Text style={[styles.label, { color: colors.textSecondary }]}>{t('mycommission.commissionRate', 'Commission rate')}</Text>
                     <Text style={[styles.value, { color: colors.text }]}>
                       {plan && Object.keys(plan.productRateMap || {}).length > 0
                         ? 'Per product (see calculation below)'
                         : `Rs. ${Number(defaultRate).toFixed(2)} per unit`}
                     </Text>
                   </View>
-                  <Text style={[styles.calcTitle, { color: colors.text }]}>Calculation</Text>
+                  <Text style={[styles.calcTitle, { color: colors.text }]}>{t('mycommission.calculation', 'Calculation')}</Text>
                   {day.breakdown.length === 0 ? (
                     <Text style={[styles.calcLine, { color: colors.textSecondary }]}>
                       No line items
@@ -243,7 +245,7 @@ export default function MyCommissionScreen({ navigation }) {
                     ))
                   )}
                   <View style={[styles.totalRow, { borderTopColor: colors.border }]}>
-                    <Text style={[styles.totalLabel, { color: colors.text }]}>Total commission</Text>
+                    <Text style={[styles.totalLabel, { color: colors.text }]}>{t('mycommission.totalCommission', 'Total commission')}</Text>
                     <Text style={[styles.totalAmount, { color: colors.primary }]}>
                       {formatCurrency(day.commission)}
                     </Text>

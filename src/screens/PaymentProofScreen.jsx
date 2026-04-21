@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import { useState, useMemo, useCallback } from 'react';
 import {
   View,
@@ -31,6 +32,7 @@ import { clearCheckoutResume } from '../services/checkoutResume.service';
 const MAX_PHOTOS = 3;
 
 export default function PaymentProofScreen({ route, navigation }) {
+  const { t } = useTranslation();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const { saleOrderId, creditProofRequired = false, orderName } = route.params || {};
@@ -295,9 +297,9 @@ export default function PaymentProofScreen({ route, navigation }) {
   if (!Number.isFinite(soId) || soId <= 0) {
     return (
       <View style={[styles.container, { justifyContent: 'center', padding: spacing.lg }]}>
-        <Text style={{ color: colors.textSecondary, textAlign: 'center' }}>Missing order.</Text>
+        <Text style={{ color: colors.textSecondary, textAlign: 'center' }}>{t('paymentproof.missingOrder', 'Missing order.')}</Text>
         <TouchableOpacity style={[styles.primaryBtn, { marginTop: spacing.lg }]} onPress={() => navigation.goBack()}>
-          <Text style={styles.primaryBtnText}>Go back</Text>
+          <Text style={styles.primaryBtnText}>{t('paymentproof.goBack', 'Go back')}</Text>
         </TouchableOpacity>
       </View>
     );
@@ -310,7 +312,7 @@ export default function PaymentProofScreen({ route, navigation }) {
           <View style={styles.heroIconWrap}>
             <Ionicons name="camera" size={40} color={colors.primary} />
           </View>
-          <Text style={styles.title}>Payment proof</Text>
+          <Text style={styles.title}>{t('paymentproof.paymentProof', 'Payment proof')}</Text>
           <Text style={styles.subtitle}>
             {creditProofRequired
               ? 'Credit: add at least one clear photo (receipt, agreement, or handover).'
@@ -350,7 +352,7 @@ export default function PaymentProofScreen({ route, navigation }) {
               activeOpacity={0.85}
             >
               <Ionicons name="camera" size={32} color={colors.primary} />
-              <Text style={styles.pickBtnText}>Take photo</Text>
+              <Text style={styles.pickBtnText}>{t('paymentproof.takePhoto', 'Take photo')}</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={styles.pickBtn}
@@ -373,7 +375,7 @@ export default function PaymentProofScreen({ route, navigation }) {
               activeOpacity={0.85}
             >
               <Ionicons name="images-outline" size={32} color={colors.primary} />
-              <Text style={styles.pickBtnText}>Gallery</Text>
+              <Text style={styles.pickBtnText}>{t('paymentproof.gallery', 'Gallery')}</Text>
             </TouchableOpacity>
           </View>
           {photos.length > 0 ? (
@@ -410,7 +412,7 @@ export default function PaymentProofScreen({ route, navigation }) {
           ) : (
             <>
               <Ionicons name="checkmark-done-circle" size={24} color="#fff" />
-              <Text style={styles.primaryBtnText}>Complete payment</Text>
+              <Text style={styles.primaryBtnText}>{t('paymentproof.completePayment', 'Complete payment')}</Text>
             </>
           )}
         </TouchableOpacity>
@@ -428,7 +430,7 @@ export default function PaymentProofScreen({ route, navigation }) {
       >
         <Pressable style={styles.confirmBackdrop} onPress={() => setConfirmVisible(false)}>
           <Pressable style={styles.confirmCard} onPress={(e) => e.stopPropagation()}>
-            <Text style={styles.confirmTitle}>Complete this order?</Text>
+            <Text style={styles.confirmTitle}>{t('paymentproof.completeThisOrder', 'Complete this order?')}</Text>
             <Text style={styles.confirmText}>
               Once completed, delivery and invoice are finalized. You can no longer edit this order flow.
             </Text>
@@ -438,7 +440,7 @@ export default function PaymentProofScreen({ route, navigation }) {
                 onPress={() => setConfirmVisible(false)}
                 activeOpacity={0.85}
               >
-                <Text style={styles.confirmBtnKeepText}>Keep order</Text>
+                <Text style={styles.confirmBtnKeepText}>{t('paymentproof.keepOrder', 'Keep order')}</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.confirmBtn, styles.confirmBtnYes]}
@@ -448,7 +450,7 @@ export default function PaymentProofScreen({ route, navigation }) {
                 }}
                 activeOpacity={0.85}
               >
-                <Text style={styles.confirmBtnYesText}>Yes, complete</Text>
+                <Text style={styles.confirmBtnYesText}>{t('paymentproof.yesComplete', 'Yes, complete')}</Text>
               </TouchableOpacity>
             </View>
           </Pressable>

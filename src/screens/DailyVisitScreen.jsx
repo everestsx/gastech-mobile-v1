@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import React, { useState, useCallback, useMemo } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
 import {
@@ -29,6 +30,7 @@ function formatDate(d) {
 }
 
 export default function DailyVisitScreen({ route, navigation }) {
+  const { t } = useTranslation();
   const { colors, syncDateField } = useTheme();
   const customerId = route?.params?.customerId ?? null;
   const [orders, setOrders] = useState([]);
@@ -231,7 +233,7 @@ export default function DailyVisitScreen({ route, navigation }) {
           onPress={clearCustomerFilter}
           activeOpacity={0.8}
         >
-          <Text style={styles.filterChipText}>Showing one customer — tap to show all</Text>
+          <Text style={styles.filterChipText}>{t('dailyvisit.showingOneCustomerTapToShowAll', 'Showing one customer — tap to show all')}</Text>
           <Ionicons name="close-circle" size={20} color={colors.primary} />
         </TouchableOpacity>
       )}
@@ -252,7 +254,7 @@ export default function DailyVisitScreen({ route, navigation }) {
           style={styles.doneDateBtn}
           onPress={() => setShowPicker(false)}
         >
-          <Text style={styles.doneDateText}>Done</Text>
+          <Text style={styles.doneDateText}>{t('dailyvisit.done', 'Done')}</Text>
         </TouchableOpacity>
       )}
 

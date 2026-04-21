@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Updates from 'expo-updates';
+import { useTranslation } from 'react-i18next';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
 import {
@@ -27,6 +28,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { odooImageToUri } from '../services/employee.service';
 
 export default function MenuScreen({ navigation }) {
+  const { t } = useTranslation();
   const { colors } = useTheme();
   const { clearPrinter } = usePrinterConnection();
   const [syncing, setSyncing] = useState(false);
@@ -84,46 +86,56 @@ export default function MenuScreen({ navigation }) {
 
   const handleDeleteLocalData = () => {
     showAlert(
-      'Delete local data',
-      'Removes customers, orders, and other synced data on this phone. You stay logged in. Sync again to reload from GasTech. Continue?',
+      t('menu.deleteLocalData', 'Delete local data'),
+      t(
+        'menu.deleteLocalDataMessage',
+        'Removes customers, orders, and other synced data on this phone. You stay logged in. Sync again to reload from GasTech. Continue?'
+      ),
       [
-        { text: 'Cancel', style: 'cancel', onPress : hideAlert },
+        { text: t('menu.cancel', 'Cancel'), style: 'cancel', onPress : hideAlert },
         {
-          text: 'Delete',
+          text: t('menu.delete', 'Delete'),
           style: 'destructive',
           onPress: async () => {
             hideAlert();
             try {
               await deleteLocalData();
               await refreshLastSync();
-              showAlert('Done', 'Deleted. Tap Sync to download data again.');
+              showAlert(t('menu.done', 'Done'), t('menu.deletedTapSyncAgain', 'Deleted. Tap Sync to download data again.'));
             } catch (e) {
               if (e?.code === 'PENDING_SYNC') {
                 const q = e.pendingQueueCount ?? 0;
                 const a = e.pendingAttachmentCount ?? 0;
                 showAlert(
-                  'Not everything is synced',
-                  `${q} item(s) in queue, ${a} photo(s) not sent yet. Sync first, or delete anyway and lose those items on the server.`,
+                  t('menu.notEverythingIsSynced', 'Not everything is synced'),
+                  t(
+                    'menu.pendingSyncMessage',
+                    '{{queue}} item(s) in queue, {{attachments}} photo(s) not sent yet. Sync first, or delete anyway and lose those items on the server.',
+                    { queue: q, attachments: a }
+                  ),
                   [
-                    { text: 'Cancel', style: 'cancel', onPress: hideAlert },
+                    { text: t('menu.cancel', 'Cancel'), style: 'cancel', onPress: hideAlert },
                     {
-                      text: 'Discard & delete',
+                      text: t('menu.discardAndDelete', 'Discard & delete'),
                       style: 'destructive',
                       onPress: async () => {
                         hideAlert();
                         try {
                           await deleteLocalData({ discardUnsynced: true });
                           await refreshLastSync();
-                          showAlert('Done', 'Deleted (unsynced items were dropped). Tap Sync to reload.');
+                          showAlert(
+                            t('menu.done', 'Done'),
+                            t('menu.deletedUnsyncedDropped', 'Deleted (unsynced items were dropped). Tap Sync to reload.')
+                          );
                         } catch (e2) {
-                          showAlert('Error', e2?.message || 'Failed to delete local data.');
+                          showAlert(t('menu.error', 'Error'), e2?.message || t('menu.failedToDeleteLocalData', 'Failed to delete local data.'));
                         }
                       },
                     },
                   ]
                 );
               } else {
-                showAlert('Error', e?.message || 'Failed to delete local data.');
+                showAlert(t('menu.error', 'Error'), e?.message || t('menu.failedToDeleteLocalData', 'Failed to delete local data.'));
               }
             }
           },
@@ -136,22 +148,22 @@ export default function MenuScreen({ navigation }) {
     setCheckingAppUpdate(true);
     try {
       await Updates.fetchUpdateAsync();
-      showAlert('Update ready', 'The latest update has been downloaded. Restart the app now?', [
-        { text: 'Later', style: 'cancel', onPress: hideAlert },
+      showAlert(t('menu.updateReady', 'Update ready'), t('menu.updateReadyMessage', 'The latest update has been downloaded. Restart the app now?'), [
+        { text: t('menu.later', 'Later'), style: 'cancel', onPress: hideAlert },
         {
-          text: 'Restart now',
+          text: t('menu.restartNow', 'Restart now'),
           onPress: async () => {
             hideAlert();
             try {
               await Updates.reloadAsync();
             } catch (e) {
-              showAlert('Restart failed', e?.message || 'Please close and reopen the app.');
+              showAlert(t('menu.restartFailed', 'Restart failed'), e?.message || t('menu.closeAndReopen', 'Please close and reopen the app.'));
             }
           },
         },
       ]);
     } catch (e) {
-      showAlert('Update failed', e?.message || 'Could not download update. Try again.');
+      showAlert(t('menu.updateFailed', 'Update failed'), e?.message || t('menu.couldNotDownloadUpdate', 'Could not download update. Try again.'));
     } finally {
       setCheckingAppUpdate(false);
     }
@@ -161,8 +173,8 @@ export default function MenuScreen({ navigation }) {
     if (checkingAppUpdate) return;
     if (!Updates.isEnabled) {
       showAlert(
-        'Updates unavailable',
-        'This app build does not support OTA updates. Install an EAS-built update-enabled APK first.'
+        t('menu.updatesUnavailable', 'Updates unavailable'),
+        t('menu.otaNotSupported', 'This app build does not support OTA updates. Install an EAS-built update-enabled APK first.')
       );
       return;
     }
@@ -170,13 +182,13 @@ export default function MenuScreen({ navigation }) {
     try {
       const result = await Updates.checkForUpdateAsync();
       if (!result?.isAvailable) {
-        showAlert('Up to date', 'You are already on the latest app update.');
+        showAlert(t('menu.upToDate', 'Up to date'), t('menu.alreadyOnLatestUpdate', 'You are already on the latest app update.'));
         return;
       }
-      showAlert('Update available', 'A newer app update is available. Download now?', [
-        { text: 'Later', style: 'cancel', onPress: hideAlert },
+      showAlert(t('menu.updateAvailable', 'Update available'), t('menu.newerUpdateAvailable', 'A newer app update is available. Download now?'), [
+        { text: t('menu.later', 'Later'), style: 'cancel', onPress: hideAlert },
         {
-          text: 'Update now',
+          text: t('menu.updateNow', 'Update now'),
           onPress: () => {
             hideAlert();
             void fetchAndPromptApplyUpdate();
@@ -186,9 +198,9 @@ export default function MenuScreen({ navigation }) {
     } catch (e) {
       const msg = String(e?.message || e || '');
       if (/development mode|dev mode|expo go/i.test(msg)) {
-        showAlert('Updates unavailable', 'OTA updates work only in installed release/internal builds, not Expo Go/dev mode.');
+        showAlert(t('menu.updatesUnavailable', 'Updates unavailable'), t('menu.otaOnlyInRelease', 'OTA updates work only in installed release/internal builds, not Expo Go/dev mode.'));
       } else {
-        showAlert('Update check failed', e?.message || 'Could not check for updates.');
+        showAlert(t('menu.updateCheckFailed', 'Update check failed'), e?.message || t('menu.couldNotCheckForUpdates', 'Could not check for updates.'));
       }
     } finally {
       setCheckingAppUpdate(false);
@@ -196,10 +208,10 @@ export default function MenuScreen({ navigation }) {
   };
 
   const handleLogout = () => {
-    showAlert('Log out', 'Are you sure?', [
-      { text: 'Cancel', style: 'cancel', onPress: hideAlert },
+    showAlert(t('menu.logOut', 'Log out'), t('menu.areYouSure', 'Are you sure?'), [
+      { text: t('menu.cancel', 'Cancel'), style: 'cancel', onPress: hideAlert },
       {
-        text: 'Log out',
+        text: t('menu.logOut', 'Log out'),
         style: 'destructive',
         onPress: async () => {
           try {
@@ -230,13 +242,13 @@ export default function MenuScreen({ navigation }) {
 
   const intervalMin = getSyncIntervalMinutes();
 
-  const plateOrVehicle = user?.isAdmin ? '' : user?.licensePlate || user?.vehicleName || 'Vehicle';
-  const profileTitle = user?.isAdmin ? 'Admin' : user?.driverName || plateOrVehicle;
+  const plateOrVehicle = user?.isAdmin ? '' : user?.licensePlate || user?.vehicleName || t('menu.vehicle', 'Vehicle');
+  const profileTitle = user?.isAdmin ? t('menu.admin', 'Admin') : user?.driverName || plateOrVehicle;
   const profileSubtitle = user?.isAdmin
-    ? 'Tap to open Settings'
+    ? t('menu.tapToOpenSettings', 'Tap to open Settings')
     : user?.driverName
-      ? `${plateOrVehicle} · Tap for settings`
-      : 'Tap to open Settings';
+      ? t('menu.tapForSettings', '{{vehicle}} · Tap for settings', { vehicle: plateOrVehicle })
+      : t('menu.tapToOpenSettings', 'Tap to open Settings');
   const profileAvatarUri = !user?.isAdmin && user?.driverImageBase64 ? odooImageToUri(user.driverImageBase64) : null;
   const profileInitial = (profileTitle || 'V').trim().charAt(0).toUpperCase();
 
@@ -282,7 +294,7 @@ export default function MenuScreen({ navigation }) {
           <Ionicons name="sync-outline" size={24} color="#fff" />
         )}
         <Text style={styles.syncText}>
-          {syncing ? 'Syncing...' : 'Sync'}
+            {syncing ? t('menu.syncing', 'Syncing...') : t('menu.sync', 'Sync')}
         </Text>
       </TouchableOpacity>
 
@@ -292,7 +304,7 @@ export default function MenuScreen({ navigation }) {
         activeOpacity={0.8}
       >
         <Ionicons name="people-outline" size={24} color={colors.primary} />
-        <Text style={[styles.menuItemText, { color: colors.text }]}>My Customers</Text>
+        <Text style={[styles.menuItemText, { color: colors.text }]}>{t("menu.myCustomers", "My Customers")}</Text>
         <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
       </TouchableOpacity>
 
@@ -302,7 +314,7 @@ export default function MenuScreen({ navigation }) {
         activeOpacity={0.8}
       >
         <Ionicons name="cube-outline" size={24} color={colors.primary} />
-        <Text style={[styles.menuItemText, { color: colors.text }]}>My Stocks</Text>
+        <Text style={[styles.menuItemText, { color: colors.text }]}>{t("menu.myStocks", "My Stocks")}</Text>
         <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
       </TouchableOpacity>
 
@@ -312,7 +324,7 @@ export default function MenuScreen({ navigation }) {
         activeOpacity={0.8}
       >
         <Ionicons name="bluetooth-outline" size={24} color={colors.primary} />
-        <Text style={[styles.menuItemText, { color: colors.text }]}>Bluetooth printer</Text>
+        <Text style={[styles.menuItemText, { color: colors.text }]}>{t("menu.bluetoothPrinter", "Bluetooth printer")}</Text>
         <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
       </TouchableOpacity>
 
@@ -332,7 +344,7 @@ export default function MenuScreen({ navigation }) {
         activeOpacity={0.8}
       >
         <Ionicons name="document-text-outline" size={24} color={colors.primary} />
-        <Text style={[styles.menuItemText, { color: colors.text }]}>My Invoices</Text>
+        <Text style={[styles.menuItemText, { color: colors.text }]}>{t("menu.myInvoices", "My Invoices")}</Text>
         <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
       </TouchableOpacity>
 
@@ -342,7 +354,7 @@ export default function MenuScreen({ navigation }) {
         activeOpacity={0.8}
       >
         <Ionicons name="time-outline" size={24} color={colors.primary} />
-        <Text style={[styles.menuItemText, { color: colors.text }]}>Sync History</Text>
+        <Text style={[styles.menuItemText, { color: colors.text }]}>{t("menu.syncHistory", "Sync History")}</Text>
         <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
       </TouchableOpacity>
 
@@ -358,7 +370,7 @@ export default function MenuScreen({ navigation }) {
           <Ionicons name="cloud-download-outline" size={24} color={colors.primary} />
         )}
         <Text style={[styles.menuItemText, { color: colors.text }]}>
-          {checkingAppUpdate ? 'Checking updates...' : 'Check app update'}
+          {checkingAppUpdate ? t('menu.checkingUpdates', 'Checking updates...') : t('menu.checkAppUpdate', 'Check app update')}
         </Text>
         <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
       </TouchableOpacity>
@@ -369,7 +381,7 @@ export default function MenuScreen({ navigation }) {
         activeOpacity={0.8}
       >
         <Ionicons name="trash-outline" size={24} color={colors.error || '#dc2626'} />
-        <Text style={[styles.menuItemText, { color: colors.text }]}>Delete local data</Text>
+        <Text style={[styles.menuItemText, { color: colors.text }]}>{t('menu.deleteLocalData', 'Delete local data')}</Text>
         <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
       </TouchableOpacity>
 
@@ -379,7 +391,7 @@ export default function MenuScreen({ navigation }) {
         activeOpacity={0.8}
       >
         <Ionicons name="settings-outline" size={24} color={colors.primary} />
-        <Text style={[styles.menuItemText, { color: colors.text }]}>Settings</Text>
+        <Text style={[styles.menuItemText, { color: colors.text }]}>{t("menu.settings", "Settings")}</Text>
         <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
       </TouchableOpacity>
 
@@ -389,17 +401,17 @@ export default function MenuScreen({ navigation }) {
         activeOpacity={0.8}
       >
         <Ionicons name="qr-code-outline" size={24} color={colors.primary} />
-        <Text style={[styles.menuItemText, { color: colors.text }]}>Customer QR Generator</Text>
+        <Text style={[styles.menuItemText, { color: colors.text }]}>{t('navigation.customerQRGenerator', 'Customer QR Generator')}</Text>
         <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
       </TouchableOpacity>
 
       <Text style={[styles.lastSync, { color: colors.textSecondary }]}>
         {lastSync
-          ? `Last sync: ${lastSync.toLocaleString()}`
-          : 'Not synced yet'}
+          ? t('drawer.lastSync', 'Last sync: {{date}}', { date: lastSync.toLocaleString() })
+          : t('drawer.notSyncedYet', 'Not synced yet')}
       </Text>
       <Text style={[styles.hint, { color: colors.textSecondary }]}>
-        Auto-sync runs every {intervalMin} minutes when app is open.
+        {t('drawer.autoSyncHint', 'Auto-sync runs every {{interval}} minutes when app is open.', { interval: intervalMin })}
       </Text>
 
       <TouchableOpacity
@@ -408,7 +420,7 @@ export default function MenuScreen({ navigation }) {
         activeOpacity={0.8}
       >
         <Ionicons name="log-out-outline" size={22} color={colors.error} />
-        <Text style={[styles.logoutText, { color: colors.error }]}>Log out</Text>
+        <Text style={[styles.logoutText, { color: colors.error }]}>{t("menu.logOut", "Log out")}</Text>
       </TouchableOpacity>
       <CustomAlert
           visible={alertConfig.visible}

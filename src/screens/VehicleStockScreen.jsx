@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   View,
@@ -55,7 +56,7 @@ function orderDateToLocalDay(value) {
 
 const LOGO_SIZE = 48;
 
-function StockCard({ item, colors, cardWidth, isLeft, productImageUri, deliveredQty, emptyCollectedQty, emptyOnHandQty }) {
+function StockCard({ item, colors, cardWidth, isLeft, productImageUri, deliveredQty, emptyCollectedQty, emptyOnHandQty, t }) {
   const rawName = item.product_name || `Product ${item.product_id || ''}`.trim() || '—';
   const name = formatProductName(rawName);
   const stockQuantity = Math.max(0, Number(item.quantity) || 0);
@@ -94,29 +95,29 @@ function StockCard({ item, colors, cardWidth, isLeft, productImageUri, delivered
         </Text>
         <View style={styles.stockRowsWrap}>
           <View style={styles.stockRow}>
-            <Text style={[styles.stockRowLabel, { color: colors.textSecondary }]}>On Hand Stock</Text>
+            <Text style={[styles.stockRowLabel, { color: colors.textSecondary }]}>{t('vehiclestock.onHandStock', 'On Hand Stock')}</Text>
             <Text style={[styles.stockRowValue, { color: colors.text }]}>{onHand}</Text>
           </View>
           <View style={styles.stockRow}>
-            <Text style={[styles.stockRowLabel, { color: colors.textSecondary }]}>Ordered Stock</Text>
+            <Text style={[styles.stockRowLabel, { color: colors.textSecondary }]}>{t('vehiclestock.orderedStock', 'Ordered Stock')}</Text>
             <Text style={[styles.stockRowValue, { color: colors.text }]}>{ordered}</Text>
           </View>
           <View style={styles.stockRow}>
-            <Text style={[styles.stockRowLabel, { color: colors.textSecondary }]}>Extra Stock</Text>
+            <Text style={[styles.stockRowLabel, { color: colors.textSecondary }]}>{t('vehiclestock.extraStock', 'Extra Stock')}</Text>
             <Text style={[styles.stockRowValue, { color: colors.text }]}>{extra}</Text>
           </View>
           <View style={styles.stockRow}>
-            <Text style={[styles.stockRowLabel, { color: colors.textSecondary }]}>Delivered</Text>
+            <Text style={[styles.stockRowLabel, { color: colors.textSecondary }]}>{t('vehiclestock.delivered', 'Delivered')}</Text>
             <Text style={[styles.stockRowValue, { color: delivered > 0 ? '#16a34a' : colors.textSecondary }]}>{delivered}</Text>
           </View>
           <View style={styles.stockRow}>
-            <Text style={[styles.stockRowLabel, { color: colors.textSecondary }]}>Empty Collected</Text>
+            <Text style={[styles.stockRowLabel, { color: colors.textSecondary }]}>{t('vehiclestock.emptyCollected', 'Empty Collected')}</Text>
             <Text style={[styles.stockRowValue, { color: (Number(emptyCollectedQty) || 0) > 0 ? '#0f766e' : colors.textSecondary }]}>
               {Number(emptyCollectedQty) || 0}
             </Text>
           </View>
           <View style={styles.stockRow}>
-            <Text style={[styles.stockRowLabel, { color: colors.textSecondary }]}>Empty Stock</Text>
+            <Text style={[styles.stockRowLabel, { color: colors.textSecondary }]}>{t('vehiclestock.emptyStock', 'Empty Stock')}</Text>
             <Text style={[styles.stockRowValue, { color: colors.text }]}>
               {Number(emptyOnHandQty) || 0}
             </Text>
@@ -194,6 +195,7 @@ const styles = StyleSheet.create({
 });
 
 export default function VehicleStockScreen({ navigation }) {
+  const { t } = useTranslation();
   const { colors, syncDateField } = useTheme();
   const { syncCompleteTimestamp } = useSync();
   const insets = useSafeAreaInsets();
@@ -416,7 +418,7 @@ useEffect(() => {
     return (
       <View style={[screenStyles.container, screenStyles.empty]}>
         <ActivityIndicator size="large" color={colors.primary} />
-        <Text style={[screenStyles.hint, { marginTop: spacing.md }]}>Loading vehicle stock…</Text>
+        <Text style={[screenStyles.hint, { marginTop: spacing.md }]}>{t('vehiclestock.loadingVehicleStock', 'Loading vehicle stock…')}</Text>
       </View>
     );
   }
@@ -435,7 +437,7 @@ useEffect(() => {
       showsVerticalScrollIndicator={false}
     >
       <View style={screenStyles.summaryBar}>
-        <Text style={screenStyles.summaryText}>Item-wise stock</Text>
+        <Text style={screenStyles.summaryText}>{t('vehiclestock.itemWiseStock', 'Item-wise stock')}</Text>
         {/* <Text style={screenStyles.summaryCount}>
           {visibleInventory.length} gas size{visibleInventory.length !== 1 ? 's' : ''}
         </Text> */}
@@ -471,6 +473,7 @@ useEffect(() => {
                 const kg = parseKgFromProductName(String(name || ''));
                 return kg != null ? (emptyStockByKg[kg] || 0) : 0;
               })()}
+              t={t}
             />
           ))
         ) : !hasVehicle ? (
@@ -480,8 +483,8 @@ useEffect(() => {
               <View style={styles.cardIconWrap}>
                 <Ionicons name="cube-outline" size={28} color={colors.textSecondary} />
               </View>
-              <Text style={[styles.cardProductName, { color: colors.textSecondary }]}>No vehicle in session</Text>
-              <Text style={[screenStyles.hint, { marginTop: spacing.xs }]}>Log in with a vehicle to see lorry stock.</Text>
+              <Text style={[styles.cardProductName, { color: colors.textSecondary }]}>{t('vehiclestock.noVehicleInSession', 'No vehicle in session')}</Text>
+              <Text style={[screenStyles.hint, { marginTop: spacing.xs }]}>{t('vehiclestock.logInWithAVehicleToSeeLorryStock', 'Log in with a vehicle to see lorry stock.')}</Text>
             </View>
           </View>
         ) : null}

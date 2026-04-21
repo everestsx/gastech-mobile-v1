@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import {
   View,
@@ -46,6 +47,7 @@ function userFacingPaymentError(err) {
 }
 
 export default function ProceedPaymentScreen({ route, navigation }) {
+  const { t } = useTranslation();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const headerHeight = useHeaderHeight();
@@ -757,31 +759,31 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           <>
             {orderSubtotal != null && (
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 }}>
-                <Text style={styles.totalLabel}>Sub total</Text>
+                <Text style={styles.totalLabel}>{t('proceedpayment.subTotal', 'Sub total')}</Text>
                 <Text style={[styles.totalLabel, { fontWeight: '600', color: colors.text }]}>Rs. {formatAmount(orderSubtotal)}</Text>
               </View>
             )}
             {orderTax != null && (
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 }}>
-                <Text style={styles.totalLabel}>VAT (18%)</Text>
+                <Text style={styles.totalLabel}>{t('proceedpayment.vAT18', 'VAT (18%)')}</Text>
                 <Text style={[styles.totalLabel, { fontWeight: '600', color: colors.text }]}>Rs. {formatAmount(orderTax)}</Text>
               </View>
             )}
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 6, paddingTop: 8, borderTopWidth: 1, borderTopColor: colors.border }}>
-              <Text style={[styles.totalLabel, { fontWeight: '700', fontSize: 15 }]}>Payment total</Text>
+              <Text style={[styles.totalLabel, { fontWeight: '700', fontSize: 15 }]}>{t('proceedpayment.paymentTotal', 'Payment total')}</Text>
               <Text style={styles.total}>Rs. {formatAmount(total)}</Text>
             </View>
           </>
         ) : (
           <>
-            <Text style={styles.totalLabel}>Total Amount</Text>
+            <Text style={styles.totalLabel}>{t('proceedpayment.totalAmount', 'Total Amount')}</Text>
             <Text style={styles.total}>Rs. {formatAmount(total)}</Text>
           </>
         )}
       </View>
 
       {/* Payment method: checkboxes (multi-select) */}
-      <Text style={styles.sectionLabel}>Payment method</Text>
+      <Text style={styles.sectionLabel}>{t('proceedpayment.paymentMethod', 'Payment method')}</Text>
       <View style={styles.radioRow}>
         <TouchableOpacity
           style={[styles.radioOption, selectedPaymentMethods.includes(PAYMENT_CASH) && styles.checkboxOptionSelected]}
@@ -792,7 +794,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
             {selectedPaymentMethods.includes(PAYMENT_CASH) && <Ionicons name="checkmark" size={14} color="#fff" />}
           </View>
           <Ionicons name="cash-outline" size={22} color={selectedPaymentMethods.includes(PAYMENT_CASH) ? '#fff' : colors.text} />
-          <Text style={[styles.radioLabel, selectedPaymentMethods.includes(PAYMENT_CASH) && styles.radioLabelSelected]}>Cash</Text>
+          <Text style={[styles.radioLabel, selectedPaymentMethods.includes(PAYMENT_CASH) && styles.radioLabelSelected]}>{t('proceedpayment.cash', 'Cash')}</Text>
         </TouchableOpacity>
 
         <TouchableOpacity
@@ -804,7 +806,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
             {selectedPaymentMethods.includes(PAYMENT_CHECK) && <Ionicons name="checkmark" size={14} color="#fff" />}
           </View>
           <Ionicons name="card-outline" size={22} color={selectedPaymentMethods.includes(PAYMENT_CHECK) ? '#fff' : colors.text} />
-          <Text style={[styles.radioLabel, selectedPaymentMethods.includes(PAYMENT_CHECK) && styles.radioLabelSelected]}>Cheque</Text>
+          <Text style={[styles.radioLabel, selectedPaymentMethods.includes(PAYMENT_CHECK) && styles.radioLabelSelected]}>{t('proceedpayment.cheque', 'Cheque')}</Text>
         </TouchableOpacity>
 
         <TouchableOpacity
@@ -816,7 +818,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
             {selectedPaymentMethods.includes(PAYMENT_CREDIT) && <Ionicons name="checkmark" size={14} color="#fff" />}
           </View>
           <Ionicons name="wallet-outline" size={22} color={selectedPaymentMethods.includes(PAYMENT_CREDIT) ? '#fff' : colors.text} />
-          <Text style={[styles.radioLabel, selectedPaymentMethods.includes(PAYMENT_CREDIT) && styles.radioLabelSelected]}>Credit</Text>
+          <Text style={[styles.radioLabel, selectedPaymentMethods.includes(PAYMENT_CREDIT) && styles.radioLabelSelected]}>{t('proceedpayment.credit', 'Credit')}</Text>
         </TouchableOpacity>
       </View>
 
@@ -828,7 +830,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
             {selectedPaymentMethods.includes(PAYMENT_CASH) ? (
               <View style={styles.cashInputWrap}>
                 <Ionicons name="cash-outline" size={20} color={colors.primary} style={styles.cashInputIcon} />
-                <Text style={styles.cashInputSuffix}>Rs.</Text>
+                <Text style={styles.cashInputSuffix}>{t('proceedpayment.rs', 'Rs.')}</Text>
                 <TextInput
                   ref={cashInputRef}
                   style={styles.cashInput}
@@ -839,7 +841,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
                     setLastEditedAmount(PAYMENT_CASH);
                     setCashAmount(v);
                   }}
-                  placeholder="Cash"
+                  placeholder={t('proceedpayment.cash', 'Cash')}
                   placeholderTextColor={colors.textSecondary}
                   keyboardType="decimal-pad"
                 />
@@ -850,7 +852,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
             {selectedPaymentMethods.includes(PAYMENT_CHECK) ? (
               <View style={styles.cashInputWrap}>
                 <Ionicons name="card-outline" size={20} color={colors.primary} style={styles.cashInputIcon} />
-                <Text style={styles.cashInputSuffix}>Rs.</Text>
+                <Text style={styles.cashInputSuffix}>{t('proceedpayment.rs', 'Rs.')}</Text>
                 <TextInput
                   ref={checkInputRef}
                   style={styles.cashInput}
@@ -861,7 +863,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
                     setLastEditedAmount(PAYMENT_CHECK);
                     setCheckAmount(v);
                   }}
-                  placeholder="Cheque"
+                  placeholder={t('proceedpayment.cheque', 'Cheque')}
                   placeholderTextColor={colors.textSecondary}
                   keyboardType="decimal-pad"
                 />
@@ -892,7 +894,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           {journalsLoading ? (
             <View style={styles.bankList}>
               <ActivityIndicator size="small" color={colors.primary} />
-              <Text style={styles.noBanksText}>Loading…</Text>
+              <Text style={styles.noBanksText}>{t('proceedpayment.loading', 'Loading…')}</Text>
             </View>
           ) : (
             <>
@@ -903,7 +905,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
                     style={styles.searchInput}
                     value={bankSearchQuery}
                     onChangeText={setBankSearchQuery}
-                    placeholder="Search bank..."
+                    placeholder={t('proceedpayment.searchBank', 'Search bank...')}
                     placeholderTextColor={colors.textSecondary}
                     autoCapitalize="none"
                     autoCorrect={false}
@@ -942,7 +944,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
                       activeOpacity={0.8}
                     >
                       <Ionicons name="swap-horizontal-outline" size={18} color={colors.primary} />
-                      <Text style={styles.changeBankText}>Change bank</Text>
+                      <Text style={styles.changeBankText}>{t('proceedpayment.changeBank', 'Change bank')}</Text>
                     </TouchableOpacity>
                   </>
                 ) : filteredBanks.length === 0 ? (
@@ -982,7 +984,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
                   style={[styles.checkAmountInput, { flex: 1 }]}
                   value={checkNumber}
                   onChangeText={setCheckNumber}
-                  placeholder="Check #"
+                  placeholder={t('proceedpayment.check', 'Check #')}
                   placeholderTextColor={colors.textSecondary}
                   returnKeyType="done"
                   blurOnSubmit
@@ -1029,7 +1031,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         ) : (
           <>
             <Ionicons name="checkmark-done-outline" size={22} color="#fff" />
-            <Text style={styles.btnText}>Confirm Payment</Text>
+            <Text style={styles.btnText}>{t('proceedpayment.confirmPayment', 'Confirm Payment')}</Text>
           </>
         )}
       </TouchableOpacity>

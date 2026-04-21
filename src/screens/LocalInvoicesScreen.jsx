@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import React, { useState, useCallback, useEffect } from 'react';
 import {
   View,
@@ -20,6 +21,7 @@ import * as syncQueueDb from '../database/syncQueue.js';
 import { getLocalizedCustomerNameFromOrder } from '../utils/customerDisplayName';
 
 export default function LocalInvoicesScreen({ navigation }) {
+  const { t } = useTranslation();
   const { colors, appLanguage } = useTheme();
   const [invoices, setInvoices] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -117,7 +119,7 @@ export default function LocalInvoicesScreen({ navigation }) {
       }
       showsVerticalScrollIndicator={false}
     >
-      <Text style={[styles.title, { color: colors.text }]}>Invoices</Text>
+      <Text style={[styles.title, { color: colors.text }]}>{t('localinvoices.invoices', 'Invoices')}</Text>
       <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
         Invoices created on this device. Status shows if payment was uploaded to Odoo.
       </Text>
@@ -192,20 +194,20 @@ export default function LocalInvoicesScreen({ navigation }) {
             </View>
             <View style={styles.metaRow}>
               <View style={styles.metaBlock}>
-                <Text style={[styles.label, { color: colors.textSecondary }]}>Invoice date</Text>
+                <Text style={[styles.label, { color: colors.textSecondary }]}>{t('localinvoices.invoiceDate', 'Invoice date')}</Text>
                 <Text style={[styles.value, { color: colors.text }]}>{formatDate(inv.created_at)}</Text>
               </View>
               <View style={[styles.metaBlock, styles.metaBlockRight]}>
-                <Text style={[styles.label, { color: colors.textSecondary }]}>Order</Text>
+                <Text style={[styles.label, { color: colors.textSecondary }]}>{t('localinvoices.order', 'Order')}</Text>
                 <Text style={[styles.value, { color: colors.text }]} numberOfLines={1}>{inv.orderName}</Text>
               </View>
             </View>
-            <Text style={[styles.label, { color: colors.textSecondary }]}>Customer</Text>
+            <Text style={[styles.label, { color: colors.textSecondary }]}>{t('localinvoices.customer', 'Customer')}</Text>
             <Text style={[styles.value, { color: colors.text }]} numberOfLines={1}>
               {inv.partnerName}
             </Text>
             <View style={styles.amountRow}>
-              <Text style={[styles.amountLabel, { color: colors.textSecondary }]}>Total</Text>
+              <Text style={[styles.amountLabel, { color: colors.textSecondary }]}>{t('localinvoices.total', 'Total')}</Text>
               <Text style={[styles.amountValue, { color: colors.text }]}>
                 Rs. {formatAmount(inv.amount_total)}
               </Text>

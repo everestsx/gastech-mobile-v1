@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
@@ -11,6 +12,7 @@ import { spacing, borderRadius } from '../constants/theme';
 import { getSyncLogRecent, getLastSyncTime } from '../services/sync.service';
 
 export default function SyncHistoryScreen() {
+  const { t } = useTranslation();
   const { colors } = useTheme();
   const [log, setLog] = useState([]);
   const [lastSync, setLastSync] = useState(null);
@@ -92,7 +94,7 @@ export default function SyncHistoryScreen() {
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.primary]} />
         }
         ListEmptyComponent={
-          <Text style={[styles.empty, { color: colors.textSecondary }]}>No sync history yet</Text>
+          <Text style={[styles.empty, { color: colors.textSecondary }]}>{t('synchistory.noSyncHistoryYet', 'No sync history yet')}</Text>
         }
       />
     </View>

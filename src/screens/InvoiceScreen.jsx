@@ -12,6 +12,7 @@ import {
   Alert,
   FlatList,
 } from 'react-native';
+import { useTranslation } from 'react-i18next';
 import { Ionicons } from '@expo/vector-icons';
 import * as Print from 'expo-print';
 import * as ImagePicker from 'expo-image-picker';
@@ -954,6 +955,7 @@ async function resolveInvoiceLogoDataUriForPrint() {
 }
 
 export default function InvoiceScreen({ route, navigation }) {
+  const { t } = useTranslation();
   const { colors, appLanguage } = useTheme();
   const {
     rongtaReady,
@@ -2441,15 +2443,15 @@ export default function InvoiceScreen({ route, navigation }) {
         <Image source={INVOICE_LOGO_ASSET} style={styles.logo} resizeMode="contain" />
         <Text style={styles.invoiceTitle}>Tax Invoice</Text>
         <View style={styles.metaRow}>
-          <Text style={styles.metaLabel}>Invoice No.</Text>
+          <Text style={styles.metaLabel}>{t('invoice.invoiceNo', 'Invoice No.')}</Text>
           <Text style={styles.metaValue}>{invoiceNumber ?? '—'}</Text>
         </View>
         <View style={styles.metaRow}>
-          <Text style={styles.metaLabel}>Date</Text>
+          <Text style={styles.metaLabel}>{t('invoice.date', 'Date')}</Text>
           <Text style={styles.metaValue}>{invoiceDate}</Text>
         </View>
         <View style={styles.metaRow}>
-          <Text style={styles.metaLabel}>Customer</Text>
+          <Text style={styles.metaLabel}>{t('invoice.customer', 'Customer')}</Text>
           <Text style={styles.metaValue} numberOfLines={2}>
             {resolveInvoiceCustomerDisplayName(order, partyInfo, appLanguage)}
           </Text>
@@ -2466,10 +2468,10 @@ export default function InvoiceScreen({ route, navigation }) {
         <View style={styles.tableWrapper}>
           <View style={styles.tableHeader}>
             <Text style={[styles.th, styles.thNo]}>No</Text>
-            <Text style={[styles.th, styles.thProduct]}>Product</Text>
+            <Text style={[styles.th, styles.thProduct]}>{t('invoice.product', 'Product')}</Text>
             <Text style={[styles.th, styles.thQty]}>Qty</Text>
             <Text style={[styles.th, styles.thTax]}>Unit Price</Text>
-            <Text style={[styles.th, styles.thTotal]}>Total</Text>
+            <Text style={[styles.th, styles.thTotal]}>{t('invoice.total', 'Total')}</Text>
           </View>
           {(invoiceVisibleLines || []).map((line, index) => {
             const lineUnitPrice = Number(line.price_unit) || 0;
@@ -2495,19 +2497,19 @@ export default function InvoiceScreen({ route, navigation }) {
 
         <View style={styles.totalsSection}>
           <View style={styles.totalsRow}>
-            <Text style={styles.totalsLabel}>Subtotal</Text>
+            <Text style={styles.totalsLabel}>{t('invoice.subtotal', 'Subtotal')}</Text>
             <Text style={styles.totalsValue}>
               {formatInvoiceCurrency(displaySubtotal)}
             </Text>
           </View>
           <View style={styles.totalsRow}>
-            <Text style={styles.totalsLabel}>VAT</Text>
+            <Text style={styles.totalsLabel}>{t('invoice.vAT', 'VAT')}</Text>
             <Text style={styles.totalsValue}>
               {formatInvoiceCurrency(displayTax)}
             </Text>
           </View>
           <View style={[styles.totalsRow, styles.totalsRowMain]}>
-            <Text style={styles.totalsLabelMain}>Total</Text>
+            <Text style={styles.totalsLabelMain}>{t('invoice.total', 'Total')}</Text>
             <Text style={styles.totalsValueMain}>
               {formatInvoiceCurrency(displayTotal)}
             </Text>
@@ -2528,7 +2530,7 @@ export default function InvoiceScreen({ route, navigation }) {
             activeOpacity={0.85}
           >
             <Ionicons name="card-outline" size={22} color="#fff" />
-            <Text style={styles.printBtnText}>Proceed to payment</Text>
+            <Text style={styles.printBtnText}>{t('invoice.proceedToPayment', 'Proceed to payment')}</Text>
           </TouchableOpacity>
         ) : null}
         {(effectiveCustomerSignatureDataUrl || effectiveDriverSignatureDataUrl) ? (
@@ -2619,7 +2621,7 @@ export default function InvoiceScreen({ route, navigation }) {
                 style={[styles.printerPickCloseBtn, connectingThermal && { opacity: 0.45 }]}
                 activeOpacity={0.75}
               >
-                <Text style={styles.printerPickCloseBtnText}>Close</Text>
+                <Text style={styles.printerPickCloseBtnText}>{t('invoice.close', 'Close')}</Text>
                 <Ionicons name="close-circle" size={26} color={colors.primary} />
               </TouchableOpacity>
             </View>
@@ -2628,7 +2630,7 @@ export default function InvoiceScreen({ route, navigation }) {
                 <Ionicons name="bluetooth" size={28} color={colors.primary} />
               </View>
               <View style={{ flex: 1, minWidth: 0 }}>
-                <Text style={styles.printerPickHeadTitle}>Bluetooth printer</Text>
+                <Text style={styles.printerPickHeadTitle}>{t('invoice.bluetoothPrinter', 'Bluetooth printer')}</Text>
                 <Text style={styles.printerPickHeadSub}>
                   Choose a paired device, then print. This sheet tries to connect for you — use Connect if it does not link, or Clear saved printer to pick another device.
                 </Text>
@@ -2693,7 +2695,7 @@ export default function InvoiceScreen({ route, navigation }) {
                   activeOpacity={0.85}
                 >
                   <Ionicons name="link" size={20} color="#fff" />
-                  <Text style={styles.printerPickPrimaryBtnText}>Connect now</Text>
+                  <Text style={styles.printerPickPrimaryBtnText}>{t('invoice.connectNow', 'Connect now')}</Text>
                 </TouchableOpacity>
               ) : null}
               {thermalPrinter?.address ? (
@@ -2703,7 +2705,7 @@ export default function InvoiceScreen({ route, navigation }) {
                   activeOpacity={0.85}
                 >
                   <Ionicons name="trash-outline" size={20} color={colors.error || '#b91c1c'} />
-                  <Text style={styles.printerPickOutlineBtnText}>Clear saved printer</Text>
+                  <Text style={styles.printerPickOutlineBtnText}>{t('invoice.clearSavedPrinter', 'Clear saved printer')}</Text>
                 </TouchableOpacity>
               ) : null}
               <TouchableOpacity
@@ -2716,11 +2718,11 @@ export default function InvoiceScreen({ route, navigation }) {
                 disabled={connectingThermal}
                 activeOpacity={0.85}
               >
-                <Text style={styles.printerPickGhostBtnText}>Full Bluetooth settings</Text>
+                <Text style={styles.printerPickGhostBtnText}>{t('invoice.fullBluetoothSettings', 'Full Bluetooth settings')}</Text>
               </TouchableOpacity>
             </View>
             <View style={[styles.printerPickHeader, { marginTop: spacing.xs }]}>
-              <Text style={styles.printerPickTitle}>Paired devices</Text>
+              <Text style={styles.printerPickTitle}>{t('invoice.pairedDevices', 'Paired devices')}</Text>
             </View>
             <TouchableOpacity
               style={[styles.thermalPrinterBtn, { alignSelf: 'flex-start', marginBottom: spacing.sm }]}
@@ -2732,7 +2734,7 @@ export default function InvoiceScreen({ route, navigation }) {
               ) : (
                 <Ionicons name="refresh" size={20} color={colors.primary} />
               )}
-              <Text style={styles.thermalPrinterBtnText}>Refresh list</Text>
+              <Text style={styles.thermalPrinterBtnText}>{t('invoice.refreshList', 'Refresh list')}</Text>
             </TouchableOpacity>
             <FlatList
               data={pairedPrinterRows}
@@ -2781,7 +2783,7 @@ export default function InvoiceScreen({ route, navigation }) {
           ) : (
             <>
               <Ionicons name="print-outline" size={24} color="#fff" />
-              <Text style={styles.printBtnText}>Print invoice</Text>
+              <Text style={styles.printBtnText}>{t('invoice.printInvoice', 'Print invoice')}</Text>
             </>
           )}
         </TouchableOpacity>
@@ -2836,7 +2838,7 @@ export default function InvoiceScreen({ route, navigation }) {
       {printing && (
         <View style={styles.printOverlay} pointerEvents="box-only">
           <ActivityIndicator size="large" color="#fff" />
-          <Text style={styles.printOverlayText}>Printing…</Text>
+          <Text style={styles.printOverlayText}>{t('invoice.printing', 'Printing…')}</Text>
         </View>
       )}
 
@@ -2877,7 +2879,7 @@ export default function InvoiceScreen({ route, navigation }) {
                 activeOpacity={0.8}
               >
                 <Ionicons name="print-outline" size={22} color="#fff" />
-                <Text style={styles.resultModalBtnTextPrimary}>Re-print</Text>
+                <Text style={styles.resultModalBtnTextPrimary}>{t('invoice.rePrint', 'Re-print')}</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.resultModalBtn, styles.resultModalBtnSecondary, { width: '100%', flex: 0 }]}
@@ -2885,7 +2887,7 @@ export default function InvoiceScreen({ route, navigation }) {
                 activeOpacity={0.8}
               >
                 <Ionicons name="arrow-forward-circle-outline" size={22} color={colors.primary} />
-                <Text style={styles.resultModalBtnTextSecondary}>Continue without printing</Text>
+                <Text style={styles.resultModalBtnTextSecondary}>{t('invoice.continueWithoutPrinting', 'Continue without printing')}</Text>
               </TouchableOpacity>
               <TouchableOpacity style={styles.resultModalLinkBtn} onPress={() => void goToHome()} activeOpacity={0.75}>
                 <Text style={[styles.resultModalLinkText, { color: colors.textSecondary }]}>
@@ -2918,7 +2920,7 @@ export default function InvoiceScreen({ route, navigation }) {
               <View style={styles.sigCapHeroIconWrap}>
                 <Ionicons name="create-outline" size={32} color={colors.primary} />
               </View>
-              <Text style={styles.sigCapHeroTitle}>Sign to confirm delivery</Text>
+              <Text style={styles.sigCapHeroTitle}>{t('invoice.signToConfirmDelivery', 'Sign to confirm delivery')}</Text>
               <Text style={styles.sigCapHeroSubtitle}>
                 {blockSignatureModalDismiss
                   ? 'Add customer and driver signatures, then tap Save signatures.'
@@ -3039,7 +3041,7 @@ export default function InvoiceScreen({ route, navigation }) {
                       setCaptureCustomerSaved(false);
                     }}
                   >
-                    <Text style={styles.sigCapBtnText}>Clear</Text>
+                    <Text style={styles.sigCapBtnText}>{t('invoice.clear', 'Clear')}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={[styles.sigCapBtn, styles.sigCapBtnPrimary]}
@@ -3060,7 +3062,7 @@ export default function InvoiceScreen({ route, navigation }) {
                       setCaptureDriverSaved(false);
                     }}
                   >
-                    <Text style={styles.sigCapBtnText}>Clear</Text>
+                    <Text style={styles.sigCapBtnText}>{t('invoice.clear', 'Clear')}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={[styles.sigCapBtn, styles.sigCapBtnPrimary]}
@@ -3093,7 +3095,7 @@ export default function InvoiceScreen({ route, navigation }) {
               activeOpacity={0.88}
             >
               <Ionicons name="checkmark-done-outline" size={22} color="#fff" />
-              <Text style={styles.evidenceSaveBtnText}>Save signatures</Text>
+              <Text style={styles.evidenceSaveBtnText}>{t('invoice.saveSignatures', 'Save signatures')}</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -3128,7 +3130,7 @@ export default function InvoiceScreen({ route, navigation }) {
       >
         <View style={styles.evidenceModalOverlay}>
           <ScrollView style={styles.evidenceModalContent} nestedScrollEnabled showsVerticalScrollIndicator={false}>
-            <Text style={styles.evidenceModalTitle}>Delivery photos</Text>
+            <Text style={styles.evidenceModalTitle}>{t('invoice.deliveryPhotos', 'Delivery photos')}</Text>
             <Text style={styles.evidenceModalHint}>
               {evidenceRequired
                 ? 'Credit: add at least one photo.'
@@ -3157,7 +3159,7 @@ export default function InvoiceScreen({ route, navigation }) {
                   activeOpacity={0.8}
                 >
                   <Ionicons name="camera" size={28} color={colors.primary} />
-                  <Text style={styles.evidencePhotoBtnText}>Take photo</Text>
+                  <Text style={styles.evidencePhotoBtnText}>{t('invoice.takePhoto', 'Take photo')}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={styles.evidencePhotoBtn}
@@ -3179,7 +3181,7 @@ export default function InvoiceScreen({ route, navigation }) {
                   activeOpacity={0.8}
                 >
                   <Ionicons name="images-outline" size={28} color={colors.primary} />
-                  <Text style={styles.evidencePhotoBtnText}>Choose photo</Text>
+                  <Text style={styles.evidencePhotoBtnText}>{t('invoice.choosePhoto', 'Choose photo')}</Text>
                 </TouchableOpacity>
               </View>
             )}
@@ -3249,7 +3251,7 @@ export default function InvoiceScreen({ route, navigation }) {
                 disabled={savingEvidence}
                 activeOpacity={0.8}
               >
-                <Text style={styles.evidenceSkipBtnText}>Skip</Text>
+                <Text style={styles.evidenceSkipBtnText}>{t('invoice.skip', 'Skip')}</Text>
               </TouchableOpacity>
             )}
           </ScrollView>
@@ -3260,7 +3262,7 @@ export default function InvoiceScreen({ route, navigation }) {
       <View style={styles.printerNote}>
         <Ionicons name="hardware-chip-outline" size={20} color={colors.primary} />
         <View style={styles.printerNoteTextWrap}>
-          <Text style={styles.printerNoteTitle}>Connect to printer</Text>
+          <Text style={styles.printerNoteTitle}>{t('invoice.connectToPrinter', 'Connect to printer')}</Text>
           <Text style={styles.printerNoteText}>
             {Platform.OS === 'android' && rongtaReady
               ? 'This build includes a Rongta Bluetooth driver: pair the printer in Settings → Bluetooth, choose it above, then Print invoice (PDF raster to the printer; plain-text fallback if needed). Without a selected printer, Android opens the normal print dialog. Custom native code does not run in Expo Go — use a dev build (expo run:android) or your APK.'

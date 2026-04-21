@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import {
   View,
@@ -135,6 +136,7 @@ function getPrimaryPaymentType(paymentSplit, fallbackPaymentType) {
 }
 
 export default function DeliveredOrdersScreen({ route, navigation }) {
+  const { t } = useTranslation();
   const { colors, syncDateField } = useTheme();
   const insets = useSafeAreaInsets();
   const customerId = route?.params?.customerId ?? null;
@@ -672,7 +674,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
       )}
       {showPicker && Platform.OS === 'ios' && (
         <TouchableOpacity style={styles.doneDateBtn} onPress={() => setShowPicker(false)}>
-          <Text style={styles.doneDateText}>Done</Text>
+          <Text style={styles.doneDateText}>{t('deliveredorders.done', 'Done')}</Text>
         </TouchableOpacity>
       )}
 
@@ -694,7 +696,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
             activeOpacity={0.85}
           >
             <Ionicons name="close-circle-outline" size={18} color={colors.primary} />
-            <Text style={styles.customerFilterClearText}>Clear</Text>
+            <Text style={styles.customerFilterClearText}>{t('deliveredorders.clear', 'Clear')}</Text>
           </TouchableOpacity>
         </View>
       ) : null}
@@ -741,7 +743,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
                 activeOpacity={0.7}
               >
                 <Ionicons name="person-outline" size={20} color={colors.primary} />
-                <Text style={styles.dropdownItemText}>Customer name</Text>
+                <Text style={styles.dropdownItemText}>{t('deliveredorders.customerName', 'Customer name')}</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.dropdownItem}
@@ -752,7 +754,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
                 activeOpacity={0.7}
               >
                 <Ionicons name="document-text-outline" size={20} color={colors.primary} />
-                <Text style={styles.dropdownItemText}>Order ID</Text>
+                <Text style={styles.dropdownItemText}>{t('deliveredorders.orderID', 'Order ID')}</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -771,7 +773,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
             activeOpacity={0.8}
           >
             <Ionicons name="list-outline" size={18} color={activeTab === TAB_ALL ? '#fff' : colors.text} />
-            <Text style={[styles.tabText, activeTab === TAB_ALL && styles.tabTextActive]}>All</Text>
+            <Text style={[styles.tabText, activeTab === TAB_ALL && styles.tabTextActive]}>{t('deliveredorders.all', 'All')}</Text>
             <View style={[styles.tabBadge, activeTab === TAB_ALL && styles.tabBadgeActive]}>
               <Text style={[styles.tabBadgeText, activeTab === TAB_ALL && styles.tabBadgeTextActive]}>
                 {tabCounts[TAB_ALL]}
@@ -784,7 +786,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
             activeOpacity={0.8}
           >
             <Ionicons name="cash-outline" size={18} color={activeTab === TAB_CASH ? '#fff' : colors.text} />
-            <Text style={[styles.tabText, activeTab === TAB_CASH && styles.tabTextActive]}>Cash</Text>
+            <Text style={[styles.tabText, activeTab === TAB_CASH && styles.tabTextActive]}>{t('deliveredorders.cash', 'Cash')}</Text>
             <View style={[styles.tabBadge, activeTab === TAB_CASH && styles.tabBadgeActive]}>
               <Text style={[styles.tabBadgeText, activeTab === TAB_CASH && styles.tabBadgeTextActive]}>
                 {tabCounts[TAB_CASH]}
@@ -797,7 +799,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
             activeOpacity={0.8}
           >
             <Ionicons name="card-outline" size={18} color={activeTab === TAB_CHEQUE ? '#fff' : colors.text} />
-            <Text style={[styles.tabText, activeTab === TAB_CHEQUE && styles.tabTextActive]}>Cheque</Text>
+            <Text style={[styles.tabText, activeTab === TAB_CHEQUE && styles.tabTextActive]}>{t('deliveredorders.cheque', 'Cheque')}</Text>
             <View style={[styles.tabBadge, activeTab === TAB_CHEQUE && styles.tabBadgeActive]}>
               <Text style={[styles.tabBadgeText, activeTab === TAB_CHEQUE && styles.tabBadgeTextActive]}>
                 {tabCounts[TAB_CHEQUE]}
@@ -810,7 +812,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
             activeOpacity={0.8}
           >
             <Ionicons name="wallet-outline" size={18} color={activeTab === TAB_CREDIT ? '#fff' : colors.text} />
-            <Text style={[styles.tabText, activeTab === TAB_CREDIT && styles.tabTextActive]}>Credit</Text>
+            <Text style={[styles.tabText, activeTab === TAB_CREDIT && styles.tabTextActive]}>{t('deliveredorders.credit', 'Credit')}</Text>
             <View style={[styles.tabBadge, activeTab === TAB_CREDIT && styles.tabBadgeActive]}>
               <Text style={[styles.tabBadgeText, activeTab === TAB_CREDIT && styles.tabBadgeTextActive]}>
                 {tabCounts[TAB_CREDIT]}

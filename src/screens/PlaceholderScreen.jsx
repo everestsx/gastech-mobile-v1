@@ -1,15 +1,17 @@
+import { useTranslation } from 'react-i18next';
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { useTheme } from '../context/ThemeContext';
 import { spacing } from '../constants/theme';
 
 export default function PlaceholderScreen({ route }) {
+  const { t } = useTranslation();
   const { colors } = useTheme();
   const title = route?.params?.title ?? 'Coming soon';
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <Text style={[styles.text, { color: colors.textSecondary }]}>{title}</Text>
-      <Text style={[styles.hint, { color: colors.textSecondary }]}>Coming soon</Text>
+      <Text style={[styles.hint, { color: colors.textSecondary }]}>{t('placeholder.comingSoon', 'Coming soon')}</Text>
     </View>
   );
 }
