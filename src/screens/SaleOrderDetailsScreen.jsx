@@ -661,7 +661,8 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
       const allInventory = await vehicleInventoriesDb.getVehicleInventoryByLocationId(locationId);
       console.log('[Inventory Update] Full inventory after update:', JSON.stringify(allInventory));
 
-      await syncQueueDb.enqueue(syncQueueDb.ACTION_INVENTORY_UPDATE, {
+      const inventoryPayload = {
+        saleOrderId: Number(order.id),
         vehicleId,
         locationId,
         updates: Array.from(remainingByProduct.entries()).map(([productId, newQuantity]) => ({
@@ -669,7 +670,14 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
           quantityUsed: baselineOnLorry(productId) - newQuantity,
           newQuantity,
         })),
-      });
+      };
+      const existingInventoryUpdate =
+        await syncQueueDb.getPendingInventoryUpdateItemBySaleOrderId(Number(order.id));
+      if (existingInventoryUpdate?.id != null) {
+        await syncQueueDb.updateQueueItemPayload(existingInventoryUpdate.id, inventoryPayload);
+      } else {
+        await syncQueueDb.enqueue(syncQueueDb.ACTION_INVENTORY_UPDATE, inventoryPayload);
+      }
 
       console.log('[Inventory Update] Complete - enqueued for sync');
     } catch (error) {

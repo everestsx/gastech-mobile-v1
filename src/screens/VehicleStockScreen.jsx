@@ -119,10 +119,10 @@ function StockCard({ item, colors, cardWidth, isLeft, productImageUri, delivered
             <Text style={styles.emptyLabel}>Empty Collected</Text>
             <Text style={[styles.emptyValue, { color: '#0f766e' }]}>{Number(emptyCollectedQty) || 0}</Text>
           </View>
-          <View style={styles.emptyRow}>
+          {/* <View style={styles.emptyRow}>
             <Text style={styles.emptyLabel}>Empty Stock</Text>
             <Text style={styles.emptyValue}>{Number(emptyOnHandQty) || 0}</Text>
-          </View>
+          </View> */}
         </View>
         <View style={[styles.badge, { backgroundColor: lowStock ? colors.error + '20' : accentColor + '20' }]}>
           <Text style={[styles.badgeText, { color: lowStock ? colors.error : accentColor }]}>

@@ -117,6 +117,23 @@ export async function getPendingDeliveryItemBySaleOrderId(saleOrderId) {
   return null;
 }
 
+/** Get pending (unsynced) inventory_update queue item for a sale order, if any. */
+export async function getPendingInventoryUpdateItemBySaleOrderId(saleOrderId) {
+  if (saleOrderId == null) return null;
+  const db = await getDb();
+  const rows = await db.getAllAsync(
+    `SELECT id, payload FROM sync_queue WHERE action_type = ? AND COALESCE(is_uploaded, 0) = 0 AND synced_at IS NULL`,
+    [ACTION_INVENTORY_UPDATE]
+  );
+  const soId = Number(saleOrderId);
+  for (const row of rows || []) {
+    const p = safeParseJson(row.payload, {});
+    const id = p.saleOrderId ?? p.sale_order_id;
+    if (id != null && Number(id) === soId) return { id: row.id, payload: p };
+  }
+  return null;
+}
+
 /** Update payload of an existing queue item (e.g. to merge payment updates for same sale order). */
 export async function updateQueueItemPayload(id, payload) {
   const db = await getDb();

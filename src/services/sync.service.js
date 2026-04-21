@@ -1090,13 +1090,28 @@ async function processSyncQueue() {
             continue;
           }
 
-          const { setQuantQuantityAtLocation } = await import('./vehicleInventory.service.js');
+          const { setQuantQuantityAtLocation, adjustQuantQuantityAtLocation } = await import('./vehicleInventory.service.js');
           for (const u of updates) {
             const productId = u?.productId != null ? Number(u.productId) : null;
             if (productId == null) continue;
+            const inc = Number(u?.incrementQuantity);
             const targetQty = Number(u?.newQuantity);
-            if (Number.isFinite(targetQty)) {
-              try {
+            try {
+              if (Number.isFinite(inc) && inc !== 0) {
+                const result = await adjustQuantQuantityAtLocation(locationId, productId, inc);
+                if (result?.ok) {
+                  log(
+                    'queue',
+                    `inventory upload (delta): location=${locationId} product=${productId} delta=${inc} → qty=${result.targetQty ?? '?'}` +
+                      (result.created ? ' (quant created)' : result.quantId != null ? ` quantId=${result.quantId}` : '')
+                  );
+                } else {
+                  logWarn(
+                    'queue inventory_update upload',
+                    new Error(`loc=${locationId} product=${productId}: adjustQuantQuantityAtLocation failed`)
+                  );
+                }
+              } else if (Number.isFinite(targetQty)) {
                 const result = await setQuantQuantityAtLocation(locationId, productId, targetQty);
                 if (result?.ok) {
                   log(
@@ -1110,12 +1125,12 @@ async function processSyncQueue() {
                     new Error(`loc=${locationId} product=${productId}: setQuantQuantityAtLocation failed`)
                   );
                 }
-              } catch (invErr) {
-                logWarn(
-                  'queue inventory_update upload',
-                  new Error(`loc=${locationId} product=${productId}: ${String(invErr?.message || invErr).slice(0, 160)}`)
-                );
               }
+            } catch (invErr) {
+              logWarn(
+                'queue inventory_update upload',
+                new Error(`loc=${locationId} product=${productId}: ${String(invErr?.message || invErr).slice(0, 160)}`)
+              );
             }
             await vehicleInventoriesDb.clearLocalModificationFlagByLocation(locationId, productId);
           }
@@ -2211,11 +2226,10 @@ export async function clearAllTables() {
       console.log(`[DB] Clearing ${table}...`);
       await db.runAsync(`DELETE FROM ${table}`);
     }
-
-    isLoggingOut = false;
     return true;
   } catch (error) {
-    isLoggingOut = false;
     return false;
+  } finally {
+    setIsLoggingOut(false);
   }
 }

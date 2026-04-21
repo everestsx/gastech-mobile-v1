@@ -207,9 +207,7 @@ export default function MenuScreen({ navigation }) {
             await clearPrinter().catch(() => {});
             await logout();
             hideAlert();
-            clearAllTables().then(() => {
-              console.log('Database cleanup finished in background');
-            });
+            await clearAllTables();
 
             const root = navigation.getParent();
             if (root) {
@@ -222,6 +220,8 @@ export default function MenuScreen({ navigation }) {
             console.error('Logout UI error:', error);
             await logout();
             navigation.navigate('Login');
+          } finally {
+            setIsLoggingOut(false);
           }
         },
       },

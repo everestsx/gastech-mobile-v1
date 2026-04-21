@@ -60,6 +60,9 @@ export async function upsertSaleOrders(rows, options = {}) {
         const useLocal = preserveIds.length > 0 && localMap[rid];
         const invoiceStatus = useLocal ? (localMap[rid].invoice_status || empty(r.invoice_status)) : empty(r.invoice_status);
         const paymentType = useLocal ? (localMap[rid].payment_type || empty(r.payment_type ?? '')) : empty(r.payment_type ?? '');
+        const amountCash = numOrNull(r.amount_cash);
+        const amountCheque = numOrNull(r.amount_cheque);
+        const amountCredit = numOrNull(r.amount_credit);
 
         const params = [
           rid,
@@ -81,14 +84,18 @@ export async function upsertSaleOrders(rows, options = {}) {
           now,
           empty(r.payload),
           paymentType,
+          amountCash,
+          amountCheque,
+          amountCredit,
         ];
         try {
           await tx.runAsync(
             `INSERT INTO sale_orders (
               id, name, partner_id, partner_name, state, date_order, commitment_date,
               amount_total, amount_untaxed, amount_tax, invoice_status, order_line,
-              route_id, route_name, vehicle_id, vehicle_name, updated_at, payload, payment_type
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              route_id, route_name, vehicle_id, vehicle_name, updated_at, payload, payment_type,
+              amount_cash, amount_cheque, amount_credit
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
               name=excluded.name, partner_id=excluded.partner_id, partner_name=excluded.partner_name,
               state=excluded.state, date_order=excluded.date_order, commitment_date=excluded.commitment_date,
@@ -97,7 +104,8 @@ export async function upsertSaleOrders(rows, options = {}) {
               route_id=excluded.route_id, route_name=excluded.route_name,
               vehicle_id=excluded.vehicle_id, vehicle_name=excluded.vehicle_name,
               updated_at=excluded.updated_at, payload=excluded.payload,
-              payment_type=excluded.payment_type`,
+              payment_type=excluded.payment_type,
+              amount_cash=excluded.amount_cash, amount_cheque=excluded.amount_cheque, amount_credit=excluded.amount_credit`,
             params
           );
         } catch (rowErr) {

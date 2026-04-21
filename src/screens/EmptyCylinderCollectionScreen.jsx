@@ -209,7 +209,7 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
           for (const item of inventory || []) {
             const pid = item?.product_id != null ? Number(item.product_id) : null;
             if (!Number.isFinite(pid)) continue;
-            byProductId[pid] = Number(item.quantity ?? item.available_quantity) || 0;
+            byProductId[pid] = Number(item.quantity) || 0;
           }
           for (const row of emptyCylinderEntries) {
             if (row.emptyProductId == null || row.emptyCollectedQty <= 0) continue;
@@ -227,15 +227,23 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
               productId: Number(row.emptyProductId),
               quantityUsed: -Math.abs(Number(row.emptyCollectedQty) || 0),
               newQuantity: nextQty,
+              incrementQuantity: Math.abs(Number(row.emptyCollectedQty) || 0),
             });
           }
           if (inventoryQueueUpdates.length > 0) {
-            await syncQueueDb.enqueue(syncQueueDb.ACTION_INVENTORY_UPDATE, {
+            const inventoryPayload = {
               saleOrderId: Number(saleOrderId),
               vehicleId: Number(vehicleId),
               locationId: Number(locationId),
               updates: inventoryQueueUpdates,
-            });
+            };
+            const existingInventoryUpdate =
+              await syncQueueDb.getPendingInventoryUpdateItemBySaleOrderId(Number(saleOrderId));
+            if (existingInventoryUpdate?.id != null) {
+              await syncQueueDb.updateQueueItemPayload(existingInventoryUpdate.id, inventoryPayload);
+            } else {
+              await syncQueueDb.enqueue(syncQueueDb.ACTION_INVENTORY_UPDATE, inventoryPayload);
+            }
           }
         }
 

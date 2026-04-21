@@ -109,9 +109,38 @@ export async function getAllVehicleInventories() {
   }));
 }
 
+function computeAvailableAfterQtyChange(oldQty, oldAvail, newQty) {
+  const Q0 = Math.max(0, Number(oldQty) || 0);
+  const Q1 = Math.max(0, Number(newQty) || 0);
+  const A0raw = Number(oldAvail);
+  const A0safe = Number.isFinite(A0raw) ? Math.max(0, A0raw) : Q0;
+  if (Q1 > Q0 + 0.0001) {
+    const add = Q1 - Q0;
+    return Math.min(Q1, A0safe + add);
+  }
+  const d = Math.max(0, Q0 - Q1);
+  let newAvail;
+  if (A0safe >= Q0 - 0.0001) {
+    newAvail = Math.min(Q1, Math.max(0, d));
+  } else {
+    const reserved0 = Math.max(0, Q0 - A0safe);
+    const releasedFromReserve = Math.min(d, reserved0);
+    newAvail = Math.max(0, Math.min(Q1, A0safe + releasedFromReserve));
+  }
+  return newAvail;
+}
+
 export async function updateVehicleInventoryQuantity(vehicleId, productId, newQuantity) {
   const db = await getDb();
-  console.log(`[DB Update] Setting vehicle ${vehicleId}, product ${productId} to quantity ${newQuantity} (marking as locally modified)`);
+  const existing = await db.getFirstAsync(
+    `SELECT quantity, available_quantity FROM vehicle_inventories WHERE vehicle_id = ? AND product_id = ?`,
+    [vehicleId, productId]
+  );
+  const Q0 = Number(existing?.quantity) || 0;
+  const A0 = existing?.available_quantity;
+  const Q1 = Math.max(0, Number(newQuantity) || 0);
+  const newAvail = computeAvailableAfterQtyChange(Q0, A0, Q1);
+  console.log(`[DB Update] Setting vehicle ${vehicleId}, product ${productId} to quantity ${Q1}, available ${newAvail} (marking as locally modified)`);
   await db.runAsync(
     `UPDATE vehicle_inventories 
      SET quantity = ?,
@@ -119,13 +148,21 @@ export async function updateVehicleInventoryQuantity(vehicleId, productId, newQu
          updated_at = datetime('now'),
          is_locally_modified = 1
      WHERE vehicle_id = ? AND product_id = ?`,
-    [newQuantity, newQuantity, vehicleId, productId]
+    [Q1, newAvail, vehicleId, productId]
   );
 }
 
 export async function updateVehicleInventoryQuantityByLocation(locationId, productId, newQuantity) {
   const db = await getDb();
-  console.log(`[DB Update] Setting location ${locationId}, product ${productId} to quantity ${newQuantity} (marking as locally modified)`);
+  const existing = await db.getFirstAsync(
+    `SELECT quantity, available_quantity FROM vehicle_inventories WHERE location_id = ? AND product_id = ?`,
+    [locationId, productId]
+  );
+  const Q0 = Number(existing?.quantity) || 0;
+  const A0 = existing?.available_quantity;
+  const Q1 = Math.max(0, Number(newQuantity) || 0);
+  const newAvail = computeAvailableAfterQtyChange(Q0, A0, Q1);
+  console.log(`[DB Update] Setting location ${locationId}, product ${productId} to quantity ${Q1}, available ${newAvail} (marking as locally modified)`);
   await db.runAsync(
     `UPDATE vehicle_inventories 
      SET quantity = ?,
@@ -133,7 +170,7 @@ export async function updateVehicleInventoryQuantityByLocation(locationId, produ
          updated_at = datetime('now'),
          is_locally_modified = 1
      WHERE location_id = ? AND product_id = ?`,
-    [newQuantity, newQuantity, locationId, productId]
+    [Q1, newAvail, locationId, productId]
   );
 }
 

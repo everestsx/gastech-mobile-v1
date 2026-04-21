@@ -21,11 +21,20 @@ const SALE_ORDER_FIELDS = [
   "order_line",
   "route_id",
   "vehicle_id",
-  // Optional: add if your Odoo has these on sale.order (standard does not):
-  // "amount_credit",
-  // "payment_type",
-  // "x_payment_type",
 ];
+
+/** Custom / studio fields on sale.order (GasTech): used for dashboard payment split on a fresh device after sync. */
+const SALE_ORDER_OPTIONAL_PAYMENT_FIELDS = ["payment_type", "amount_cash", "amount_cheque", "amount_credit"];
+
+const SALE_ORDER_FIELDS_WITH_PAYMENT = [...SALE_ORDER_FIELDS, ...SALE_ORDER_OPTIONAL_PAYMENT_FIELDS];
+
+function isUnknownFieldOdooError(err) {
+  const m = String(err?.message || err || "").toLowerCase();
+  return (
+    m.includes("field") &&
+    (m.includes("invalid") || m.includes("unknown") || m.includes("does not exist") || m.includes("undefined"))
+  );
+}
 
 const CANCEL_REASON_FALLBACKS = [
   { value: 'shop_closed', label: 'Shop closed' },
@@ -50,20 +59,26 @@ function resolveDateValue(dateFrom) {
  * @param {string} dateFrom - Optional ISO date string (e.g., "2024-03-13") to filter orders from this date onward
  * @param {'creation_date'|'delivery_date'} syncDateField - Filter and sort field selector from sync settings
  */
-export const getAllSaleOrders = (dateFrom, syncDateField = 'creation_date') => {
+export const getAllSaleOrders = async (dateFrom, syncDateField = 'creation_date') => {
   const dateField = resolveDateField(syncDateField);
   const dateValue = resolveDateValue(dateFrom);
   const domain = dateValue ? [[dateField, '>=', dateValue]] : [];
-  return callOdoo(
-    "sale.order",
-    "search_read",
-    [domain],
-    {
+  const opts = {
+    order: `${dateField} desc, id desc`,
+    limit: 500,
+  };
+  try {
+    return await callOdoo("sale.order", "search_read", [domain], {
+      ...opts,
+      fields: SALE_ORDER_FIELDS_WITH_PAYMENT,
+    });
+  } catch (e) {
+    if (!isUnknownFieldOdooError(e)) throw e;
+    return await callOdoo("sale.order", "search_read", [domain], {
+      ...opts,
       fields: SALE_ORDER_FIELDS,
-      order: `${dateField} desc, id desc`,
-      limit: 500,
-    }
-  );
+    });
+  }
 };
 
 /** Load backend cancellation reasons from the wizard selection field, with sensible fallback values. */
@@ -102,23 +117,29 @@ export const cancelSaleOrderWithReason = (orderId, reason) =>
  * @param {string} dateFrom - Optional ISO date string (e.g., "2024-03-13") to filter orders from this date onward
  * @param {'creation_date'|'delivery_date'} syncDateField - Filter and sort field selector from sync settings
  */
-export const getSaleOrdersByVehicle = (vehicleId, dateFrom, syncDateField = 'creation_date') => {
+export const getSaleOrdersByVehicle = async (vehicleId, dateFrom, syncDateField = 'creation_date') => {
   const dateField = resolveDateField(syncDateField);
   const dateValue = resolveDateValue(dateFrom);
   const domain = [['vehicle_id', '=', vehicleId]];
   if (dateValue) {
     domain.push([dateField, '>=', dateValue]);
   }
-  return callOdoo(
-    "sale.order",
-    "search_read",
-    [domain],
-    {
+  const opts = {
+    order: `${dateField} desc, id desc`,
+    limit: 500,
+  };
+  try {
+    return await callOdoo("sale.order", "search_read", [domain], {
+      ...opts,
+      fields: SALE_ORDER_FIELDS_WITH_PAYMENT,
+    });
+  } catch (e) {
+    if (!isUnknownFieldOdooError(e)) throw e;
+    return await callOdoo("sale.order", "search_read", [domain], {
+      ...opts,
       fields: SALE_ORDER_FIELDS,
-      order: `${dateField} desc, id desc`,
-      limit: 500,
-    }
-  );
+    });
+  }
 };
 
 /**

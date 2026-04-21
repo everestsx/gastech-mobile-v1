@@ -8,6 +8,37 @@ import { callOdoo, callOdooArgs, callOdooArgsKwargs } from './index.service';
  * @param {number} targetQty
  * @returns {Promise<{ ok: boolean, quantId?: number, created?: boolean }>}
  */
+/**
+ * Read current Odoo stock.quant quantity at a location (0 if no quant).
+ */
+export async function readQuantQuantityAtLocation(locationId, productId) {
+  if (locationId == null || productId == null) return 0;
+  const quantRows = await callOdoo(
+    'stock.quant',
+    'search_read',
+    [
+      [
+        ['location_id', '=', locationId],
+        ['product_id', '=', productId],
+      ],
+    ],
+    { fields: ['id', 'quantity'], limit: 1 }
+  );
+  const row = Array.isArray(quantRows) ? quantRows[0] : null;
+  return Math.max(0, Number(row?.quantity) || 0);
+}
+
+/**
+ * Apply a signed delta to on-hand at location (reads Odoo first — avoids stale absolute from another device).
+ */
+export async function adjustQuantQuantityAtLocation(locationId, productId, deltaQty) {
+  const delta = Number(deltaQty) || 0;
+  if (delta === 0) return { ok: true, targetQty: null };
+  const cur = await readQuantQuantityAtLocation(locationId, productId);
+  const target = Math.max(0, cur + delta);
+  return { ...(await setQuantQuantityAtLocation(locationId, productId, target)), targetQty: target };
+}
+
 export async function setQuantQuantityAtLocation(locationId, productId, targetQty) {
   if (locationId == null || productId == null) return { ok: false };
   const target = Math.max(0, Number(targetQty) || 0);
