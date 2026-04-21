@@ -550,7 +550,6 @@ const mockFetchLanguagesFromOdoo = async () => {
             updateAvailable: 'යාවත්කාලීනයක් ඇත',
             newerUpdateAvailable: 'නව යෙදුම් යාවත්කාලීනයක් ඇත. දැන් බාගත කරන්නද?',
             updateNow: 'දැන් යාවත්කාලීන කරන්න',
-            otaOnlyInRelease: 'OTA යාවත්කාලීන ස්ථාපිත release/internal builds වල පමණක් ක්‍රියා කරයි; Expo Go/dev mode වල නොවේ.',
             updateCheckFailed: 'යාවත්කාලීන පරීක්ෂාව අසාර්ථකයි',
             couldNotCheckForUpdates: 'යාවත්කාලීන පරීක්ෂා කළ නොහැක.',
             areYouSure: 'ඔබට විශ්වාසද?',
@@ -968,7 +967,7 @@ export const syncLanguageDictionaries = async () => {
 
     // Fetch from "Backend"
     const response = await mockFetchLanguagesFromOdoo();
-    
+
     // If backend has a newer version (or we don't have one), update cache
     if (!cachedVersion || cachedVersion !== response.version) {
       await AsyncStorage.setItem(TRANSLATIONS_STORAGE_KEY, JSON.stringify(response.translations));
