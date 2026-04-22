@@ -27,6 +27,7 @@ import { spacing, borderRadius } from '../constants/theme';
 import { dashboardConfig } from '../constants/dashboardConfig';
 import { getGasTypeBlueColor, parseKgFromProductName } from '../utils/productDisplay';
 import { buildDefaultGasDashboardStockCards } from '../utils/defaultGasStock';
+import { isGasCylinderName } from '../utils/cylinderCatalog';
 import { getLocalizedCustomerNameFromOrder } from '../utils/customerDisplayName';
 import {
   getCachedOrders,
@@ -1642,13 +1643,17 @@ export default function DashboardScreen({ navigation }) {
                     <Text style={{ fontSize: 18, fontWeight: '900', color: deliveredQty > 0 ? '#16a34a' : colors.textSecondary, marginTop: 4 }}>
                       {deliveredQty.toLocaleString('en-IN')}
                     </Text>
-                    <View style={{ height: 6 }} />
-                    <Text style={{ fontSize: 12, color: colors.textSecondary, fontWeight: '800' }}>
-                      Empty Collected
-                    </Text>
-                    <Text style={{ fontSize: 18, fontWeight: '900', color: emptyCollectedQty > 0 ? '#0f766e' : colors.textSecondary, marginTop: 4 }}>
-                      {emptyCollectedQty.toLocaleString('en-IN')}
-                    </Text>
+                    {isGasCylinderName(productLabel) ? (
+                      <>
+                        <View style={{ height: 6 }} />
+                        <Text style={{ fontSize: 12, color: colors.textSecondary, fontWeight: '800' }}>
+                          Empty Collected
+                        </Text>
+                        <Text style={{ fontSize: 18, fontWeight: '900', color: emptyCollectedQty > 0 ? '#0f766e' : colors.textSecondary, marginTop: 4 }}>
+                          {emptyCollectedQty.toLocaleString('en-IN')}
+                        </Text>
+                      </>
+                    ) : null}
                   </TouchableOpacity>
                 );
               })
