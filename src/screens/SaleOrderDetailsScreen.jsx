@@ -665,6 +665,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
         saleOrderId: Number(order.id),
         vehicleId,
         locationId,
+        holdUntilComplete: true,
         updates: Array.from(remainingByProduct.entries()).map(([productId, newQuantity]) => ({
           productId,
           quantityUsed: baselineOnLorry(productId) - newQuantity,
@@ -844,6 +845,24 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
       return clampNonNegativeStock(productIdToOnHand[productId]);
     },
     [isDeliveryDone, lines, productIdToOnHand]
+  );
+
+  /**
+   * Live available = on-hand - currently ordered qty for this product (all lines),
+   * so it updates immediately while the user edits quantities.
+   */
+  const getLiveAvailableForProduct = useCallback(
+    (productId, linesSnapshot = lines) => {
+      if (productId == null) return undefined;
+      const onHand = clampNonNegativeStock(productIdToOnHand[productId] ?? 0);
+      const ordered = (linesSnapshot || []).reduce((sum, l) => {
+        const pid = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
+        if (Number(pid) !== Number(productId)) return sum;
+        return sum + (Number(l.newQty) || 0);
+      }, 0);
+      return Math.max(0, onHand - ordered);
+    },
+    [lines, productIdToOnHand]
   );
 
     const setLineQty = useCallback((lineId, value) => {
@@ -1327,6 +1346,10 @@ const handleProceedToPayment = useCallback(async () => {
     const onHandStockRaw = productId != null ? productIdToOnHand[productId] : undefined;
     const onHandStock =
       onHandStockRaw !== undefined ? clampNonNegativeStock(onHandStockRaw) : undefined;
+    const liveAvailable =
+      productId != null && onHandStock !== undefined
+        ? getLiveAvailableForProduct(productId)
+        : undefined;
     const backendImageUri = productId != null ? productIdToImageUri[productId] : null;
     const imageSource = backendImageUri ? { uri: backendImageUri } : getProductImageSource(productName);
 
@@ -1401,10 +1424,10 @@ const handleProceedToPayment = useCallback(async () => {
                     <Text
                       style={[
                         styles.availableStockText,
-                        onHandStock === 0 && { color: colors.error || '#c00' },
+                        (liveAvailable ?? 0) === 0 && { color: colors.error || '#c00' },
                       ]}
                     >
-                      Available : {onHandStock}
+                      Available : {liveAvailable ?? 0}
                     </Text>
                   </View>
                 )}

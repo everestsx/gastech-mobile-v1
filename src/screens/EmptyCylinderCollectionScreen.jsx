@@ -172,12 +172,6 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
     );
   }, []);
 
-  const resetToSuggested = useCallback((kg) => {
-    setRows((prev) =>
-      prev.map((r) => (r.kg === kg ? { ...r, emptyQty: Number(r.defaultEmptyQty) || 0 } : r))
-    );
-  }, []);
-
   const buildEntriesPayload = useCallback(() => {
     return rows.map((r) => ({
       kg: Number(r.kg),
@@ -236,6 +230,7 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
               vehicleId: Number(vehicleId),
               locationId: Number(locationId),
               updates: inventoryQueueUpdates,
+              holdUntilComplete: true,
             };
             const existingInventoryUpdate =
               await syncQueueDb.getPendingInventoryUpdateItemBySaleOrderId(Number(saleOrderId));
@@ -369,9 +364,6 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
           fontWeight: '800',
           textAlign: 'center',
         },
-        suggested: { fontSize: 12, color: colors.textSecondary, marginTop: 6 },
-        resetLink: { flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start', marginTop: 10, paddingVertical: 4 },
-        resetLinkText: { fontSize: 13, fontWeight: '700', color: colors.primary },
         summary: {
           marginTop: spacing.xs,
           marginBottom: spacing.sm,
@@ -481,16 +473,6 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
-        <View style={styles.hero}>
-          <View style={styles.heroIcon}>
-            <Ionicons name="swap-vertical-outline" size={32} color={colors.primary} />
-          </View>
-          <Text style={styles.title}>Empty cylinders</Text>
-          <Text style={styles.heroText}>
-            Enter collected empty cylinders for this order.
-          </Text>
-        </View>
-
         <View style={styles.cardsWrap}>
           {rows.map((row) => {
             const adjusted = !qtyClose(row.emptyQty, row.defaultEmptyQty);
@@ -527,13 +509,6 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
                     <Ionicons name="add" size={22} color={colors.primary} />
                   </TouchableOpacity>
                 </View>
-                <Text style={styles.suggested}>
-                  Suggested: {Number(row.defaultEmptyQty) || 0}
-                </Text>
-                <TouchableOpacity style={styles.resetLink} onPress={() => resetToSuggested(row.kg)} activeOpacity={0.8}>
-                  <Ionicons name="refresh" size={16} color={colors.primary} />
-                  <Text style={styles.resetLinkText}>Use suggested</Text>
-                </TouchableOpacity>
               </View>
             );
           })}

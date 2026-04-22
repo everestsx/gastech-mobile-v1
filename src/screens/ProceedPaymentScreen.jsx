@@ -62,8 +62,8 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   const [journals, setJournals] = useState([]);
   const [vehicleJournalIds, setVehicleJournalIds] = useState({ cashJournalId: null, chequeJournalId: null });
   const [hasSyncedOnce, setHasSyncedOnce] = useState(false);
-  const [selectedPaymentMethods, setSelectedPaymentMethods] = useState([PAYMENT_CASH]);
-  const [cashAmount, setCashAmount] = useState(() => (orderTotalRounded > 0 ? formatAmount(orderTotalRounded) : ''));
+  const [selectedPaymentMethods, setSelectedPaymentMethods] = useState([]);
+  const [cashAmount, setCashAmount] = useState('');
   const [checkAmount, setCheckAmount] = useState('');
   const [lastEditedAmount, setLastEditedAmount] = useState(PAYMENT_CASH);
   const [selectedJournalId, setSelectedJournalId] = useState(null);
@@ -753,31 +753,8 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       keyboardDismissMode="on-drag"
     >
       <View style={styles.totalCard}>
-        {(orderSubtotal != null || orderTax != null) ? (
-          <>
-            {orderSubtotal != null && (
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 }}>
-                <Text style={styles.totalLabel}>Sub total</Text>
-                <Text style={[styles.totalLabel, { fontWeight: '600', color: colors.text }]}>Rs. {formatAmount(orderSubtotal)}</Text>
-              </View>
-            )}
-            {orderTax != null && (
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 }}>
-                <Text style={styles.totalLabel}>VAT (18%)</Text>
-                <Text style={[styles.totalLabel, { fontWeight: '600', color: colors.text }]}>Rs. {formatAmount(orderTax)}</Text>
-              </View>
-            )}
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 6, paddingTop: 8, borderTopWidth: 1, borderTopColor: colors.border }}>
-              <Text style={[styles.totalLabel, { fontWeight: '700', fontSize: 15 }]}>Payment total</Text>
-              <Text style={styles.total}>Rs. {formatAmount(total)}</Text>
-            </View>
-          </>
-        ) : (
-          <>
-            <Text style={styles.totalLabel}>Total Amount</Text>
-            <Text style={styles.total}>Rs. {formatAmount(total)}</Text>
-          </>
-        )}
+        <Text style={styles.totalLabel}>Payment total</Text>
+        <Text style={styles.total}>Rs. {formatAmount(total)}</Text>
       </View>
 
       {/* Payment method: checkboxes (multi-select) */}
@@ -888,6 +865,25 @@ export default function ProceedPaymentScreen({ route, navigation }) {
 
       {selectedPaymentMethods.includes(PAYMENT_CHECK) && (
         <>
+          <Text style={[styles.sectionLabel]}>Cheque number <Text style={styles.requiredStar}>*</Text></Text>
+          <View style={[styles.checkInputRow, { marginBottom: spacing.sm }]}>
+            <TextInput
+              ref={checkNumberInputRef}
+              style={[styles.checkAmountInput, { flex: 1 }]}
+              value={checkNumber}
+              onChangeText={setCheckNumber}
+              placeholder="Check #"
+              placeholderTextColor={colors.textSecondary}
+              returnKeyType="done"
+              blurOnSubmit
+              onSubmitEditing={() => Keyboard.dismiss()}
+              onFocus={() => {
+                setTimeout(() => {
+                  scrollRef.current?.scrollToEnd({ animated: true });
+                }, 200);
+              }}
+            />
+          </View>
           <Text style={styles.sectionLabel}>Choose Bank <Text style={styles.requiredStar}>*</Text></Text>
           {journalsLoading ? (
             <View style={styles.bankList}>
@@ -974,25 +970,6 @@ export default function ProceedPaymentScreen({ route, navigation }) {
                     </ScrollView>
                   </View>
                 )}
-              </View>
-              <Text style={[styles.sectionLabel]}>Cheque number <Text style={styles.requiredStar}>*</Text></Text>
-              <View style={[styles.checkInputRow , { marginBottom: spacing.sm }]}>
-                <TextInput
-                  ref={checkNumberInputRef}
-                  style={[styles.checkAmountInput, { flex: 1 }]}
-                  value={checkNumber}
-                  onChangeText={setCheckNumber}
-                  placeholder="Check #"
-                  placeholderTextColor={colors.textSecondary}
-                  returnKeyType="done"
-                  blurOnSubmit
-                  onSubmitEditing={() => Keyboard.dismiss()}
-                  onFocus={() => {
-                    setTimeout(() => {
-                      scrollRef.current?.scrollToEnd({ animated: true });
-                    }, 200);
-                  }}
-                />
               </View>
             </>
           )}
