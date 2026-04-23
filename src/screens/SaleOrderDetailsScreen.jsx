@@ -1005,19 +1005,34 @@ const validateQuantities = useCallback(() => {
       const targets = openPickings.length > 0 ? openPickings : [];
 
       const orderLineUpdates = [];
-      if (demandEdit) {
-        for (let i = 0; i < lines.length; i++) {
-          const l = lines[i];
-          const newVal = effectiveQtys[i] != null ? Number(effectiveQtys[i]) : Number(l.newQty);
-          const oldDem = Number(l.product_uom_qty) || 0;
-          if (newVal !== oldDem) {
-            orderLineUpdates.push({ lineId: l.id, product_uom_qty: newVal });
-            await saleOrderLinesDb.updateSaleOrderLineQtyLocal(l.id, newVal);
-          }
+      for (let i = 0; i < lines.length; i++) {
+        const l = lines[i];
+        const newVal = effectiveQtys[i] != null ? Number(effectiveQtys[i]) : Number(l.newQty);
+        const oldDem = Number(l.product_uom_qty) || 0;
+        if (newVal !== oldDem) {
+          /**
+           * Keep SO demand aligned to final delivered qty in both flows:
+           * - demandEdit=true (manual Modify->Update)
+           * - demandEdit=false (proceed-to-payment)
+           * This avoids intermittent "not fully invoiced" when Odoo compares ordered vs invoiced quantities.
+           */
+          orderLineUpdates.push({ lineId: l.id, product_uom_qty: newVal });
+          await saleOrderLinesDb.updateSaleOrderLineQtyLocal(l.id, newVal);
         }
-        if (orderLineUpdates.length > 0) {
-          await saleOrdersDb.updateSaleOrderAmountsFromLines(order.id);
-        }
+      }
+      if (orderLineUpdates.length > 0) {
+        await saleOrdersDb.updateSaleOrderAmountsFromLines(order.id);
+      }
+
+      /** Aggregate requested qty by product to avoid last-line-wins bugs when same product appears multiple times. */
+      const requestedQtyByProductId = {};
+      for (let i = 0; i < lines.length; i++) {
+        const l = lines[i];
+        const productId = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
+        if (productId == null) continue;
+        const newVal = effectiveQtys[i] != null ? Number(effectiveQtys[i]) : Number(l.newQty);
+        const safeQty = Number.isFinite(newVal) ? Math.max(0, newVal) : 0;
+        requestedQtyByProductId[productId] = (requestedQtyByProductId[productId] || 0) + safeQty;
       }
 
       const pickingsOut = [];
@@ -1045,11 +1060,10 @@ const validateQuantities = useCallback(() => {
         const moveLineUpdates = [];
         const deliveryLines = [];
 
-        for (let i = 0; i < lines.length; i++) {
-          const l = lines[i];
-          const newVal = effectiveQtys[i] != null ? Number(effectiveQtys[i]) : Number(l.newQty);
-          const productId = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
-          if (productId == null) continue;
+        for (const [pidRaw, totalRequestedQty] of Object.entries(requestedQtyByProductId)) {
+          const productId = Number(pidRaw);
+          const newVal = Number(totalRequestedQty) || 0;
+          if (!Number.isFinite(productId)) continue;
 
           const moveId = productIdToMoveId[productId];
           if (moveId == null) continue;
@@ -1062,13 +1076,13 @@ const validateQuantities = useCallback(() => {
               await stockMovesDb.updateStockMoveQtyLocal(moveId, newVal);
               moveUpdates.push({ moveId, product_uom_qty: newVal });
             }
-          } else if (newVal > currentMoveDemand) {
+          } else if (newVal !== currentMoveDemand) {
+            /**
+             * Proceed-to-payment path: keep stock.move demand aligned to delivered qty, even when reduced.
+             * If demand stays higher than qty_done, Odoo treats the gap as remaining quantity (backorder/not fully invoiced).
+             */
             await stockMovesDb.updateStockMoveQtyLocal(moveId, newVal);
             moveUpdates.push({ moveId, product_uom_qty: newVal });
-          } else if (newVal === 0 && currentMoveDemand > 0) {
-            /** Cancelled / not delivered: zero demand on stock.move so Odoo does not keep the line waiting (qty_done 0 + demand > 0). */
-            await stockMovesDb.updateStockMoveQtyLocal(moveId, 0);
-            moveUpdates.push({ moveId, product_uom_qty: 0 });
           }
 
           if (!demandEdit) {

@@ -27,7 +27,7 @@ import { spacing, borderRadius } from '../constants/theme';
 import { dashboardConfig } from '../constants/dashboardConfig';
 import { getGasTypeBlueColor, parseKgFromProductName } from '../utils/productDisplay';
 import { buildDefaultGasDashboardStockCards } from '../utils/defaultGasStock';
-import { isGasCylinderName } from '../utils/cylinderCatalog';
+import { canonicalKgFromName, isEmptyCylinderName, isGasCylinderName } from '../utils/cylinderCatalog';
 import { getLocalizedCustomerNameFromOrder } from '../utils/customerDisplayName';
 import {
   getCachedOrders,
@@ -197,7 +197,7 @@ export default function DashboardScreen({ navigation }) {
   // Stock overview (local lorry stock) computed from vehicle_inventories.
   const [stockCards, setStockCards] = useState([]);
   const [productIdToImageUri, setProductIdToImageUri] = useState({});
-  const [emptyCollectedByKg, setEmptyCollectedByKg] = useState({});
+  const [emptyStockByKg, setEmptyStockByKg] = useState({});
 
   // Collection cards: tap to expand one (shows full amount), tap again to collapse
   const [expandedCollectionCard, setExpandedCollectionCard] = useState(null);
@@ -308,26 +308,6 @@ export default function DashboardScreen({ navigation }) {
       setQtyDoneBySaleId(qtyDoneMap || {});
       setTodayOrderLines(orderLines || []);
       setPaymentSplitsByOrderId(splits || {});
-      try {
-        const paymentPayloadMap = orderIds.length
-          ? await syncQueueDb.getLatestPaymentPayloadMapBySaleOrderIds(orderIds)
-          : {};
-        const nextEmptyByKg = {};
-        for (const soId of orderIds) {
-          const payload = paymentPayloadMap?.[Number(soId)]?.payload || {};
-          const entries = Array.isArray(payload?.emptyCylinderEntries) ? payload.emptyCylinderEntries : [];
-          for (const entry of entries) {
-            const kg = Number(entry?.kg);
-            const qty = Number(entry?.emptyCollectedQty) || 0;
-            if (!Number.isFinite(kg) || qty <= 0) continue;
-            nextEmptyByKg[kg] = (nextEmptyByKg[kg] || 0) + qty;
-          }
-        }
-        setEmptyCollectedByKg(nextEmptyByKg);
-      } catch (_) {
-        setEmptyCollectedByKg({});
-      }
-
       const saleIdToPickState = mergePickingStateBySaleIdFromRows(pickings);
 
       const pendingQueueItems = await syncQueueDb.getPending();
@@ -458,6 +438,17 @@ export default function DashboardScreen({ navigation }) {
             vehicleInventoriesDb.getVehicleInventoryByVehicleId(vehicleId),
             productsDb.getProductsMap(),
           ]);
+          const nextEmptyStockByKg = {};
+          for (const inv of inventories || []) {
+            const pid = inv?.product_id != null ? Number(inv.product_id) : null;
+            const resolvedName = (pid != null ? productNameMap?.[pid] : null) || inv?.product_name || '';
+            if (!isEmptyCylinderName(resolvedName)) continue;
+            const kg = canonicalKgFromName(resolvedName);
+            if (kg == null) continue;
+            const qty = Math.max(0, Number(inv?.quantity) || 0);
+            nextEmptyStockByKg[kg] = (nextEmptyStockByKg[kg] || 0) + qty;
+          }
+          setEmptyStockByKg(nextEmptyStockByKg);
           const byProduct = {};
           for (const inv of inventories || []) {
             const pid = inv?.product_id != null ? Number(inv.product_id) : null;
@@ -493,7 +484,7 @@ export default function DashboardScreen({ navigation }) {
       setPendingCheckoutOrderIds(new Set());
       setStockCards([]);
       setProductIdToImageUri({});
-      setEmptyCollectedByKg({});
+      setEmptyStockByKg({});
     } finally {
       setLoading(false);
     }
@@ -1585,7 +1576,7 @@ export default function DashboardScreen({ navigation }) {
                   s.product_id != null ? Number(deliveredQtyByProductId[s.product_id]) || 0 : 0;
                 const cardKg = parseKgFromProductName(productLabel);
                 const emptyCollectedQty =
-                  cardKg != null ? Number(emptyCollectedByKg[cardKg]) || 0 : 0;
+                  cardKg != null ? Number(emptyStockByKg[cardKg]) || 0 : 0;
 
                 return (
                   <TouchableOpacity

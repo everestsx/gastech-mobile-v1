@@ -35,7 +35,6 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { fetchAndStoreVehicleJournals } from '../services/vehicle.service';
 import {
   getDriverByBarcode,
-  getPortersEmployees,
   getPortersEmployeesOfflineFirst,
   refreshPortersEmployeesCache,
   odooImageToUri,
@@ -196,24 +195,8 @@ export default function LoginScreen({ navigation }) {
       return showAlert('Select porters', 'Pick at least one porter.', [{ text: 'OK', onPress: hideAlert }]);
     }
 
-    let sourcePorters = portersList;
-    try {
-      const withImages = await getPortersEmployees();
-      if (Array.isArray(withImages) && withImages.length) {
-        const byId = new Map(withImages.map((p) => [Number(p.id), p]));
-        sourcePorters = portersList.map((p) => {
-          const full = byId.get(Number(p.id));
-          if (!full) return p;
-          return {
-            ...p,
-            imageBase64: p.imageBase64 || full.imageBase64,
-            phone: (p.phone && String(p.phone).trim()) ? p.phone : (full.phone || ''),
-          };
-        });
-      }
-    } catch (_) {
-      /* keep portersList */
-    }
+    // Use already loaded porter list for instant login UX; do not block on extra network calls here.
+    const sourcePorters = portersList;
 
     const selectedPorters = sourcePorters
       .filter((p) => selectedPorterIds.includes(Number(p.id)))
@@ -243,21 +226,23 @@ export default function LoginScreen({ navigation }) {
       });
 
       saveLastVehicleId(selected.id);
-      const licensePlate = (selected.license_plate || selected.name || '').trim();
-      if (licensePlate) {
-        await fetchAndStoreVehicleJournals(licensePlate);
-      }
-      try {
-        const syncResult = await runSync();
-        if (syncResult && !syncResult.error) {
-          await setPostLoginSyncSuccessPending();
-        }
-      } catch (syncErr) {
-        console.warn('[Login] initial runSync failed', syncErr?.message ?? syncErr);
-      }
       resetLoginFlow();
       setPassword('');
       navigation.replace('Main');
+      const licensePlate = (selected.license_plate || selected.name || '').trim();
+      void (async () => {
+        try {
+          if (licensePlate) {
+            await fetchAndStoreVehicleJournals(licensePlate);
+          }
+          const syncResult = await runSync();
+          if (syncResult && !syncResult.error) {
+            await setPostLoginSyncSuccessPending();
+          }
+        } catch (syncErr) {
+          console.warn('[Login] initial runSync failed', syncErr?.message ?? syncErr);
+        }
+      })();
     } catch (err) {
       showAlert('Login failed', err.message || 'Could not save your session.', [{ text: 'Try again', onPress: hideAlert }]);
     } finally {
@@ -701,6 +686,7 @@ export default function LoginScreen({ navigation }) {
     const idSet = new Set(selectedPorterIds);
     return portersList.filter((p) => idSet.has(Number(p.id)));
   }, [portersList, selectedPorterIds]);
+  const canGoDashboard = selectedPorterIds.length > 0 && !loading && !portersLoading;
 
   const displayLabel = selected
       ? (selected?.license_plate || selected?.name)
@@ -1122,15 +1108,17 @@ export default function LoginScreen({ navigation }) {
                   <Text style={styles.modalBtnSecondaryText}>Back</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
-                  style={[styles.modalBtnPrimary, loading && { opacity: 0.7 }]}
+                  style={[styles.modalBtnPrimary, !canGoDashboard && { opacity: 0.55 }]}
                   onPress={finishLoginWithPorters}
-                  disabled={loading || portersLoading}
+                  disabled={!canGoDashboard}
                   activeOpacity={0.85}
                 >
                   {loading ? (
                     <ActivityIndicator color="#fff" />
                   ) : (
-                    <Text style={styles.modalBtnPrimaryText}>Go to dashboard</Text>
+                    <Text style={styles.modalBtnPrimaryText}>
+                      {selectedPorterIds.length > 0 ? 'Go to dashboard' : 'Select at least one porter'}
+                    </Text>
                   )}
                 </TouchableOpacity>
               </View>

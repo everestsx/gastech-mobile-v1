@@ -818,9 +818,8 @@ async function processSyncQueue() {
         createMoveLine,
         actionConfirmPicking,
         actionAssignPicking,
+        actionCancelPicking,
         validatePickingWithContext,
-        createBackorderConfirmation,
-        processBackorderConfirmation,
       } = await import('./delivery.service');
       const {
         getSaleOrderForPayment,
@@ -871,6 +870,8 @@ async function processSyncQueue() {
         const orderLineUpdates = p.orderLineUpdates || [];
         const saleOrderLineDeliveredUpdates = p.saleOrderLineDeliveredUpdates || [];
         const blocks = pickingsBlocksFromPayload(p);
+        let validatedAnyPicking = false;
+        const targetPickingIds = new Set();
 
         const applySoLineOrderedQty = async () => {
           for (const u of orderLineUpdates) {
@@ -927,6 +928,7 @@ async function processSyncQueue() {
             logWarn('queue delivery', new Error('No picking id for block (SO ' + saleOrderId + ')'));
             continue;
           }
+          targetPickingIds.add(Number(pickingId));
 
           try {
             const stateRows = await getPickingState(pickingId);
@@ -989,7 +991,10 @@ async function processSyncQueue() {
           }
 
           const tryValidateOne = async () => {
-            await validatePickingWithContext(pickingId, { skip_backorder: true });
+            await validatePickingWithContext(pickingId, {
+              skip_backorder: true,
+              cancel_backorder: true,
+            });
           };
           const validateMsgOkToSkip = (msg) => {
             const v = (msg || '').toLowerCase();
@@ -1038,6 +1043,7 @@ async function processSyncQueue() {
             }
             try {
               await tryValidateOne();
+              validatedAnyPicking = true;
               log('queue', `delivery validated picking ${pickingId} (skip_backorder)`);
             } catch (validateErr) {
               const vMsgRaw = String(validateErr?.message || validateErr);
@@ -1052,6 +1058,7 @@ async function processSyncQueue() {
                   /* second assign optional */
                 }
                 await tryValidateOne();
+                validatedAnyPicking = true;
                 log('queue', `delivery validated picking ${pickingId} after assign retry`);
               } else {
                 throw validateErr;
@@ -1064,6 +1071,33 @@ async function processSyncQueue() {
             } else {
               throw validateErr;
             }
+          }
+        }
+
+        if (validatedAnyPicking && saleOrderId != null) {
+          try {
+            const refreshedPickings = await getPickingBySaleOrder(saleOrderId);
+            for (const pick of refreshedPickings || []) {
+              const pid = pick?.id != null ? Number(pick.id) : null;
+              const state = String(pick?.state || '').toLowerCase();
+              if (pid == null) continue;
+              if (state === 'done' || state === 'cancel') continue;
+              if (targetPickingIds.has(pid)) continue;
+              try {
+                await actionCancelPicking(pid);
+                log('queue', `delivery auto-cancelled backorder picking ${pid} for SO ${saleOrderId}`);
+              } catch (cancelErr) {
+                log(
+                  'queue',
+                  `delivery backorder cancel skipped for picking ${pid}: ${String(cancelErr?.message || cancelErr).slice(0, 120)}`
+                );
+              }
+            }
+          } catch (refreshErr) {
+            log(
+              'queue',
+              `delivery backorder cleanup skipped for SO ${saleOrderId}: ${String(refreshErr?.message || refreshErr).slice(0, 120)}`
+            );
           }
         }
 
@@ -1218,7 +1252,10 @@ async function processSyncQueue() {
                       }
                     }
                   }
-                  await validatePickingWithContext(Number(pickingId), { skip_backorder: true });
+                  await validatePickingWithContext(Number(pickingId), {
+                    skip_backorder: true,
+                    cancel_backorder: true,
+                  });
                   movedByPicking = true;
                   log('queue', `inventory empty return synced via picking id=${pickingId} SO=${saleOrderId} lines=${emptyReturnLines.length}`);
                 }
@@ -1305,6 +1342,24 @@ async function processSyncQueue() {
             } catch (flushErr) {
               logWarn('queue delivery (flush before payment)', flushErr);
             }
+          }
+
+          /**
+           * Hard guard: never create/post invoice while this SO still has any pending delivery sync row.
+           * This keeps "ordered/delivered/invoiced" aligned and avoids intermittent partial invoicing.
+           */
+          const pendingAfterFlush = await syncQueueDb.getPending();
+          const remainingDeliveryForSo = (pendingAfterFlush || []).filter(
+            (q) =>
+              q.action_type === syncQueueDb.ACTION_DELIVERY &&
+              Number((q.payload || {}).saleOrderId ?? (q.payload || {}).sale_id) === soId
+          );
+          if (remainingDeliveryForSo.length > 0) {
+            log(
+              'queue',
+              `payment id=${item.id} SO ${soId} delayed: waiting for delivery sync (${remainingDeliveryForSo.length} pending)`
+            );
+            continue;
           }
 
           await writeSaleOrderCrewFromPaymentPayload(soId, p);
@@ -2207,21 +2262,33 @@ async function runSyncInternal() {
             complete_name: loc.complete_name,
           });
           log('fetch', `vehicle inventory location ${loc.id}  ${vehicleId}`);
-          const quants = await getVehicleInventoryByLocation(loc.id).catch(() => []);
+          let quants = [];
+          let inventoryFetchOk = false;
+          try {
+            quants = await getVehicleInventoryByLocation(loc.id);
+            inventoryFetchOk = true;
+          } catch (invErr) {
+            inventoryFetchOk = false;
+            logWarn(`vehicle inventory fetch location ${loc.id}`, invErr);
+          }
           const inventoryRowsForLocation = (quants || []).map((q) => ({
             ...q,
             location_id: loc.id,
             vehicle_id: vId,
           }));
           allVehicleInventories.push(...inventoryRowsForLocation);
-          if (inventoryRowsForLocation.length > 0) {
+          if (inventoryFetchOk) {
             await vehicleInventoriesDb.pruneInventoryForLocationToIds(
               loc.id,
               inventoryRowsForLocation.map((r) => r.id)
             );
-            await vehicleInventoriesDb.upsertVehicleInventories(inventoryRowsForLocation);
+            if (inventoryRowsForLocation.length > 0) {
+              await vehicleInventoriesDb.upsertVehicleInventories(inventoryRowsForLocation);
+            } else {
+              log('sync', `vehicle inventory location ${loc.id}: synced empty quants (stock now zero where applicable)`);
+            }
           } else {
-            log('sync', `vehicle inventory location ${loc.id}: empty response, keep existing local rows`);
+            log('sync', `vehicle inventory location ${loc.id}: fetch failed, keep existing local rows`);
           }
         }
       } catch (e) {
