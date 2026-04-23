@@ -1,51 +1,88 @@
-/**
- * Invoice number in format ddmmyy0001 (sequential per day).
- * Persists last sequence per day and assigns one number per sale order (reused when reopening invoice).
- */
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { getUserSession } from '../services/sync.service';
 
-const SEQ_PREFIX = 'invoice_seq_';
+const SEQ_PREFIX = 'invoice_seq_v2_';
 const ORDER_PREFIX = 'invoice_no_';
+const LORRY_MAP_PREFIX = 'invoice_lorry_map_';
+const LORRY_LAST_INDEX_KEY = 'invoice_lorry_last_index';
 
-function pad2(n) {
-  return String(n).padStart(2, '0');
+function padN(v, n) {
+  return String(v).padStart(n, '0');
 }
 
-/** Get ddmmyy for today (e.g. 270226 for 27 Feb 2026). */
-export function getTodayDdmmyy() {
-  const d = new Date();
-  const day = pad2(d.getDate());
-  const month = pad2(d.getMonth() + 1);
-  const year = pad2(d.getFullYear() % 100);
-  return `${day}${month}${year}`;
+function safeNumber(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
 }
 
-/**
- * Get next sequential number for today (increments and persists).
- * @returns {Promise<string>} e.g. "2702260001"
- */
-export async function getNextInvoiceNumber() {
-  const ddmmyy = getTodayDdmmyy();
-  const key = SEQ_PREFIX + ddmmyy;
-  const raw = await AsyncStorage.getItem(key);
-  const next = (parseInt(raw ?? '0', 10) + 1);
-  await AsyncStorage.setItem(key, String(next));
-  const seq = String(next).padStart(4, '0');
-  return ddmmyy + seq;
+function financialYearLabel(dateObj = new Date()) {
+  const y = dateObj.getFullYear();
+  const m = dateObj.getMonth() + 1;
+  const startYear = m >= 4 ? y : y - 1; // Apr-Mar financial year
+  const endYear = startYear + 1;
+  return `${padN(startYear % 100, 2)}-${padN(endYear % 100, 2)}`;
 }
 
-/**
- * Get or assign invoice number for a sale order.
- * Reuses stored number if already assigned; otherwise generates next and stores.
- * @param {number|string} saleOrderId
- * @returns {Promise<string>} Invoice number ddmmyy0001
- */
-export async function getOrAssignInvoiceNumber(saleOrderId) {
-  if (saleOrderId == null) return getNextInvoiceNumber();
+async function resolveSessionVehicle() {
+  try {
+    const s = await getUserSession();
+    return {
+      vehicleId: safeNumber(s?.vehicleId),
+      vehicleName: String(s?.vehicleName || '').trim(),
+      licensePlate: String(s?.licensePlate || '').trim(),
+    };
+  } catch (_) {
+    return { vehicleId: null, vehicleName: '', licensePlate: '' };
+  }
+}
+
+function extractExplicitLorryNo(vehicleName, licensePlate) {
+  const candidates = [String(vehicleName || ''), String(licensePlate || '')];
+  for (const raw of candidates) {
+    const m = raw.match(/\bL\s*[-/]?\s*(\d+)\b/i);
+    if (m?.[1]) return `L${Number(m[1])}`;
+  }
+  return null;
+}
+
+async function getOrAssignLorryNumber({ vehicleId, vehicleName, licensePlate }) {
+  const explicit = extractExplicitLorryNo(vehicleName, licensePlate);
+  if (explicit) return explicit;
+  const key = `${LORRY_MAP_PREFIX}${vehicleId != null ? vehicleId : String(licensePlate || vehicleName || 'default')}`;
+  const existing = await AsyncStorage.getItem(key);
+  if (existing) return existing;
+  const lastRaw = await AsyncStorage.getItem(LORRY_LAST_INDEX_KEY);
+  const nextIndex = (parseInt(lastRaw || '0', 10) || 0) + 1;
+  const assigned = `L${nextIndex}`;
+  await AsyncStorage.multiSet([
+    [LORRY_LAST_INDEX_KEY, String(nextIndex)],
+    [key, assigned],
+  ]);
+  return assigned;
+}
+
+async function getNextInvoiceNumberV2(options = {}) {
+  const sessionVehicle = await resolveSessionVehicle();
+  const vehicle = {
+    vehicleId: options.vehicleId != null ? safeNumber(options.vehicleId) : sessionVehicle.vehicleId,
+    vehicleName: options.vehicleName != null ? String(options.vehicleName) : sessionVehicle.vehicleName,
+    licensePlate: options.licensePlate != null ? String(options.licensePlate) : sessionVehicle.licensePlate,
+  };
+  const lorryNo = await getOrAssignLorryNumber(vehicle);
+  const fy = financialYearLabel(new Date());
+  const seqKey = `${SEQ_PREFIX}${lorryNo}_${fy}`;
+  const raw = await AsyncStorage.getItem(seqKey);
+  const next = (parseInt(raw || '0', 10) || 0) + 1;
+  await AsyncStorage.setItem(seqKey, String(next));
+  return `${lorryNo}/${fy}/${padN(next, 5)}`;
+}
+
+export async function getOrAssignInvoiceNumber(saleOrderId, options = {}) {
+  if (saleOrderId == null) return getNextInvoiceNumberV2(options);
   const key = ORDER_PREFIX + saleOrderId;
   const existing = await AsyncStorage.getItem(key);
   if (existing) return existing;
-  const next = await getNextInvoiceNumber();
+  const next = await getNextInvoiceNumberV2(options);
   await AsyncStorage.setItem(key, next);
   return next;
 }

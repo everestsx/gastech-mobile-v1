@@ -484,5 +484,18 @@ export const updateInvoiceIncotermLocation = (invoiceId, localInvoiceNumber) => 
   const idNum = Number(invoiceId);
   const text = String(localInvoiceNumber).trim();
   if (!idNum || !text) return Promise.resolve(false);
-  return callOdooArgs("account.move", "write", [[idNum], { incoterm_location: text }]);
+  return (async () => {
+    let candidate = text;
+    for (let i = 0; i < 25; i++) {
+      const existing = await callOdoo(
+        "account.move",
+        "search_read",
+        [[["incoterm_location", "=", candidate], ["id", "!=", idNum]]],
+        { fields: ["id"], limit: 1 }
+      );
+      if (!Array.isArray(existing) || existing.length === 0) break;
+      candidate = `${text}.${i + 1}`;
+    }
+    return callOdooArgs("account.move", "write", [[idNum], { incoterm_location: candidate }]);
+  })();
 };
