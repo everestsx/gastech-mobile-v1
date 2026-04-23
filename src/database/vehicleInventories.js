@@ -37,7 +37,7 @@ export async function upsertVehicleInventories(rows) {
       }
 
       await tx.runAsync(
-        `INSERT OR REPLACE INTO vehicle_inventories (id, location_id, vehicle_id, product_id, product_name, quantity, available_quantity, updated_at, is_locally_modified) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+        `INSERT OR REPLACE INTO vehicle_inventories (id, location_id, vehicle_id, product_id, product_name, quantity, available_quantity, incoming_quantity, outgoing_quantity, updated_at, is_locally_modified) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
         [
           r.id != null ? r.id : 0,
           numOrNull(r.location_id),
@@ -46,6 +46,8 @@ export async function upsertVehicleInventories(rows) {
           empty(product.name),
           num(r.quantity),
           num(r.available_quantity),
+          num(r.incoming_quantity),
+          num(r.outgoing_quantity),
           now,
         ]
       );
@@ -59,7 +61,7 @@ export async function getVehicleInventoryByVehicleId(vehicleId) {
   const total = await db.getFirstAsync('SELECT COUNT(*) as count FROM vehicle_inventories');
   console.log(`[DB Debug] Total rows in inventory table: ${total.count}`);
   const rows = await db.getAllAsync(
-    'SELECT id, location_id, vehicle_id, product_id, product_name, quantity, available_quantity FROM vehicle_inventories WHERE vehicle_id = ? ORDER BY product_name',
+    'SELECT id, location_id, vehicle_id, product_id, product_name, quantity, available_quantity, incoming_quantity, outgoing_quantity FROM vehicle_inventories WHERE vehicle_id = ? ORDER BY product_name',
     [vehicleId]
   );
   return (rows || []).map((row) => ({
@@ -70,6 +72,8 @@ export async function getVehicleInventoryByVehicleId(vehicleId) {
     product_name: row.product_name,
     quantity: row.quantity,
     available_quantity: row.available_quantity,
+    incoming_quantity: row.incoming_quantity,
+    outgoing_quantity: row.outgoing_quantity,
   }));
 }
 
@@ -79,7 +83,7 @@ export async function getVehicleInventoryByLocationId(locationId) {
   const total = await db.getFirstAsync('SELECT COUNT(*) as count FROM vehicle_inventories');
   console.log(`[DB Debug] Total rows in inventory table: ${total.count}`);
   const rows = await db.getAllAsync(
-    'SELECT id, location_id, vehicle_id, product_id, product_name, quantity, available_quantity FROM vehicle_inventories WHERE location_id = ? ORDER BY product_name',
+    'SELECT id, location_id, vehicle_id, product_id, product_name, quantity, available_quantity, incoming_quantity, outgoing_quantity FROM vehicle_inventories WHERE location_id = ? ORDER BY product_name',
     [locationId]
   );
   return (rows || []).map((row) => ({
@@ -90,13 +94,15 @@ export async function getVehicleInventoryByLocationId(locationId) {
     product_name: row.product_name,
     quantity: row.quantity,
     available_quantity: row.available_quantity,
+    incoming_quantity: row.incoming_quantity,
+    outgoing_quantity: row.outgoing_quantity,
   }));
 }
 
 export async function getAllVehicleInventories() {
   const db = await getDb();
   const rows = await db.getAllAsync(
-    'SELECT id, location_id, vehicle_id, product_id, product_name, quantity, available_quantity FROM vehicle_inventories ORDER BY vehicle_id, product_name'
+    'SELECT id, location_id, vehicle_id, product_id, product_name, quantity, available_quantity, incoming_quantity, outgoing_quantity FROM vehicle_inventories ORDER BY vehicle_id, product_name'
   );
   return (rows || []).map((row) => ({
     id: row.id,
@@ -106,6 +112,8 @@ export async function getAllVehicleInventories() {
     product_name: row.product_name,
     quantity: row.quantity,
     available_quantity: row.available_quantity,
+    incoming_quantity: row.incoming_quantity,
+    outgoing_quantity: row.outgoing_quantity,
   }));
 }
 

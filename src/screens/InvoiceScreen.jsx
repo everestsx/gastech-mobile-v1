@@ -1048,6 +1048,7 @@ export default function InvoiceScreen({ route, navigation }) {
   const invoiceVisibleLines = useMemo(() => displayLines || [], [displayLines]);
 
   const [invoiceNumber, setInvoiceNumber] = useState(null);
+  const [odooInvoiceNumber, setOdooInvoiceNumber] = useState(null);
   const [loading, setLoading] = useState(true);
   const [printing, setPrinting] = useState(false);
   const [printResult, setPrintResult] = useState(null);
@@ -1646,6 +1647,7 @@ export default function InvoiceScreen({ route, navigation }) {
     if (!saleOrderId) {
       setLocalCustomerSig(null);
       setLocalDriverSig(null);
+      setOdooInvoiceNumber(null);
       setLoading(false);
       return;
     }
@@ -1711,6 +1713,20 @@ export default function InvoiceScreen({ route, navigation }) {
       const localInv = await localInvoicesDb.getLocalInvoiceBySaleOrderId(saleOrderId);
       setLocalCustomerSig(localInv?.customer_signature_data ?? null);
       setLocalDriverSig(localInv?.driver_signature_data ?? null);
+      let odooNo = null;
+      const odooInvoiceId = Number(localInv?.odoo_invoice_id);
+      if (Number.isFinite(odooInvoiceId) && odooInvoiceId > 0) {
+        try {
+          const invRows = await callOdoo('account.move', 'read', [[odooInvoiceId]], { fields: ['name'] });
+          const name = Array.isArray(invRows) ? invRows[0]?.name : null;
+          if (name && typeof name === 'string' && String(name).trim()) {
+            odooNo = String(name).trim();
+          }
+        } catch (_) {
+          odooNo = null;
+        }
+      }
+      setOdooInvoiceNumber(odooNo);
 
       // Fetch supplier(company) and customer details for printed invoice.
       let nextPartyInfo = {};
@@ -1766,6 +1782,7 @@ export default function InvoiceScreen({ route, navigation }) {
       setLocalCustomerSig(null);
       setLocalDriverSig(null);
       setPartyInfo({});
+      setOdooInvoiceNumber(null);
     } finally {
       setLoading(false);
     }
@@ -1905,6 +1922,98 @@ export default function InvoiceScreen({ route, navigation }) {
     });
   }, [navigation, saleOrderId, routeCreditProofRequired, routeOrderName]);
 
+  const effectiveInvoiceNumber = odooInvoiceNumber || invoiceNumber;
+
+  const buildInvoicePrintHtml = useCallback(async () => {
+    if (!order) return null;
+    const recomputeTotalsFromLines =
+      previewBeforePayment ||
+      (Array.isArray(invoiceLineQtys) && invoiceLineQtys.length > 0);
+    const orderForPrint = recomputeTotalsFromLines
+      ? (() => {
+          const sub = invoiceVisibleLines.reduce((s, l) => s + (Number(l.price_subtotal) || 0), 0);
+          const tax = invoiceVisibleLines.reduce(
+            (s, l) => s + ((Number(l.price_total) || 0) - (Number(l.price_subtotal) || 0)),
+            0
+          );
+          return { ...order, amount_untaxed: sub, amount_tax: tax, amount_total: sub + tax };
+        })()
+      : order;
+    const logoForPrint = await loadInvoiceLogoDataUriForPrint();
+    const effectiveSplitForPrint =
+      paymentType === 'split' && paymentSplit ? paymentSplit : localPaymentSplit || paymentSplit;
+    const resolvedChequeBankName = chequeBankName || selectedBankName || localChequeMeta.bankName || null;
+    const resolvedChequeNumber = checkNumber || localChequeMeta.checkNumber || null;
+    const logoB64ForNative = extractRawBase64FromDataUri(logoForPrint);
+    const user = await getUserSession();
+    const vehicleNo =
+      (user?.licensePlate && String(user.licensePlate).trim()) ||
+      (user?.vehicleName && String(user.vehicleName).trim()) ||
+      '';
+    const printSessionOpts = {
+      appLanguage,
+      invoiceGeneratedAt: new Date(),
+      salesRepName: user?.driverName && String(user.driverName).trim() ? user.driverName : '',
+      vehicleNumber: vehicleNo,
+    };
+    const htmlForThermal = buildInvoiceHtml(
+      orderForPrint,
+      invoiceVisibleLines,
+      paymentType,
+      selectedBankName,
+      effectiveSplitForPrint,
+      logoForPrint,
+      effectiveCustomerSignatureDataUrl,
+      effectiveDriverSignatureDataUrl,
+      resolvedChequeBankName,
+      resolvedChequeNumber,
+      effectiveInvoiceNumber,
+      supplierTin,
+      purchaserTin,
+      partyInfo,
+      { ...printSessionOpts, omitLogoBlock: true }
+    );
+    const htmlForSystem = buildInvoiceHtml(
+      orderForPrint,
+      invoiceVisibleLines,
+      paymentType,
+      selectedBankName,
+      effectiveSplitForPrint,
+      logoForPrint,
+      effectiveCustomerSignatureDataUrl,
+      effectiveDriverSignatureDataUrl,
+      resolvedChequeBankName,
+      resolvedChequeNumber,
+      effectiveInvoiceNumber,
+      supplierTin,
+      purchaserTin,
+      partyInfo,
+      printSessionOpts
+    );
+    return { htmlForSystem, htmlForThermal, logoB64ForNative };
+  }, [
+    order,
+    previewBeforePayment,
+    invoiceLineQtys,
+    invoiceVisibleLines,
+    paymentType,
+    paymentSplit,
+    localPaymentSplit,
+    chequeBankName,
+    selectedBankName,
+    localChequeMeta.bankName,
+    checkNumber,
+    localChequeMeta.checkNumber,
+    appLanguage,
+    effectiveCustomerSignatureDataUrl,
+    effectiveDriverSignatureDataUrl,
+    supplierTin,
+    purchaserTin,
+    partyInfo,
+    loadInvoiceLogoDataUriForPrint,
+    effectiveInvoiceNumber,
+  ]);
+
   const handlePrint = useCallback(async () => {
     if (!order) return;
     if (openPaymentProofAfterPrint && promptSignatures) {
@@ -1933,70 +2042,9 @@ export default function InvoiceScreen({ route, navigation }) {
     setPrintResult(null);
     setPrintError(null);
     try {
-      const recomputeTotalsFromLines =
-        previewBeforePayment ||
-        (Array.isArray(invoiceLineQtys) && invoiceLineQtys.length > 0);
-      const orderForPrint = recomputeTotalsFromLines
-        ? (() => {
-            const sub = invoiceVisibleLines.reduce((s, l) => s + (Number(l.price_subtotal) || 0), 0);
-            const tax = invoiceVisibleLines.reduce(
-              (s, l) => s + ((Number(l.price_total) || 0) - (Number(l.price_subtotal) || 0)),
-              0
-            );
-            return { ...order, amount_untaxed: sub, amount_tax: tax, amount_total: sub + tax };
-          })()
-        : order;
-      const logoForPrint = await loadInvoiceLogoDataUriForPrint();
-      const effectiveSplitForPrint =
-        paymentType === 'split' && paymentSplit ? paymentSplit : localPaymentSplit || paymentSplit;
-      const resolvedChequeBankName = chequeBankName || selectedBankName || localChequeMeta.bankName || null;
-      const resolvedChequeNumber = checkNumber || localChequeMeta.checkNumber || null;
-      const logoB64ForNative = extractRawBase64FromDataUri(logoForPrint);
-      const user = await getUserSession();
-      const vehicleNo =
-        (user?.licensePlate && String(user.licensePlate).trim()) ||
-        (user?.vehicleName && String(user.vehicleName).trim()) ||
-        '';
-      const printSessionOpts = {
-        appLanguage,
-        invoiceGeneratedAt: new Date(),
-        salesRepName: user?.driverName && String(user.driverName).trim() ? user.driverName : '',
-        vehicleNumber: vehicleNo,
-      };
-      const htmlForThermal = buildInvoiceHtml(
-        orderForPrint,
-        invoiceVisibleLines,
-        paymentType,
-        selectedBankName,
-        effectiveSplitForPrint,
-        logoForPrint,
-        effectiveCustomerSignatureDataUrl,
-        effectiveDriverSignatureDataUrl,
-        resolvedChequeBankName,
-        resolvedChequeNumber,
-        invoiceNumber,
-        supplierTin,
-        purchaserTin,
-        partyInfo,
-        { ...printSessionOpts, omitLogoBlock: true }
-      );
-      const htmlForSystem = buildInvoiceHtml(
-        orderForPrint,
-        invoiceVisibleLines,
-        paymentType,
-        selectedBankName,
-        effectiveSplitForPrint,
-        logoForPrint,
-        effectiveCustomerSignatureDataUrl,
-        effectiveDriverSignatureDataUrl,
-        resolvedChequeBankName,
-        resolvedChequeNumber,
-        invoiceNumber,
-        supplierTin,
-        purchaserTin,
-        partyInfo,
-        printSessionOpts
-      );
+      const payload = await buildInvoicePrintHtml();
+      if (!payload) throw new Error('Invoice content is not ready yet.');
+      const { htmlForThermal, htmlForSystem, logoB64ForNative } = payload;
 
       if (rongtaReady && thermalConnected && thermalPrinter?.address) {
         try {
@@ -2039,26 +2087,10 @@ export default function InvoiceScreen({ route, navigation }) {
   }, [
     order,
     previewBeforePayment,
-    invoiceVisibleLines,
-    invoiceNumber,
-    paymentType,
-    selectedBankName,
-    paymentSplit,
-    localPaymentSplit,
-    effectiveCustomerSignatureDataUrl,
-    effectiveDriverSignatureDataUrl,
-    chequeBankName,
-    checkNumber,
-    localChequeMeta.bankName,
-    localChequeMeta.checkNumber,
-    supplierTin,
-    purchaserTin,
-    partyInfo,
-    appLanguage,
+    buildInvoicePrintHtml,
     rongtaReady,
     thermalPrinter,
     thermalConnected,
-    loadInvoiceLogoDataUriForPrint,
     route.params?.skipEvidenceModal,
     route.params?.promptSignatures,
     openPaymentProofAfterPrint,
@@ -2442,7 +2474,7 @@ export default function InvoiceScreen({ route, navigation }) {
         <Text style={styles.invoiceTitle}>Tax Invoice</Text>
         <View style={styles.metaRow}>
           <Text style={styles.metaLabel}>Invoice No.</Text>
-          <Text style={styles.metaValue}>{invoiceNumber ?? '—'}</Text>
+          <Text style={styles.metaValue}>{effectiveInvoiceNumber ?? '—'}</Text>
         </View>
         <View style={styles.metaRow}>
           <Text style={styles.metaLabel}>Date</Text>
