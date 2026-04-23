@@ -14,7 +14,9 @@ import {
   Modal,
   Pressable,
   Linking,
+  Alert,
 } from 'react-native';
+import { BlurView } from 'expo-blur';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -40,6 +42,7 @@ import {
   getPickingsBySaleIdsFromDB,
   getOrderLinesByOrderIdsFromDB,
   consumePostLoginSyncSuccessPending,
+  saveUserSession,
 } from '../services/sync.service';
 import * as localPaymentsDb from '../database/localPayments.js';
 import * as localInvoicesDb from '../database/localInvoices.js';
@@ -51,6 +54,9 @@ import {
 } from '../services/commission.service';
 import {
   getMonthDateRange,
+  getTodayDateRange,
+  getYesterdayDateRange,
+  formatDateRangeLabel,
   getDeliverySummaryByEmployeeByDate,
   getCommissionByEmployeeByDate,
   mergeCommissionRowsByEmployee,
@@ -161,7 +167,7 @@ function getGasImageByProductName(productName) {
 export default function DashboardScreen({ navigation }) {
   const { t } = useTranslation();
   const insets = useSafeAreaInsets();
-  const { syncCompleteTimestamp } = useSync();
+  const { syncCompleteTimestamp, isSyncing } = useSync();
   const {
     colors,
     showCreateSalesOrder: userShowCreate,
@@ -197,7 +203,11 @@ export default function DashboardScreen({ navigation }) {
   const [commissionPlan, setCommissionPlan] = useState(null);
   const [commissionLoading, setCommissionLoading] = useState(false);
   const [employeeCommissionCards, setEmployeeCommissionCards] = useState([]);
-  const [selectedCommissionEmployee, setSelectedCommissionEmployee] = useState(null);
+  const [commissionRangePreset, setCommissionRangePreset] = useState('today');
+  const [commissionDateRange, setCommissionDateRange] = useState(() => getTodayDateRange());
+  const [commissionRangeModalVisible, setCommissionRangeModalVisible] = useState(false);
+  const [commissionRangeDraft, setCommissionRangeDraft] = useState({ dateFrom: '', dateTo: '' });
+  const [commissionRangePickerField, setCommissionRangePickerField] = useState(null);
   const [todayOrderLines, setTodayOrderLines] = useState([]);
   const [orderSyncStats, setOrderSyncStats] = useState({
     pendingOrders: 0,
@@ -510,24 +520,26 @@ export default function DashboardScreen({ navigation }) {
       const [plan, deliveryRows, commissionRows] = await Promise.all([
         user?.licensePlate ? getActiveCommissionPlan(user.licensePlate) : Promise.resolve(null),
         (async () => {
-          const { dateFrom, dateTo } = getMonthDateRange();
-          const employeeIds = [
+          const { dateFrom, dateTo } = commissionDateRange;
+          const raw = [
             user?.driverId != null ? Number(user.driverId) : null,
             ...((Array.isArray(user?.selectedPorters) ? user.selectedPorters : [])
               .map((p) => Number(p?.id))
               .filter((id) => Number.isFinite(id))),
-          ].filter((id) => Number.isFinite(id));
+          ];
+          const employeeIds = [...new Set(raw.filter((id) => Number.isFinite(id)).map((id) => Number(id)))];
           if (employeeIds.length === 0) return [];
           return getDeliverySummaryByEmployeeByDate({ dateFrom, dateTo, employeeIds });
         })(),
         (async () => {
-          const { dateFrom, dateTo } = getMonthDateRange();
-          const employeeIds = [
+          const { dateFrom, dateTo } = commissionDateRange;
+          const raw = [
             user?.driverId != null ? Number(user.driverId) : null,
             ...((Array.isArray(user?.selectedPorters) ? user.selectedPorters : [])
               .map((p) => Number(p?.id))
               .filter((id) => Number.isFinite(id))),
-          ].filter((id) => Number.isFinite(id));
+          ];
+          const employeeIds = [...new Set(raw.filter((id) => Number.isFinite(id)).map((id) => Number(id)))];
           if (employeeIds.length === 0) return [];
           return getCommissionByEmployeeByDate({ dateFrom, dateTo, employeeIds });
         })(),
@@ -540,7 +552,7 @@ export default function DashboardScreen({ navigation }) {
     } finally {
       setCommissionLoading(false);
     }
-  }, [user]);
+  }, [user, commissionDateRange]);
 
   const loadSyncStatus = useCallback(async () => {
     try {
@@ -586,7 +598,29 @@ export default function DashboardScreen({ navigation }) {
     if (user?.licensePlate) {
       loadCommissionData();
     }
-  }, [user?.licensePlate, loadCommissionData]);
+  }, [user?.licensePlate, loadCommissionData, commissionDateRange.dateFrom, commissionDateRange.dateTo]);
+
+  const totalCrewCommission = useMemo(
+    () => (employeeCommissionCards || []).reduce((s, r) => s + (Number(r.totalCommission) || 0), 0),
+    [employeeCommissionCards]
+  );
+
+  useEffect(() => {
+    if (!user?.pendingInitialSync) return;
+    if (isSyncing) return;
+    let cancelled = false;
+    (async () => {
+      const u = await getUserSession();
+      if (cancelled || !u?.pendingInitialSync) return;
+      try {
+        await saveUserSession({ ...u, pendingInitialSync: false });
+      } catch (_) {}
+      setUser((prev) => (prev ? { ...prev, pendingInitialSync: false } : prev));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.pendingInitialSync, isSyncing]);
 
   // Short delayed reload on first mount so dashboard amounts update immediately after first-time login
   useEffect(() => {
@@ -1225,18 +1259,9 @@ export default function DashboardScreen({ navigation }) {
           gap: 8,
         },
         commissionEmptyText: { color: colors.textSecondary, fontSize: 13, fontWeight: '600' },
-        employeeCommissionCard: {
-          width: 190,
-          borderWidth: 1,
-          borderColor: colors.border,
-          borderRadius: borderRadius.lg,
-          backgroundColor: colors.surface,
-          padding: spacing.md,
-          marginRight: spacing.sm,
-        },
-        employeeCommissionName: { fontSize: 14, fontWeight: '800', color: colors.text, minHeight: 34 },
+        employeeCommissionName: { fontSize: 15, fontWeight: '800', color: colors.text, flex: 1, minHeight: 36 },
         employeeCommissionType: { fontSize: 12, color: colors.textSecondary, textTransform: 'capitalize', marginTop: 2 },
-        employeeCommissionAmount: { fontSize: 19, fontWeight: '900', color: colors.primary, marginTop: spacing.sm },
+        employeeCommissionAmount: { fontSize: 22, fontWeight: '900', color: colors.primary, textAlign: 'center' },
         employeeCommissionQty: { fontSize: 12, color: colors.textSecondary, marginTop: 4, fontWeight: '700' },
         commissionDetailRow: {
           flexDirection: 'row',
@@ -1248,6 +1273,134 @@ export default function DashboardScreen({ navigation }) {
         },
         commissionDetailLabel: { fontSize: 13, color: colors.textSecondary, fontWeight: '600' },
         commissionDetailValue: { fontSize: 14, color: colors.text, fontWeight: '800' },
+        commissionRangeRow: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 8,
+          marginBottom: spacing.sm,
+          flexWrap: 'wrap',
+        },
+        commissionRangeChip: {
+          borderWidth: 1,
+          borderColor: colors.border,
+          borderRadius: 999,
+          paddingVertical: 6,
+          paddingHorizontal: 10,
+          backgroundColor: colors.surface,
+        },
+        commissionRangeChipActive: {
+          borderColor: colors.primary,
+          backgroundColor: (colors.primary || '#6366f1') + '18',
+        },
+        commissionRangeChipText: {
+          fontSize: 12,
+          fontWeight: '700',
+          color: colors.textSecondary,
+        },
+        commissionRangeChipTextActive: {
+          color: colors.primary,
+        },
+        commissionDateRangeRow: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          paddingVertical: 10,
+          paddingHorizontal: 12,
+          marginBottom: spacing.sm,
+          borderRadius: borderRadius.lg,
+          borderWidth: 1,
+          borderColor: colors.border,
+          backgroundColor: colors.background,
+        },
+        commissionDateRangeRowText: {
+          flex: 1,
+          fontSize: 13,
+          fontWeight: '600',
+          color: colors.text,
+        },
+        commissionModalRangeRow: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          paddingVertical: 12,
+          paddingHorizontal: 4,
+          borderBottomWidth: 1,
+          borderBottomColor: colors.border,
+        },
+        commissionModalRangeLabel: { fontSize: 12, fontWeight: '600', color: colors.textSecondary },
+        commissionModalRangeValue: { fontSize: 15, fontWeight: '700', color: colors.primary },
+        employeeCommissionCard: {
+          width: 200,
+          borderWidth: 0,
+          borderRadius: borderRadius.lg,
+          backgroundColor: colors.surface,
+          marginRight: spacing.sm,
+          overflow: 'hidden',
+          borderLeftWidth: 4,
+          borderLeftColor: colors.primary,
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: 3 },
+          shadowOpacity: 0.1,
+          shadowRadius: 5,
+          elevation: 3,
+        },
+        employeeCardInner: {
+          padding: spacing.md,
+          backgroundColor: (colors.primary || '#4f46e5') + '0C',
+        },
+        employeeCommissionNameRow: {
+          flexDirection: 'row',
+          alignItems: 'flex-start',
+          justifyContent: 'space-between',
+          gap: 6,
+        },
+        employeeTypePill: {
+          alignSelf: 'flex-start',
+          paddingHorizontal: 8,
+          paddingVertical: 3,
+          borderRadius: 999,
+          backgroundColor: colors.background,
+        },
+        employeeTypePillText: { fontSize: 10, fontWeight: '800', color: colors.textSecondary, textTransform: 'capitalize' },
+        employeeMoneyBand: {
+          marginTop: spacing.sm,
+          paddingVertical: spacing.sm,
+          paddingHorizontal: spacing.sm,
+          borderRadius: borderRadius.md,
+          backgroundColor: colors.surface,
+          alignItems: 'center',
+        },
+        employeeCommissionSubLabel: { fontSize: 11, fontWeight: '600', color: colors.textSecondary, marginTop: 2 },
+        employeeCommissionFooter: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 6,
+          marginTop: spacing.sm,
+        },
+        employeeCommissionFooterText: { fontSize: 12, fontWeight: '700', color: colors.text },
+        commissionSectionCard: {
+          marginHorizontal: spacing.md,
+          marginBottom: spacing.md,
+          borderRadius: borderRadius.xl,
+          overflow: 'hidden',
+          borderWidth: 1,
+          borderColor: colors.border,
+          backgroundColor: colors.surface,
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: 6 },
+          shadowOpacity: 0.08,
+          shadowRadius: 12,
+          elevation: 4,
+        },
+        commissionHero: {
+          paddingVertical: 18,
+          paddingHorizontal: spacing.md,
+          backgroundColor: colors.primary,
+        },
+        commissionHeroKicker: { fontSize: 11, fontWeight: '700', color: 'rgba(255,255,255,0.88)', letterSpacing: 1.2 },
+        commissionHeroTotal: { fontSize: 28, fontWeight: '900', color: '#fff', marginTop: 6 },
+        commissionHeroHint: { fontSize: 12, color: 'rgba(255,255,255,0.9)', marginTop: 6, lineHeight: 18 },
+        commissionBody: { padding: spacing.md, backgroundColor: colors.surface },
         collectionSectionLabel: {
           fontSize: 12,
           fontWeight: '700',
@@ -1501,6 +1654,26 @@ export default function DashboardScreen({ navigation }) {
           color: colors.textSecondary,
           textAlign: 'center',
           marginBottom: spacing.lg,
+        },
+        initialSyncOverlayRoot: { flex: 1 },
+        initialSyncCenter: {
+          flex: 1,
+          justifyContent: 'center',
+          alignItems: 'center',
+          paddingHorizontal: spacing.lg,
+        },
+        initialSyncTitle: {
+          marginTop: spacing.lg,
+          fontSize: 17,
+          fontWeight: '700',
+          color: '#f8fafc',
+          textAlign: 'center',
+        },
+        initialSyncSub: {
+          marginTop: spacing.sm,
+          fontSize: 14,
+          color: 'rgba(248, 250, 252, 0.9)',
+          textAlign: 'center',
         },
       }),
     [colors]
@@ -2024,34 +2197,122 @@ export default function DashboardScreen({ navigation }) {
             </ScrollView>
           </View>
         )}
-      {/* Employee commission cards (driver + selected porters only). */}
-      <View style={{ paddingHorizontal: spacing.md, marginBottom: spacing.md }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.xs }}>
-          <Text style={styles.sectionTitle}>Employee Commission</Text>
-          {commissionLoading ? <ActivityIndicator size="small" color={colors.primary} /> : null}
+      {/* Employee commission — web-style card: total + filters + crew strip */}
+      <View style={styles.commissionSectionCard}>
+        <View style={styles.commissionHero}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+            <Text style={styles.commissionHeroKicker}>
+              {t('dashboard.crewEarnings', 'CREW EARNINGS').toUpperCase()}
+            </Text>
+            {commissionLoading ? <ActivityIndicator size="small" color="#fff" /> : null}
+          </View>
+          <Text style={styles.commissionHeroTotal}>{formatCurrency(totalCrewCommission)}</Text>
+          <Text style={styles.commissionHeroHint}>
+            {t(
+              'dashboard.crewEarningsHint',
+              'Combined commission for your vehicle team in the period below. Tap a name for details.'
+            )}
+          </Text>
         </View>
+        <View style={styles.commissionBody}>
+          <View style={[styles.commissionRangeRow, { marginBottom: spacing.sm }]}>
+            {[
+              { key: 'today', label: t('dashboard.commissionToday', 'Today'), range: getTodayDateRange() },
+              { key: 'yesterday', label: t('dashboard.commissionYesterday', 'Yesterday'), range: getYesterdayDateRange() },
+              { key: 'month', label: t('dashboard.commissionThisMonth', 'This month'), range: getMonthDateRange() },
+            ].map((opt) => {
+              const active = commissionRangePreset === opt.key;
+              return (
+                <TouchableOpacity
+                  key={opt.key}
+                  style={[styles.commissionRangeChip, active && styles.commissionRangeChipActive]}
+                  activeOpacity={0.86}
+                  onPress={() => {
+                    setCommissionRangePreset(opt.key);
+                    setCommissionDateRange(opt.range);
+                  }}
+                >
+                  <Text style={[styles.commissionRangeChipText, active && styles.commissionRangeChipTextActive]}>
+                    {opt.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+          <TouchableOpacity
+            style={styles.commissionDateRangeRow}
+            activeOpacity={0.86}
+            onPress={() => {
+              setCommissionRangeDraft({
+                dateFrom: commissionDateRange.dateFrom,
+                dateTo: commissionDateRange.dateTo,
+              });
+              setCommissionRangePickerField(null);
+              setCommissionRangeModalVisible(true);
+            }}
+          >
+            <Ionicons name="calendar" size={20} color={colors.primary} style={{ marginRight: 8 }} />
+            <Text style={styles.commissionDateRangeRowText} numberOfLines={2}>
+              {formatDateRangeLabel(commissionDateRange.dateFrom, commissionDateRange.dateTo)}
+            </Text>
+            <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
+          </TouchableOpacity>
         {employeeCommissionCards.length === 0 ? (
-          <View style={styles.commissionEmptyCard}>
-            <Ionicons name="cash-outline" size={20} color={colors.textSecondary} />
-            <Text style={styles.commissionEmptyText}>No commission records for selected crew.</Text>
+          <View style={[styles.commissionEmptyCard, { marginTop: spacing.sm, marginBottom: 0 }]}>
+            <Ionicons name="people-outline" size={22} color={colors.textSecondary} />
+            <Text style={styles.commissionEmptyText}>
+              {t('dashboard.noEmployeeCommission', 'No commission records for this date range.')}
+            </Text>
           </View>
         ) : (
-          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={{ marginTop: spacing.md }}
+            contentContainerStyle={{ paddingRight: 8 }}
+          >
             {employeeCommissionCards.map((row) => (
               <TouchableOpacity
                 key={String(row.employeeId)}
                 activeOpacity={0.86}
                 style={styles.employeeCommissionCard}
-                onPress={() => setSelectedCommissionEmployee(row)}
+                onPress={() =>
+                  navigation.navigate('MyCommissions', {
+                    employeeId: Number(row.employeeId),
+                    employeeName: row.employeeName,
+                    employeeType: row.employeeType || 'employee',
+                    dateFrom: commissionDateRange.dateFrom,
+                    dateTo: commissionDateRange.dateTo,
+                  })
+                }
               >
-                <Text style={styles.employeeCommissionName} numberOfLines={2}>{row.employeeName}</Text>
-                <Text style={styles.employeeCommissionType}>{row.employeeType || 'employee'}</Text>
-                <Text style={styles.employeeCommissionAmount}>{formatCurrency(row.totalCommission)}</Text>
-                <Text style={styles.employeeCommissionQty}>Gas Qty: {Number(row.totalQty || 0).toLocaleString('en-IN')}</Text>
+                <View style={styles.employeeCardInner}>
+                  <View style={styles.employeeCommissionNameRow}>
+                    <Text style={styles.employeeCommissionName} numberOfLines={2}>
+                      {row.employeeName}
+                    </Text>
+                    <View style={styles.employeeTypePill}>
+                      <Text style={styles.employeeTypePillText}>{row.employeeType || 'employee'}</Text>
+                    </View>
+                  </View>
+                  <View style={styles.employeeMoneyBand}>
+                    <Text style={styles.employeeCommissionAmount}>{formatCurrency(row.totalCommission)}</Text>
+                    <Text style={styles.employeeCommissionSubLabel}>
+                      {t('dashboard.commissionEarned', 'Commission')}
+                    </Text>
+                  </View>
+                  <View style={styles.employeeCommissionFooter}>
+                    <Ionicons name="flame-outline" size={16} color={colors.primary} />
+                    <Text style={styles.employeeCommissionFooterText}>
+                      {t('dashboard.gasQtyTotal', 'Gas qty')}: {Number(row.totalQty || 0).toLocaleString('en-IN')}
+                    </Text>
+                  </View>
+                </View>
               </TouchableOpacity>
             ))}
           </ScrollView>
         )}
+        </View>
       </View>
 
         {/* 6. Configurable: Create Sales Order & Return */}
@@ -2086,56 +2347,144 @@ export default function DashboardScreen({ navigation }) {
       </ScrollView>
 
       <Modal
-        visible={selectedCommissionEmployee != null}
+        visible={commissionRangeModalVisible}
         transparent
         animationType="fade"
-        onRequestClose={() => setSelectedCommissionEmployee(null)}
+        onRequestClose={() => {
+          setCommissionRangeModalVisible(false);
+          setCommissionRangePickerField(null);
+        }}
       >
-        <Pressable style={styles.modalBackdrop} onPress={() => setSelectedCommissionEmployee(null)}>
+        <Pressable
+          style={styles.modalBackdrop}
+          onPress={() => {
+            setCommissionRangeModalVisible(false);
+            setCommissionRangePickerField(null);
+          }}
+        >
           <Pressable style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
-            <Text style={styles.modalTitle}>Commission Details</Text>
-            {selectedCommissionEmployee ? (
-              <>
-                <Text style={styles.modalSubtitle}>
-                  {selectedCommissionEmployee.employeeName} ({selectedCommissionEmployee.employeeType || 'employee'})
-                </Text>
-                <View style={styles.commissionDetailRow}>
-                  <Text style={styles.commissionDetailLabel}>Total commission</Text>
-                  <Text style={styles.commissionDetailValue}>{formatCurrency(selectedCommissionEmployee.totalCommission)}</Text>
-                </View>
-                <View style={styles.commissionDetailRow}>
-                  <Text style={styles.commissionDetailLabel}>Route 1 commission</Text>
-                  <Text style={styles.commissionDetailValue}>{formatCurrency(selectedCommissionEmployee.commissionRoute1)}</Text>
-                </View>
-                <View style={styles.commissionDetailRow}>
-                  <Text style={styles.commissionDetailLabel}>Route 2 commission</Text>
-                  <Text style={styles.commissionDetailValue}>{formatCurrency(selectedCommissionEmployee.commissionRoute2)}</Text>
-                </View>
-                <View style={styles.commissionDetailRow}>
-                  <Text style={styles.commissionDetailLabel}>Gas 2.4 kg</Text>
-                  <Text style={styles.commissionDetailValue}>{Number(selectedCommissionEmployee.qty24 || 0).toLocaleString('en-IN')}</Text>
-                </View>
-                <View style={styles.commissionDetailRow}>
-                  <Text style={styles.commissionDetailLabel}>Gas 5 kg</Text>
-                  <Text style={styles.commissionDetailValue}>{Number(selectedCommissionEmployee.qty5 || 0).toLocaleString('en-IN')}</Text>
-                </View>
-                <View style={styles.commissionDetailRow}>
-                  <Text style={styles.commissionDetailLabel}>Gas 12.5 kg</Text>
-                  <Text style={styles.commissionDetailValue}>{Number(selectedCommissionEmployee.qty125 || 0).toLocaleString('en-IN')}</Text>
-                </View>
-                <View style={styles.commissionDetailRow}>
-                  <Text style={styles.commissionDetailLabel}>Gas 37.5 kg</Text>
-                  <Text style={styles.commissionDetailValue}>{Number(selectedCommissionEmployee.qty375 || 0).toLocaleString('en-IN')}</Text>
-                </View>
-                <View style={styles.commissionDetailRow}>
-                  <Text style={styles.commissionDetailLabel}>Total gas qty</Text>
-                  <Text style={styles.commissionDetailValue}>{Number(selectedCommissionEmployee.totalQty || 0).toLocaleString('en-IN')}</Text>
-                </View>
-              </>
-            ) : null}
-            <TouchableOpacity style={styles.modalCloseBtn} onPress={() => setSelectedCommissionEmployee(null)} activeOpacity={0.88}>
-              <Text style={styles.modalCloseBtnText}>Close</Text>
+            <Text style={styles.modalTitle}>{t('dashboard.commissionDateRange', 'Date range')}</Text>
+            <Text style={styles.modalSubtitle}>
+              {t('dashboard.commissionDateRangeHint', 'Choose from and to, then apply. You can also use Today / Yesterday / This month.')}
+            </Text>
+            <TouchableOpacity
+              style={styles.commissionModalRangeRow}
+              onPress={() => setCommissionRangePickerField('from')}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.commissionModalRangeLabel}>{t('dashboard.dateFrom', 'From')}</Text>
+              <Text style={styles.commissionModalRangeValue}>
+                {formatDateRangeLabel(commissionRangeDraft.dateFrom, commissionRangeDraft.dateFrom)}
+              </Text>
             </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.commissionModalRangeRow}
+              onPress={() => setCommissionRangePickerField('to')}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.commissionModalRangeLabel}>{t('dashboard.dateTo', 'To')}</Text>
+              <Text style={styles.commissionModalRangeValue}>
+                {formatDateRangeLabel(commissionRangeDraft.dateTo, commissionRangeDraft.dateTo)}
+              </Text>
+            </TouchableOpacity>
+            {commissionRangePickerField ? (
+              <DateTimePicker
+                value={(() => {
+                  const key = commissionRangePickerField === 'from' ? 'dateFrom' : 'dateTo';
+                  const raw =
+                    commissionRangeDraft[key] ||
+                    commissionDateRange[key] ||
+                    getTodayDateRange().dateFrom;
+                  const d = new Date(`${String(raw).slice(0, 10)}T12:00:00`);
+                  return Number.isNaN(d.getTime()) ? new Date() : d;
+                })()}
+                mode="date"
+                display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                onChange={(e, date) => {
+                  if (e?.type === 'dismissed') {
+                    if (Platform.OS === 'android') setCommissionRangePickerField(null);
+                    return;
+                  }
+                  if (!date) {
+                    if (Platform.OS === 'android') setCommissionRangePickerField(null);
+                    return;
+                  }
+                  const which = commissionRangePickerField;
+                  if (which !== 'from' && which !== 'to') return;
+                  const y = date.getFullYear();
+                  const m = String(date.getMonth() + 1).padStart(2, '0');
+                  const d0 = String(date.getDate()).padStart(2, '0');
+                  const s = `${y}-${m}-${d0}`;
+                  setCommissionRangeDraft((prev) => ({
+                    ...prev,
+                    [which === 'from' ? 'dateFrom' : 'dateTo']: s,
+                  }));
+                  if (Platform.OS === 'android') setCommissionRangePickerField(null);
+                }}
+              />
+            ) : null}
+            {commissionRangePickerField && Platform.OS === 'ios' ? (
+              <TouchableOpacity
+                onPress={() => setCommissionRangePickerField(null)}
+                style={{ alignSelf: 'flex-end', padding: 8 }}
+              >
+                <Text style={{ color: colors.primary, fontWeight: '600' }}>{t('dashboard.done', 'Done')}</Text>
+              </TouchableOpacity>
+            ) : null}
+            <View style={{ flexDirection: 'row', gap: 10, marginTop: spacing.sm }}>
+              <TouchableOpacity
+                style={{
+                  flex: 1,
+                  paddingVertical: 12,
+                  borderRadius: 12,
+                  backgroundColor: colors.background,
+                  borderWidth: 1,
+                  borderColor: colors.border,
+                  alignItems: 'center',
+                }}
+                onPress={() => {
+                  setCommissionRangeModalVisible(false);
+                  setCommissionRangePickerField(null);
+                }}
+                activeOpacity={0.86}
+              >
+                <Text style={{ fontSize: 16, fontWeight: '700', color: colors.text }}>
+                  {t('common.cancel', 'Cancel')}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={{
+                  flex: 1,
+                  paddingVertical: 12,
+                  borderRadius: 12,
+                  backgroundColor: colors.primary,
+                  alignItems: 'center',
+                }}
+                onPress={() => {
+                  let dateFrom = commissionRangeDraft.dateFrom;
+                  let dateTo = commissionRangeDraft.dateTo;
+                  if (!dateFrom || !dateTo) {
+                    Alert.alert(
+                      t('dashboard.rangeInvalid', 'Date range'),
+                      t('dashboard.selectBothDates', 'Please choose both from and to dates.')
+                    );
+                    return;
+                  }
+                  if (dateFrom > dateTo) {
+                    const t0 = dateFrom;
+                    dateFrom = dateTo;
+                    dateTo = t0;
+                  }
+                  setCommissionDateRange({ dateFrom, dateTo });
+                  setCommissionRangePreset('custom');
+                  setCommissionRangeModalVisible(false);
+                  setCommissionRangePickerField(null);
+                }}
+                activeOpacity={0.86}
+              >
+                <Text style={{ fontSize: 16, fontWeight: '700', color: '#fff' }}>{t('dashboard.apply', 'Apply')}</Text>
+              </TouchableOpacity>
+            </View>
           </Pressable>
         </Pressable>
       </Modal>
@@ -2248,6 +2597,35 @@ export default function DashboardScreen({ navigation }) {
             ) : null}
           </Pressable>
         </Pressable>
+      </Modal>
+
+      <Modal
+        visible={!!user?.pendingInitialSync && isSyncing}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+      >
+        <View style={styles.initialSyncOverlayRoot}>
+          <BlurView
+            experimentalBlurMethod={Platform.OS === 'android' ? 'dimezisBlurView' : undefined}
+            intensity={88}
+            tint="dark"
+            style={StyleSheet.absoluteFill}
+          />
+          <View
+            style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(15, 23, 42, 0.28)' }]}
+            pointerEvents="none"
+          />
+          <View style={styles.initialSyncCenter} pointerEvents="box-none">
+            <ActivityIndicator size="large" color="#f8fafc" />
+            <Text style={styles.initialSyncTitle}>
+              {t('dashboard.initialSyncTitle', 'Loading your data…')}
+            </Text>
+            <Text style={styles.initialSyncSub}>
+              {t('dashboard.initialSyncSub', 'This only takes a moment.')}
+            </Text>
+          </View>
+        </View>
       </Modal>
     </>
   );

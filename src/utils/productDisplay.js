@@ -136,3 +136,28 @@ export function getGasTypeBlueColor(raw) {
 
   return blueShades[gasSize.size] || '#60a5fa';
 }
+
+/**
+ * Invoice / print order: lightest gas (e.g. 2.4 kg) first, heaviest (e.g. 37.5 kg) before services,
+ * then other lines, empty cylinders and new-issue lines last. Stable by label.
+ * @param {Array<Record<string, unknown>>} lines
+ * @returns {Array<Record<string, unknown>>}
+ */
+export function sortInvoiceLinesByGasKgAsc(lines) {
+  if (!Array.isArray(lines) || lines.length < 2) return lines;
+  const keyOf = (line) => {
+    const label = getOrderLineDisplayLabel(line) || String(line?.name || '').trim();
+    const s = label.toLowerCase();
+    if (s.includes('empty') && s.includes('cylinder')) return { w: 200000, t: label };
+    if (s.includes('new issue')) return { w: 199000, t: label };
+    const kg = parseKgFromProductName(label);
+    if (kg != null && Number.isFinite(kg)) return { w: kg, t: label };
+    return { w: 100000, t: label };
+  };
+  return [...lines].sort((a, b) => {
+    const ka = keyOf(a);
+    const kb = keyOf(b);
+    if (ka.w !== kb.w) return ka.w - kb.w;
+    return String(ka.t).localeCompare(String(kb.t), undefined, { numeric: true, sensitivity: 'base' });
+  });
+}

@@ -6,6 +6,27 @@ const ORDER_PREFIX = 'invoice_no_';
 const LORRY_MAP_PREFIX = 'invoice_lorry_map_';
 const LORRY_LAST_INDEX_KEY = 'invoice_lorry_last_index';
 
+/**
+ * Last segment: Odoo sale order ref e.g. S00676 (S + digits). Preserves leading zeros from Odoo.
+ * Fallback: S + zero-padded database sale order id.
+ */
+export function formatInvoiceOrderRefSegment(saleOrderName, saleOrderId) {
+  const name = String(saleOrderName || '').trim();
+  const m = name.match(/S(0*\d{3,})/i);
+  if (m) {
+    return `S${m[1]}`;
+  }
+  const mLoose = name.match(/S(0*\d+)/i);
+  if (mLoose) {
+    return `S${mLoose[1]}`;
+  }
+  const soId = safeNumber(saleOrderId);
+  if (soId != null && soId > 0) {
+    return `S${String(soId).padStart(5, '0')}`;
+  }
+  return 'S00000';
+}
+
 function padN(v, n) {
   return String(v).padStart(n, '0');
 }
@@ -61,6 +82,7 @@ async function getOrAssignLorryNumber({ vehicleId, vehicleName, licensePlate }) 
   return assigned;
 }
 
+/** Fallback when sale order id is missing: legacy sequential last segment. */
 async function getNextInvoiceNumberV2(options = {}) {
   const sessionVehicle = await resolveSessionVehicle();
   const vehicle = {
@@ -77,12 +99,28 @@ async function getNextInvoiceNumberV2(options = {}) {
   return `${lorryNo}/${fy}/${padN(next, 5)}`;
 }
 
+/**
+ * Lorry / FY / sale-order–based segment. One stored value per sale order (replaces 00001-style seq).
+ */
+export async function buildInvoiceNumberForSaleOrder(saleOrderId, options = {}) {
+  const sessionVehicle = await resolveSessionVehicle();
+  const vehicle = {
+    vehicleId: options.vehicleId != null ? safeNumber(options.vehicleId) : sessionVehicle.vehicleId,
+    vehicleName: options.vehicleName != null ? String(options.vehicleName) : sessionVehicle.vehicleName,
+    licensePlate: options.licensePlate != null ? String(options.licensePlate) : sessionVehicle.licensePlate,
+  };
+  const lorryNo = await getOrAssignLorryNumber(vehicle);
+  const fy = financialYearLabel(new Date());
+  const lastPart = formatInvoiceOrderRefSegment(options.saleOrderName, saleOrderId);
+  return `${lorryNo}/${fy}/${lastPart}`;
+}
+
 export async function getOrAssignInvoiceNumber(saleOrderId, options = {}) {
   if (saleOrderId == null) return getNextInvoiceNumberV2(options);
   const key = ORDER_PREFIX + saleOrderId;
   const existing = await AsyncStorage.getItem(key);
   if (existing) return existing;
-  const next = await getNextInvoiceNumberV2(options);
+  const next = await buildInvoiceNumberForSaleOrder(saleOrderId, options);
   await AsyncStorage.setItem(key, next);
   return next;
 }

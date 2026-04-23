@@ -272,7 +272,44 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
             const existingInventoryUpdate =
               await syncQueueDb.getPendingInventoryUpdateItemBySaleOrderId(Number(saleOrderId));
             if (existingInventoryUpdate?.id != null) {
-              await syncQueueDb.updateQueueItemPayload(existingInventoryUpdate.id, inventoryPayload);
+              const existingPayload = existingInventoryUpdate.payload || {};
+              const existingUpdates = Array.isArray(existingPayload?.updates) ? existingPayload.updates : [];
+              const mergedByProduct = new Map();
+              for (const u of existingUpdates) {
+                const pid = Number(u?.productId);
+                if (!Number.isFinite(pid)) continue;
+                mergedByProduct.set(pid, {
+                  productId: pid,
+                  quantityUsed: Number(u?.quantityUsed) || 0,
+                  newQuantity: Number(u?.newQuantity) || 0,
+                  incrementQuantity: Number(u?.incrementQuantity) || 0,
+                });
+              }
+              for (const u of inventoryQueueUpdates) {
+                const pid = Number(u?.productId);
+                if (!Number.isFinite(pid)) continue;
+                const prev = mergedByProduct.get(pid) || {
+                  productId: pid,
+                  quantityUsed: 0,
+                  newQuantity: 0,
+                  incrementQuantity: 0,
+                };
+                const nextIncrement = (Number(prev.incrementQuantity) || 0) + (Number(u?.incrementQuantity) || 0);
+                mergedByProduct.set(pid, {
+                  productId: pid,
+                  quantityUsed: Number(prev.quantityUsed) + (Number(u?.quantityUsed) || 0),
+                  newQuantity: Number(u?.newQuantity),
+                  incrementQuantity: nextIncrement,
+                });
+              }
+              await syncQueueDb.updateQueueItemPayload(existingInventoryUpdate.id, {
+                ...existingPayload,
+                saleOrderId: Number(saleOrderId),
+                vehicleId: Number(vehicleId),
+                locationId: Number(locationId),
+                holdUntilComplete: true,
+                updates: Array.from(mergedByProduct.values()),
+              });
             } else {
               await syncQueueDb.enqueue(syncQueueDb.ACTION_INVENTORY_UPDATE, inventoryPayload);
             }

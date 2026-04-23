@@ -322,7 +322,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       if (!orderInfo) throw new Error('Sale order not found');
       const partnerId = odooRecordId(orderInfo.partner_id);
       const orderName = orderInfo.name ?? `Order ${saleOrderId}`;
-      const invoiceNumber = await getOrAssignInvoiceNumber(saleOrderId);
+      const invoiceNumber = await getOrAssignInvoiceNumber(saleOrderId, { saleOrderName: orderName });
 
       const soId = Number(saleOrderId);
 
@@ -393,9 +393,11 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         paymentDate: paymentDateStr,
         chequeBankName: needsCheck ? empty(selectedLocalBank?.name) : '',
         checkNumber: needsCheck ? empty(checkNumberTrimmed) : '',
-        driverEmployeeId: driverEmployeeId != null && Number.isFinite(driverEmployeeId) ? driverEmployeeId : 0,
         porterEmployeeIds: Array.isArray(porterEmployeeIds) ? porterEmployeeIds : [],
         holdUntilComplete: true,
+        ...(driverEmployeeId != null && Number.isFinite(driverEmployeeId) && driverEmployeeId > 0
+          ? { driverEmployeeId }
+          : {}),
       };
       const existingPending = await syncQueueDb.getPendingPaymentItemBySaleOrderId(soId);
       if (existingPending) {

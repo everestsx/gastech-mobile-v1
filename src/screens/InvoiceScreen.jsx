@@ -27,7 +27,7 @@ import { spacing, borderRadius } from '../constants/theme';
 import { INVOICE_LOGO_PNG_BASE64 } from '../constants/invoiceLogoBase64';
 import { getSaleOrderDetailsFromDB, getUserSession, runSync } from '../services/sync.service';
 import { getOrAssignInvoiceNumber } from '../utils/invoiceNumber';
-import { getProductDisplayName } from '../utils/productDisplay';
+import { getProductDisplayName, sortInvoiceLinesByGasKgAsc } from '../utils/productDisplay';
 import { formatAmount } from '../utils/format';
 import * as localPaymentsDb from '../database/localPayments.js';
 import * as localInvoicesDb from '../database/localInvoices.js';
@@ -1046,13 +1046,17 @@ export default function InvoiceScreen({ route, navigation }) {
     });
   }, [lines, hasInvoiceQtyOverrides, qtyByLineId]);
 
-  /** Keep all line rows in invoice output, including zero-qty products requested by stakeholders. */
-  const invoiceVisibleLines = useMemo(() => displayLines || [], [displayLines]);
+  /** Keep all line rows; order by gas size (2.4 kg → 37+ kg) for screen + print. */
+  const invoiceVisibleLines = useMemo(
+    () => sortInvoiceLinesByGasKgAsc(displayLines || []),
+    [displayLines]
+  );
 
   const [invoiceNumber, setInvoiceNumber] = useState(null);
   const [odooInvoiceNumber, setOdooInvoiceNumber] = useState(null);
   const [loading, setLoading] = useState(true);
   const [printing, setPrinting] = useState(false);
+  const [previewing, setPreviewing] = useState(false);
   const [printResult, setPrintResult] = useState(null);
   const [printError, setPrintError] = useState(null);
   const [localPaymentSplit, setLocalPaymentSplit] = useState(null);
@@ -1225,6 +1229,19 @@ export default function InvoiceScreen({ route, navigation }) {
           marginBottom: spacing.md,
         },
         skipPrintBtnText: { fontSize: 16, fontWeight: '700', color: colors.textSecondary },
+        previewPrintBtn: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 8,
+          backgroundColor: colors.primarySurface || '#eef2ff',
+          borderWidth: 1,
+          borderColor: colors.primary,
+          paddingVertical: 14,
+          borderRadius: borderRadius.lg,
+          marginBottom: spacing.md,
+        },
+        previewPrintBtnText: { fontSize: 16, fontWeight: '700', color: colors.primary },
         printBlockedHint: {
           fontSize: 13,
           color: colors.textSecondary,
@@ -1655,10 +1672,13 @@ export default function InvoiceScreen({ route, navigation }) {
     }
     setLoading(true);
     try {
-      const invNo = route.params?.invoiceNumber ?? await getOrAssignInvoiceNumber(saleOrderId);
-      setInvoiceNumber(invNo);
       const data = await getSaleOrderDetailsFromDB(saleOrderId);
       setOrder(data.order);
+      const orderName = data?.order?.name;
+      const invNo =
+        route.params?.invoiceNumber ??
+        (await getOrAssignInvoiceNumber(saleOrderId, { saleOrderName: orderName }));
+      setInvoiceNumber(invNo);
       const rawLines = data.lines ?? [];
       let nextLines = rawLines;
       try {
@@ -2103,6 +2123,43 @@ export default function InvoiceScreen({ route, navigation }) {
     invoiceLineQtys,
   ]);
 
+  /** System print / preview dialog only (no navigation, no Bluetooth thermal). */
+  const handlePreviewPrintInvoice = useCallback(async () => {
+    if (!order) return;
+    if (openPaymentProofAfterPrint && promptSignatures) {
+      const hasCust = localCustomerSig && String(localCustomerSig).trim() !== '';
+      const hasDrv = localDriverSig && String(localDriverSig).trim() !== '';
+      if (!hasCust || !hasDrv) {
+        Alert.alert('Signatures needed', 'Add customer and driver signatures before preview.');
+        setShowSignatureCaptureModal(true);
+        return;
+      }
+    }
+    setPreviewing(true);
+    setPrintError(null);
+    try {
+      const payload = await buildInvoicePrintHtml();
+      if (!payload) throw new Error('Invoice content is not ready yet.');
+      const { htmlForSystem } = payload;
+      await Print.printAsync({ html: htmlForSystem });
+    } catch (err) {
+      console.error(err);
+      setPrintError(
+        err?.message ||
+          'Could not open preview. Try again, or use Print invoice to open the system print dialog.'
+      );
+    } finally {
+      setPreviewing(false);
+    }
+  }, [
+    order,
+    buildInvoicePrintHtml,
+    openPaymentProofAfterPrint,
+    promptSignatures,
+    localCustomerSig,
+    localDriverSig,
+  ]);
+
   const goToHome = useCallback(async () => {
     try {
       if (fromProceedPayment && !openPaymentProofAfterPrint && saleOrderId != null) {
@@ -2288,7 +2345,7 @@ export default function InvoiceScreen({ route, navigation }) {
       let invNumber = existing?.invoice_number ?? invoiceNumber ?? null;
       if (invNumber == null || String(invNumber).trim() === '') {
         try {
-          invNumber = await getOrAssignInvoiceNumber(saleOrderId);
+          invNumber = await getOrAssignInvoiceNumber(saleOrderId, { saleOrderName: order?.name });
           setInvoiceNumber(invNumber);
         } catch (_) {
           invNumber = `INV-${saleOrderId}`;
@@ -2805,9 +2862,9 @@ export default function InvoiceScreen({ route, navigation }) {
       {/* Print invoice button - hidden after print so modal offers Re-print */}
       {printResult == null && (
         <TouchableOpacity
-          style={[styles.printBtn, (printing || rongtaPrintBlocked) && styles.printBtnDisabled]}
+          style={[styles.printBtn, (printing || previewing || rongtaPrintBlocked) && styles.printBtnDisabled]}
           onPress={handlePrint}
-          disabled={printing || rongtaPrintBlocked}
+          disabled={printing || previewing || rongtaPrintBlocked}
           activeOpacity={0.8}
         >
           {printing ? (
@@ -2816,6 +2873,26 @@ export default function InvoiceScreen({ route, navigation }) {
             <>
               <Ionicons name="print-outline" size={24} color="#fff" />
               <Text style={styles.printBtnText}>{t('invoice.printInvoice', 'Print invoice')}</Text>
+            </>
+          )}
+        </TouchableOpacity>
+      )}
+
+      {printResult == null && (
+        <TouchableOpacity
+          style={[styles.previewPrintBtn, (printing || previewing) && styles.printBtnDisabled]}
+          onPress={() => void handlePreviewPrintInvoice()}
+          disabled={printing || previewing}
+          activeOpacity={0.8}
+        >
+          {previewing && !printing ? (
+            <ActivityIndicator size="small" color={colors.primary} />
+          ) : (
+            <>
+              <Ionicons name="document-text-outline" size={22} color={colors.primary} />
+              <Text style={styles.previewPrintBtnText}>
+                {t('invoice.previewPrintInvoice', 'Preview print invoice')}
+              </Text>
             </>
           )}
         </TouchableOpacity>
@@ -2856,7 +2933,7 @@ export default function InvoiceScreen({ route, navigation }) {
             }
             setShowEvidenceModal(true);
           }}
-          disabled={printing}
+          disabled={printing || previewing}
           activeOpacity={0.8}
         >
           <Ionicons name="play-forward-outline" size={22} color={colors.textSecondary} />
@@ -2866,11 +2943,15 @@ export default function InvoiceScreen({ route, navigation }) {
         </TouchableOpacity>
       )}
 
-      {/* Printing overlay - full screen until print request completes */}
-      {printing && (
+      {/* Printing / preview overlay - full screen until system dialog is shown */}
+      {(printing || previewing) && (
         <View style={styles.printOverlay} pointerEvents="box-only">
           <ActivityIndicator size="large" color="#fff" />
-          <Text style={styles.printOverlayText}>{t('invoice.printing', 'Printing…')}</Text>
+          <Text style={styles.printOverlayText}>
+            {previewing && !printing
+              ? t('invoice.openingPreview', 'Opening preview…')
+              : t('invoice.printing', 'Printing…')}
+          </Text>
         </View>
       )}
 

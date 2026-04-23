@@ -61,7 +61,7 @@ function StockCard({ item, colors, cardWidth, isLeft, productImageUri, delivered
   const extra = Math.max(0, Number(item.available_quantity ?? item.extra_quantity ?? 0) || 0);
   const outgoing = Math.max(0, Number(item.outgoing_quantity) || 0);
   const onHand = stockQuantity;
-  const ordered = outgoing > 0 ? outgoing : Math.max(0, onHand - extra);
+  const ordered = outgoing;
   const delivered = Math.max(0, Number(deliveredQty) || 0);
   const lowStock = onHand <= 0;
   const logoSource = productImageUri ? { uri: productImageUri } : getProductImageSource(rawName);
@@ -106,7 +106,7 @@ function StockCard({ item, colors, cardWidth, isLeft, productImageUri, delivered
               <Ionicons name="cube-outline" size={18} color="#8b5e2b" />
               <Ionicons name="arrow-up" size={12} color="#8b5e2b" />
             </View>
-            <Text style={styles.statLabel}>Extra: {extra}</Text>
+            <Text style={styles.statLabel}>Extra (Free): {extra}</Text>
           </View>
           <View style={styles.statCell}>
             <View style={styles.statHead}>

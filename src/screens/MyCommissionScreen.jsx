@@ -26,6 +26,11 @@ import {
   getActiveCommissionPlan,
   calculateCommissionByProducts,
 } from '../services/commission.service';
+import {
+  getDeliverySummaryByEmployeeByDate,
+  getCommissionByEmployeeByDate,
+  getTodayDateRange,
+} from '../services/commisrioNew.service';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -47,7 +52,7 @@ function formatDate(dateStr) {
   return d.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
 }
 
-export default function MyCommissionScreen({ navigation }) {
+export default function MyCommissionScreen({ navigation, route }) {
   const { t } = useTranslation();
   const { colors } = useTheme();
   const [user, setUser] = useState(null);
@@ -56,12 +61,83 @@ export default function MyCommissionScreen({ navigation }) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [expandedDate, setExpandedDate] = useState(null);
+  const employeeIdParam = Number(route?.params?.employeeId);
+  const employeeMode = Number.isFinite(employeeIdParam) && employeeIdParam > 0;
+  const employeeNameParam = String(route?.params?.employeeName || '').trim();
+  const employeeTypeParam = String(route?.params?.employeeType || '').trim();
+  const routeDateFrom = String(route?.params?.dateFrom || '').trim();
+  const routeDateTo = String(route?.params?.dateTo || '').trim();
 
   const loadData = useCallback(async () => {
     try {
       const userData = await getUserSession();
       const u = userData || null;
       setUser(u);
+      if (employeeMode) {
+        const fallback = getTodayDateRange();
+        const dateFrom = routeDateFrom || fallback.dateFrom;
+        const dateTo = routeDateTo || fallback.dateTo;
+        const [deliveryRows, commissionRows] = await Promise.all([
+          getDeliverySummaryByEmployeeByDate({
+            dateFrom,
+            dateTo,
+            employeeIds: [employeeIdParam],
+          }),
+          getCommissionByEmployeeByDate({
+            dateFrom,
+            dateTo,
+            employeeIds: [employeeIdParam],
+          }),
+        ]);
+        const byDate = new Map();
+        const ensure = (date) => {
+          const d = String(date || '').slice(0, 10);
+          if (!d) return null;
+          if (!byDate.has(d)) {
+            byDate.set(d, {
+              date: d,
+              commission: 0,
+              totalGas: 0,
+              breakdown: [],
+              lineCount: 0,
+            });
+          }
+          return byDate.get(d);
+        };
+        for (const row of deliveryRows || []) {
+          const e = ensure(row?.date);
+          if (!e) continue;
+          const q24 = Number(row?.qty_gas_24) || 0;
+          const q5 = Number(row?.qty_gas_5) || 0;
+          const q125 = Number(row?.qty_gas_125) || 0;
+          const q375 = Number(row?.qty_gas_375) || 0;
+          const totalQty = Number(row?.total_qty) || (q24 + q5 + q125 + q375);
+          e.totalGas += totalQty;
+          e.lineCount += 1;
+          e.breakdown.push(
+            { detailText: `Gas 2.4kg: ${q24}` },
+            { detailText: `Gas 5kg: ${q5}` },
+            { detailText: `Gas 12.5kg: ${q125}` },
+            { detailText: `Gas 37.5kg: ${q375}` }
+          );
+        }
+        for (const row of commissionRows || []) {
+          const e = ensure(row?.date);
+          if (!e) continue;
+          const r1 = Number(row?.commission_route1) || 0;
+          const r2 = Number(row?.commission_route2) || 0;
+          const totalCommission = Number(row?.total_commission) || (r1 + r2);
+          e.commission += totalCommission;
+          e.breakdown.push({ detailText: `Route 1 commission: ${formatCurrency(r1)}` });
+          e.breakdown.push({ detailText: `Route 2 commission: ${formatCurrency(r2)}` });
+          const planTxt = row?.plan ? String(row.plan).trim() : '';
+          if (planTxt) e.breakdown.push({ detailText: `Plan: ${planTxt}` });
+        }
+        const result = Array.from(byDate.values()).sort((a, b) => b.date.localeCompare(a.date));
+        setPlan(null);
+        setDailyData(result);
+        return;
+      }
       if (!u?.licensePlate) {
         setDailyData([]);
         setPlan(null);
@@ -130,7 +206,7 @@ export default function MyCommissionScreen({ navigation }) {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [employeeMode, employeeIdParam, routeDateFrom, routeDateTo]);
 
   useFocusEffect(
     useCallback(() => {
@@ -173,7 +249,9 @@ export default function MyCommissionScreen({ navigation }) {
       <View style={styles.header}>
         <Text style={[styles.headerTitle, { color: colors.text }]}>{t('mycommission.dailyCommissionHistory', 'Daily commission history')}</Text>
         <Text style={[styles.headerSub, { color: colors.textSecondary }]}>
-          Tap a day to see gas delivered and calculation
+          {employeeMode
+            ? `${employeeNameParam || `Employee ${employeeIdParam}`}${employeeTypeParam ? ` (${employeeTypeParam})` : ''}`
+            : 'Tap a day to see gas delivered and calculation'}
         </Text>
       </View>
       {dailyData.length === 0 ? (
@@ -235,12 +313,20 @@ export default function MyCommissionScreen({ navigation }) {
                   ) : (
                     day.breakdown.map((row, idx) => (
                       <View key={idx} style={styles.calcRow}>
-                        <Text style={[styles.calcProduct, { color: colors.text }]} numberOfLines={1}>
-                          {row.productName}
-                        </Text>
-                        <Text style={[styles.calcDetail, { color: colors.textSecondary }]}>
-                          {row.quantity} × Rs.{row.rate.toFixed(2)} = {formatCurrency(row.amount)}
-                        </Text>
+                        {row.detailText ? (
+                          <Text style={[styles.calcDetail, { color: colors.textSecondary, marginLeft: 0 }]}>
+                            {row.detailText}
+                          </Text>
+                        ) : (
+                          <>
+                            <Text style={[styles.calcProduct, { color: colors.text }]} numberOfLines={1}>
+                              {row.productName}
+                            </Text>
+                            <Text style={[styles.calcDetail, { color: colors.textSecondary }]}>
+                              {row.quantity} × Rs.{row.rate.toFixed(2)} = {formatCurrency(row.amount)}
+                            </Text>
+                          </>
+                        )}
                       </View>
                     ))
                   )}

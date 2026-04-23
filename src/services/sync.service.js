@@ -717,12 +717,15 @@ async function writeSaleOrderCrewFromPaymentPayload(soId, payload) {
   const p = payload || {};
   let driverId = null;
   const dRaw = p.driverEmployeeId ?? p.driver_employee_id;
-  if (dRaw != null && Number.isFinite(Number(dRaw))) driverId = Number(dRaw);
+  if (dRaw != null && Number.isFinite(Number(dRaw))) {
+    const n = Number(dRaw);
+    if (n > 0) driverId = n;
+  }
 
   let porterIds = [];
   const pr = p.porterEmployeeIds ?? p.porter_employee_ids;
   if (Array.isArray(pr)) {
-    porterIds = pr.map((x) => Number(x)).filter((n) => Number.isFinite(n));
+    porterIds = pr.map((x) => Number(x)).filter((n) => Number.isFinite(n) && n > 0);
   }
 
   if (driverId == null || porterIds.length === 0) {
@@ -730,12 +733,12 @@ async function writeSaleOrderCrewFromPaymentPayload(soId, payload) {
       const session = await getUserSession();
       if (driverId == null && session?.driverId != null) {
         const n = Number(session.driverId);
-        if (Number.isFinite(n)) driverId = n;
+        if (Number.isFinite(n) && n > 0) driverId = n;
       }
       if (porterIds.length === 0 && Array.isArray(session?.selectedPorters)) {
         porterIds = session.selectedPorters
           .map((x) => Number(x?.id))
-          .filter((n) => Number.isFinite(n));
+          .filter((n) => Number.isFinite(n) && n > 0);
       }
     } catch (_) { }
   }
@@ -744,7 +747,8 @@ async function writeSaleOrderCrewFromPaymentPayload(soId, payload) {
 
   const vals = {};
   if (driverId != null) vals.driver_employee_id = driverId;
-  vals.porter_employee_ids = [[6, 0, porterIds]];
+  /** Never use [[6,0,[]]] — that would clear all porters in Odoo. */
+  if (porterIds.length > 0) vals.porter_employee_ids = [[6, 0, porterIds]];
 
   try {
     const { callOdooArgs } = await import('./index.service.js');
@@ -808,34 +812,13 @@ async function processSyncQueue() {
         const invId = Number(invoiceId);
         if (!Number.isFinite(invId) || invId <= 0) return null;
         try {
-          const { callOdooArgs } = await import('./index.service.js');
           const { createSaleOrderAttachment } = await import('./proofAttachment.service.js');
-          const reportNames = [
-            'account.report_invoice_with_payments',
-            'account.report_invoice',
-            'account.account_invoices',
-          ];
-          let pdfBase64 = '';
-          for (const reportName of reportNames) {
-            try {
-              const rendered = await callOdooArgs('ir.actions.report', '_render_qweb_pdf', [reportName, [invId]]);
-              const direct = typeof rendered === 'string' ? rendered : '';
-              const tupleValue =
-                Array.isArray(rendered) && typeof rendered[0] === 'string' ? rendered[0] : '';
-              const objValue =
-                rendered && typeof rendered === 'object' && typeof rendered.pdf === 'string'
-                  ? rendered.pdf
-                  : '';
-              const candidate = String(direct || tupleValue || objValue || '').trim();
-              if (candidate) {
-                pdfBase64 = candidate;
-                break;
-              }
-            } catch (_) {
-              // Try next report xmlid.
-            }
+          const { renderPostedInvoicePdfBase64 } = await import('./invoicePdfReport.service.js');
+          const pdfBase64 = await renderPostedInvoicePdfBase64(invId);
+          if (!pdfBase64 || String(pdfBase64).length < 200) {
+            log('queue', `invoice PDF render empty for account.move id=${invId} (SO ${soId}) — no attachment; check report rights`);
+            return null;
           }
-          if (!pdfBase64) return null;
           const safeOrder = String(orderName || `SO-${soId}`).replace(/[^\w.-]+/g, '_');
           const fileName = `${safeOrder}_printed_invoice.pdf`;
           const attId = await createSaleOrderAttachment(soId, pdfBase64, fileName, 'application/pdf');
@@ -948,6 +931,10 @@ async function processSyncQueue() {
         const hasPickings = blocks.length > 0;
         if (!hasPickings) {
           await applySoLineDeliveredQty();
+          {
+            const soCrew = saleOrderId != null ? Number(saleOrderId) : NaN;
+            if (Number.isFinite(soCrew) && soCrew > 0) await writeSaleOrderCrewFromPaymentPayload(soCrew, p);
+          }
           await syncQueueDb.markSynced(Number(item.id));
           log(
             'queue',
@@ -1146,6 +1133,10 @@ async function processSyncQueue() {
         }
 
         await applySoLineDeliveredQty();
+        {
+          const soCrew = saleOrderId != null ? Number(saleOrderId) : NaN;
+          if (Number.isFinite(soCrew) && soCrew > 0) await writeSaleOrderCrewFromPaymentPayload(soCrew, p);
+        }
         await syncQueueDb.markSynced(Number(item.id));
         log('queue', `delivery synced id=${item.id} (${blocks.length} picking block(s))`);
       };
@@ -1373,6 +1364,9 @@ async function processSyncQueue() {
             continue;
           }
 
+          /** Driver / porter on sale.order as early as possible (not only after delivery is synced). */
+          await writeSaleOrderCrewFromPaymentPayload(soId, p);
+
           const pendingForFlush = await syncQueueDb.getPending();
           const heldDeliveriesForSo = (pendingForFlush || []).filter(
             (q) =>
@@ -1406,8 +1400,6 @@ async function processSyncQueue() {
             );
             continue;
           }
-
-          await writeSaleOrderCrewFromPaymentPayload(soId, p);
 
           const payments = p.payments || [];
           const orderName = p.orderName ?? `Order ${saleOrderId}`;
@@ -1680,12 +1672,10 @@ async function processSyncQueue() {
             bankName: pm.type === 'check' ? chequeBankName : undefined,
           }));
           const isPartialPayment = paymentsForMessage.length > 1;
-          const chatterBody = null; // built later with hasProof (after attachmentIds are computed)
+          const invoicePendingNote = invoiceBlockFailedNoItemsToInvoice
+            ? '\n\n— Invoice / delivery not fully synced in Odoo yet; confirm quantities in the office if needed. Payment proof is attached above. —'
+            : '';
 
-          if (invoiceBlockFailedNoItemsToInvoice) {
-            log('queue', `payment item ${item.id} NOT marked synced (invoice not created — deliver first, then sync again for cheque/credit)`);
-            continue;
-          }
           if (chatterPostedInThisRun.has(soId)) {
             await syncQueueDb.markSynced(Number(item.id));
             alreadySyncedSaleOrderIds.add(soId);
@@ -1693,6 +1683,7 @@ async function processSyncQueue() {
             continue;
           }
 
+          if (!p._paymentProofChatterPosted) {
           const offlineAttachmentsDb = await import('../database/offlineAttachments.js');
           const pendingAttachments = await offlineAttachmentsDb.getPendingBySaleOrderId(soId);
           const FileSystem = await import('expo-file-system');
@@ -1772,7 +1763,9 @@ async function processSyncQueue() {
               for (let i = 0; i < paymentsForMessage.length; i++) {
                 const pm = paymentsForMessage[i];
                 const attachToThisMessage = i === 0 ? attachmentIds : [];
-                const body = buildSinglePaymentMessageBody(pm, { hasProof: attachToThisMessage.length > 0 });
+                const body =
+                  buildSinglePaymentMessageBody(pm, { hasProof: attachToThisMessage.length > 0 }) +
+                  (i === 0 ? invoicePendingNote : '');
                 await postPaymentProofToChatterWithAttachmentIds(soId, { body, attachmentIds: attachToThisMessage });
                 if (attachToThisMessage.length > 0) {
                   const pendingById = new Map((pendingAttachments || []).map((a) => [Number(a.id), a]));
@@ -1791,13 +1784,14 @@ async function processSyncQueue() {
               }
             } else {
               log('queue', `message_post API (sale.order) SO ${soId} attachment_ids=[${attachmentIds.join(', ')}]`);
-              const body = buildPaymentProofMessageBody({
-                paymentMethod,
-                chequeBankName: paymentMethod === 'cheque' ? chequeBankName : undefined,
-                checkNumber: paymentMethod === 'cheque' ? (chequeNumber || undefined) : undefined,
-                payments: paymentsForMessage,
-                hasProof,
-              });
+              const body =
+                buildPaymentProofMessageBody({
+                  paymentMethod,
+                  chequeBankName: paymentMethod === 'cheque' ? chequeBankName : undefined,
+                  checkNumber: paymentMethod === 'cheque' ? (chequeNumber || undefined) : undefined,
+                  payments: paymentsForMessage,
+                  hasProof,
+                }) + invoicePendingNote;
               await postPaymentProofToChatterWithAttachmentIds(soId, { body, attachmentIds });
               if (attachmentIds.length > 0) {
                 const pendingById = new Map((pendingAttachments || []).map((a) => [Number(a.id), a]));
@@ -1829,12 +1823,25 @@ async function processSyncQueue() {
 
             chatterPostedInThisRun.add(soId);
             log('queue', `chatter posted to SO ${soId}${isPartialPayment ? ` (${paymentsForMessage.length} messages)` : ` (${attachmentIds.length} images)`}`);
+            if (invoiceBlockFailedNoItemsToInvoice) {
+              try {
+                await syncQueueDb.updateQueueItemPayload(item.id, { ...(item.payload || {}), _paymentProofChatterPosted: true });
+              } catch (upErr) {
+                logWarn('queue payment _paymentProofChatterPosted', upErr);
+              }
+            }
           } catch (chatterErr) {
             for (const id of syncedAttachmentIds) {
               await offlineAttachmentsDb.incrementRetry(Number(id), chatterErr?.message || 'API error');
             }
             logWarn('queue payment chatter', chatterErr);
             continue;
+          }
+          } else {
+            log(
+              'queue',
+              `payment SO ${soId}: skipping duplicate payment-proof chatter (already posted; retrying invoice/payment only)`
+            );
           }
 
           if (invoiceBlockFailedNoItemsToInvoice) {
@@ -2377,6 +2384,13 @@ async function runSyncInternal() {
       await vehicleWarehousesDb.upsertVehicleWarehouses(allVehicleWarehouses);
     }
     if (allVehicleInventories.length > 0) log('db', 'vehicle_inventories');
+    /** Second pass: retry queue after data pull (unblocks payment/delivery that depended on server state). */
+    try {
+      await processSyncQueue();
+      await processStandaloneOfflineAttachments();
+    } catch (e) {
+      logWarn('sync second queue pass', e);
+    }
     //TODO: count column should renamed to results
     await syncLogDb.appendLog({
       sync_at: syncAt,

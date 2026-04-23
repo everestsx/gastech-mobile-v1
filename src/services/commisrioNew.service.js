@@ -17,6 +17,31 @@ export function getMonthDateRange() {
   };
 }
 
+export function getYesterdayToTodayRange() {
+  const now = new Date();
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  return {
+    dateFrom: localYyyyMmDd(yesterday),
+    dateTo: localYyyyMmDd(now),
+  };
+}
+
+/** Single calendar day: yesterday (local). */
+export function getYesterdayDateRange() {
+  const now = new Date();
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  const d = localYyyyMmDd(yesterday);
+  return { dateFrom: d, dateTo: d };
+}
+
+export function getTodayDateRange() {
+  const now = new Date();
+  const d = localYyyyMmDd(now);
+  return { dateFrom: d, dateTo: d };
+}
+
 export async function getDeliverySummaryByEmployeeByDate({ dateFrom, dateTo, employeeIds = [] }) {
   const domain = [
     ['date', '>=', String(dateFrom)],
@@ -72,6 +97,14 @@ export async function getCommissionByEmployeeByDate({ dateFrom, dateTo, employee
   }
 }
 
+/** Per Odoo line: use total_commission, or fall back to route1 + route2 (same as My Commissions by day). */
+export function commissionRowAmount(row) {
+  if (!row || typeof row !== 'object') return 0;
+  const r1 = Number(row.commission_route1) || 0;
+  const r2 = Number(row.commission_route2) || 0;
+  return Number(row.total_commission) || r1 + r2;
+}
+
 function ensureEmployeeEntry(map, employeeId, fallbackName = '', fallbackType = '') {
   if (!map.has(employeeId)) {
     map.set(employeeId, {
@@ -93,6 +126,18 @@ function ensureEmployeeEntry(map, employeeId, fallbackName = '', fallbackType = 
   return map.get(employeeId);
 }
 
+/** One line for UI: "24 Apr 2026" or "23 Apr 2026 – 24 Apr 2026". */
+export function formatDateRangeLabel(dateFrom, dateTo) {
+  const fs = String(dateFrom || '').slice(0, 10);
+  const ts = String(dateTo || '').slice(0, 10);
+  const a = new Date(`${fs}T12:00:00`);
+  const b = new Date(`${ts}T12:00:00`);
+  if (Number.isNaN(a.getTime()) || Number.isNaN(b.getTime())) return '—';
+  const f = (d) => d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+  if (fs === ts) return f(a);
+  return `${f(a)} – ${f(b)}`;
+}
+
 export function mergeCommissionRowsByEmployee(deliveryRows, commissionRows) {
   const map = new Map();
 
@@ -109,14 +154,21 @@ export function mergeCommissionRowsByEmployee(deliveryRows, commissionRows) {
     entry.lastDate = String(row?.date || entry.lastDate || '');
   }
 
+  const seenCommissionIds = new Set();
   for (const row of commissionRows || []) {
+    if (row?.id != null) {
+      if (seenCommissionIds.has(row.id)) continue;
+      seenCommissionIds.add(row.id);
+    }
     const empRel = Array.isArray(row?.employee_id) ? row.employee_id : [row?.employee_id, ''];
     const empId = Number(empRel?.[0]);
     if (!Number.isFinite(empId)) continue;
     const entry = ensureEmployeeEntry(map, empId, String(empRel?.[1] || ''), String(row?.employee_type || ''));
-    entry.commissionRoute1 += Number(row?.commission_route1) || 0;
-    entry.commissionRoute2 += Number(row?.commission_route2) || 0;
-    entry.totalCommission += Number(row?.total_commission) || 0;
+    const r1 = Number(row?.commission_route1) || 0;
+    const r2 = Number(row?.commission_route2) || 0;
+    entry.commissionRoute1 += r1;
+    entry.commissionRoute2 += r2;
+    entry.totalCommission += commissionRowAmount(row);
     if (row?.plan != null) {
       const p = String(row.plan).trim();
       if (p && !entry.plans.includes(p)) entry.plans.push(p);
