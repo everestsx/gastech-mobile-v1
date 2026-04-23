@@ -1,5 +1,6 @@
 import React from 'react';
 import { View, Text, ActivityIndicator, StyleSheet } from 'react-native';
+import { useTranslation } from 'react-i18next';
 import { useSync } from '../context/SyncContext';
 
 /**
@@ -12,6 +13,7 @@ import { useSync } from '../context/SyncContext';
  *   - dashboard: home top bar (light text on gradient/orange)
  */
 export default function SyncHeaderBadge({ variant = 'surface' }) {
+  const { t } = useTranslation();
   const { isSyncing, hideSyncIndicator } = useSync();
   if (!isSyncing || hideSyncIndicator) return null;
 
@@ -25,7 +27,7 @@ export default function SyncHeaderBadge({ variant = 'surface' }) {
     <View style={[styles.pill, { backgroundColor: pillBg, borderColor: borderCol }]}>
       <ActivityIndicator size="small" color={spinCol} style={styles.spinner} />
       <Text style={[styles.label, { color: textCol }]} numberOfLines={1}>
-        Syncing
+        {t('common.syncing', 'Syncing')}
       </Text>
     </View>
   );

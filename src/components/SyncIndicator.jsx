@@ -1,5 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import { View, Text, Animated, StyleSheet } from 'react-native';
+import { useTranslation } from 'react-i18next';
 import { useSync } from '../context/SyncContext';
 
 const DOT_SIZE = 6;
@@ -10,6 +11,7 @@ const GAP = 4;
  * Renders only when app is syncing with backend (isSyncing from SyncContext).
  */
 export default function SyncIndicator({ dotSize = DOT_SIZE, gap = GAP, style }) {
+  const { t } = useTranslation();
   const { isSyncing } = useSync();
   const a1 = useRef(new Animated.Value(0.4)).current;
   const a2 = useRef(new Animated.Value(0.4)).current;
@@ -51,7 +53,7 @@ export default function SyncIndicator({ dotSize = DOT_SIZE, gap = GAP, style }) 
   const color = '#22c55e';
   return (
     <View style={[styles.wrap, style]}>
-      <Text style={styles.label}>Syncing…</Text>
+      <Text style={styles.label}>{t('common.syncing2', 'Syncing…')}</Text>
       <View style={styles.row}>
         <Animated.View style={[styles.dot, { width: dotSize, height: dotSize, borderRadius: dotSize / 2, backgroundColor: color, opacity: a1 }]} />
         <Animated.View style={[styles.dot, { width: dotSize, height: dotSize, borderRadius: dotSize / 2, backgroundColor: color, opacity: a2, marginLeft: gap }]} />

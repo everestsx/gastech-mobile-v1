@@ -1,5 +1,5 @@
 {
-  "version": "1.0.3",
+  "version": "1.0.5",
   "language": "en",
   "translation": {
     "dashboard": {
@@ -83,7 +83,7 @@
       "myStocks": "My Stocks",
       "myCommissions": "My Commissions",
       "syncHistory": "Sync History",
-      "myInvoices": "My Invoices",
+      "myInvoices": "My Invoicess",
       "settings": "Settings",
       "bluetoothPrinter": "Bluetooth printer",
       "orderDetails": "Order Details",
@@ -114,7 +114,7 @@
       "myStocks": "My Stocks",
       "myCommission": "My Commission",
       "bluetoothPrinter": "Bluetooth printer",
-      "myInvoices": "My Invoices",
+      "myInvoices": "My Invoicess",
       "syncHistory": "Sync History",
       "settings": "Settings",
       "checkForUpdates": "Check for Updates",

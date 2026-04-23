@@ -121,17 +121,17 @@ export default function LocalInvoicesScreen({ navigation }) {
     >
       <Text style={[styles.title, { color: colors.text }]}>{t('localinvoices.invoices', 'Invoices')}</Text>
       <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
-        Invoices created on this device. Status shows if payment was uploaded to Odoo.
+        {t('localinvoices.invoicesCreatedOnThisDeviceStatusShowsIf', 'Invoices created on this device. Status shows if payment was uploaded to Odoo.')}
       </Text>
 
       {invoices.length === 0 ? (
         <View style={styles.empty}>
           <Ionicons name="document-text-outline" size={56} color={colors.textSecondary} />
           <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
-            No local invoices yet
+            {t('localinvoices.noLocalInvoicesYet', 'No local invoices yet')}
           </Text>
           <Text style={[styles.emptyHint, { color: colors.textSecondary }]}>
-            Complete payment on an order to create a local invoice.
+            {t('localinvoices.completePaymentOnAnOrderToCreateA', 'Complete payment on an order to create a local invoice.')}
           </Text>
         </View>
       ) : (
@@ -209,15 +209,15 @@ export default function LocalInvoicesScreen({ navigation }) {
             <View style={styles.amountRow}>
               <Text style={[styles.amountLabel, { color: colors.textSecondary }]}>{t('localinvoices.total', 'Total')}</Text>
               <Text style={[styles.amountValue, { color: colors.text }]}>
-                Rs. {formatAmount(inv.amount_total)}
+                {t('localinvoices.rs', 'Rs.')} {formatAmount(inv.amount_total)}
               </Text>
             </View>
             <Text style={[styles.syncedAt, { color: colors.textSecondary }]}>
-              Payment mode: {inv.paymentModeLabel}
+              {t('localinvoices.paymentMode', 'Payment mode:')} {inv.paymentModeLabel}
             </Text>
             {inv.uploadedToOdoo && inv.syncedAt ? (
               <Text style={[styles.syncedAt, { color: colors.textSecondary }]}>
-                Synced {formatDate(inv.syncedAt)}
+                {t('localinvoices.synced', 'Synced')} {formatDate(inv.syncedAt)}
               </Text>
             ) : null}
           </TouchableOpacity>

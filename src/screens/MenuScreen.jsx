@@ -199,6 +199,14 @@ export default function MenuScreen({ navigation }) {
       const msg = String(e?.message || e || '');
       if (/development mode|dev mode|expo go/i.test(msg)) {
         showAlert(t('menu.updatesUnavailable', 'Updates unavailable'), t('menu.otaOnlyInRelease', 'OTA updates work only in installed release/internal builds, not Expo Go/dev mode.'));
+      } else if (/failed to check for update|failure to check for update|checkforupdateasync/i.test(msg)) {
+        showAlert(
+          t('menu.updateCheckFailed', 'Update check failed'),
+          t(
+            'menu.updateChannelMismatchHint',
+            'This build is not linked to a valid EAS Update channel yet. Install a fresh EAS build (release/preview profile with channel configured) and try again.'
+          )
+        );
       } else {
         showAlert(t('menu.updateCheckFailed', 'Update check failed'), e?.message || t('menu.couldNotCheckForUpdates', 'Could not check for updates.'));
       }
@@ -344,7 +352,7 @@ export default function MenuScreen({ navigation }) {
         activeOpacity={0.8}
       >
         <Ionicons name="document-text-outline" size={24} color={colors.primary} />
-        <Text style={[styles.menuItemText, { color: colors.text }]}>{t("menu.myInvoices", "My Invoices")}</Text>
+        <Text style={[styles.menuItemText, { color: colors.text }]}>{t("menu.myInvoices", "My Invoicess")}</Text>
         <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
       </TouchableOpacity>
 

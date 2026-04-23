@@ -181,7 +181,10 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
     [orders, pickingStateBySaleId, qtyDoneBySaleId, backendQtyDeliveredOrderIds, pendingCheckoutOrderIds]
   );
 
-  const searchFieldLabels = { customer: 'Customer', orderId: 'Order ID' };
+  const searchFieldLabels = {
+    customer: t('deliveredorders.searchCustomer', 'Customer'),
+    orderId: t('deliveredorders.searchOrderId', 'Order ID'),
+  };
 
   const deliveredOrdersForCustomer = useMemo(() => {
     if (customerId == null) return deliveredOrders;
@@ -682,7 +685,9 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
         <View style={styles.customerFilterBanner}>
           <Ionicons name="person-circle-outline" size={22} color={colors.primary} />
           <Text style={styles.customerFilterBannerText} numberOfLines={2}>
-            Deliveries for {customerNameForEmpty || 'this customer'} · change date above if needed
+            {t('deliveredorders.deliveriesForCustomer', 'Deliveries for {{customer}} · change date above if needed', {
+              customer: customerNameForEmpty || t('deliveredorders.thisCustomer', 'this customer'),
+            })}
           </Text>
           <TouchableOpacity
             style={styles.customerFilterClear}
@@ -707,7 +712,9 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
           style={styles.searchInput}
           value={searchQuery}
           onChangeText={setSearchQuery}
-          placeholder={`Search ${(searchFieldLabels[searchField] || 'customer').toLowerCase()}…`}
+          placeholder={t('deliveredorders.searchPlaceholder', 'Search {{field}}…', {
+            field: String(searchFieldLabels[searchField] || t('deliveredorders.customerName', 'Customer name')).toLowerCase(),
+          })}
           placeholderTextColor={colors.textSecondary}
           returnKeyType="search"
           blurOnSubmit
@@ -719,7 +726,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
           activeOpacity={0.8}
         >
           <Text style={styles.searchFieldBtnText} numberOfLines={1}>
-            {searchFieldLabels[searchField] || 'Field'}
+            {searchFieldLabels[searchField] || t('deliveredorders.field', 'Field')}
           </Text>
           <Ionicons name="chevron-down" size={18} color={colors.textSecondary} />
         </TouchableOpacity>
@@ -839,19 +846,23 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
             />
             <Text style={styles.emptyText}>
               {searchQuery.trim()
-                ? 'No delivered orders match your search'
+                ? t('deliveredorders.noDeliveredOrdersMatchYourSearch', 'No delivered orders match your search')
                 : activeTab === TAB_ALL
                   ? customerId != null
-                    ? `No delivered orders for ${customerNameForEmpty || 'this customer'} on this date`
-                    : 'No delivered orders for this date'
-                  : `No delivered orders paid by ${activeTab === TAB_CASH ? 'Cash' : activeTab === TAB_CHEQUE ? 'Cheque' : 'Credit'} for this date`}
+                    ? t('deliveredorders.noDeliveredOrdersForCustomerOnThisDate', 'No delivered orders for {{customer}} on this date', {
+                        customer: customerNameForEmpty || t('deliveredorders.thisCustomer', 'this customer'),
+                      })
+                    : t('deliveredorders.noDeliveredOrdersForThisDate', 'No delivered orders for this date')
+                  : t('deliveredorders.noDeliveredOrdersPaidByForThisDate', 'No delivered orders paid by {{payment}} for this date', {
+                      payment: activeTab === TAB_CASH ? t('deliveredorders.cash', 'Cash') : activeTab === TAB_CHEQUE ? t('deliveredorders.cheque', 'Cheque') : t('deliveredorders.credit', 'Credit'),
+                    })}
             </Text>
             <Text style={styles.emptyHint}>
               {searchQuery.trim()
-                ? 'Try another word or clear search.'
+                ? t('deliveredorders.tryAnotherWordOrClearSearch', 'Try another word or clear search.')
                 : customerId != null
-                  ? 'Try another date or clear the customer filter.'
-                  : 'Paid deliveries show here after you complete payment.'}
+                  ? t('deliveredorders.tryAnotherDateOrClearCustomerFilter', 'Try another date or clear the customer filter.')
+                  : t('deliveredorders.paidDeliveriesShowHereAfterYouCompletePayment', 'Paid deliveries show here after you complete payment.')}
             </Text>
           </View>
         }

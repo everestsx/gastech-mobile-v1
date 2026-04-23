@@ -178,6 +178,7 @@ export default function DashboardScreen({ navigation }) {
   const [selectedChartDate, setSelectedChartDate] = useState(() => formatLocalYyyyMmDd(new Date()));
   const [showChartDatePicker, setShowChartDatePicker] = useState(false);
   const [chartLineTotalsByOrder, setChartLineTotalsByOrder] = useState({});
+  const [chartOrderLines, setChartOrderLines] = useState([]);
   const [chartPickingsBySaleId, setChartPickingsBySaleId] = useState([]);
   /** Sum of stock.move.line qty_done per sale order (partial delivery counts). */
   const [qtyDoneBySaleId, setQtyDoneBySaleId] = useState({});
@@ -576,6 +577,7 @@ export default function DashboardScreen({ navigation }) {
     const today = formatLocalDate(new Date());
     if (selectedChartDate === today) {
       setChartLineTotalsByOrder(lineTotalsByOrder);
+      setChartOrderLines(todayOrderLines);
       setChartPickingsBySaleId(pickingsBySaleId);
       setChartQtyDoneBySaleId(qtyDoneBySaleId);
       return;
@@ -584,6 +586,7 @@ export default function DashboardScreen({ navigation }) {
     const orderIds = dateOrders.map((o) => o.id);
     if (orderIds.length === 0) {
       setChartLineTotalsByOrder({});
+      setChartOrderLines([]);
       setChartPickingsBySaleId([]);
       setChartQtyDoneBySaleId({});
       return;
@@ -591,19 +594,22 @@ export default function DashboardScreen({ navigation }) {
     let cancelled = false;
     (async () => {
       try {
-        const [totals, pickings, qtyMap] = await Promise.all([
+        const [totals, lines, pickings, qtyMap] = await Promise.all([
           getOrderLineTotalsFromDB(dateOrders),
+          getOrderLinesByOrderIdsFromDB(orderIds),
           getPickingsBySaleIdsFromDB(orderIds),
           deliveryQtyDb.getTotalQtyDoneBySaleOrderIds(orderIds),
         ]);
         if (!cancelled) {
           setChartLineTotalsByOrder(totals || {});
+          setChartOrderLines(lines || []);
           setChartPickingsBySaleId(pickings || []);
           setChartQtyDoneBySaleId(qtyMap || {});
         }
       } catch (_) {
         if (!cancelled) {
           setChartLineTotalsByOrder({});
+          setChartOrderLines([]);
           setChartPickingsBySaleId([]);
           setChartQtyDoneBySaleId({});
         }
@@ -614,6 +620,7 @@ export default function DashboardScreen({ navigation }) {
     selectedChartDate,
     orders,
     lineTotalsByOrder,
+    todayOrderLines,
     pickingsBySaleId,
     qtyDoneBySaleId,
     formatLocalDate,
@@ -898,14 +905,64 @@ export default function DashboardScreen({ navigation }) {
   );
   const chartDeliveryByShop = useMemo(() => {
     const byPartner = {};
+    const gasSort = (a, b) => {
+      const an = Number(String(a).replace(/[^0-9.]/g, ''));
+      const bn = Number(String(b).replace(/[^0-9.]/g, ''));
+      const aFinite = Number.isFinite(an);
+      const bFinite = Number.isFinite(bn);
+      if (aFinite && bFinite) return an - bn;
+      if (aFinite) return -1;
+      if (bFinite) return 1;
+      return String(a).localeCompare(String(b));
+    };
+
+    const orderById = {};
     chartDateOrders.forEach((o) => {
+      orderById[Number(o.id)] = o;
       const partnerId = o.partner_id?.[0] ?? o.partner_id;
       const partnerName = getLocalizedCustomerNameFromOrder(o, appLanguage) || `Shop ${partnerId}`;
       const key = partnerId ?? 'unknown';
-      if (!byPartner[key]) byPartner[key] = { shopId: `S${partnerId}`, shopName: partnerName, delivered: 0, pending: 0 };
-      const qty = Math.round(Number(chartLineTotalsByOrder[o.id]) || 0);
+      if (!byPartner[key]) {
+        byPartner[key] = {
+          shopId: `S${partnerId}`,
+          shopName: partnerName,
+          delivered: 0,
+          pending: 0,
+          total: 0,
+          stacks: {},
+        };
+      }
+    });
+
+    (chartOrderLines || []).forEach((line) => {
+      const orderId = Array.isArray(line.order_id) ? line.order_id[0] : line.order_id;
+      const soId = orderId != null ? Number(orderId) : null;
+      if (soId == null || !Number.isFinite(soId)) return;
+      const order = orderById[soId];
+      if (!order) return;
+
+      const partnerId = order.partner_id?.[0] ?? order.partner_id;
+      const key = partnerId ?? 'unknown';
+      if (!byPartner[key]) return;
+
+      const qty = Math.round(Number(line.product_uom_qty) || 0);
+      if (qty <= 0) return;
+
+      const productName = (Array.isArray(line.product_id) ? line.product_id[1] : null) || line.name || '';
+      const canonicalKg = canonicalKgFromName(productName);
+      const parsedKg = canonicalKg == null ? parseKgFromProductName(productName) : null;
+      const gasTypeKey = canonicalKg != null
+        ? `${canonicalKg}kg`
+        : Number.isFinite(Number(parsedKg))
+          ? `${Number(parsedKg)}kg`
+          : 'Other';
+
+      byPartner[key].stacks[gasTypeKey] = (Number(byPartner[key].stacks[gasTypeKey]) || 0) + qty;
+
+      byPartner[key].total += qty;
+
       const isDone = orderIsDeliveryDoneForProgress(
-        o,
+        order,
         chartPickingStateBySaleId,
         chartQtyDoneBySaleId,
         backendQtyDeliveredOrderIds,
@@ -914,11 +971,23 @@ export default function DashboardScreen({ navigation }) {
       if (isDone) byPartner[key].delivered += qty;
       else byPartner[key].pending += qty;
     });
-    const real = Object.values(byPartner).filter((r) => r.delivered > 0 || r.pending > 0);
+
+    const real = Object.values(byPartner)
+      .map((r) => {
+        const orderedStacks = {};
+        Object.keys(r.stacks || {})
+          .sort(gasSort)
+          .forEach((k) => {
+            orderedStacks[k] = r.stacks[k];
+          });
+        return { ...r, stacks: orderedStacks };
+      })
+      .filter((r) => r.total > 0);
+
     return real;
   }, [
     chartDateOrders,
-    chartLineTotalsByOrder,
+    chartOrderLines,
     chartPickingStateBySaleId,
     chartQtyDoneBySaleId,
     backendQtyDeliveredOrderIds,
@@ -1435,7 +1504,7 @@ export default function DashboardScreen({ navigation }) {
                     {vehicleName}
                   </Text>
                 ) : null}
-                <Text style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 4 }}>Tap for profile</Text>
+                <Text style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 4 }}>{t('dashboard.tapForProfile', 'Tap for profile')}</Text>
               </View>
             </TouchableOpacity>
             <View style={styles.dateRow}>
@@ -1448,11 +1517,11 @@ export default function DashboardScreen({ navigation }) {
                 onPress={() => setRoutePickerVisible(true)}
                 activeOpacity={0.85}
                 accessibilityRole="button"
-                accessibilityLabel="Choose route for today"
+                accessibilityLabel={t('dashboard.chooseRouteForToday', 'Choose route for today')}
               >
                 <Ionicons name="location-outline" size={16} color="rgba(255,255,255,0.95)" />
                 <Text style={styles.routePillText} numberOfLines={1}>
-                  Route: {routeName}
+                  {t('dashboard.route', 'Route:')} {routeName}
                 </Text>
                 <Ionicons name="chevron-down" size={16} color="rgba(255,255,255,0.95)" />
               </TouchableOpacity>
@@ -1464,7 +1533,7 @@ export default function DashboardScreen({ navigation }) {
               >
                 <Ionicons name="location-outline" size={16} color="rgba(255,255,255,0.95)" />
                 <Text style={styles.routePillText} numberOfLines={1}>
-                  Route: {routeName}
+                  {t('dashboard.route', 'Route:')} {routeName}
                 </Text>
               </View>
             )}

@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useTranslation } from 'react-i18next';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
 import {
@@ -62,6 +63,7 @@ export default function OrderCard({
   /** 'invoice' | 'payment_proof' — checkout in progress after payment (resume from list). */
   checkoutResumePhase = null,
 }) {
+  const { t } = useTranslation();
   const { colors, syncDateField, appLanguage } = useTheme();
 
   // Consistent colors per gas size so users quickly identify Small/Medium/Large/Big across all cards
@@ -279,22 +281,22 @@ export default function OrderCard({
       {/* Payment breakdown (Delivery tab): Cash Paid, Cheque Paid, Credit Balance, Remaining balance */}
       {isDelivered && paymentSplit && (paymentSplit.cash > 0 || paymentSplit.cheque > 0 || paymentSplit.credit > 0) ? (
         <View style={styles.paymentBreakdown}>
-          <Text style={styles.paymentBreakdownTitle}>Payment breakdown</Text>
+          <Text style={styles.paymentBreakdownTitle}>{t('common.paymentBreakdown', 'Payment breakdown')}</Text>
           {paymentSplit.cash > 0 && (
             <View style={styles.paymentRow}>
-              <Text style={styles.paymentLabel}>Cash Paid</Text>
+              <Text style={styles.paymentLabel}>{t('common.cashPaid', 'Cash Paid')}</Text>
               <Text style={styles.paymentValue}>{formatCurrency(paymentSplit.cash, 'Rs.')}</Text>
             </View>
           )}
           {paymentSplit.cheque > 0 && (
             <View style={styles.paymentRow}>
-              <Text style={styles.paymentLabel}>Cheque Paid</Text>
+              <Text style={styles.paymentLabel}>{t('common.chequePaid', 'Cheque Paid')}</Text>
               <Text style={styles.paymentValue}>{formatCurrency(paymentSplit.cheque, 'Rs.')}</Text>
             </View>
           )}
           {paymentSplit.credit > 0 && (
             <View style={styles.paymentRow}>
-              <Text style={styles.paymentLabel}>Credit Balance</Text>
+              <Text style={styles.paymentLabel}>{t('common.creditBalance', 'Credit Balance')}</Text>
               <Text style={styles.paymentValue}>{formatCurrency(paymentSplit.credit, 'Rs.')}</Text>
             </View>
           )}
@@ -305,7 +307,7 @@ export default function OrderCard({
             if (remaining <= 0) return null;
             return (
               <View style={[styles.paymentRow, styles.remainingRow]}>
-                <Text style={styles.remainingLabel}>Remaining balance</Text>
+                <Text style={styles.remainingLabel}>{t('common.remainingBalance', 'Remaining balance')}</Text>
                 <Text style={styles.remainingValue}>{formatCurrency(remaining, 'Rs.')}</Text>
               </View>
             );
@@ -331,7 +333,7 @@ export default function OrderCard({
                   {line.__deliveredBadge && gasSize ? (
                     <>
                       <Text style={styles.qtyBadgeSizeLabel}>{gasSize.kg} kg — </Text>
-                      <Text style={styles.qtyBadgeSizeLabel}>{qty} delivered</Text>
+                      <Text style={styles.qtyBadgeSizeLabel}>{qty} {t('common.delivered2', 'delivered')}</Text>
                     </>
                   ) : gasSize ? (
                     <>
@@ -339,7 +341,7 @@ export default function OrderCard({
                       <Text style={styles.qtyBadgeSizeLabel}>{qty}</Text>
                     </>
                   ) : line.__deliveredBadge ? (
-                    `${displayName} — ${qty} delivered`
+                    `${displayName} — ${qty} ${t('common.delivered2', 'delivered')}`
                   ) : (
                     `${displayName} × ${qty}`
                   )}
@@ -352,7 +354,7 @@ export default function OrderCard({
         <View style={styles.qtyBadgesRow}>
           <View style={[styles.qtyBadge, { borderColor: colors.border }]}>
             <View style={[styles.qtyBadgeSquare, { backgroundColor: colors.border }]} />
-            <Text style={styles.qtyBadgeText}>Qty: {getOrderTotalQty(order)}</Text>
+            <Text style={styles.qtyBadgeText}>{t('common.qty', 'Qty:')} {getOrderTotalQty(order)}</Text>
           </View>
         </View>
       )}

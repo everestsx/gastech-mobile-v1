@@ -55,6 +55,7 @@ const KEYS = {
 };
 
 const KEY_POST_LOGIN_SYNC_OK = '@gastech_post_login_sync_ok';
+const TRANSLATION_STORAGE_KEYS = ['@gastech_translations', '@gastech_translations_version'];
 
 /** After a successful login sync, Dashboard shows a one-time success dialog. */
 export async function setPostLoginSyncSuccessPending() {
@@ -1921,7 +1922,7 @@ export async function deleteLocalData(options = {}) {
     }
   });
   const storage = await getAsyncStorage();
-  await storage.removeItem(KEYS.LAST_SYNC);
+  await storage.multiRemove([KEYS.LAST_SYNC, ...TRANSLATION_STORAGE_KEYS]);
   log('deleteLocalData', 'all synced data cleared');
 }
 
@@ -2415,6 +2416,8 @@ export async function clearAllTables() {
       console.log(`[DB] Clearing ${table}...`);
       await db.runAsync(`DELETE FROM ${table}`);
     }
+    const storage = await getAsyncStorage();
+    await storage.multiRemove(TRANSLATION_STORAGE_KEYS);
     return true;
   } catch (error) {
     return false;
