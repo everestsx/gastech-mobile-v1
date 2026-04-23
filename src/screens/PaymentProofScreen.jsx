@@ -74,6 +74,7 @@ export default function PaymentProofScreen({ route, navigation }) {
   const releaseHeldQueueItemsAndFinalizeLocal = useCallback(async () => {
     const pendingPayment = await syncQueueDb.getPendingPaymentItemBySaleOrderId(soId);
     const pendingDelivery = await syncQueueDb.getPendingDeliveryItemBySaleOrderId(soId);
+    const pendingInventory = await syncQueueDb.getPendingInventoryUpdateItemBySaleOrderId(soId);
     const paymentPayload = pendingPayment?.payload || {};
 
     if (pendingPayment?.id != null) {
@@ -96,6 +97,11 @@ export default function PaymentProofScreen({ route, navigation }) {
       } else if (next.pickingId != null) {
         await stockPickingsDb.updatePickingStateLocal(Number(next.pickingId), 'done');
       }
+    }
+    if (pendingInventory?.id != null) {
+      const next = { ...(pendingInventory.payload || {}) };
+      delete next.holdUntilComplete;
+      await syncQueueDb.updateQueueItemPayload(pendingInventory.id, next);
     }
 
     const data = await getSaleOrderDetailsFromDB(soId);

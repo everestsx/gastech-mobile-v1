@@ -21,7 +21,7 @@ import { buildDefaultGasVehicleInventoryRows } from '../utils/defaultGasStock';
 import { getProductImageSource } from '../utils/gasImage';
 import * as syncQueueDb from '../database/syncQueue.js';
 import * as productsDb from '../database/products.js';
-import { canonicalKgFromName, isEmptyCylinderName } from '../utils/cylinderCatalog';
+import { canonicalKgFromName, isEmptyCylinderName, isGasCylinderName } from '../utils/cylinderCatalog';
 
 const CARD_MIN_WIDTH = 160;
 const CARD_GAP = spacing.md;
@@ -115,16 +115,14 @@ function StockCard({ item, colors, cardWidth, isLeft, productImageUri, delivered
             <Text style={[styles.statLabel, { color: '#15803d' }]}>Delivered: {delivered}</Text>
           </View>
         </View>
-        <View style={styles.emptyRowsWrap}>
-          <View style={styles.emptyRow}>
-            <Text style={styles.emptyLabel}>Empty Collected</Text>
-            <Text style={[styles.emptyValue, { color: '#0f766e' }]}>{Number(emptyCollectedQty) || 0}</Text>
+        {isGasCylinderName(rawName) ? (
+          <View style={styles.emptyRowsWrap}>
+            <View style={styles.emptyRow}>
+              <Text style={styles.emptyLabel}>Empty Collected</Text>
+              <Text style={[styles.emptyValue, { color: '#0f766e' }]}>{Number(emptyCollectedQty) || 0}</Text>
+            </View>
           </View>
-          {/* <View style={styles.emptyRow}>
-            <Text style={styles.emptyLabel}>Empty Stock</Text>
-            <Text style={styles.emptyValue}>{Number(emptyOnHandQty) || 0}</Text>
-          </View> */}
-        </View>
+        ) : null}
         <View style={[styles.badge, { backgroundColor: lowStock ? colors.error + '20' : accentColor + '20' }]}>
           <Text style={[styles.badgeText, { color: lowStock ? colors.error : accentColor }]}>
             {lowStock ? 'Out of stock' : 'In stock'}

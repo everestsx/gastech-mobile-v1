@@ -44,10 +44,12 @@ function qtyClose(a, b) {
   return Math.abs(Number(a) - Number(b)) < 0.0001;
 }
 
+const DISPLAY_KG_SIZES = [2.4, 5, 12.5, 37.5];
 const REASON_PRESETS = [
-  'Will collect next time',
+  'Loan return pending',
+  'New issue replacement',
+  'Cylinder shortage at customer',
   'Pending empty collection',
-  'Customer will return later',
 ];
 const DEFAULT_MATCHED_EMPTY_NOTE = 'All empty cylinders were collected as per the delivered gas quantity.';
 
@@ -65,8 +67,7 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [reasonModalVisible, setReasonModalVisible] = useState(false);
-  const [selectedReasonText, setSelectedReasonText] = useState(REASON_PRESETS[0]);
-  const [customReasonText, setCustomReasonText] = useState('');
+  const [selectedReasonText, setSelectedReasonText] = useState('');
 
   const loadDefaults = useCallback(async () => {
     setLoading(true);
@@ -75,6 +76,15 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
       const lines = Array.isArray(details?.lines) ? details.lines : [];
       const qtyMap = qtyByLineIdMap(invoiceLineQtys);
       const byKg = new Map();
+      for (const kg of DISPLAY_KG_SIZES) {
+        byKg.set(kg, {
+          kg,
+          deliveredGasQty: 0,
+          newIssueQty: 0,
+          emptyQty: 0,
+          emptyProductId: null,
+        });
+      }
 
       for (const line of lines) {
         const rawName = line?.product_id?.[1] ?? line?.name ?? '';
@@ -112,7 +122,16 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
           const name = productMap?.[pid] || row?.product_name || '';
           if (!isEmptyCylinderName(name)) continue;
           const kg = canonicalKgFromName(name);
-          if (kg == null || !byKg.has(kg)) continue;
+          if (kg == null) continue;
+          if (!byKg.has(kg)) {
+            byKg.set(kg, {
+              kg,
+              deliveredGasQty: 0,
+              newIssueQty: 0,
+              emptyQty: 0,
+              emptyProductId: null,
+            });
+          }
           const entry = byKg.get(kg);
           if (entry.emptyProductId == null) entry.emptyProductId = pid;
         }
@@ -174,12 +193,6 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
     );
   }, []);
 
-  const resetToSuggested = useCallback((kg) => {
-    setRows((prev) =>
-      prev.map((r) => (r.kg === kg ? { ...r, emptyQty: Number(r.defaultEmptyQty) || 0 } : r))
-    );
-  }, []);
-
   const buildEntriesPayload = useCallback(() => {
     return rows.map((r) => ({
       kg: Number(r.kg),
@@ -238,6 +251,7 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
               vehicleId: Number(vehicleId),
               locationId: Number(locationId),
               updates: inventoryQueueUpdates,
+              holdUntilComplete: true,
             };
             const existingInventoryUpdate =
               await syncQueueDb.getPendingInventoryUpdateItemBySaleOrderId(Number(saleOrderId));
@@ -286,8 +300,7 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
 
   const onPressConfirm = useCallback(() => {
     if (hasAdjustment) {
-      setSelectedReasonText(REASON_PRESETS[0]);
-      setCustomReasonText('');
+      setSelectedReasonText('');
       setReasonModalVisible(true);
       return;
     }
@@ -296,16 +309,14 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
 
   const onConfirmReason = useCallback(() => {
     const selected = String(selectedReasonText || '').trim();
-    const custom = String(customReasonText || '').trim();
-    const typedReason = custom ? `${selected}. ${custom}` : selected;
     if (!selected) {
       Alert.alert('Reason required', 'Please select a reason.');
       return;
     }
-    const body = buildEmptyCylinderChatterBody(buildEntriesPayload(), typedReason);
+    const body = buildEmptyCylinderChatterBody(buildEntriesPayload(), selected);
     setReasonModalVisible(false);
     void persistAndNavigate(body);
-  }, [buildEntriesPayload, customReasonText, persistAndNavigate, selectedReasonText]);
+  }, [buildEntriesPayload, persistAndNavigate, selectedReasonText]);
 
   const styles = useMemo(
     () =>
@@ -371,9 +382,6 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
           fontWeight: '800',
           textAlign: 'center',
         },
-        suggested: { fontSize: 12, color: colors.textSecondary, marginTop: 6 },
-        resetLink: { flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start', marginTop: 10, paddingVertical: 4 },
-        resetLinkText: { fontSize: 13, fontWeight: '700', color: colors.primary },
         summary: {
           marginTop: spacing.xs,
           marginBottom: spacing.sm,
@@ -484,12 +492,10 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
         keyboardShouldPersistTaps="handled"
       >
         <View style={styles.hero}>
-          <View style={styles.heroIcon}>
-            <Ionicons name="swap-vertical-outline" size={32} color={colors.primary} />
-          </View>
-          <Text style={styles.title}>Empty cylinders</Text>
+          <Ionicons name="cube-outline" size={22} color={colors.primary} style={styles.heroIcon} />
+          <Text style={styles.title}>Empty Collected Cylinder</Text>
           <Text style={styles.heroText}>
-            Enter collected empty cylinders for this order.
+            Review collected empties by size. If a size has no collection, it still appears as 0.
           </Text>
         </View>
 
@@ -529,13 +535,6 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
                     <Ionicons name="add" size={22} color={colors.primary} />
                   </TouchableOpacity>
                 </View>
-                <Text style={styles.suggested}>
-                  Suggested: {Number(row.defaultEmptyQty) || 0}
-                </Text>
-                <TouchableOpacity style={styles.resetLink} onPress={() => resetToSuggested(row.kg)} activeOpacity={0.8}>
-                  <Ionicons name="refresh" size={16} color={colors.primary} />
-                  <Text style={styles.resetLinkText}>Use suggested</Text>
-                </TouchableOpacity>
               </View>
             );
           })}
@@ -564,7 +563,7 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
           <Pressable style={[styles.modalCard, { paddingBottom: Math.max(insets.bottom, spacing.md) }]} onPress={(e) => e.stopPropagation()}>
             <Text style={styles.modalTitle}>Reason for change</Text>
             <Text style={styles.modalSub}>
-              Select a reason.
+              Select one reason to continue.
             </Text>
 
             {REASON_PRESETS.map((reason) => {
@@ -580,16 +579,6 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
                 </TouchableOpacity>
               );
             })}
-
-            <Text style={styles.customLabel}>Custom message (optional)</Text>
-            <TextInput
-              style={styles.customInput}
-              placeholder="Type your custom reason..."
-              placeholderTextColor={colors.textSecondary}
-              value={customReasonText}
-              onChangeText={setCustomReasonText}
-              multiline
-            />
 
             <View style={styles.modalActions}>
               <TouchableOpacity

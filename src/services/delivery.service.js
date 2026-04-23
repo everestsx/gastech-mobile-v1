@@ -119,6 +119,14 @@ export const getPickingState = (pickingId) =>
 export const actionAssignPicking = (pickingId) =>
   callOdooArgs("stock.picking", "action_assign", [[pickingId]]);
 
+/** Confirm transfer before assignment/validation (safe no-op if already confirmed). */
+export const actionConfirmPicking = (pickingId) =>
+  callOdooArgs("stock.picking", "action_confirm", [[pickingId]]);
+
+/** Cancel transfer (used to force-close any auto-created backorders). */
+export const actionCancelPicking = (pickingId) =>
+  callOdooArgs("stock.picking", "action_cancel", [[pickingId]]);
+
 /**
  * Get full delivery data for a sale order: picking, moves, move lines.
  * Use to map order lines (by product_id) to move lines for qty_done updates.

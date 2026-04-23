@@ -2982,6 +2982,7 @@ export default function InvoiceScreen({ route, navigation }) {
                     onOK={(dataUrl) => {
                       setCaptureCustomerSig(dataUrl);
                       setCaptureCustomerSaved(true);
+                      setSignatureCaptureStep('driver');
                     }}
                     onEmpty={() => {
                       Alert.alert('Signature', 'Sign in the box, then tap Save customer.');
@@ -3048,7 +3049,7 @@ export default function InvoiceScreen({ route, navigation }) {
                     onPress={() => captureCustomerRef.current?.readSignature()}
                   >
                     <Text style={styles.sigCapBtnTextLight}>
-                      {captureCustomerSaved ? 'Saved' : 'Save customer'}
+                      {captureCustomerSaved ? 'Continue' : 'Save customer'}
                     </Text>
                   </TouchableOpacity>
                 </View>
@@ -3069,7 +3070,7 @@ export default function InvoiceScreen({ route, navigation }) {
                     onPress={() => captureDriverRef.current?.readSignature()}
                   >
                     <Text style={styles.sigCapBtnTextLight}>
-                      {captureDriverSaved ? 'Saved' : 'Save driver'}
+                      {captureDriverSaved ? 'Continue' : 'Save driver'}
                     </Text>
                   </TouchableOpacity>
                 </View>
