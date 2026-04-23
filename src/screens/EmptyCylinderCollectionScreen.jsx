@@ -16,7 +16,12 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
-import { getSaleOrderDetailsFromDB, getVehicleLocationId, getCachedVehicleInventoryByLocation } from '../services/sync.service';
+import {
+  getSaleOrderDetailsFromDB,
+  getVehicleLocationId,
+  getCachedVehicleInventoryByLocation,
+  getUserSession,
+} from '../services/sync.service';
 import * as syncQueueDb from '../database/syncQueue.js';
 import * as vehicleInventoriesDb from '../database/vehicleInventories.js';
 import * as productsDb from '../database/products.js';
@@ -52,6 +57,13 @@ const REASON_PRESETS = [
   'Pending empty collection',
 ];
 const DEFAULT_MATCHED_EMPTY_NOTE = 'All empty cylinders were collected as per the delivered gas quantity.';
+
+function parseVehicleIdFromOrder(order) {
+  if (!order || order.vehicle_id == null) return null;
+  const raw = Array.isArray(order.vehicle_id) ? order.vehicle_id[0] : order.vehicle_id;
+  const id = Number(raw);
+  return Number.isFinite(id) && id > 0 ? id : null;
+}
 
 export default function EmptyCylinderCollectionScreen({ route, navigation }) {
   const { t } = useTranslation();
@@ -210,10 +222,14 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
       try {
         const details = await getSaleOrderDetailsFromDB(saleOrderId);
         const order = details?.order || {};
-        const vehicleId = order?.vehicle_id != null
-          ? (Array.isArray(order.vehicle_id) ? order.vehicle_id[0] : order.vehicle_id)
-          : null;
-        const locationId = vehicleId != null ? await getVehicleLocationId(vehicleId) : null;
+        const session = await getUserSession();
+        const orderVehicleId = parseVehicleIdFromOrder(order);
+        const sessionVehicleId = Number(session?.vehicleId);
+        const vehicleId =
+          orderVehicleId != null
+            ? orderVehicleId
+            : (Number.isFinite(sessionVehicleId) && sessionVehicleId > 0 ? sessionVehicleId : null);
+        const locationId = vehicleId != null ? await getVehicleLocationId(Number(vehicleId)) : null;
 
         const emptyCylinderEntries = buildEntriesPayload();
 

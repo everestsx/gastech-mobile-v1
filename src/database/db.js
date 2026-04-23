@@ -549,6 +549,23 @@ async function runMigrations(db) {
     }
     await db.runAsync('PRAGMA user_version = 22');
   }
+
+  // Migration 23: Track stock.quant incoming/outgoing on vehicle_inventories
+  if (current < 23) {
+    try {
+      const info = await db.getAllAsync('PRAGMA table_info(vehicle_inventories)');
+      const names = new Set((info || []).map((c) => c.name));
+      if (!names.has('incoming_quantity')) {
+        await db.runAsync('ALTER TABLE vehicle_inventories ADD COLUMN incoming_quantity REAL');
+      }
+      if (!names.has('outgoing_quantity')) {
+        await db.runAsync('ALTER TABLE vehicle_inventories ADD COLUMN outgoing_quantity REAL');
+      }
+    } catch (e) {
+      console.warn('[Migration] vehicle_inventories incoming/outgoing:', e);
+    }
+    await db.runAsync('PRAGMA user_version = 23');
+  }
 }
 
 /**

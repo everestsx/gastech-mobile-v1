@@ -186,6 +186,40 @@ export async function createProofAttachment(saleOrderId, base64Data, filename = 
 }
 
 /**
+ * Generic sale.order attachment create helper (supports PDF, images, etc.).
+ * @param {number|string} saleOrderId
+ * @param {string} base64Data raw base64 or data-url
+ * @param {string} filename
+ * @param {string} mimetype
+ */
+export async function createSaleOrderAttachment(
+  saleOrderId,
+  base64Data,
+  filename = 'attachment.bin',
+  mimetype = 'application/octet-stream'
+) {
+  const resId = typeof saleOrderId === 'number' ? saleOrderId : parseInt(saleOrderId, 10);
+  if (Number.isNaN(resId)) throw new Error('Invalid sale order id for attachment');
+  const datas = getDatasForOdooAttachment(base64Data);
+  if (!datas) throw new Error('Invalid base64 for attachment');
+  const payload = {
+    name: filename,
+    type: 'binary',
+    datas,
+    res_model: 'sale.order',
+    res_id: resId,
+    mimetype: mimetype || 'application/octet-stream',
+  };
+  const result = await callOdooArgs('ir.attachment', 'create', [payload]);
+  if (typeof result === 'number' && !Number.isNaN(result)) return result;
+  if (Array.isArray(result) && result.length > 0) {
+    const id = result[0];
+    if (typeof id === 'number' && !Number.isNaN(id)) return id;
+  }
+  throw new Error('Invalid attachment create result: expected id number');
+}
+
+/**
  * API 2 — Post message to sale order chatter with attachment_ids (ids from API 1).
  * Odoo: sale.order message_post([sale_order_id], body=..., attachment_ids=[1305], message_type, subtype_xmlid).
  */

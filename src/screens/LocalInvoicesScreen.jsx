@@ -158,7 +158,11 @@ export default function LocalInvoicesScreen({ navigation }) {
           >
             <View style={styles.cardHeader}>
               <Text style={[styles.invoiceNumber, { color: colors.primary }]} numberOfLines={1}>
-                {vehicleNumber ? `${vehicleNumber}/${inv.invoice_number}` : inv.invoice_number}
+                {String(inv.invoice_number || '').includes('/')
+                  ? inv.invoice_number
+                  : vehicleNumber
+                    ? `${vehicleNumber}/${inv.invoice_number}`
+                    : inv.invoice_number}
               </Text>
               <View
                 style={[

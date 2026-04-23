@@ -59,8 +59,9 @@ function StockCard({ item, colors, cardWidth, isLeft, productImageUri, delivered
   const name = formatProductName(rawName);
   const stockQuantity = Math.max(0, Number(item.quantity) || 0);
   const extra = Math.max(0, Number(item.available_quantity ?? item.extra_quantity ?? 0) || 0);
+  const outgoing = Math.max(0, Number(item.outgoing_quantity) || 0);
   const onHand = stockQuantity;
-  const ordered = Math.max(0, onHand - extra);
+  const ordered = outgoing > 0 ? outgoing : Math.max(0, onHand - extra);
   const delivered = Math.max(0, Number(deliveredQty) || 0);
   const lowStock = onHand <= 0;
   const logoSource = productImageUri ? { uri: productImageUri } : getProductImageSource(rawName);

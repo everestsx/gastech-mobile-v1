@@ -803,6 +803,48 @@ async function processSyncQueue() {
         }
         dedupedPayment.push(item);
       }
+
+      async function tryAttachPrintedInvoicePdfToSaleOrder(soId, invoiceId, orderName = '') {
+        const invId = Number(invoiceId);
+        if (!Number.isFinite(invId) || invId <= 0) return null;
+        try {
+          const { callOdooArgs } = await import('./index.service.js');
+          const { createSaleOrderAttachment } = await import('./proofAttachment.service.js');
+          const reportNames = [
+            'account.report_invoice_with_payments',
+            'account.report_invoice',
+            'account.account_invoices',
+          ];
+          let pdfBase64 = '';
+          for (const reportName of reportNames) {
+            try {
+              const rendered = await callOdooArgs('ir.actions.report', '_render_qweb_pdf', [reportName, [invId]]);
+              const direct = typeof rendered === 'string' ? rendered : '';
+              const tupleValue =
+                Array.isArray(rendered) && typeof rendered[0] === 'string' ? rendered[0] : '';
+              const objValue =
+                rendered && typeof rendered === 'object' && typeof rendered.pdf === 'string'
+                  ? rendered.pdf
+                  : '';
+              const candidate = String(direct || tupleValue || objValue || '').trim();
+              if (candidate) {
+                pdfBase64 = candidate;
+                break;
+              }
+            } catch (_) {
+              // Try next report xmlid.
+            }
+          }
+          if (!pdfBase64) return null;
+          const safeOrder = String(orderName || `SO-${soId}`).replace(/[^\w.-]+/g, '_');
+          const fileName = `${safeOrder}_printed_invoice.pdf`;
+          const attId = await createSaleOrderAttachment(soId, pdfBase64, fileName, 'application/pdf');
+          return Number(attId);
+        } catch (e) {
+          logWarn('queue payment attach invoice pdf', e);
+          return null;
+        }
+      }
       const {
         updateSaleOrderLineQty,
         updateSaleOrderLineQtyDelivered,
@@ -825,6 +867,7 @@ async function processSyncQueue() {
       const {
         getSaleOrderForPayment,
         getSaleOrderInvoiceIds,
+        normalizeSaleOrderInvoiceIds,
         getInvoiceState,
         getInvoiceIdAfterCreate,
         firstInvoiceId,
@@ -1316,6 +1359,7 @@ async function processSyncQueue() {
 
       for (const item of dedupedPayment) {
         let invoiceBlockFailedNoItemsToInvoice = false;
+        let postedInvoiceId = null;
         try {
           const p = item.payload || {};
           if (p.holdUntilComplete === true) {
@@ -1396,10 +1440,12 @@ async function processSyncQueue() {
                 const invState = await getInvoiceState(resId).catch(() => ({}));
                 if (invState?.state === 'posted') {
                   invoiceAlreadyPosted = true;
+                  postedInvoiceId = Number(resId);
                 } else if (invState?.state === 'draft') {
                   log('queue', `payment SO ${saleOrderId}: post existing draft invoice res_id=${resId}`);
                   await postInvoice(resId);
                   invoiceAlreadyPosted = true;
+                  postedInvoiceId = Number(resId);
                 }
               }
 
@@ -1409,15 +1455,18 @@ async function processSyncQueue() {
                   if ((invStateAgain?.state || '').toLowerCase() === 'posted') {
                     log('queue', `payment SO ${saleOrderId}: invoice ${resId} already posted — skip post`);
                     invoiceAlreadyPosted = true;
+                    postedInvoiceId = Number(resId);
                   } else if ((invStateAgain?.state || '').toLowerCase() === 'draft') {
                     log('queue', `payment SO ${saleOrderId}: post existing draft invoice res_id=${resId}`);
                     await postInvoice(resId);
                     invoiceAlreadyPosted = true;
+                    postedInvoiceId = Number(resId);
                   }
                   if (!invoiceAlreadyPosted) {
                     log('queue', `payment SO ${saleOrderId}: post existing invoice res_id=${resId}`);
                     await postInvoice(resId);
                     invoiceAlreadyPosted = true;
+                    postedInvoiceId = Number(resId);
                   }
                 } else {
                   log('queue', `payment SO ${saleOrderId}: Step 1 — create advance payment wizard (context active_ids [${saleOrderId}])`);
@@ -1434,6 +1483,7 @@ async function processSyncQueue() {
                       log('queue', `payment SO ${saleOrderId}: Step 3 — action_post [[${resId}]]`);
                       await postInvoice(resId);
                       log('queue', `payment SO ${saleOrderId}: invoice created and posted res_id=${resId}`);
+                      postedInvoiceId = Number(resId);
                     }
                   }
                 }
@@ -1647,6 +1697,17 @@ async function processSyncQueue() {
           const pendingAttachments = await offlineAttachmentsDb.getPendingBySaleOrderId(soId);
           const FileSystem = await import('expo-file-system');
 
+          if (!(Number.isFinite(Number(postedInvoiceId)) && Number(postedInvoiceId) > 0)) {
+            try {
+              const maybeIds = normalizeSaleOrderInvoiceIds(await getSaleOrderInvoiceIds(soId));
+              if (maybeIds.length > 0) {
+                postedInvoiceId = Number(maybeIds[0]);
+              }
+            } catch (_) {
+              postedInvoiceId = null;
+            }
+          }
+
           const attachmentIds = [];
           const syncedAttachmentIds = [];
           const pendingCount = (pendingAttachments || []).length;
@@ -1687,6 +1748,19 @@ async function processSyncQueue() {
               )
             );
             // Do not continue: previously this left the queue item unsynced forever even when Odoo already had the payment.
+          }
+
+          // Auto-attach printed invoice PDF from Odoo report when order is completed and payment sync runs.
+          if (Number.isFinite(Number(postedInvoiceId)) && Number(postedInvoiceId) > 0) {
+            const invoicePdfAttachmentId = await tryAttachPrintedInvoicePdfToSaleOrder(
+              soId,
+              Number(postedInvoiceId),
+              orderName
+            );
+            if (invoicePdfAttachmentId != null) {
+              attachmentIds.push(Number(invoicePdfAttachmentId));
+              log('queue', `invoice PDF attached for SO ${soId} from invoice ${postedInvoiceId}`);
+            }
           }
 
           const hasProof = attachmentIds.length > 0;
@@ -2262,7 +2336,7 @@ async function runSyncInternal() {
             name: loc.name,
             complete_name: loc.complete_name,
           });
-          log('fetch', `vehicle inventory location ${loc.id}  ${vehicleId}`);
+          log('fetch', `vehicle inventory location ${loc.id}  ${vId}`);
           let quants = [];
           let inventoryFetchOk = false;
           try {
