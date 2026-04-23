@@ -152,24 +152,60 @@ export async function setQuantQuantityAtLocation(locationId, productId, targetQt
  */
 export async function getVehicleInventoryByLocation(locationId) {
   if (locationId == null) return [];
-  const response = await callOdoo(
-    'stock.quant',
-    'search_read',
+  const domain = [
     [
-      [
-        ['location_id', '=', locationId],
-        ['product_id', '!=', false],
-      ],
+      ['location_id', '=', locationId],
+      ['product_id', '!=', false],
     ],
-    { fields: ['product_id', 'quantity', 'available_quantity', 'incoming_qty', 'outgoing_qty'] }
-  );
+  ];
+  let response = [];
+  try {
+    response = await callOdoo(
+      'stock.quant',
+      'search_read',
+      domain,
+      {
+        fields: [
+          'id',
+          'product_id',
+          'quantity',
+          'available_quantity',
+          'reserved_quantity',
+          'incoming_qty',
+          'outgoing_qty',
+        ],
+      }
+    );
+  } catch (primaryErr) {
+    // Some Odoo deployments may not expose all computed fields in API.
+    // Fallback to a minimal field set so stock cards never go blank.
+    console.warn('[Vehicle Inventory API] primary field set failed, retrying minimal fields', primaryErr?.message || primaryErr);
+    response = await callOdoo(
+      'stock.quant',
+      'search_read',
+      domain,
+      { fields: ['id', 'product_id', 'quantity', 'reserved_quantity'] }
+    );
+  }
   const rows = Array.isArray(response) ? response : [];
   const normalized = rows.map((r) => ({
     ...r,
+    id: Number(r?.id) || null,
     quantity: Math.max(0, Number(r?.quantity) || 0),
-    available_quantity: Math.max(0, Number(r?.available_quantity) || 0),
+    available_quantity: (() => {
+      const direct = Number(r?.available_quantity);
+      if (Number.isFinite(direct)) return Math.max(0, direct);
+      const qty = Math.max(0, Number(r?.quantity) || 0);
+      const reserved = Math.max(0, Number(r?.reserved_quantity) || 0);
+      return Math.max(0, qty - reserved);
+    })(),
     incoming_quantity: Math.max(0, Number(r?.incoming_qty) || 0),
-    outgoing_quantity: Math.max(0, Number(r?.outgoing_qty) || 0),
+    outgoing_quantity: (() => {
+      const outgoing = Number(r?.outgoing_qty);
+      if (Number.isFinite(outgoing)) return Math.max(0, outgoing);
+      const reserved = Number(r?.reserved_quantity);
+      return Number.isFinite(reserved) ? Math.max(0, reserved) : 0;
+    })(),
   }));
   console.log('[Vehicle Inventory API] locationId:', locationId, 'rows:', normalized.length);
   return normalized;

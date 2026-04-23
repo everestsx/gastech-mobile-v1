@@ -18,6 +18,11 @@ export async function upsertVehicleInventories(rows) {
       const product = odooRel(r.product_id);
       const vehicleId = numOrNull(r.vehicle_id);
       const productId = numOrNull(product.id);
+      const locationId = numOrNull(r.location_id);
+      const incomingQty = num(r.incoming_quantity);
+      const outgoingQty = num(r.outgoing_quantity);
+      const incomingOrOutgoing = incomingQty !== 0 || outgoingQty !== 0;
+      const backendRowId = numOrNull(r.id);
 
       // Check if this row was locally modified.
       // Keep local quantity/available_quantity, but still refresh product_name from backend
@@ -36,21 +41,43 @@ export async function upsertVehicleInventories(rows) {
         continue;
       }
 
+      const fallbackSyntheticId =
+        backendRowId ??
+        (locationId != null && productId != null
+          ? -(Math.abs(Number(locationId)) * 100000 + Math.abs(Number(productId)))
+          : null);
+
       await tx.runAsync(
         `INSERT OR REPLACE INTO vehicle_inventories (id, location_id, vehicle_id, product_id, product_name, quantity, available_quantity, incoming_quantity, outgoing_quantity, updated_at, is_locally_modified) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
         [
-          r.id != null ? r.id : 0,
-          numOrNull(r.location_id),
+          fallbackSyntheticId,
+          locationId,
           vehicleId,
           productId,
           empty(product.name),
           num(r.quantity),
           num(r.available_quantity),
-          num(r.incoming_quantity),
-          num(r.outgoing_quantity),
+          incomingQty,
+          outgoingQty,
           now,
         ]
       );
+
+      if (locationId != null && productId != null) {
+        await tx.runAsync(
+          `DELETE FROM vehicle_inventories
+           WHERE location_id = ?
+             AND product_id = ?
+             AND id != ?`,
+          [locationId, productId, fallbackSyntheticId]
+        );
+      }
+
+      if (incomingOrOutgoing) {
+        console.log(
+          `[DB Sync] flow loc=${locationId} pid=${productId} onHand=${num(r.quantity)} free=${num(r.available_quantity)} incoming=${incomingQty} outgoing=${outgoingQty}`
+        );
+      }
     }
   });
 }
