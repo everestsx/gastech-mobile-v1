@@ -167,7 +167,7 @@ function getGasImageByProductName(productName) {
 export default function DashboardScreen({ navigation }) {
   const { t } = useTranslation();
   const insets = useSafeAreaInsets();
-  const { syncCompleteTimestamp, isSyncing } = useSync();
+  const { syncCompleteTimestamp, isSyncing, syncResult, syncErrorMessage } = useSync();
   const {
     colors,
     showCreateSalesOrder: userShowCreate,
@@ -226,6 +226,7 @@ export default function DashboardScreen({ navigation }) {
   const [routePickerVisible, setRoutePickerVisible] = useState(false);
   const [profileModal, setProfileModal] = useState(null);
   const [postLoginSyncModalVisible, setPostLoginSyncModalVisible] = useState(false);
+  const lastSyncNotificationRef = React.useRef(null);
 
   const postLoginSyncCopy = useMemo(() => {
     const map = {
@@ -299,7 +300,9 @@ export default function DashboardScreen({ navigation }) {
       setUser(user);
       setRoutes(Array.isArray(routesData) ? routesData : []);
       const vehicleId = user?.isAdmin === false ? user.vehicleId : null;
-      const [data, resumeMap] = await Promise.all([getCachedOrders(vehicleId), getCheckoutResumeMap()]);
+      const [ordersRes, resumeRes] = await Promise.allSettled([getCachedOrders(vehicleId), getCheckoutResumeMap()]);
+      const data = ordersRes.status === 'fulfilled' ? ordersRes.value : [];
+      const resumeMap = resumeRes.status === 'fulfilled' ? resumeRes.value : {};
       const pendingCheckoutSaleOrderIds = pendingCheckoutSaleOrderIdsFromResumeMap(resumeMap);
       setPendingCheckoutOrderIds(pendingCheckoutSaleOrderIds);
       setOrders(Array.isArray(data) ? data : []);
@@ -311,7 +314,7 @@ export default function DashboardScreen({ navigation }) {
           ? await saleOrderLinesDb.getSaleOrderIdsWithPositiveQtyDelivered(allCachedOrderIds)
           : new Set();
       setBackendQtyDeliveredOrderIds(backendDeliveredSet);
-      const imageMap = await productsDb.getProductImageUriMap();
+      const imageMap = await productsDb.getProductImageUriMap().catch(() => ({}));
       setProductIdToImageUri(imageMap || {});
       const today = formatLocalDate(new Date());
       const todayOrders = (Array.isArray(data) ? data : []).filter((o) => getOrderDateForSyncMode(o).startsWith(today));
@@ -331,7 +334,7 @@ export default function DashboardScreen({ navigation }) {
       setPaymentSplitsByOrderId(splits || {});
       const saleIdToPickState = mergePickingStateBySaleIdFromRows(pickings);
 
-      const pendingQueueItems = await syncQueueDb.getPending();
+      const pendingQueueItems = await syncQueueDb.getPending().catch(() => []);
 
       const pendingPaymentOrderIds = new Set(
         (pendingQueueItems || [])
@@ -340,7 +343,7 @@ export default function DashboardScreen({ navigation }) {
           .filter((id) => Number.isFinite(id))
       );
 
-      const localInvoiceSaleOrderIds = await localInvoicesDb.getSaleOrderIdsWithLocalInvoices();
+      const localInvoiceSaleOrderIds = await localInvoicesDb.getSaleOrderIdsWithLocalInvoices().catch(() => new Set());
 
       function orderCountsAsCompletedToday(order) {
         const oid = Number(order?.id);
@@ -493,19 +496,9 @@ export default function DashboardScreen({ navigation }) {
       } catch (_) {
         setStockCards([]);
       }
-    } catch (_) {
-      setOrders([]);
-      setLineTotalsByOrder({});
-      setPickingsBySaleId([]);
-      setQtyDoneBySaleId({});
-      setTodayOrderLines([]);
-      setPaymentSplitsByOrderId({});
-      setOrderSyncStats({ pendingOrders: 0, localCompleted: 0, syncedCompleted: 0 });
-      setBackendQtyDeliveredOrderIds(new Set());
-      setPendingCheckoutOrderIds(new Set());
-      setStockCards([]);
-      setProductIdToImageUri({});
-      setEmptyStockByKg({});
+    } catch (err) {
+      // Keep last known dashboard data on transient read failures.
+      console.warn('[Dashboard] loadData failed, preserving previous view state', err?.message ?? err);
     } finally {
       setLoading(false);
     }
@@ -593,6 +586,25 @@ export default function DashboardScreen({ navigation }) {
       loadSyncStatus();
     }
   }, [syncCompleteTimestamp, loadData, loadSyncStatus]);
+
+  useEffect(() => {
+    if (isSyncing || !syncResult) return;
+    if (lastSyncNotificationRef.current === syncResult) return;
+    lastSyncNotificationRef.current = syncResult;
+
+    if (syncResult === 'success') {
+      Alert.alert(
+        t('common.syncSuccessfulTitle', 'Sync successful'),
+        t('common.syncSuccessfulBody', 'Data synced successfully.')
+      );
+      return;
+    }
+
+    Alert.alert(
+      t('common.syncFailedTitle', 'Sync failed'),
+      syncErrorMessage || t('common.syncFailedBody', 'Data sync failed. Please try again.')
+    );
+  }, [isSyncing, syncResult, syncErrorMessage, t]);
 
   useEffect(() => {
     if (user?.licensePlate) {
