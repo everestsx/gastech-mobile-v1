@@ -318,7 +318,6 @@ export default function DashboardScreen({ navigation }) {
       setProductIdToImageUri(imageMap || {});
       const today = formatLocalDate(new Date());
       const todayOrders = (Array.isArray(data) ? data : []).filter((o) => getOrderDateForSyncMode(o).startsWith(today));
-      console.log('todayOrders', todayOrders);
       const orderIds = todayOrders.map((o) => o.id);
       const [totals, pickings, orderLines, splits, qtyDoneMap] = await Promise.all([
         getOrderLineTotalsFromDB(todayOrders),
@@ -592,13 +591,7 @@ export default function DashboardScreen({ navigation }) {
     if (lastSyncNotificationRef.current === syncResult) return;
     lastSyncNotificationRef.current = syncResult;
 
-    if (syncResult === 'success') {
-      Alert.alert(
-        t('common.syncSuccessfulTitle', 'Sync successful'),
-        t('common.syncSuccessfulBody', 'Data synced successfully.')
-      );
-      return;
-    }
+    if (syncResult === 'success') return;
 
     Alert.alert(
       t('common.syncFailedTitle', 'Sync failed'),

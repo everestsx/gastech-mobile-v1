@@ -171,7 +171,6 @@ export async function getVehicleInventoryByLocation(locationId) {
           'quantity',
           'available_quantity',
           'reserved_quantity',
-          'incoming_qty',
           'outgoing_qty',
         ],
       }

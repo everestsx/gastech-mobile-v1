@@ -4,7 +4,7 @@
  */
 import { getCustomers, getPartnersByIds } from './customer.service';
 import { getAllSaleOrders, getSaleOrdersByVehicle } from './saleOrder.service';
-import { getAllProducts } from './product.service';
+import { getAllProducts, getProductsByIds } from './product.service';
 import { getStockMovesByPickingId, getStockMoveLinesByMoveIds } from './delivery.service';
 import { getJournals } from './journal.service';
 import { getRoutes } from './route.service';
@@ -2236,18 +2236,39 @@ async function runSyncInternal() {
       result.pickings = allPickings.length;
       log('fetch', `pickings=${result.pickings}`);
 
-      for (const p of allPickings) {
-        const moves = await getStockMovesByPickingId(p.id);
-        const moveIdsFromMoves = (moves || []).map((m) => m.id).filter((id) => id != null);
-        if (!moveIdsFromMoves.length) continue;
-        const moveLines = await getStockMoveLinesByMoveIds(moveIdsFromMoves);
-        (moves || []).forEach((m) => {
-          allMoves.push({ ...m, picking_id: m.picking_id ?? p.id });
+      const pickingIds = (allPickings || []).map((p) => Number(p?.id)).filter((id) => Number.isFinite(id));
+      const pickBatchSize = 40;
+      for (let i = 0; i < pickingIds.length; i += pickBatchSize) {
+        const batch = pickingIds.slice(i, i + pickBatchSize);
+        if (!batch.length) continue;
+        const batchMoves = await callOdoo(
+          'stock.move',
+          'search_read',
+          [[['picking_id', 'in', batch]]],
+          { fields: ['id', 'picking_id', 'product_uom_qty', 'product_id', 'state'], limit: 5000 }
+        );
+        (batchMoves || []).forEach((m) => {
+          const pickingId = Array.isArray(m.picking_id) ? Number(m.picking_id[0]) : Number(m.picking_id);
+          allMoves.push({ ...m, picking_id: Number.isFinite(pickingId) ? pickingId : m.picking_id });
           const pid = Array.isArray(m.product_id) ? m.product_id[0] : m.product_id;
           if (pid) productIds.add(pid);
         });
-        (moveLines || []).forEach((ml) => allMoveLines.push(ml));
       }
+
+      const moveIds = (allMoves || []).map((m) => Number(m?.id)).filter((id) => Number.isFinite(id));
+      const moveBatchSize = 200;
+      for (let i = 0; i < moveIds.length; i += moveBatchSize) {
+        const batch = moveIds.slice(i, i + moveBatchSize);
+        if (!batch.length) continue;
+        const batchMoveLines = await callOdoo(
+          'stock.move.line',
+          'search_read',
+          [[['move_id', 'in', batch]]],
+          { fields: ['id', 'move_id', 'qty_done'], limit: 5000 }
+        );
+        (batchMoveLines || []).forEach((ml) => allMoveLines.push(ml));
+      }
+
       result.moves = allMoves.length;
       result.moveLines = allMoveLines.length;
       log('fetch', `moves=${result.moves} moveLines=${result.moveLines}`);
@@ -2263,16 +2284,23 @@ async function runSyncInternal() {
     await stockMovesDb.upsertStockMoves(allMoves);
     log('db', 'stock_move_lines');
     await stockMoveLinesDb.upsertStockMoveLines(allMoveLines);
-    // Always refresh full product catalog so invoice rows can include all goods
-    // (e.g. HOSE / PACK / REG) even when they are not in current order lines.
+    // Prefer only products referenced by fetched orders/moves to keep sync fast.
+    // Fallback to full catalog only when targeted fetch fails or returns empty.
     try {
-      log('fetch', 'product.product (full catalog)');
-      const products = await getAllProducts();
+      const ids = Array.from(productIds);
+      let products = [];
+      if (ids.length > 0) {
+        log('fetch', `product.product (targeted by ids: ${ids.length})`);
+        products = await getProductsByIds(ids);
+      }
+      if (!products?.length) {
+        log('fetch', 'product.product (full catalog fallback)');
+        products = await getAllProducts();
+      }
       if (products?.length) {
         log('db', `products (${products.length})`);
         await productsDb.upsertProducts(products);
-      } else if (productIds.size > 0) {
-        const ids = Array.from(productIds);
+      } else if (ids.length > 0) {
         await productsDb.upsertProducts(ids.map((id) => ({ id, name: null })));
       }
     } catch (e) {
