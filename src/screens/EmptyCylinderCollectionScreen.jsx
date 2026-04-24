@@ -383,8 +383,12 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
           backgroundColor: colors.primary + '18',
           borderWidth: 1,
           borderColor: colors.primary + '44',
+          flexDirection: 'row',
+          alignItems: 'flex-start',
+          gap: spacing.sm,
         },
-        heroIcon: { marginBottom: 6 },
+        heroIcon: { marginTop: 2, flexShrink: 0 },
+        heroContent: { flex: 1, flexDirection: 'column' },
         title: { fontSize: 20, fontWeight: '800', color: colors.text, marginBottom: 2 },
         heroText: { fontSize: 13, lineHeight: 18, color: colors.textSecondary },
         cardsWrap: { gap: spacing.sm },
@@ -546,10 +550,12 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
       >
         <View style={styles.hero}>
           <Ionicons name="cube-outline" size={22} color={colors.primary} style={styles.heroIcon} />
-          <Text style={styles.title}>Empty Collected Cylinder</Text>
-          <Text style={styles.heroText}>
-            Review collected empties by size. If a size has no collection, it still appears as 0.
-          </Text>
+          <View style={styles.heroContent}>
+            <Text style={styles.title}>Empty Collected Cylinder</Text>
+            <Text style={styles.heroText}>
+              Review collected empties by size. If a size has no collection, it still appears as 0.
+            </Text>
+          </View>
         </View>
 
         <View style={styles.cardsWrap}>

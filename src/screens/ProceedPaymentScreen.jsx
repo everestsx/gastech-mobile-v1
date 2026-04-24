@@ -64,7 +64,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   const [journals, setJournals] = useState([]);
   const [vehicleJournalIds, setVehicleJournalIds] = useState({ cashJournalId: null, chequeJournalId: null });
   const [hasSyncedOnce, setHasSyncedOnce] = useState(false);
-  const [selectedPaymentMethods, setSelectedPaymentMethods] = useState([PAYMENT_CASH]);
+  const [selectedPaymentMethods, setSelectedPaymentMethods] = useState([]);
   const [cashAmount, setCashAmount] = useState(() => (orderTotalRounded > 0 ? formatAmount(orderTotalRounded) : ''));
   const [checkAmount, setCheckAmount] = useState('');
   const [lastEditedAmount, setLastEditedAmount] = useState(PAYMENT_CASH);

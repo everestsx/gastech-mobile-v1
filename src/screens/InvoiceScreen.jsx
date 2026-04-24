@@ -1617,8 +1617,13 @@ export default function InvoiceScreen({ route, navigation }) {
           borderColor: colors.border,
         },
         sigCapBtnPrimary: { backgroundColor: colors.primary, borderColor: colors.primary },
+        sigCapBtnSaved: {
+          backgroundColor: colors.primary + '2a',
+          borderColor: colors.primary + '55',
+        },
         sigCapBtnText: { fontSize: 15, fontWeight: '600', color: colors.textSecondary },
         sigCapBtnTextLight: { fontSize: 15, fontWeight: '600', color: '#fff' },
+        sigCapBtnTextSaved: { fontSize: 15, fontWeight: '700', color: colors.primary },
         sigCapDoneBtn: {
           flexDirection: 'row',
           alignItems: 'center',
@@ -3020,7 +3025,7 @@ export default function InvoiceScreen({ route, navigation }) {
           if (blockSignatureModalDismiss) {
             Alert.alert(
               'Signatures needed',
-              'Add both signatures, then tap Save signatures. Use the tabs to switch between customer and driver.'
+                  'Add both signatures, then tap Continue. Use the tabs to switch between customer and driver.'
             );
             return;
           }
@@ -3036,7 +3041,7 @@ export default function InvoiceScreen({ route, navigation }) {
               <Text style={styles.sigCapHeroTitle}>{t('invoice.signToConfirmDelivery', 'Sign to confirm delivery')}</Text>
               <Text style={styles.sigCapHeroSubtitle}>
                 {blockSignatureModalDismiss
-                  ? 'Add customer and driver signatures, then tap Save signatures.'
+                  ? 'Add customer and driver signatures, then tap Continue.'
                   : 'Add signatures if you can. You can close when they are optional.'}
               </Text>
             </View>
@@ -3158,11 +3163,18 @@ export default function InvoiceScreen({ route, navigation }) {
                     <Text style={styles.sigCapBtnText}>{t('invoice.clear', 'Clear')}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
-                    style={[styles.sigCapBtn, styles.sigCapBtnPrimary]}
+                    style={[
+                      styles.sigCapBtn,
+                      captureCustomerSaved ? styles.sigCapBtnSaved : styles.sigCapBtnPrimary,
+                    ]}
                     onPress={() => captureCustomerRef.current?.readSignature()}
                   >
-                    <Text style={styles.sigCapBtnTextLight}>
-                      {captureCustomerSaved ? 'Continue' : 'Save customer'}
+                    <Text
+                      style={
+                        captureCustomerSaved ? styles.sigCapBtnTextSaved : styles.sigCapBtnTextLight
+                      }
+                    >
+                      {captureCustomerSaved ? 'Saved' : 'Save customer'}
                     </Text>
                   </TouchableOpacity>
                 </View>
@@ -3179,11 +3191,14 @@ export default function InvoiceScreen({ route, navigation }) {
                     <Text style={styles.sigCapBtnText}>{t('invoice.clear', 'Clear')}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
-                    style={[styles.sigCapBtn, styles.sigCapBtnPrimary]}
+                    style={[
+                      styles.sigCapBtn,
+                      captureDriverSaved ? styles.sigCapBtnSaved : styles.sigCapBtnPrimary,
+                    ]}
                     onPress={() => captureDriverRef.current?.readSignature()}
                   >
-                    <Text style={styles.sigCapBtnTextLight}>
-                      {captureDriverSaved ? 'Continue' : 'Save driver'}
+                    <Text style={captureDriverSaved ? styles.sigCapBtnTextSaved : styles.sigCapBtnTextLight}>
+                      {captureDriverSaved ? 'Saved' : 'Save driver'}
                     </Text>
                   </TouchableOpacity>
                 </View>
@@ -3200,7 +3215,7 @@ export default function InvoiceScreen({ route, navigation }) {
                 if (!custOk || !drvOk) {
                   Alert.alert(
                     'Signatures',
-                    'Use Save customer and Save driver on each tab, then tap Save signatures.'
+                    'Use Save customer and Save driver on each tab, then tap Continue.'
                   );
                   return;
                 }
@@ -3209,7 +3224,7 @@ export default function InvoiceScreen({ route, navigation }) {
               activeOpacity={0.88}
             >
               <Ionicons name="checkmark-done-outline" size={22} color="#fff" />
-              <Text style={styles.evidenceSaveBtnText}>{t('invoice.saveSignatures', 'Save signatures')}</Text>
+              <Text style={styles.evidenceSaveBtnText}>{t('login.continue', 'Continue')}</Text>
             </TouchableOpacity>
           </View>
         </View>

@@ -361,6 +361,31 @@ export default function LoginScreen({ navigation }) {
       width: '100%',
       marginTop: spacing.lg,
     },
+    sectionEyebrow: {
+      fontSize: 11,
+      fontWeight: '800',
+      color: colors.textSecondary,
+      letterSpacing: 1,
+      textTransform: 'uppercase',
+      marginBottom: 10,
+      marginLeft: 4,
+    },
+    langCard: {
+      backgroundColor: colors.surface,
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: borderRadius.lg,
+      padding: spacing.sm,
+      marginBottom: spacing.md,
+    },
+    credentialsCard: {
+      backgroundColor: colors.background,
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: borderRadius.xl,
+      padding: spacing.sm,
+      marginBottom: spacing.sm,
+    },
     inputLabel: {
       fontSize: 12,
       fontWeight: '700',
@@ -372,13 +397,16 @@ export default function LoginScreen({ navigation }) {
     inputGroup: {
       flexDirection: 'row',
       alignItems: 'center',
-      backgroundColor: colors.background,
+      backgroundColor: colors.surface,
       borderWidth: 1.5,
       borderColor: colors.border,
       borderRadius: borderRadius.lg,
       paddingHorizontal: 16,
       height: 56,
       marginBottom: spacing.lg,
+    },
+    inputGroupLast: {
+      marginBottom: spacing.xs,
     },
     loginBtn: {
       backgroundColor: colors.primary,
@@ -620,17 +648,17 @@ export default function LoginScreen({ navigation }) {
       justifyContent: 'center',
     },
     langFooter: {
-      paddingTop: spacing.sm,
+      paddingTop: 0,
     },
     langSelectBtn: {
       flexDirection: 'row',
       alignItems: 'center',
-      backgroundColor: colors.background,
-      borderWidth: 1.5,
-      borderColor: colors.border,
+      backgroundColor: colors.primary + '10',
+      borderWidth: 1,
+      borderColor: colors.primary + '40',
       borderRadius: borderRadius.lg,
       paddingHorizontal: 16,
-      height: 52,
+      height: 50,
       gap: 10,
     },
     langSelectBtnOpen: {
@@ -789,10 +817,36 @@ export default function LoginScreen({ navigation }) {
             </View>
 
             <View style={styles.formSection}>
-              <View
-                  style={styles.dropdownWrapper}
-              >
-                <Text style={styles.inputLabel}>{t('login.vehicleID', 'Vehicle ID')}</Text>
+              <View style={styles.langCard}>
+                <Text style={styles.sectionEyebrow}>{t('login.language', 'Language')}</Text>
+                <TouchableOpacity
+                  style={[styles.langSelectBtn, languageMenuVisible && styles.langSelectBtnOpen]}
+                  onPress={() => {
+                    Keyboard.dismiss();
+                    setLanguageMenuVisible(true);
+                  }}
+                  activeOpacity={0.85}
+                  accessibilityRole="button"
+                  accessibilityLabel="Language"
+                  accessibilityHint="Choose app language"
+                >
+                  <Ionicons name="language-outline" size={22} color={colors.primary} />
+                  <Text style={styles.langSelectLabel} numberOfLines={1}>
+                    {currentLanguageLabel}
+                  </Text>
+                  <Ionicons
+                    name={languageMenuVisible ? 'chevron-down' : 'chevron-up'}
+                    size={20}
+                    color={colors.textSecondary}
+                  />
+                </TouchableOpacity>
+              </View>
+              <View style={styles.credentialsCard}>
+                <Text style={styles.sectionEyebrow}>{t('login.login', 'Login')}</Text>
+                <View
+                    style={styles.dropdownWrapper}
+                >
+                  <Text style={styles.inputLabel}>{t('login.vehicleID', 'Vehicle ID')}</Text>
 
                 <TouchableOpacity
                     ref={dropdownRef}
@@ -805,7 +859,7 @@ export default function LoginScreen({ navigation }) {
                   <Ionicons name={dropdownVisible ? "chevron-up" : "chevron-down"} size={20} color={colors.textSecondary} />
                 </TouchableOpacity>
 
-                <Modal visible={dropdownVisible} transparent animationType="fade">
+                  <Modal visible={dropdownVisible} transparent animationType="fade">
                   <TouchableOpacity
                       style={[styles.fullScreenOverlay, { backgroundColor: 'transparent' }]}
                       activeOpacity={1}
@@ -867,26 +921,27 @@ export default function LoginScreen({ navigation }) {
                     </View>
                   </TouchableOpacity>
                 </Modal>
-              </View>
-              <Text style={styles.inputLabel}>{t('login.driverPin', 'Driver pin')}</Text>
-              <View style={styles.inputGroup}>
-                <Ionicons name="key-outline" size={20} color={colors.primary} style={{ marginRight: 12 }} />
-                <TextInput
-                    style={{ flex: 1, fontSize: 16, color: colors.text }}
-                    placeholder={t('login.yourDriverPin', 'Your driver pin')}
-                    placeholderTextColor={colors.textSecondary}
-                    secureTextEntry={!showPassword}
-                    value={password}
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    returnKeyType="done"
-                    blurOnSubmit
-                    onChangeText={setPassword}
-                    onSubmitEditing={handleLogin}
-                />
-                <TouchableOpacity onPress={() => setShowPassword(!showPassword)}>
-                  <Ionicons name={showPassword ? "eye-off-outline" : "eye-outline"} size={22} color={colors.textSecondary} />
-                </TouchableOpacity>
+                </View>
+                <Text style={styles.inputLabel}>{t('login.driverPin', 'Driver pin')}</Text>
+                <View style={[styles.inputGroup, styles.inputGroupLast]}>
+                  <Ionicons name="key-outline" size={20} color={colors.primary} style={{ marginRight: 12 }} />
+                  <TextInput
+                      style={{ flex: 1, fontSize: 16, color: colors.text }}
+                      placeholder={t('login.yourDriverPin', 'Your driver pin')}
+                      placeholderTextColor={colors.textSecondary}
+                      secureTextEntry={!showPassword}
+                      value={password}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      returnKeyType="done"
+                      blurOnSubmit
+                      onChangeText={setPassword}
+                      onSubmitEditing={handleLogin}
+                  />
+                  <TouchableOpacity onPress={() => setShowPassword(!showPassword)}>
+                    <Ionicons name={showPassword ? "eye-off-outline" : "eye-outline"} size={22} color={colors.textSecondary} />
+                  </TouchableOpacity>
+                </View>
               </View>
 
               <TouchableOpacity
@@ -906,31 +961,6 @@ export default function LoginScreen({ navigation }) {
             </View>
             </View>
 
-            {loginPhase === 'credentials' ? (
-              <View style={[styles.langFooter, { paddingBottom: spacing.sm }]}>
-                <TouchableOpacity
-                  style={[styles.langSelectBtn, languageMenuVisible && styles.langSelectBtnOpen]}
-                  onPress={() => {
-                    Keyboard.dismiss();
-                    setLanguageMenuVisible(true);
-                  }}
-                  activeOpacity={0.85}
-                  accessibilityRole="button"
-                  accessibilityLabel="Language"
-                  accessibilityHint="Choose app language"
-                >
-                  <Ionicons name="language-outline" size={22} color={colors.primary} />
-                  <Text style={styles.langSelectLabel} numberOfLines={1}>
-                    {currentLanguageLabel}
-                  </Text>
-                  <Ionicons
-                    name={languageMenuVisible ? 'chevron-down' : 'chevron-up'}
-                    size={20}
-                    color={colors.textSecondary}
-                  />
-                </TouchableOpacity>
-              </View>
-            ) : null}
           </View>
         </KeyboardAvoidingView>
 
