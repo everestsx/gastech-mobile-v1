@@ -10,6 +10,7 @@ const BAR_GAP = 4;
 const FIXED_BAR_WIDTH = 18;
 const LABEL_HEIGHT = 28;
 
+const STACK_COLORS = ['#2563eb', '#0891b2', '#16a34a', '#d97706', '#dc2626', '#7c3aed', '#0f766e'];
 const COLOR_DELIVERED = '#16a34a';
 const COLOR_PENDING = '#dc2626';
 
@@ -52,6 +53,14 @@ export default function DeliveryProgressBarChart({ data = [], title = 'Delivery 
     });
     return Array.from(set).sort(gasSort);
   }, [sortedData]);
+
+  const gasColorByKey = useMemo(() => {
+    const map = {};
+    gasKeys.forEach((k, i) => {
+      map[k] = STACK_COLORS[i % STACK_COLORS.length];
+    });
+    return map;
+  }, [gasKeys]);
 
   const maxVal = useMemo(() => {
     const max = Math.max(
@@ -209,10 +218,26 @@ export default function DeliveryProgressBarChart({ data = [], title = 'Delivery 
               const drawable = CHART_HEIGHT - LABEL_HEIGHT - 10;
               const barHeight = total > 0 ? Math.max(6, (total / maxVal) * drawable) : 0;
               const isSelected = selectedIndex === i;
-              const deliveredHeight = total > 0 ? (delivered / total) * barHeight : 0;
-              const pendingHeight = total > 0 ? (pending / total) * barHeight : 0;
-              const safeDeliveredHeight = Math.max(0, Math.min(barHeight, deliveredHeight));
-              const safePendingHeight = Math.max(0, Math.min(barHeight - safeDeliveredHeight, pendingHeight));
+              const isIncomplete = pending > 0;
+
+              const activeKeys = gasKeys.filter((k) => Math.max(0, Number(row?.stacks?.[k]) || 0) > 0);
+              let used = 0;
+              const stackSegments = activeKeys
+                .map((k, idx) => {
+                  const qty = Math.max(0, Number(row?.stacks?.[k]) || 0);
+                  if (qty <= 0 || total <= 0) return null;
+                  let h = (qty / total) * barHeight;
+                  if (idx === activeKeys.length - 1) {
+                    h = Math.max(0, barHeight - used);
+                  }
+                  used += h;
+                  return {
+                    key: k,
+                    height: h,
+                    color: gasColorByKey[k],
+                  };
+                })
+                .filter(Boolean);
 
               return (
                 <Pressable
@@ -249,24 +274,34 @@ export default function DeliveryProgressBarChart({ data = [], title = 'Delivery 
                       justifyContent: 'flex-end',
                     }}
                   >
-                    {safePendingHeight > 0 ? (
+                    {isIncomplete ? (
                       <View
                         style={{
                           width: '100%',
-                          height: safePendingHeight,
+                          height: barHeight,
                           backgroundColor: COLOR_PENDING,
                         }}
                       />
-                    ) : null}
-                    {safeDeliveredHeight > 0 ? (
+                    ) : stackSegments.length ? (
+                      stackSegments.map((seg) => (
+                        <View
+                          key={`${row.shopId || i}-${seg.key}`}
+                          style={{
+                            width: '100%',
+                            height: seg.height,
+                            backgroundColor: seg.color,
+                          }}
+                        />
+                      ))
+                    ) : (
                       <View
                         style={{
                           width: '100%',
-                          height: safeDeliveredHeight,
+                          height: barHeight,
                           backgroundColor: COLOR_DELIVERED,
                         }}
                       />
-                    ) : null}
+                    )}
                   </View>
                 </Pressable>
               );
@@ -304,12 +339,12 @@ export default function DeliveryProgressBarChart({ data = [], title = 'Delivery 
       </ScrollView>
       <Text style={styles.scrollHint}>{t('common.swipeToSeeAllShops', '← Swipe to see all shops →')}</Text>
       <View style={styles.legendRow}>
-        <View style={styles.legendItem}>
-          <View style={[styles.legendBox, { backgroundColor: COLOR_DELIVERED }]} />
-          <Text style={[styles.legendText, { color: colors.text }]}>
-            {t('common.delivered', 'Delivered')}
-          </Text>
-        </View>
+        {gasKeys.map((k) => (
+          <View style={styles.legendItem} key={`legend-${k}`}>
+            <View style={[styles.legendBox, { backgroundColor: gasColorByKey[k] }]} />
+            <Text style={[styles.legendText, { color: colors.text }]}>{k}</Text>
+          </View>
+        ))}
         <View style={styles.legendItem}>
           <View style={[styles.legendBox, { backgroundColor: COLOR_PENDING }]} />
           <Text style={[styles.legendText, { color: colors.text }]}>
