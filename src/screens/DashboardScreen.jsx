@@ -66,6 +66,7 @@ import * as deliveryQtyDb from '../database/deliveryQty.js';
 import * as saleOrderLinesDb from '../database/saleOrderLines.js';
 import DeliveryProgressBarChart from '../components/DeliveryProgressBarChart';
 import SyncHeaderBadge from '../components/SyncHeaderBadge';
+import RichNotification from '../components/RichNotification';
 import { useSync } from '../context/SyncContext';
 import { odooImageToUri, getPortersEmployees } from '../services/employee.service';
 import {
@@ -226,6 +227,7 @@ export default function DashboardScreen({ navigation }) {
   const [routePickerVisible, setRoutePickerVisible] = useState(false);
   const [profileModal, setProfileModal] = useState(null);
   const [postLoginSyncModalVisible, setPostLoginSyncModalVisible] = useState(false);
+  const [notification, setNotification] = useState({ visible: false, title: '', message: '', type: 'info' });
   const lastSyncNotificationRef = React.useRef(null);
 
   const postLoginSyncCopy = useMemo(() => {
@@ -593,17 +595,21 @@ export default function DashboardScreen({ navigation }) {
     lastSyncNotificationRef.current = syncResult;
 
     if (syncResult === 'success') {
-      Alert.alert(
-        t('common.syncSuccessfulTitle', 'Sync successful'),
-        t('common.syncSuccessfulBody', 'Data synced successfully.')
-      );
+      setNotification({
+        visible: true,
+        title: t('common.syncSuccessfulTitle', 'Sync successful'),
+        message: t('common.syncSuccessfulBody', 'Data synced successfully.'),
+        type: 'success',
+      });
       return;
     }
 
-    Alert.alert(
-      t('common.syncFailedTitle', 'Sync failed'),
-      syncErrorMessage || t('common.syncFailedBody', 'Data sync failed. Please try again.')
-    );
+    setNotification({
+      visible: true,
+      title: t('common.syncFailedTitle', 'Sync failed'),
+      message: syncErrorMessage || t('common.syncFailedBody', 'Data sync failed. Please try again.'),
+      type: 'error',
+    });
   }, [isSyncing, syncResult, syncErrorMessage, t]);
 
   useEffect(() => {
@@ -1714,6 +1720,13 @@ export default function DashboardScreen({ navigation }) {
 
   return (
     <>
+    <RichNotification
+      visible={notification.visible}
+      title={notification.title}
+      message={notification.message}
+      type={notification.type}
+      onHide={() => setNotification((prev) => ({ ...prev, visible: false }))}
+    />
     <ScrollView
       style={styles.container}
       contentContainerStyle={styles.content}

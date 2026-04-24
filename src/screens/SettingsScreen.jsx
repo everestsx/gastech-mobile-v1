@@ -60,7 +60,9 @@ export default function SettingsScreen({ navigation }) {
     </View>
   );
 
-  const syncPeriodLabel = syncPeriod === '7days'
+  const syncPeriodLabel = syncPeriod === '3days'
+    ? t('settings.syncPeriodOptions.last3Days', 'Last 3 days')
+    : syncPeriod === '7days'
     ? t('settings.syncPeriodOptions.last7Days', 'Last 7 days')
     : syncPeriod === '30days'
       ? t('settings.syncPeriodOptions.last30Days', 'Last 30 days')
@@ -247,6 +249,7 @@ export default function SettingsScreen({ navigation }) {
           <View style={[styles.modalContent, { backgroundColor: colors.surface }]}>
             <Text style={[styles.modalTitle, { color: colors.text }]}>{t('settings.syncPeriod')}</Text>
             {[
+              { label: t('settings.syncPeriodOptions.last3Days', 'Last 3 days'), value: '3days' },
               { label: t('settings.syncPeriodOptions.last7Days', 'Last 7 days'), value: '7days' },
               { label: t('settings.syncPeriodOptions.last30Days', 'Last 30 days'), value: '30days' },
               { label: t('settings.syncPeriodOptions.last90Days', 'Last 90 days'), value: '90days' },

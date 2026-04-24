@@ -5,12 +5,14 @@ import { Ionicons } from '@expo/vector-icons';
 import { useTranslation } from 'react-i18next';
 import { colors, spacing, borderRadius } from '../constants/theme';
 import { runSync, getLastSyncTime, getUserSession, logout, getSyncIntervalMinutes } from '../services/sync.service';
+import RichNotification from './RichNotification';
 
 export default function DrawerContent({ navigation }) {
   const { t } = useTranslation();
   const [syncing, setSyncing] = useState(false);
   const [lastSync, setLastSync] = useState(null);
   const [user, setUser] = useState(null);
+  const [notification, setNotification] = useState({ visible: false, title: '', message: '', type: 'info' });
 
   const refreshLastSync = async () => {
     const t = await getLastSyncTime();
@@ -36,15 +38,22 @@ export default function DrawerContent({ navigation }) {
       const result = await runSync();
       await refreshLastSync();
       if (result.error) {
-        Alert.alert(t('drawer.syncFailed', 'Sync failed'), result.error);
+        setNotification({
+          visible: true,
+          title: t('drawer.syncFailed', 'Sync failed'),
+          message: result.error,
+          type: 'error',
+        });
       } else {
-        Alert.alert(
-          t('drawer.syncDone', 'Sync done'),
-          t('drawer.syncDoneMessage', '{{customers}} customers · {{orders}} orders', {
+        setNotification({
+          visible: true,
+          title: t('drawer.syncDone', 'Sync done'),
+          message: t('drawer.syncDoneMessage', '{{customers}} customers · {{orders}} orders', {
             customers: result.customers,
             orders: result.orders,
-          })
-        );
+          }),
+          type: 'success',
+        });
       }
     } finally {
       setSyncing(false);
@@ -71,6 +80,13 @@ export default function DrawerContent({ navigation }) {
 
   return (
     <View style={styles.container}>
+      <RichNotification
+        visible={notification.visible}
+        title={notification.title}
+        message={notification.message}
+        type={notification.type}
+        onHide={() => setNotification((prev) => ({ ...prev, visible: false }))}
+      />
       <View style={styles.header}>
         <Text style={styles.title}>{t('drawer.title', 'Gas Cylinder Delivery')}</Text>
         {user?.driverName ? (

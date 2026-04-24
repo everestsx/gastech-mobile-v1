@@ -2028,12 +2028,15 @@ export function getSyncIntervalMinutes(syncInterval = '5min') {
 async function getCutoffDateForSync() {
   try {
     const storage = await getAsyncStorage();
-    const syncPeriod = await storage.getItem(KEYS.SYNC_PERIOD) || '7days';
+    const syncPeriod = await storage.getItem(KEYS.SYNC_PERIOD) || '3days';
 
     const now = new Date();
     let cutoffDate = new Date(now);
 
     switch (syncPeriod) {
+      case '3days':
+        cutoffDate.setDate(now.getDate() - 3);
+        break;
       case '7days':
         cutoffDate.setDate(now.getDate() - 7);
         break;

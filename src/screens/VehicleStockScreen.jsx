@@ -19,7 +19,6 @@ import { getUserSession, getCachedVehicleInventoryByLocation, getVehicleLocation
 import { getGasTypeBlueColor, parseKgFromProductName } from '../utils/productDisplay';
 import { buildDefaultGasVehicleInventoryRows } from '../utils/defaultGasStock';
 import { getProductImageSource } from '../utils/gasImage';
-import * as syncQueueDb from '../database/syncQueue.js';
 import * as productsDb from '../database/products.js';
 import { canonicalKgFromName, isEmptyCylinderName, isGasCylinderName } from '../utils/cylinderCatalog';
 
@@ -54,7 +53,7 @@ function orderDateToLocalDay(value) {
   return Number.isNaN(parsed.getTime()) ? '' : formatLocalYyyyMmDd(parsed);
 }
 
-function StockCard({ item, colors, cardWidth, isLeft, productImageUri, deliveredQty, emptyCollectedQty, emptyOnHandQty }) {
+function StockCard({ item, colors, cardWidth, isLeft, productImageUri, deliveredQty, emptyOnHandQty }) {
   const rawName = item.product_name || `Product ${item.product_id || ''}`.trim() || '—';
   const name = formatProductName(rawName);
   const stockQuantity = Math.max(0, Number(item.quantity) || 0);
@@ -119,8 +118,8 @@ function StockCard({ item, colors, cardWidth, isLeft, productImageUri, delivered
         {isGasCylinderName(rawName) ? (
           <View style={styles.emptyRowsWrap}>
             <View style={styles.emptyRow}>
-              <Text style={styles.emptyLabel}>Empty Collected</Text>
-              <Text style={[styles.emptyValue, { color: '#0f766e' }]}>{Number(emptyCollectedQty) || 0}</Text>
+              <Text style={styles.emptyLabel}>Empty On-hand</Text>
+              <Text style={[styles.emptyValue, { color: '#0f766e' }]}>{Number(emptyOnHandQty) || 0}</Text>
             </View>
           </View>
         ) : null}
@@ -251,7 +250,6 @@ export default function VehicleStockScreen({ navigation }) {
   const [productIdToImageUri, setProductIdToImageUri] = useState({});
   const [productIdToName, setProductIdToName] = useState({});
   const [productStatsById, setProductStatsById] = useState({});
-  const [emptyCollectedByKg, setEmptyCollectedByKg] = useState({});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -345,22 +343,6 @@ const load = useCallback(async (forceRefresh = false) => {
         return acc;
       }, {})
     );
-    const paymentPayloadMap = orderIds.length
-      ? await syncQueueDb.getLatestPaymentPayloadMapBySaleOrderIds(orderIds)
-      : {};
-    const nextEmptyByKg = {};
-    for (const soId of orderIds) {
-      const payload = paymentPayloadMap?.[Number(soId)]?.payload || {};
-      const entries = Array.isArray(payload?.emptyCylinderEntries) ? payload.emptyCylinderEntries : [];
-      for (const entry of entries) {
-        const kg = Number(entry?.kg);
-        const qty = Number(entry?.emptyCollectedQty) || 0;
-        if (!Number.isFinite(kg) || qty <= 0) continue;
-        nextEmptyByKg[kg] = (nextEmptyByKg[kg] || 0) + qty;
-      }
-    }
-    setEmptyCollectedByKg(nextEmptyByKg);
-
     if (locationId) {
       console.log(`[UI Debug] Found ${data.length} items for location ${locationId}`, data);
       setInventory(Array.isArray(data) ? data : []);
@@ -368,12 +350,10 @@ const load = useCallback(async (forceRefresh = false) => {
       console.warn(`[UI Debug] No location_id found for vehicle ${vId}`);
       setInventory([]);
       setProductStatsById({});
-      setEmptyCollectedByKg({});
     }
   } else {
     setInventory([]);
     setProductStatsById({});
-    setEmptyCollectedByKg({});
   }
 }, [syncDateField]);
 
@@ -409,7 +389,8 @@ useEffect(() => {
       if (!isEmptyCylinderName(name)) continue;
       const kg = canonicalKgFromName(name);
       if (kg == null) continue;
-      const qty = Number(row?.available_quantity ?? row?.quantity) || 0;
+      // Match Dashboard logic: empty on-hand comes from inventory quantity.
+      const qty = Number(row?.quantity) || 0;
       map[kg] = (map[kg] || 0) + Math.max(0, qty);
     }
     return map;
@@ -505,13 +486,6 @@ useEffect(() => {
               isLeft={index % 2 === 0}
               productImageUri={item.product_id != null ? productIdToImageUri[item.product_id] : null}
               deliveredQty={item.product_id != null ? (productStatsById[item.product_id]?.delivered ?? 0) : 0}
-              emptyCollectedQty={(() => {
-                const name = item.product_id != null
-                  ? (productIdToName[item.product_id] || item.product_name)
-                  : item.product_name;
-                const kg = parseKgFromProductName(String(name || ''));
-                return kg != null ? (emptyCollectedByKg[kg] || 0) : 0;
-              })()}
               emptyOnHandQty={(() => {
                 const name = item.product_id != null
                   ? (productIdToName[item.product_id] || item.product_name)
