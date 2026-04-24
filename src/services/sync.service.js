@@ -1300,6 +1300,7 @@ async function processSyncQueue() {
             }
           }
 
+          let allInventoryUpdatesSynced = true;
           if (!movedByPicking) {
             const { setQuantQuantityAtLocation, adjustQuantQuantityAtLocation } = await import('./vehicleInventory.service.js');
             for (const u of updates) {
@@ -1313,13 +1314,14 @@ async function processSyncQueue() {
                 } else if (Number.isFinite(targetQty)) {
                   await setQuantQuantityAtLocation(locationId, productId, targetQty);
                 }
+                await vehicleInventoriesDb.clearLocalModificationFlagByLocation(locationId, productId);
               } catch (invErr) {
+                allInventoryUpdatesSynced = false;
                 logWarn(
                   'queue inventory_update upload',
                   new Error(`loc=${locationId} product=${productId}: ${String(invErr?.message || invErr).slice(0, 160)}`)
                 );
               }
-              await vehicleInventoriesDb.clearLocalModificationFlagByLocation(locationId, productId);
             }
           } else {
             for (const u of updates) {
@@ -1329,8 +1331,15 @@ async function processSyncQueue() {
             }
           }
 
-          await syncQueueDb.markSynced(Number(item.id));
-          log('queue', `inventory synced id=${item.id} location=${locationId} items=${updates.length}`);
+          if (allInventoryUpdatesSynced) {
+            await syncQueueDb.markSynced(Number(item.id));
+            log('queue', `inventory synced id=${item.id} location=${locationId} items=${updates.length}`);
+          } else {
+            log(
+              'queue',
+              `inventory id=${item.id} partially failed; keep pending for retry (location=${locationId}, items=${updates.length})`
+            );
+          }
         } catch (e) {
           logWarn('queue inventory_update', e);
         }
