@@ -27,7 +27,6 @@ import * as stockMoveLinesDb from '../database/stockMoveLines.js';
 import * as stockMovesDb from '../database/stockMoves.js';
 import * as stockPickingsDb from '../database/stockPickings.js';
 import * as syncQueueDb from '../database/syncQueue.js';
-import * as vehicleInventoriesDb from '../database/vehicleInventories.js';
 import * as productsDb from '../database/products.js';
 import {
   buildProductIdToMoveLineIdMap,
@@ -652,17 +651,6 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
         console.log(`[Inventory Update] Product ${pid}: ${prev} - ${qtyUsed} → running ${newStock}`);
       }
 
-      for (const [pid, newStock] of remainingByProduct) {
-        await vehicleInventoriesDb.updateVehicleInventoryQuantityByLocation(
-          locationId,
-          pid,
-          newStock
-        );
-      }
-
-      const allInventory = await vehicleInventoriesDb.getVehicleInventoryByLocationId(locationId);
-      console.log('[Inventory Update] Full inventory after update:', JSON.stringify(allInventory));
-
       const inventoryPayload = {
         saleOrderId: Number(order.id),
         vehicleId,
@@ -682,7 +670,9 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
         await syncQueueDb.enqueue(syncQueueDb.ACTION_INVENTORY_UPDATE, inventoryPayload);
       }
 
-      console.log('[Inventory Update] Complete - enqueued for sync');
+      // Intentionally do not mutate local inventory here.
+      // Stock should reduce only after user confirms "Complete order" on PaymentProof.
+      console.log('[Inventory Update] Prepared held inventory update for completion');
     } catch (error) {
       console.error('[Inventory Update] Failed:', error);
       throw new Error('Failed to update vehicle inventory');

@@ -123,6 +123,12 @@
       "pleaseSelectAReason": "කරුණාකර හේතුවක් තෝරන්න.",
       "reasonForChange": "වෙනස් කිරීමට හේතුව",
       "reasonRequired": "හේතුවක් අවශ්‍යයි",
+      "reasons": {
+        "loanReturnPending": "ණයට දුන් සිලින්ඩර ආපසු ලබාදීම ඉතිරිව ඇත",
+        "newIssueReplacement": "නව නිකුත් කිරීමක් සඳහා ප්‍රතිස්ථාපනය",
+        "cylinderShortageAtCustomer": "පාරිභෝගිකයා අසල හිස් සිලින්ඩර හිඟය",
+        "pendingEmptyCollection": "හිස් සිලින්ඩර එකතු කිරීම ඉතිරිව ඇත"
+      },
       "reviewCollectedEmptiesBySizeIfASize": "එකතු කළ හිස් සිලින්ඩර ප්‍රමාණය අනුව පරීක්ෂා කරන්න. යම් ප්‍රමාණයක එකතුවක් නොමැති නම්, එය තවමත් 0 ලෙස පෙන්වයි.",
       "saveAndContinue": "සේව් කර ඉදිරියට යන්න",
       "selectOneReasonToContinue": "ඉදිරියට යාමට එක් හේතුවක් තෝරන්න.",

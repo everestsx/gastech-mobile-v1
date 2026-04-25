@@ -31,7 +31,15 @@
       "emptyCylinderCollection": "காலி சிலிண்டர் சேகரிப்பு",
       "emptyCollected": "காலி சேகரிக்கப்பட்டது",
       "resetToDefault": "இயல்புநிலைக்கு மீட்டமை",
-      "continueToInvoice": "விலைப்பட்டியலுக்குத் தொடரவும்"
+      "continueToInvoice": "விலைப்பட்டியலுக்குத் தொடரவும்",
+      "reasonRequired": "காரணம் அவசியம்",
+      "pleaseSelectAReason": "தயவுசெய்து ஒரு காரணத்தைத் தேர்ந்தெடுக்கவும்.",
+      "reasons": {
+        "loanReturnPending": "கடனாக கொடுத்த சிலிண்டர் திருப்பி அளிப்பு நிலுவையில் உள்ளது",
+        "newIssueReplacement": "புதிய வழங்கலுக்கான மாற்று",
+        "cylinderShortageAtCustomer": "வாடிக்கையாளரிடம் காலி சிலிண்டர் குறைவு",
+        "pendingEmptyCollection": "காலி சிலிண்டர் சேகரிப்பு நிலுவையில் உள்ளது"
+      }
     },
     "home": {
       "welcomeToMyApp": "எனது செயலிக்கு வருக",

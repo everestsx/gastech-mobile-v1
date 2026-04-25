@@ -24,6 +24,7 @@ import * as localInvoicesDb from '../database/localInvoices.js';
 import * as localPaymentsDb from '../database/localPayments.js';
 import * as stockPickingsDb from '../database/stockPickings.js';
 import * as syncQueueDb from '../database/syncQueue.js';
+import * as vehicleInventoriesDb from '../database/vehicleInventories.js';
 import { getSaleOrderDetailsFromDB } from '../services/sync.service';
 import { empty } from '../database/dbHelpers.js';
 import { runSync } from '../services/sync.service';
@@ -100,6 +101,20 @@ export default function PaymentProofScreen({ route, navigation }) {
     }
     if (pendingInventory?.id != null) {
       const next = { ...(pendingInventory.payload || {}) };
+      const locationId = Number(next.locationId);
+      const updates = Array.isArray(next.updates) ? next.updates : [];
+      if (Number.isFinite(locationId) && locationId > 0 && updates.length > 0) {
+        for (const update of updates) {
+          const productId = Number(update?.productId);
+          const newQuantity = Number(update?.newQuantity);
+          if (!Number.isFinite(productId) || productId <= 0 || !Number.isFinite(newQuantity)) continue;
+          await vehicleInventoriesDb.updateVehicleInventoryQuantityByLocation(
+            locationId,
+            productId,
+            Math.max(0, newQuantity)
+          );
+        }
+      }
       delete next.holdUntilComplete;
       await syncQueueDb.updateQueueItemPayload(pendingInventory.id, next);
     }

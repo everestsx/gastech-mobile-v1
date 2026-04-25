@@ -159,6 +159,16 @@
       "tapForSettings": "{{vehicle}} · Tap for settings",
       "vehicle": "Vehicle"
     },
+    "emptycylindercollection": {
+      "reasonRequired": "Reason required",
+      "pleaseSelectAReason": "Please select a reason.",
+      "reasons": {
+        "loanReturnPending": "Loan return pending",
+        "newIssueReplacement": "New issue replacement",
+        "cylinderShortageAtCustomer": "Cylinder shortage at customer",
+        "pendingEmptyCollection": "Pending empty collection"
+      }
+    },
     "common": {
       "loading": "Loading..."
     }

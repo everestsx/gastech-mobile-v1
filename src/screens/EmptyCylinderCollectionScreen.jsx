@@ -50,12 +50,32 @@ function qtyClose(a, b) {
 }
 
 const DISPLAY_KG_SIZES = [2.4, 5, 12.5, 37.5];
-const REASON_PRESETS = [
-  'Loan return pending',
-  'New issue replacement',
-  'Cylinder shortage at customer',
-  'Pending empty collection',
+const REASON_PRESET_KEYS = [
+  'loanReturnPending',
+  'newIssueReplacement',
+  'cylinderShortageAtCustomer',
+  'pendingEmptyCollection',
 ];
+const REASON_LABEL_FALLBACKS = {
+  en: {
+    loanReturnPending: 'Loan return pending',
+    newIssueReplacement: 'New issue replacement',
+    cylinderShortageAtCustomer: 'Cylinder shortage at customer',
+    pendingEmptyCollection: 'Pending empty collection',
+  },
+  si: {
+    loanReturnPending: 'ණයට දුන් සිලින්ඩර ආපසු ලබාදීම ඉතිරිව ඇත',
+    newIssueReplacement: 'නව නිකුත් කිරීමක් සඳහා ප්‍රතිස්ථාපනය',
+    cylinderShortageAtCustomer: 'පාරිභෝගිකයා අසල හිස් සිලින්ඩර හිඟය',
+    pendingEmptyCollection: 'හිස් සිලින්ඩර එකතු කිරීම ඉතිරිව ඇත',
+  },
+  ta: {
+    loanReturnPending: 'கடனாக கொடுத்த சிலிண்டர் திருப்பி அளிப்பு நிலுவையில் உள்ளது',
+    newIssueReplacement: 'புதிய வழங்கலுக்கான மாற்று',
+    cylinderShortageAtCustomer: 'வாடிக்கையாளரிடம் காலி சிலிண்டர் குறைவு',
+    pendingEmptyCollection: 'காலி சிலிண்டர் சேகரிப்பு நிலுவையில் உள்ளது',
+  },
+};
 const DEFAULT_MATCHED_EMPTY_NOTE = 'All empty cylinders were collected as per the delivered gas quantity.';
 
 function parseVehicleIdFromOrder(order) {
@@ -66,7 +86,7 @@ function parseVehicleIdFromOrder(order) {
 }
 
 export default function EmptyCylinderCollectionScreen({ route, navigation }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const {
@@ -79,7 +99,23 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [reasonModalVisible, setReasonModalVisible] = useState(false);
-  const [selectedReasonText, setSelectedReasonText] = useState('');
+  const [selectedReasonKey, setSelectedReasonKey] = useState('');
+  const resolvedLanguage = useMemo(
+    () => String(i18n?.resolvedLanguage || i18n?.language || 'en').split('-')[0].toLowerCase(),
+    [i18n?.language, i18n?.resolvedLanguage]
+  );
+  const reasonOptions = useMemo(
+    () =>
+      REASON_PRESET_KEYS.map((key) => ({
+        key,
+        label:
+          t(`emptycylindercollection.reasons.${key}`, { defaultValue: '' }) ||
+          REASON_LABEL_FALLBACKS[resolvedLanguage]?.[key] ||
+          REASON_LABEL_FALLBACKS.en[key] ||
+          key,
+      })),
+    [resolvedLanguage, t]
+  );
 
   const loadDefaults = useCallback(async () => {
     setLoading(true);
@@ -353,7 +389,7 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
 
   const onPressConfirm = useCallback(() => {
     if (hasAdjustment) {
-      setSelectedReasonText('');
+      setSelectedReasonKey('');
       setReasonModalVisible(true);
       return;
     }
@@ -361,15 +397,19 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
   }, [hasAdjustment, persistAndNavigate]);
 
   const onConfirmReason = useCallback(() => {
-    const selected = String(selectedReasonText || '').trim();
+    const selectedReason = reasonOptions.find((reason) => reason.key === selectedReasonKey);
+    const selected = String(selectedReason?.label || '').trim();
     if (!selected) {
-      Alert.alert('Reason required', 'Please select a reason.');
+      Alert.alert(
+        t('emptycylindercollection.reasonRequired', 'Reason required'),
+        t('emptycylindercollection.pleaseSelectAReason', 'Please select a reason.')
+      );
       return;
     }
     const body = buildEmptyCylinderChatterBody(buildEntriesPayload(), selected);
     setReasonModalVisible(false);
     void persistAndNavigate(body);
-  }, [buildEntriesPayload, persistAndNavigate, selectedReasonText]);
+  }, [buildEntriesPayload, persistAndNavigate, reasonOptions, selectedReasonKey, t]);
 
   const styles = useMemo(
     () =>
@@ -619,16 +659,16 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
               Select one reason to continue.
             </Text>
 
-            {REASON_PRESETS.map((reason) => {
-              const on = selectedReasonText === reason;
+            {reasonOptions.map((reason) => {
+              const on = selectedReasonKey === reason.key;
               return (
                 <TouchableOpacity
-                  key={reason}
+                  key={reason.key}
                   style={[styles.reasonOption, on && styles.reasonOptionOn]}
-                  onPress={() => setSelectedReasonText(reason)}
+                  onPress={() => setSelectedReasonKey(reason.key)}
                   activeOpacity={0.88}
                 >
-                  <Text style={styles.reasonOptionText}>{reason}</Text>
+                  <Text style={styles.reasonOptionText}>{reason.label}</Text>
                 </TouchableOpacity>
               );
             })}
