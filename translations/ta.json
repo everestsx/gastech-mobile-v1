@@ -28,12 +28,26 @@
       "credit": "கடன்"
     },
     "emptycylindercollection": {
+      "back": "பின்",
+      "changed": "மாற்றப்பட்டது",
+      "continue": "தொடரவும்",
+      "continueToInvoice": "விலைப்பட்டியலுக்கு தொடரவும்.",
+      "couldNotSaveEmptyCylinderDetails": "காலி சிலிண்டர் விவரங்களை சேமிக்க முடியவில்லை.",
       "emptyCylinderCollection": "காலி சிலிண்டர் சேகரிப்பு",
+      "emptyCollectedCylinder": "சேகரிக்கப்பட்ட காலி சிலிண்டர்",
       "emptyCollected": "காலி சேகரிக்கப்பட்டது",
+      "emptiesCollected": "சேகரிக்கப்பட்ட காலிகள்",
+      "error": "பிழை",
+      "gasDelivered": "விநியோகிக்கப்பட்ட எரிவாயு",
+      "reasonForChange": "மாற்றத்தின் காரணம்",
       "resetToDefault": "இயல்புநிலைக்கு மீட்டமை",
-      "continueToInvoice": "விலைப்பட்டியலுக்குத் தொடரவும்",
+      "reviewCollectedEmptiesBySizeIfASize": "அளவு வாரியாக சேகரிக்கப்பட்ட காலிகளை சரிபார்க்கவும். ஒரு அளவில் சேகரிப்பு இல்லாவிட்டாலும் அது 0 ஆக காட்டப்படும்.",
+      "saveAndContinue": "சேமித்து தொடரவும்",
+      "selectOneReasonToContinue": "தொடர ஒரு காரணத்தைத் தேர்ந்தெடுக்கவும்.",
       "reasonRequired": "காரணம் அவசியம்",
+      "reasonRequiredBecauseQtyChanged": "அளவை மாற்றியதால் காரணம் அவசியம்.",
       "pleaseSelectAReason": "தயவுசெய்து ஒரு காரணத்தைத் தேர்ந்தெடுக்கவும்.",
+      "totalEmptiesCollected": "மொத்தமாக சேகரிக்கப்பட்ட காலிகள்",
       "reasons": {
         "loanReturnPending": "கடனாக கொடுத்த சிலிண்டர் திருப்பி அளிப்பு நிலுவையில் உள்ளது",
         "newIssueReplacement": "புதிய வழங்கலுக்கான மாற்று",
@@ -322,7 +336,8 @@
       "invoice": "விலைப்பட்டியல்",
       "paymentProof": "பணம் செலுத்திய சான்று",
       "scanResult": "ஸ்கேன் முடிவு",
-      "customerQRGenerator": "வாடிக்கையாளர் QR ரேகை"
+      "customerQRGenerator": "வாடிக்கையாளர் QR ரேகை",
+      "invoicedCustomers": "இன்வாய்ஸ் செய்யப்பட்ட வாடிக்கையாளர்கள்"
     },
     "drawer": {
       "title": "காஸ் சிலிண்டர் டெலிவரி",
@@ -387,10 +402,21 @@
       "admin": "நிர்வாகி",
       "tapToOpenSettings": "அமைப்புகளைத் திறக்க தட்டவும்",
       "tapForSettings": "{{vehicle}} · அமைப்புகளுக்குத் தட்டவும்",
-      "vehicle": "வாகனம்"
+      "vehicle": "வாகனம்",
+      "invoicedCustomers": "இன்வாய்ஸ் செய்யப்பட்ட வாடிக்கையாளர்கள்"
     },
     "common": {
-      "loading": "ஏற்றுகிறது..."
+      "loading": "ஏற்றுகிறது...",
+      "orderSyncCompletedTitle": "ஆர்டர் ஒத்திசைவு முடிந்தது",
+      "orderSyncCompletedBody": "{{customer}} ஆர்டர் ஒத்திசைவு முடிந்தது."
+    },
+    "invoicedcustomers": {
+      "title": "இன்வாய்ஸ் செய்யப்பட்ட வாடிக்கையாளர்கள்",
+      "subtitle": "முழுமையாக இன்வாய்ஸ் செய்யப்பட்ட ஆர்டர்கள் உள்ள வாடிக்கையாளர்கள் மட்டும் இங்கே காட்டப்படுவர்.",
+      "ordersCount": "{{count}} ஆர்டர்கள்",
+      "noPhone": "தொலைபேசி எண் இல்லை",
+      "empty": "இன்னும் இன்வாய்ஸ் செய்யப்பட்ட வாடிக்கையாளர்கள் இல்லை.",
+      "latest": "சமீபத்தில் இன்வாய்ஸ் செய்யப்பட்ட வாடிக்கையாளர்"
     }
   }
 }

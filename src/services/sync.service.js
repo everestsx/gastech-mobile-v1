@@ -183,10 +183,25 @@ export async function getUserSession() {
 export async function saveUserSession(user) {
   const storage = await getAsyncStorage();
   const safeUser = sanitizeUserSessionForStorage(user);
-  await storage.multiSet([
-    [KEYS.USER, JSON.stringify(safeUser)],
-    [KEYS.USER_MEDIA, JSON.stringify(extractUserSessionMedia(user))],
-  ]);
+  const mediaPayload = JSON.stringify(extractUserSessionMedia(user));
+  try {
+    await storage.multiSet([
+      [KEYS.USER, JSON.stringify(safeUser)],
+      [KEYS.USER_MEDIA, mediaPayload],
+    ]);
+  } catch (e) {
+    // On some devices AsyncStorage may fail when media payload is large.
+    // Keep login reliable by storing core session first, then try media best-effort.
+    // Never overwrite existing media with empty placeholders, otherwise profile images disappear.
+    console.warn(`${LOG_TAG} saveUserSession media payload fallback`, e?.message ?? e);
+    await storage.setItem(KEYS.USER, JSON.stringify(safeUser));
+    try {
+      await storage.setItem(KEYS.USER_MEDIA, mediaPayload);
+    } catch (_) {
+      // ignore media storage fallback errors; core session is already saved.
+      // keep previously stored USER_MEDIA intact in this case.
+    }
+  }
 }
 
 /** Next local midnight (12:00 AM) as ISO string — session is valid until then. */
@@ -321,9 +336,9 @@ export async function getCachedRoutes() {
 /** Sale order details from local DB (order + lines). Same shape as API. Lines loaded by order_id so they appear even if order_line was empty on sync. */
 export async function getSaleOrderDetailsFromDB(saleOrderId) {
   try {
-    const order = await saleOrdersDb.getSaleOrderById(Number(saleOrderId));
-    if (!order) return { order: null, lines: [] };
-    const lines = await saleOrderLinesDb.getSaleOrderLinesByOrderIds([order.id]);
+    const soId = Number(saleOrderId);
+    const order = await saleOrdersDb.getSaleOrderById(soId);
+    const lines = await saleOrderLinesDb.getSaleOrderLinesByOrderIds([soId]);
     return { order, lines: lines || [] };
   } catch (e) {
     console.warn('getSaleOrderDetailsFromDB', e);
@@ -2028,15 +2043,13 @@ export function getSyncIntervalMinutes(syncInterval = '5min') {
 async function getCutoffDateForSync() {
   try {
     const storage = await getAsyncStorage();
-    const syncPeriod = await storage.getItem(KEYS.SYNC_PERIOD) || '3days';
+    const rawSyncPeriod = await storage.getItem(KEYS.SYNC_PERIOD);
+    const syncPeriod = rawSyncPeriod === '3days' ? '7days' : (rawSyncPeriod || '7days');
 
     const now = new Date();
     let cutoffDate = new Date(now);
 
     switch (syncPeriod) {
-      case '3days':
-        cutoffDate.setDate(now.getDate() - 3);
-        break;
       case '7days':
         cutoffDate.setDate(now.getDate() - 7);
         break;

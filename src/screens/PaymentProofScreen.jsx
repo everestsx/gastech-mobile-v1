@@ -123,7 +123,9 @@ export default function PaymentProofScreen({ route, navigation }) {
     const orderInfo = data?.order || {};
     const existingLocalInv = await localInvoicesDb.getLocalInvoiceBySaleOrderId(soId);
     const invoiceNumber =
-      paymentPayload.invoiceNumber || existingLocalInv?.invoice_number || `INV-${soId}`;
+      empty(orderInfo?.invoice_number) ||
+      empty(existingLocalInv?.invoice_number) ||
+      '—';
     const total = Number(paymentPayload.total ?? orderInfo.amount_total ?? 0) || 0;
     const untaxed = Number(orderInfo.amount_untaxed ?? total) || 0;
     const tax = Number(orderInfo.amount_tax ?? 0) || 0;

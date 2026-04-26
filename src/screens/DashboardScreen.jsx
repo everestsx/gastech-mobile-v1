@@ -229,6 +229,8 @@ export default function DashboardScreen({ navigation }) {
   const [postLoginSyncModalVisible, setPostLoginSyncModalVisible] = useState(false);
   const [notification, setNotification] = useState({ visible: false, title: '', message: '', type: 'info' });
   const lastSyncNotificationRef = React.useRef(null);
+  const previousSyncedPaymentIdsRef = React.useRef(new Set());
+  const initialSyncStartedRef = React.useRef(false);
 
   const postLoginSyncCopy = useMemo(() => {
     const map = {
@@ -595,12 +597,45 @@ export default function DashboardScreen({ navigation }) {
     lastSyncNotificationRef.current = syncResult;
 
     if (syncResult === 'success') {
-      setNotification({
-        visible: true,
-        title: t('common.syncSuccessfulTitle', 'Sync successful'),
-        message: t('common.syncSuccessfulBody', 'Data synced successfully.'),
-        type: 'success',
-      });
+      void (async () => {
+        let nextSyncedIds = new Set();
+        try {
+          nextSyncedIds = await syncQueueDb.getSyncedPaymentSaleOrderIds();
+        } catch (_) {
+          nextSyncedIds = new Set();
+        }
+
+        const newlySyncedOrderIds = [];
+        for (const id of nextSyncedIds) {
+          if (!previousSyncedPaymentIdsRef.current.has(id)) {
+            newlySyncedOrderIds.push(Number(id));
+          }
+        }
+        previousSyncedPaymentIdsRef.current = new Set(nextSyncedIds);
+
+        if (newlySyncedOrderIds.length > 0) {
+          const latestOrderId = newlySyncedOrderIds[newlySyncedOrderIds.length - 1];
+          const matchedOrder = (orders || []).find((o) => Number(o?.id) === Number(latestOrderId));
+          const customerName = matchedOrder
+            ? getLocalizedCustomerNameFromOrder(matchedOrder, appLanguage)
+            : `SO #${latestOrderId}`;
+
+          setNotification({
+            visible: true,
+            title: t('common.orderSyncCompletedTitle', 'Order sync completed'),
+            message: t('common.orderSyncCompletedBody', '{{customer}} order sync completed.', { customer: customerName }),
+            type: 'success',
+          });
+          return;
+        }
+
+        setNotification({
+          visible: true,
+          title: t('common.syncSuccessfulTitle', 'Sync successful'),
+          message: t('common.syncSuccessfulBody', 'Data synced successfully.'),
+          type: 'success',
+        });
+      })();
       return;
     }
 
@@ -610,7 +645,7 @@ export default function DashboardScreen({ navigation }) {
       message: syncErrorMessage || t('common.syncFailedBody', 'Data sync failed. Please try again.'),
       type: 'error',
     });
-  }, [isSyncing, syncResult, syncErrorMessage, t]);
+  }, [isSyncing, syncResult, syncErrorMessage, t, orders, appLanguage]);
 
   useEffect(() => {
     if (user?.licensePlate) {
@@ -624,8 +659,15 @@ export default function DashboardScreen({ navigation }) {
   );
 
   useEffect(() => {
-    if (!user?.pendingInitialSync) return;
-    if (isSyncing) return;
+    if (!user?.pendingInitialSync) {
+      initialSyncStartedRef.current = false;
+      return;
+    }
+    if (isSyncing) {
+      initialSyncStartedRef.current = true;
+      return;
+    }
+    if (!initialSyncStartedRef.current) return;
     let cancelled = false;
     (async () => {
       const u = await getUserSession();
@@ -634,6 +676,7 @@ export default function DashboardScreen({ navigation }) {
         await saveUserSession({ ...u, pendingInitialSync: false });
       } catch (_) {}
       setUser((prev) => (prev ? { ...prev, pendingInitialSync: false } : prev));
+      initialSyncStartedRef.current = false;
     })();
     return () => {
       cancelled = true;
@@ -1697,14 +1740,6 @@ export default function DashboardScreen({ navigation }) {
     [colors]
   );
 
-  if (loading) {
-    return (
-        <View style={styles.center}>
-          <ActivityIndicator size="large" color={colors.primary} />
-        </View>
-    );
-  }
-
   const todayDateStr = new Date().toLocaleDateString('en-GB', {
     weekday: 'long',
     day: 'numeric',
@@ -1718,6 +1753,8 @@ export default function DashboardScreen({ navigation }) {
     Linking.openURL(`tel:${s}`).catch(() => {});
   };
 
+  const shouldBlockDashboard = loading || !!user?.pendingInitialSync;
+
   return (
     <>
     <RichNotification
@@ -1727,6 +1764,7 @@ export default function DashboardScreen({ navigation }) {
       type={notification.type}
       onHide={() => setNotification((prev) => ({ ...prev, visible: false }))}
     />
+    <View style={styles.initialSyncOverlayRoot}>
     <ScrollView
       style={styles.container}
       contentContainerStyle={styles.content}
@@ -2371,6 +2409,61 @@ export default function DashboardScreen({ navigation }) {
         )}
       </ScrollView>
 
+      {shouldBlockDashboard ? (
+        <View style={[StyleSheet.absoluteFillObject, { zIndex: 50 }]} pointerEvents="auto">
+          <BlurView
+            experimentalBlurMethod={Platform.OS === 'android' ? 'dimezisBlurView' : undefined}
+            intensity={52}
+            tint="light"
+            style={StyleSheet.absoluteFill}
+          />
+          <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(255, 255, 255, 0.22)' }]} />
+          <View style={styles.initialSyncCenter} pointerEvents="box-none">
+            <View
+              style={{
+                width: '100%',
+                maxWidth: 360,
+                backgroundColor: colors.surface + 'EE',
+                borderRadius: borderRadius.xl,
+                paddingVertical: 28,
+                paddingHorizontal: 24,
+                alignItems: 'center',
+                borderWidth: 1,
+                borderColor: colors.border,
+                shadowColor: '#000',
+                shadowOffset: { width: 0, height: 8 },
+                shadowOpacity: 0.15,
+                shadowRadius: 18,
+                elevation: 10,
+              }}
+            >
+              <View
+                style={{
+                  width: 56,
+                  height: 56,
+                  borderRadius: 28,
+                  backgroundColor: (colors.primary || '#4f46e5') + '14',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  marginBottom: 16,
+                }}
+              >
+                <Ionicons name="cloud-download-outline" size={28} color={colors.primary} />
+              </View>
+              <Text style={[styles.initialSyncTitle, { color: colors.text }]}>
+                {t('dashboard.initialSyncTitle', 'Loading your data...')}
+              </Text>
+              <Text style={[styles.initialSyncSub, { color: colors.textSecondary }]}>
+                {t('dashboard.initialSyncSub', 'This only takes a moment.')}
+              </Text>
+              <ActivityIndicator style={{ marginTop: 18 }} size="large" color={colors.primary} />
+            </View>
+          </View>
+        </View>
+      ) : null}
+
+    </View>
+
       <Modal
         visible={commissionRangeModalVisible}
         transparent
@@ -2624,34 +2717,6 @@ export default function DashboardScreen({ navigation }) {
         </Pressable>
       </Modal>
 
-      <Modal
-        visible={!!user?.pendingInitialSync && isSyncing}
-        transparent
-        animationType="fade"
-        statusBarTranslucent
-      >
-        <View style={styles.initialSyncOverlayRoot}>
-          <BlurView
-            experimentalBlurMethod={Platform.OS === 'android' ? 'dimezisBlurView' : undefined}
-            intensity={88}
-            tint="dark"
-            style={StyleSheet.absoluteFill}
-          />
-          <View
-            style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(15, 23, 42, 0.28)' }]}
-            pointerEvents="none"
-          />
-          <View style={styles.initialSyncCenter} pointerEvents="box-none">
-            <ActivityIndicator size="large" color="#f8fafc" />
-            <Text style={styles.initialSyncTitle}>
-              {t('dashboard.initialSyncTitle', 'Loading your data…')}
-            </Text>
-            <Text style={styles.initialSyncSub}>
-              {t('dashboard.initialSyncSub', 'This only takes a moment.')}
-            </Text>
-          </View>
-        </View>
-      </Modal>
     </>
   );
 }

@@ -28,7 +28,7 @@ export function ThemeProvider({ children }) {
   const [theme, setThemeState] = useState('light');
   const [showCreateSalesOrder, setShowCreateSalesOrderState] = useState(true);
   const [showReturnOrder, setShowReturnOrderState] = useState(true);
-  const [syncPeriod, setSyncPeriodState] = useState('3days');
+  const [syncPeriod, setSyncPeriodState] = useState('7days');
   const [syncDateField, setSyncDateFieldState] = useState('delivery_date');
   const [syncInterval, setSyncIntervalState] = useState('5min');
   const [appLanguage, setAppLanguageState] = useState('en');
@@ -52,7 +52,12 @@ export function ThemeProvider({ children }) {
       if (savedTheme === 'dark' || savedTheme === 'light') setThemeState(savedTheme);
       if (createOrder !== null) setShowCreateSalesOrderState(createOrder === 'true');
       if (returnOrder !== null) setShowReturnOrderState(returnOrder === 'true');
-      if (savedSyncPeriod && ['3days', '7days', '30days', '90days', '1year', 'all'].includes(savedSyncPeriod)) setSyncPeriodState(savedSyncPeriod);
+      if (savedSyncPeriod) {
+        const normalizedSyncPeriod = savedSyncPeriod === '3days' ? '7days' : savedSyncPeriod;
+        if (['7days', '30days', '90days', '1year', 'all'].includes(normalizedSyncPeriod)) {
+          setSyncPeriodState(normalizedSyncPeriod);
+        }
+      }
       if (savedSyncDateField && ['creation_date', 'delivery_date'].includes(savedSyncDateField)) {
         setSyncDateFieldState(savedSyncDateField);
       }
@@ -95,9 +100,10 @@ export function ThemeProvider({ children }) {
   }, []);
 
   const setSyncPeriod = useCallback(async (value) => {
-    setSyncPeriodState(value);
+    const next = ['7days', '30days', '90days', '1year', 'all'].includes(value) ? value : '7days';
+    setSyncPeriodState(next);
     try {
-      await AsyncStorage.setItem(STORAGE_KEYS.SYNC_PERIOD, String(value));
+      await AsyncStorage.setItem(STORAGE_KEYS.SYNC_PERIOD, String(next));
     } catch (_) {}
   }, []);
 

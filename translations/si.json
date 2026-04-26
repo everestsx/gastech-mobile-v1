@@ -35,7 +35,9 @@
       "syncing": "Sync වෙමින් පවතී",
       "syncing2": "Sync වෙමින් පවතී...",
       "toDeliver": "බෙදාහැරීමට ඇති (",
-      "totalGas": "මුළු ගෑස්"
+      "totalGas": "මුළු ගෑස්",
+      "orderSyncCompletedTitle": "ඕඩර් සමමුහුර්තය අවසන්",
+      "orderSyncCompletedBody": "{{customer}} ඕඩර් එකේ සමමුහුර්තය සම්පූර්ණයි."
     },
     "customers": {
       "noCustomersYet": "තවමත් පාරිභෝගිකයින් නැත",
@@ -116,6 +118,8 @@
       "back": "ආපසු",
       "changed": "වෙනස් කළා",
       "continue": "ඉදිරියට යන්න",
+      "continueToInvoice": "ඉන්වොයිස් වෙත ඉදිරියට යන්න.",
+      "couldNotSaveEmptyCylinderDetails": "හිස් සිලින්ඩර් විස්තර සුරැකීමට නොහැකි විය.",
       "emptiesCollected": "එකතු කළ හිස් සිලින්ඩර",
       "emptyCollectedCylinder": "එකතු කළ හිස් සිලින්ඩරය",
       "error": "දෝෂයකි",
@@ -123,6 +127,7 @@
       "pleaseSelectAReason": "කරුණාකර හේතුවක් තෝරන්න.",
       "reasonForChange": "වෙනස් කිරීමට හේතුව",
       "reasonRequired": "හේතුවක් අවශ්‍යයි",
+      "reasonRequiredBecauseQtyChanged": "ප්‍රමාණය වෙනස් කර ඇති නිසා හේතුවක් අවශ්‍යයි.",
       "reasons": {
         "loanReturnPending": "ණයට දුන් සිලින්ඩර ආපසු ලබාදීම ඉතිරිව ඇත",
         "newIssueReplacement": "නව නිකුත් කිරීමක් සඳහා ප්‍රතිස්ථාපනය",
@@ -298,7 +303,8 @@
       "updateReady": "අප්ඩේට් එක සූදානම්",
       "updateReadyMessage": "නවතම අප්ඩේට් එක ඩවුන්ලෝඩ් කර ඇත. දැන් ඇප් එක රීස්ටාට් කරන්නද?",
       "updatesUnavailable": "අප්ඩේට්ස් නොමැත",
-      "vehicle": "වාහනය"
+      "vehicle": "වාහනය",
+      "invoicedCustomers": "ඉන්වොයිස් කළ පාරිභෝගිකයින්"
     },
     "mycommission": {
       "calculation": "ගණනය කිරීම",
@@ -335,7 +341,8 @@
       "paymentProof": "ගෙවීම් සාක්ෂි",
       "scanResult": "ස්කෑන් ප්‍රතිඵලය",
       "settings": "Settings",
-      "syncHistory": "Sync හිස්ට්‍රි"
+      "syncHistory": "Sync හිස්ට්‍රි",
+      "invoicedCustomers": "ඉන්වොයිස් කළ පාරිභෝගිකයින්"
     },
     "paymentproof": {
       "addAtLeastOnePhotoForCreditPayment": "ණය ගෙවීම් සඳහා අවම වශයෙන් එක් ෆොටෝ එකක් එකතු කරන්න.",
@@ -509,6 +516,14 @@
       "noVehicleInSession": "සැසිය තුළ වාහනයක් නොමැත",
       "ordered": "ඕඩර් කළා:",
       "stockAvailable": "ඇති ස්ටොක්"
+    },
+    "invoicedcustomers": {
+      "title": "ඉන්වොයිස් කළ පාරිභෝගිකයින්",
+      "subtitle": "සම්පූර්ණ කර ඉන්වොයිස් කළ ඕඩර් ඇති පාරිභෝගිකයින් පමණක් මෙහි පෙන්වයි.",
+      "ordersCount": "ඕඩර් {{count}}",
+      "noPhone": "දුරකථන අංකය නොමැත",
+      "empty": "තවම ඉන්වොයිස් කළ පාරිභෝගිකයින් නොමැත.",
+      "latest": "අවසන් වරට ඉන්වොයිස් කළ පාරිභෝගිකයා"
     }
   }
 }

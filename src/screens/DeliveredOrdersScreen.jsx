@@ -599,6 +599,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
   const onOrderPress = (order) => {
     navigation.navigate('InvoiceScreen', {
       saleOrderId: order.id,
+      invoiceNumber: order?.invoice_number || null,
       total: order.amount_total,
       skipEvidenceModal: true,
       promptSignatures: false,

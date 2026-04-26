@@ -21,10 +21,16 @@ const SALE_ORDER_FIELDS = [
   "order_line",
   "route_id",
   "vehicle_id",
+  "invoice_number",
 ];
 
 /** Custom / studio fields on sale.order (GasTech): used for dashboard payment split on a fresh device after sync. */
-const SALE_ORDER_OPTIONAL_PAYMENT_FIELDS = ["payment_type", "amount_cash", "amount_cheque", "amount_credit"];
+const SALE_ORDER_OPTIONAL_PAYMENT_FIELDS = [
+  "payment_type",
+  "amount_cash",
+  "amount_cheque",
+  "amount_credit",
+];
 
 const SALE_ORDER_FIELDS_WITH_PAYMENT = [...SALE_ORDER_FIELDS, ...SALE_ORDER_OPTIONAL_PAYMENT_FIELDS];
 

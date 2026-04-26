@@ -30,6 +30,7 @@ import MyCommissionScreen from '../screens/MyCommissionScreen';
 import VehicleStockScreen from '../screens/VehicleStockScreen';
 import SyncHistoryScreen from '../screens/SyncHistoryScreen';
 import LocalInvoicesScreen from '../screens/LocalInvoicesScreen';
+import InvoicedCustomersScreen from '../screens/InvoicedCustomersScreen';
 import BluetoothPrinterScreen from '../screens/BluetoothPrinterScreen';
 import SyncHeaderBadge from '../components/SyncHeaderBadge';
 
@@ -188,6 +189,11 @@ function MainStackScreen() {
         name="LocalInvoices"
         component={LocalInvoicesScreen}
         options={{ ...headerScreenOptions, title: t('navigation.myInvoices', 'My Invoices') }}
+      />
+      <MainStack.Screen
+        name="InvoicedCustomers"
+        component={InvoicedCustomersScreen}
+        options={{ ...headerScreenOptions, title: t('navigation.invoicedCustomers', 'Invoiced Customers') }}
       />
       <MainStack.Screen
         name="Settings"

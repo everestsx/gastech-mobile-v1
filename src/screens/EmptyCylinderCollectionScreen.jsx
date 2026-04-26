@@ -379,7 +379,10 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
             : {}),
         });
       } catch (e) {
-        Alert.alert('Error', e?.message || 'Could not save empty cylinder details.');
+        Alert.alert(
+          t('emptycylindercollection.error', 'Error'),
+          e?.message || t('emptycylindercollection.couldNotSaveEmptyCylinderDetails', 'Could not save empty cylinder details.')
+        );
       } finally {
         setSaving(false);
       }
@@ -586,9 +589,12 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
       >
         <View style={styles.hero}>
           <Ionicons name="cube-outline" size={22} color={colors.primary} style={styles.heroIcon} />
-          <Text style={styles.title}>Empty Collected Cylinder</Text>
+          <Text style={styles.title}>{t('emptycylindercollection.emptyCollectedCylinder', 'Empty Collected Cylinder')}</Text>
           <Text style={styles.heroText}>
-            Review collected empties by size. If a size has no collection, it still appears as 0.
+            {t(
+              'emptycylindercollection.reviewCollectedEmptiesBySizeIfASize',
+              'Review collected empties by size. If a size has no collection, it still appears as 0.'
+            )}
           </Text>
         </View>
 
@@ -602,17 +608,19 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
                   {adjusted ? (
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
                       <Ionicons name="alert-circle" size={16} color="#b45309" />
-                      <Text style={{ fontSize: 12, fontWeight: '700', color: '#b45309' }}>Changed</Text>
+                      <Text style={{ fontSize: 12, fontWeight: '700', color: '#b45309' }}>
+                        {t('emptycylindercollection.changed', 'Changed')}
+                      </Text>
                     </View>
                   ) : null}
                 </View>
 
                 <View style={styles.gasRow}>
-                  <Text style={styles.gasLabel}>Gas delivered</Text>
+                  <Text style={styles.gasLabel}>{t('emptycylindercollection.gasDelivered', 'Gas delivered')}</Text>
                   <Text style={styles.gasVal}>{Number(row.deliveredGasQty) || 0}</Text>
                 </View>
 
-                <Text style={styles.sectionLabel}>Empties collected</Text>
+                <Text style={styles.sectionLabel}>{t('emptycylindercollection.emptiesCollected', 'Empties collected')}</Text>
                 <View style={styles.qtyRow}>
                   <TouchableOpacity style={styles.qtyBtn} onPress={() => changeQtyBy(row.kg, -1)} activeOpacity={0.85}>
                     <Ionicons name="remove" size={22} color={colors.primary} />
@@ -634,7 +642,7 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
         </View>
 
         <View style={styles.summary}>
-          <Text style={styles.summaryLabel}>Total empties collected</Text>
+          <Text style={styles.summaryLabel}>{t('emptycylindercollection.totalEmptiesCollected', 'Total empties collected')}</Text>
           <Text style={styles.summaryVal}>{totalCollected.toLocaleString('en-IN')}</Text>
         </View>
       </ScrollView>
@@ -642,21 +650,21 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
       <View style={[styles.footerBar, { paddingBottom: Math.max(insets.bottom, spacing.md) }]}>
         <TouchableOpacity style={styles.cta} onPress={() => void onPressConfirm()} disabled={saving} activeOpacity={0.88}>
           {saving ? <ActivityIndicator color="#fff" /> : <Ionicons name="checkmark-circle" size={24} color="#fff" />}
-          <Text style={styles.ctaText}>Continue</Text>
+          <Text style={styles.ctaText}>{t('emptycylindercollection.continue', 'Continue')}</Text>
         </TouchableOpacity>
         <Text style={styles.hint}>
           {hasAdjustment
-            ? 'You changed quantity, so reason is required.'
-            : 'Continue to invoice.'}
+            ? t('emptycylindercollection.reasonRequiredBecauseQtyChanged', 'You changed quantity, so reason is required.')
+            : t('emptycylindercollection.continueToInvoice', 'Continue to invoice.')}
         </Text>
       </View>
 
       <Modal visible={reasonModalVisible} animationType="slide" transparent onRequestClose={() => setReasonModalVisible(false)}>
         <Pressable style={styles.modalWrap} onPress={() => setReasonModalVisible(false)}>
           <Pressable style={[styles.modalCard, { paddingBottom: Math.max(insets.bottom, spacing.md) }]} onPress={(e) => e.stopPropagation()}>
-            <Text style={styles.modalTitle}>Reason for change</Text>
+            <Text style={styles.modalTitle}>{t('emptycylindercollection.reasonForChange', 'Reason for change')}</Text>
             <Text style={styles.modalSub}>
-              Select one reason to continue.
+              {t('emptycylindercollection.selectOneReasonToContinue', 'Select one reason to continue.')}
             </Text>
 
             {reasonOptions.map((reason) => {
@@ -680,10 +688,10 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
                   setReasonModalVisible(false);
                 }}
               >
-                <Text style={styles.modalBtnSecondaryText}>Back</Text>
+                <Text style={styles.modalBtnSecondaryText}>{t('emptycylindercollection.back', 'Back')}</Text>
               </TouchableOpacity>
               <TouchableOpacity style={styles.modalBtnPrimary} onPress={onConfirmReason}>
-                <Text style={styles.modalBtnPrimaryText}>Save and continue</Text>
+                <Text style={styles.modalBtnPrimaryText}>{t('emptycylindercollection.saveAndContinue', 'Save and continue')}</Text>
               </TouchableOpacity>
             </View>
           </Pressable>

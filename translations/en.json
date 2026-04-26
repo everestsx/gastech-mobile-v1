@@ -92,7 +92,8 @@
       "invoice": "Invoice",
       "paymentProof": "Payment proof",
       "scanResult": "Scan result",
-      "customerQRGenerator": "Customer QR Generator"
+      "customerQRGenerator": "Customer QR Generator",
+      "invoicedCustomers": "Invoiced Customers"
     },
     "drawer": {
       "title": "Gas Cylinder Delivery",
@@ -157,11 +158,27 @@
       "admin": "Admin",
       "tapToOpenSettings": "Tap to open Settings",
       "tapForSettings": "{{vehicle}} · Tap for settings",
-      "vehicle": "Vehicle"
+      "vehicle": "Vehicle",
+      "invoicedCustomers": "Invoiced Customers"
     },
     "emptycylindercollection": {
+      "back": "Back",
+      "changed": "Changed",
+      "continue": "Continue",
+      "continueToInvoice": "Continue to invoice.",
+      "couldNotSaveEmptyCylinderDetails": "Could not save empty cylinder details.",
+      "emptiesCollected": "Empties collected",
+      "emptyCollectedCylinder": "Empty Collected Cylinder",
+      "error": "Error",
+      "gasDelivered": "Gas delivered",
       "reasonRequired": "Reason required",
+      "reasonRequiredBecauseQtyChanged": "You changed quantity, so reason is required.",
+      "reasonForChange": "Reason for change",
+      "reviewCollectedEmptiesBySizeIfASize": "Review collected empties by size. If a size has no collection, it still appears as 0.",
+      "saveAndContinue": "Save and continue",
+      "selectOneReasonToContinue": "Select one reason to continue.",
       "pleaseSelectAReason": "Please select a reason.",
+      "totalEmptiesCollected": "Total empties collected",
       "reasons": {
         "loanReturnPending": "Loan return pending",
         "newIssueReplacement": "New issue replacement",
@@ -170,7 +187,17 @@
       }
     },
     "common": {
-      "loading": "Loading..."
+      "loading": "Loading...",
+      "orderSyncCompletedTitle": "Order sync completed",
+      "orderSyncCompletedBody": "{{customer}} order sync completed."
+    },
+    "invoicedcustomers": {
+      "title": "Invoiced Customers",
+      "subtitle": "Only customers with completed invoiced orders are listed here.",
+      "ordersCount": "{{count}} orders",
+      "noPhone": "No phone number",
+      "empty": "No invoiced customers found yet.",
+      "latest": "Most recent invoiced customer"
     }
   }
 }

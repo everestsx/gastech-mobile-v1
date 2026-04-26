@@ -355,6 +355,17 @@ export default function MenuScreen({ navigation }) {
         <Text style={[styles.menuItemText, { color: colors.text }]}>{t("menu.myInvoices", "My Invoicess")}</Text>
         <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
       </TouchableOpacity>
+      <TouchableOpacity
+        style={[styles.menuItem, { backgroundColor: colors.surface, borderColor: colors.border }]}
+        onPress={() => navigation.navigate('InvoicedCustomers')}
+        activeOpacity={0.8}
+      >
+        <Ionicons name="people-circle-outline" size={24} color={colors.primary} />
+        <Text style={[styles.menuItemText, { color: colors.text }]}>
+          {t('menu.invoicedCustomers', 'Invoiced Customers')}
+        </Text>
+        <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
+      </TouchableOpacity>
 
       <TouchableOpacity
         style={[styles.menuItem, { backgroundColor: colors.surface, borderColor: colors.border }]}

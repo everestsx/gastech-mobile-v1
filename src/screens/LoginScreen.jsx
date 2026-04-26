@@ -49,6 +49,19 @@ const LANGUAGE_OPTIONS = [
   { v: 'si', l: 'සිංහල' },
 ];
 const MAX_SELECTED_PORTERS = 6;
+const LOGIN_SYNC_BLOCK_MS = 8000;
+
+function isTransientNetworkLikeError(error) {
+  const msg = String(error?.message || error || '').toLowerCase();
+  return (
+    msg.includes('network') ||
+    msg.includes('timed out') ||
+    msg.includes('timeout') ||
+    msg.includes('socket') ||
+    msg.includes('failed to fetch') ||
+    msg.includes('cannot reach server')
+  );
+}
 
 export default function LoginScreen({ navigation }) {
   const { t } = useTranslation();
@@ -60,8 +73,6 @@ export default function LoginScreen({ navigation }) {
   const [languageMenuVisible, setLanguageMenuVisible] = useState(false);
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
-  /** Full-screen "rich" loading after porters confirm while runSync fetches data (dashboard stays hidden). */
-  const [workspacePreparing, setWorkspacePreparing] = useState(false);
 
   const [alertConfig, setAlertConfig] = useState({
     visible: false,
@@ -156,7 +167,15 @@ export default function LoginScreen({ navigation }) {
 
     setLoading(true);
     try {
-      const driver = await getDriverByBarcode(password);
+      let driver = null;
+      try {
+        driver = await getDriverByBarcode(password);
+      } catch (firstError) {
+        if (!isTransientNetworkLikeError(firstError)) throw firstError;
+        // Fast retry once for transient network spikes.
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        driver = await getDriverByBarcode(password);
+      }
       if (!driver) {
         throw new Error('That code does not match. Use the driver code from GasTech.');
       }
@@ -229,7 +248,6 @@ export default function LoginScreen({ navigation }) {
       }));
 
     setLoading(true);
-    setWorkspacePreparing(true);
     try {
       await saveUserSession({
         isAdmin: false,
@@ -244,28 +262,53 @@ export default function LoginScreen({ navigation }) {
         selectedPorters,
         loggedInAt: new Date().toISOString(),
         sessionExpiresAt: getSessionExpiryAtIsoEndOfLocalDay(),
+        pendingInitialSync: true,
       });
 
-      await saveLastVehicleId(selected.id);
+      try {
+        await saveLastVehicleId(selected.id);
+      } catch (e) {
+        console.warn('[Login] saveLastVehicleId failed', e?.message || e);
+      }
       const licensePlate = (selected.license_plate || selected.name || '').trim();
-      if (licensePlate) {
-        await fetchAndStoreVehicleJournals(licensePlate);
-      }
-      const syncResult = await runSync();
-      if (syncResult && !syncResult.error) {
-        await setPostLoginSyncSuccessPending();
-      } else if (syncResult?.error) {
-        throw new Error(syncResult.error);
-      }
+
+      // Do not block login UI on heavy network sync; driver must reach dashboard quickly.
+      void (async () => {
+        try {
+          if (licensePlate) {
+            await fetchAndStoreVehicleJournals(licensePlate);
+          }
+          const syncResult = await Promise.race([
+            runSync(),
+            new Promise((resolve) =>
+              setTimeout(
+                () => resolve({ error: `Sync is taking longer than ${Math.floor(LOGIN_SYNC_BLOCK_MS / 1000)}s` }),
+                LOGIN_SYNC_BLOCK_MS
+              )
+            ),
+          ]);
+          if (syncResult && !syncResult.error) {
+            await setPostLoginSyncSuccessPending();
+          } else if (syncResult?.error) {
+            console.warn('[Login] background sync delayed/failed', syncResult.error);
+          }
+        } catch (syncErr) {
+          console.warn('[Login] background sync failed', syncErr?.message || syncErr);
+        }
+      })();
 
       resetLoginFlow();
       setPassword('');
       navigation.replace('Main');
     } catch (err) {
-      showAlert('Login failed', err.message || 'Could not save your session.', [{ text: 'Try again', onPress: hideAlert }]);
+      const msg = String(err?.message || '').trim();
+      showAlert(
+        'Login failed',
+        msg || 'Could not save your session.',
+        [{ text: 'Try again', onPress: hideAlert }]
+      );
     } finally {
       setLoading(false);
-      setWorkspacePreparing(false);
     }
   };
 
@@ -717,68 +760,6 @@ export default function LoginScreen({ navigation }) {
   return (
 
       <SafeAreaView style={styles.container}>
-        <Modal visible={workspacePreparing} transparent animationType="fade" statusBarTranslucent>
-          <View
-            style={{
-              flex: 1,
-              backgroundColor: 'rgba(15, 23, 42, 0.88)',
-              justifyContent: 'center',
-              alignItems: 'center',
-              padding: spacing.lg,
-            }}
-          >
-            <View
-              style={{
-                width: '100%',
-                maxWidth: 360,
-                backgroundColor: colors.surface,
-                borderRadius: borderRadius.xl,
-                paddingVertical: 28,
-                paddingHorizontal: 24,
-                alignItems: 'center',
-                shadowColor: '#000',
-                shadowOffset: { width: 0, height: 8 },
-                shadowOpacity: 0.2,
-                shadowRadius: 20,
-                elevation: 12,
-                borderWidth: 1,
-                borderColor: colors.border,
-              }}
-            >
-              <View
-                style={{
-                  width: 56,
-                  height: 56,
-                  borderRadius: 28,
-                  backgroundColor: (colors.primary || '#4f46e5') + '18',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  marginBottom: 16,
-                }}
-              >
-                <Ionicons name="cloud-download-outline" size={28} color={colors.primary} />
-              </View>
-              <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text, textAlign: 'center' }}>
-                {t('login.preparingWorkspace', 'Preparing your workspace')}
-              </Text>
-              <Text
-                style={{
-                  marginTop: 10,
-                  fontSize: 14,
-                  lineHeight: 20,
-                  color: colors.textSecondary,
-                  textAlign: 'center',
-                }}
-              >
-                {t(
-                  'login.preparingWorkspaceHint',
-                  'Securing your session and loading routes, customers and today’s orders from the server. This only takes a moment.'
-                )}
-              </Text>
-              <ActivityIndicator style={{ marginTop: 24 }} size="large" color={colors.primary} />
-            </View>
-          </View>
-        </Modal>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
           <View style={styles.innerContainer}>
             <View style={styles.mainScrollArea}>
