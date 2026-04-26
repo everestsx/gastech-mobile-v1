@@ -87,6 +87,7 @@ export async function upsertSaleOrders(rows, options = {}) {
           amountCash,
           amountCheque,
           amountCredit,
+          empty(r.invoice_number),
         ];
         try {
           await tx.runAsync(
@@ -94,8 +95,8 @@ export async function upsertSaleOrders(rows, options = {}) {
               id, name, partner_id, partner_name, state, date_order, commitment_date,
               amount_total, amount_untaxed, amount_tax, invoice_status, order_line,
               route_id, route_name, vehicle_id, vehicle_name, updated_at, payload, payment_type,
-              amount_cash, amount_cheque, amount_credit
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              amount_cash, amount_cheque, amount_credit, invoice_number
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
               name=excluded.name, partner_id=excluded.partner_id, partner_name=excluded.partner_name,
               state=excluded.state, date_order=excluded.date_order, commitment_date=excluded.commitment_date,
@@ -105,7 +106,8 @@ export async function upsertSaleOrders(rows, options = {}) {
               vehicle_id=excluded.vehicle_id, vehicle_name=excluded.vehicle_name,
               updated_at=excluded.updated_at, payload=excluded.payload,
               payment_type=excluded.payment_type,
-              amount_cash=excluded.amount_cash, amount_cheque=excluded.amount_cheque, amount_credit=excluded.amount_credit`,
+              amount_cash=excluded.amount_cash, amount_cheque=excluded.amount_cheque, amount_credit=excluded.amount_credit,
+              invoice_number=COALESCE(NULLIF(excluded.invoice_number, ''), sale_orders.invoice_number)`,
             params
           );
         } catch (rowErr) {
@@ -162,6 +164,7 @@ export async function getAllSaleOrders(vehicleId = null, sortField = 'date_order
       amount_credit: row.amount_credit != null ? row.amount_credit : null,
       amount_cash: row.amount_cash != null ? row.amount_cash : null,
       amount_cheque: row.amount_cheque != null ? row.amount_cheque : null,
+      invoice_number: row.invoice_number != null && String(row.invoice_number).trim() !== '' ? String(row.invoice_number).trim() : null,
     }));
     logQuery(op, `done count=${result.length}`);
     return result;
@@ -277,6 +280,39 @@ export async function updateSaleOrderAmountsFromLines(orderId) {
     logQuery(op, `done orderId=${orderId} total=${amountTotal}`);
   } catch (err) {
     logError(op, `orderId=${orderId}`, err);
+    throw err;
+  }
+}
+
+/**
+ * Update header fields from a fresh Odoo `sale.order` read (e.g. after payment / invoice post).
+ * Pass only fields that should be written; omitted keys leave the column unchanged.
+ */
+export async function patchSaleOrderHeaderFromOdoo(orderId, { invoice_status, invoice_number } = {}) {
+  const op = 'patchSaleOrderHeaderFromOdoo';
+  const id = num(orderId);
+  if (!Number.isFinite(id) || id <= 0) return;
+  const parts = [];
+  const vals = [];
+  if (invoice_status != null && invoice_status !== false) {
+    parts.push('invoice_status = ?');
+    vals.push(empty(invoice_status));
+  }
+  if (invoice_number != null && String(invoice_number).trim() !== '') {
+    parts.push('invoice_number = ?');
+    vals.push(String(invoice_number).trim());
+  }
+  if (parts.length === 0) return;
+  const db = await getDb();
+  try {
+    vals.push(iso(), id);
+    await db.runAsync(
+      `UPDATE sale_orders SET ${parts.join(', ')}, updated_at = ? WHERE id = ?`,
+      vals
+    );
+    logQuery(op, `id=${id}`);
+  } catch (err) {
+    logError(op, `id=${id}`, err);
     throw err;
   }
 }

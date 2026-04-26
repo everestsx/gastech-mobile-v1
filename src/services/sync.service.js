@@ -55,7 +55,62 @@ const KEYS = {
 };
 
 const KEY_POST_LOGIN_SYNC_OK = '@gastech_post_login_sync_ok';
+/** Persists the one-time dashboard "initial load" gate across process restarts (per driver+vehicle session key). */
+const KEY_DASHBOARD_INITIAL_LOAD = '@gastech_dash_init_load_v1';
 const TRANSLATION_STORAGE_KEYS = ['@gastech_translations', '@gastech_translations_version'];
+
+let _dashboardInitialLoadMemoryDone = false;
+
+function sessionKeyForDashboardInitialLoad(u) {
+  if (!u || typeof u !== 'object') return null;
+  if (u.isAdmin) {
+    return u.vehicleId != null ? `admin|${Number(u.vehicleId)}` : 'admin';
+  }
+  const d = u.driverId;
+  const v = u.vehicleId;
+  if (d == null && v == null) return null;
+  return `${Number(d) || 0}|${Number(v) || 0}`;
+}
+
+/** In-memory: same as persisted flag, for the current app process (avoids a loader flash on tab remounts). */
+export function isDashboardInitialLoadMemoryDone() {
+  return _dashboardInitialLoadMemoryDone;
+}
+
+/**
+ * If AsyncStorage has a completed initial dashboard load for the current session, sets memory and returns true.
+ * Call on Dashboard mount so the full-screen gate does not repeat after app restart.
+ */
+export async function hydrateDashboardInitialLoadFromStorage() {
+  try {
+    const u = await getUserSession();
+    const want = sessionKeyForDashboardInitialLoad(u);
+    if (!want) return { done: false };
+    const storage = await getAsyncStorage();
+    const raw = await storage.getItem(KEY_DASHBOARD_INITIAL_LOAD);
+    if (raw === want) {
+      _dashboardInitialLoadMemoryDone = true;
+      return { done: true };
+    }
+  } catch (_) { }
+  return { done: false };
+}
+
+/** Mark initial dashboard load complete (memory + storage for current user session). */
+export async function markDashboardInitialLoadComplete(userSnapshot) {
+  try {
+    const u = userSnapshot && typeof userSnapshot === 'object' ? userSnapshot : await getUserSession();
+    const want = sessionKeyForDashboardInitialLoad(u);
+    if (!want) return;
+    const storage = await getAsyncStorage();
+    await storage.setItem(KEY_DASHBOARD_INITIAL_LOAD, want);
+    _dashboardInitialLoadMemoryDone = true;
+  } catch (_) { }
+}
+
+function resetDashboardInitialLoadState() {
+  _dashboardInitialLoadMemoryDone = false;
+}
 
 /** After a successful login sync, Dashboard shows a one-time success dialog. */
 export async function setPostLoginSyncSuccessPending() {
@@ -238,8 +293,9 @@ export async function getLastVehicleId() {
 }
 
 export async function logout() {
+  resetDashboardInitialLoadState();
   const storage = await getAsyncStorage();
-  await storage.multiRemove([KEYS.USER, KEYS.USER_MEDIA, KEYS.LAST_SYNC]);
+  await storage.multiRemove([KEYS.USER, KEYS.USER_MEDIA, KEYS.LAST_SYNC, KEY_DASHBOARD_INITIAL_LOAD]);
 }
 
 // ---------- Local reads (from SQLite) ----------
@@ -778,6 +834,46 @@ async function writeSaleOrderCrewFromPaymentPayload(soId, payload) {
       'sale.order crew fields (driver_employee_id / porter_employee_ids)',
       new Error(short || 'write failed')
     );
+  }
+}
+
+function isUnknownFieldOdooReadError(err) {
+  const m = String(err?.message || err || '').toLowerCase();
+  return (
+    m.includes('field') &&
+    (m.includes('invalid') || m.includes('unknown') || m.includes('does not exist') || m.includes('undefined'))
+  );
+}
+
+/** Re-read `invoice_status` / `invoice_number` from Odoo so SQLite matches the server after payment + invoice. */
+async function pullSaleOrderHeaderAfterPayment(saleOrderId) {
+  try {
+    const { callOdoo } = await import('./index.service.js');
+    const id = Number(saleOrderId);
+    if (!Number.isFinite(id) || id <= 0) return;
+    let rows;
+    try {
+      rows = await callOdoo('sale.order', 'read', [[id]], {
+        fields: ['invoice_status', 'invoice_number'],
+      });
+    } catch (e1) {
+      if (!isUnknownFieldOdooReadError(e1)) throw e1;
+      rows = await callOdoo('sale.order', 'read', [[id]], { fields: ['invoice_status'] });
+    }
+    const r = Array.isArray(rows) ? rows[0] : null;
+    if (!r) return;
+    const patch = {};
+    if (r.invoice_status != null && r.invoice_status !== false) {
+      patch.invoice_status = r.invoice_status;
+    }
+    if (r.invoice_number != null && r.invoice_number !== false) {
+      const s = String(r.invoice_number).trim();
+      if (s) patch.invoice_number = s;
+    }
+    if (Object.keys(patch).length === 0) return;
+    await saleOrdersDb.patchSaleOrderHeaderFromOdoo(id, patch);
+  } catch (e) {
+    logWarn('pullSaleOrderHeaderAfterPayment', e);
   }
 }
 
@@ -1701,6 +1797,7 @@ async function processSyncQueue() {
             : '';
 
           if (chatterPostedInThisRun.has(soId)) {
+            await pullSaleOrderHeaderAfterPayment(soId);
             await syncQueueDb.markSynced(Number(item.id));
             alreadySyncedSaleOrderIds.add(soId);
             log('queue', `payment synced id=${item.id} (chatter already posted for SO ${soId})`);
@@ -1872,6 +1969,7 @@ async function processSyncQueue() {
             log('queue', `payment item ${item.id} NOT marked synced (invoice not created — deliver first, then sync again for cheque/credit)`);
             continue;
           }
+          await pullSaleOrderHeaderAfterPayment(soId);
           await syncQueueDb.markSynced(item.id);
           alreadySyncedSaleOrderIds.add(soId);
           log('queue', `payment synced id=${item.id}`);

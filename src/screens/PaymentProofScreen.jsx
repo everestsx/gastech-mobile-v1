@@ -28,6 +28,7 @@ import * as vehicleInventoriesDb from '../database/vehicleInventories.js';
 import { getSaleOrderDetailsFromDB } from '../services/sync.service';
 import { empty } from '../database/dbHelpers.js';
 import { runSync } from '../services/sync.service';
+import { getOrAssignInvoiceNumber } from '../utils/invoiceNumber';
 import { clearCheckoutResume } from '../services/checkoutResume.service';
 
 const MAX_PHOTOS = 3;
@@ -122,10 +123,23 @@ export default function PaymentProofScreen({ route, navigation }) {
     const data = await getSaleOrderDetailsFromDB(soId);
     const orderInfo = data?.order || {};
     const existingLocalInv = await localInvoicesDb.getLocalInvoiceBySaleOrderId(soId);
-    const invoiceNumber =
-      empty(orderInfo?.invoice_number) ||
-      empty(existingLocalInv?.invoice_number) ||
-      '—';
+    const fromBackend = orderInfo?.invoice_number != null && String(orderInfo.invoice_number).trim() !== '' ? String(orderInfo.invoice_number).trim() : '';
+    const fromLocalRow =
+      existingLocalInv?.invoice_number != null && String(existingLocalInv.invoice_number).trim() !== ''
+        ? String(existingLocalInv.invoice_number).trim()
+        : '';
+    let invoiceNumber = fromBackend || fromLocalRow;
+    if (!invoiceNumber) {
+      try {
+        invoiceNumber = await getOrAssignInvoiceNumber(soId, {
+          saleOrderName: orderInfo?.name,
+          backendInvoiceNumber: orderInfo?.invoice_number,
+        });
+      } catch (e) {
+        console.warn('[PaymentProof] resolve invoice number', e?.message || e);
+        invoiceNumber = orderInfo?.name ? `TEMP-${soId}` : '—';
+      }
+    }
     const total = Number(paymentPayload.total ?? orderInfo.amount_total ?? 0) || 0;
     const untaxed = Number(orderInfo.amount_untaxed ?? total) || 0;
     const tax = Number(orderInfo.amount_tax ?? 0) || 0;

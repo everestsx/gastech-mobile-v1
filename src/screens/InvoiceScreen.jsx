@@ -323,7 +323,11 @@ function buildInvoiceHtml(
     .filter(Boolean)
     .join(',<br/>') || customerAddress;
   const chequeAmount = Number(paymentSplit?.check ?? paymentSplit?.cheque ?? 0);
-  const invNo = invoiceNumber ?? order?.name ?? '—';
+  const invNo =
+    (invoiceNumber && String(invoiceNumber).trim()) ||
+    (order?.invoice_number && String(order.invoice_number).trim()) ||
+    order?.name ||
+    '—';
   const showSplitBreakdown =
     (paymentType === 'split' && paymentSplit) || paymentSplitHasLineItems(paymentSplit);
   const paymentLabel = showSplitBreakdown
@@ -762,7 +766,11 @@ function buildInvoicePlainText(
   const supplierName = safeDisplay(partyInfo?.supplierName || 'GasTech');
   const supplierPhone = safeDisplay(partyInfo?.supplierPhone || '—');
   const supplierAddress = safeDisplay(partyInfo?.supplierAddress || '—');
-  const invNo = invoiceNumber ?? order?.name ?? '—';
+  const invNo =
+    (invoiceNumber && String(invoiceNumber).trim()) ||
+    (order?.invoice_number && String(order.invoice_number).trim()) ||
+    order?.name ||
+    '—';
 
   const lineAmounts = (lines || []).map((l) => {
     const sub = Number(l.price_subtotal) || 0;
@@ -1677,7 +1685,10 @@ export default function InvoiceScreen({ route, navigation }) {
       const orderName = data?.order?.name;
       const invNo =
         route.params?.invoiceNumber ??
-        (await getOrAssignInvoiceNumber(saleOrderId, { saleOrderName: orderName }));
+        (await getOrAssignInvoiceNumber(saleOrderId, {
+          saleOrderName: orderName,
+          backendInvoiceNumber: data?.order?.invoice_number,
+        }));
       setInvoiceNumber(invNo);
       const rawLines = data.lines ?? [];
       let nextLines = rawLines;
@@ -1944,7 +1955,11 @@ export default function InvoiceScreen({ route, navigation }) {
     });
   }, [navigation, saleOrderId, routeCreditProofRequired, routeOrderName]);
 
-  const effectiveInvoiceNumber = odooInvoiceNumber || invoiceNumber;
+  const backendSoInvoice =
+    order?.invoice_number && String(order.invoice_number).trim()
+      ? String(order.invoice_number).trim()
+      : null;
+  const effectiveInvoiceNumber = backendSoInvoice || odooInvoiceNumber || invoiceNumber;
 
   const buildInvoicePrintHtml = useCallback(async () => {
     if (!order) return null;
@@ -2342,10 +2357,17 @@ export default function InvoiceScreen({ route, navigation }) {
       const drvSig = norm(rawDrv);
       const existing = await localInvoicesDb.getLocalInvoiceBySaleOrderId(saleOrderId);
 
-      let invNumber = existing?.invoice_number ?? invoiceNumber ?? null;
+      let invNumber =
+        existing?.invoice_number ??
+        (order?.invoice_number && String(order.invoice_number).trim() ? String(order.invoice_number).trim() : null) ??
+        invoiceNumber ??
+        null;
       if (invNumber == null || String(invNumber).trim() === '') {
         try {
-          invNumber = await getOrAssignInvoiceNumber(saleOrderId, { saleOrderName: order?.name });
+          invNumber = await getOrAssignInvoiceNumber(saleOrderId, {
+            saleOrderName: order?.name,
+            backendInvoiceNumber: order?.invoice_number,
+          });
           setInvoiceNumber(invNumber);
         } catch (_) {
           invNumber = `INV-${saleOrderId}`;
@@ -2397,6 +2419,8 @@ export default function InvoiceScreen({ route, navigation }) {
       order?.amount_total,
       order?.amount_untaxed,
       order?.amount_tax,
+      order?.name,
+      order?.invoice_number,
     ]
   );
 

@@ -322,7 +322,10 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       if (!orderInfo) throw new Error('Sale order not found');
       const partnerId = odooRecordId(orderInfo.partner_id);
       const orderName = orderInfo.name ?? `Order ${saleOrderId}`;
-      const invoiceNumber = await getOrAssignInvoiceNumber(saleOrderId, { saleOrderName: orderName });
+      const invoiceNumber = await getOrAssignInvoiceNumber(saleOrderId, {
+        saleOrderName: orderName,
+        backendInvoiceNumber: orderInfo?.invoice_number,
+      });
 
       const soId = Number(saleOrderId);
 

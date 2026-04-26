@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getUserSession } from '../services/sync.service';
+import { getSaleOrderById } from '../database/saleOrders';
 
 const SEQ_PREFIX = 'invoice_seq_v2_';
 const ORDER_PREFIX = 'invoice_no_';
@@ -115,11 +116,42 @@ export async function buildInvoiceNumberForSaleOrder(saleOrderId, options = {}) 
   return `${lorryNo}/${fy}/${lastPart}`;
 }
 
+function normalizeInvNo(v) {
+  if (v == null || v === false) return null;
+  const t = String(v).trim();
+  return t || null;
+}
+
+/**
+ * Resolves the tax invoice number for a sale order. Prefers the Odoo `sale.order` field `invoice_number`
+ * (stored in SQLite after sync). Falls back to legacy lorry-based format only if backend/local DB have none.
+ */
 export async function getOrAssignInvoiceNumber(saleOrderId, options = {}) {
   if (saleOrderId == null) return getNextInvoiceNumberV2(options);
+
+  const fromOptions = normalizeInvNo(options.backendInvoiceNumber);
+  if (fromOptions) {
+    const key = ORDER_PREFIX + saleOrderId;
+    await AsyncStorage.setItem(key, fromOptions);
+    return fromOptions;
+  }
+
+  try {
+    const row = await getSaleOrderById(Number(saleOrderId));
+    const fromDb = normalizeInvNo(row?.invoice_number);
+    if (fromDb) {
+      const key = ORDER_PREFIX + saleOrderId;
+      await AsyncStorage.setItem(key, fromDb);
+      return fromDb;
+    }
+  } catch (_) {
+    /* ignore */
+  }
+
   const key = ORDER_PREFIX + saleOrderId;
   const existing = await AsyncStorage.getItem(key);
   if (existing) return existing;
+
   const next = await buildInvoiceNumberForSaleOrder(saleOrderId, options);
   await AsyncStorage.setItem(key, next);
   return next;

@@ -1,14 +1,24 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Linking } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTranslation } from 'react-i18next';
+import { useFocusEffect } from '@react-navigation/native';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
 import { getUserSession, getCachedOrders } from '../services/sync.service';
 import * as partnersDb from '../database/partners.js';
-import * as syncQueueDb from '../database/syncQueue.js';
 import * as localInvoicesDb from '../database/localInvoices.js';
 import { getLocalizedCustomerNameFromOrder } from '../utils/customerDisplayName';
+
+/** Sale order is fully invoiced for listing: Odoo `invoice_status` = invoiced, or a mobile invoice already linked in Odoo. */
+function isProvablyInvoicedForList(order, localInv) {
+  const st = String(order?.invoice_status || '').toLowerCase();
+  if (st === 'invoiced') return true;
+  const oid = localInv?.odoo_invoice_id;
+  const hasOdoo = oid != null && Number(oid) > 0;
+  const hasSynced = localInv?.synced_at != null && String(localInv.synced_at).trim() !== '';
+  return hasOdoo && hasSynced;
+}
 
 export default function InvoicedCustomersScreen() {
   const { t } = useTranslation();
@@ -26,43 +36,11 @@ export default function InvoicedCustomersScreen() {
         partnersDb.getAllPartners(),
         localInvoicesDb.getAllLocalInvoices(false),
       ]);
-      const [syncedPaymentOrderIds] = await Promise.all([
-        syncQueueDb.getSyncedPaymentSaleOrderIds(),
-      ]);
-      const syncedLocalInvoiceOrderIds = new Set(
-        (localInvoices || [])
-          .filter((inv) => inv?.synced_at || inv?.odoo_invoice_id)
-          .map((inv) => Number(inv?.sale_order_id))
-          .filter((id) => Number.isFinite(id) && id > 0)
-      );
-      const syncedOrderIds = new Set([
-        ...Array.from(syncedPaymentOrderIds || []),
-        ...Array.from(syncedLocalInvoiceOrderIds || []),
-      ]);
-      const backendInvoicedOrderIds = new Set(
-        (orders || [])
-          .filter((o) => String(o?.invoice_status || '').toLowerCase() === 'invoiced')
-          .map((o) => Number(o?.id))
-          .filter((id) => Number.isFinite(id) && id > 0)
-      );
-      const candidateOrderIds = new Set([
-        ...Array.from(syncedOrderIds),
-        ...Array.from(backendInvoicedOrderIds),
-      ]);
-      const localInvoiceBySaleOrderId = new Map(
-        (localInvoices || [])
-          .map((inv) => [Number(inv?.sale_order_id), inv])
-          .filter(([id]) => Number.isFinite(id) && id > 0)
-      );
-      const orderById = new Map(
-        (orders || [])
-          .map((o) => [Number(o?.id), o])
-          .filter(([id]) => Number.isFinite(id) && id > 0)
-      );
-      const paymentPayloadBySaleOrderId = await syncQueueDb.getLatestPaymentPayloadMapBySaleOrderIds(
-        Array.from(syncedOrderIds)
-      );
-
+      const localInvoiceBySaleOrderId = new Map();
+      for (const inv of localInvoices || []) {
+        const sid = Number(inv?.sale_order_id);
+        if (Number.isFinite(sid) && sid > 0) localInvoiceBySaleOrderId.set(sid, inv);
+      }
       const phoneByPartnerId = {};
       for (const p of partners || []) {
         const id = Number(p?.id);
@@ -70,19 +48,30 @@ export default function InvoicedCustomersScreen() {
           phoneByPartnerId[id] = String(p?.phone || '').trim();
         }
       }
+      const partnerNameFallback = {};
+      for (const p of partners || []) {
+        const id = Number(p?.id);
+        if (Number.isFinite(id) && id > 0) {
+          partnerNameFallback[id] = String(p?.name || '').trim();
+        }
+      }
 
       const byPartnerId = new Map();
-      for (const soId of Array.from(candidateOrderIds)) {
+      for (const o of orders || []) {
+        const soId = Number(o?.id);
         if (!Number.isFinite(soId) || soId <= 0) continue;
-        const o = orderById.get(soId);
-        // Strictly show only completed + invoiced + synced customers.
-        if (!syncedOrderIds.has(soId) && !backendInvoicedOrderIds.has(soId)) continue;
-        const payloadEntry = paymentPayloadBySaleOrderId?.[soId]?.payload || {};
-        const payloadPartnerId = Number(payloadEntry?.partnerId ?? payloadEntry?.partner_id);
-        const partnerIdRaw = Array.isArray(o?.partner_id) ? o.partner_id[0] : (o?.partner_id ?? payloadPartnerId);
+        const localInv = localInvoiceBySaleOrderId.get(soId);
+        if (!isProvablyInvoicedForList(o, localInv)) continue;
+        const partnerIdRaw = Array.isArray(o?.partner_id) ? o.partner_id[0] : o?.partner_id;
         const partnerId = Number(partnerIdRaw);
         if (!Number.isFinite(partnerId) || partnerId <= 0) continue;
-        const localInv = localInvoiceBySaleOrderId.get(soId);
+        const customerName = getLocalizedCustomerNameFromOrder(o, appLanguage);
+        const fromPartner = partnerNameFallback[partnerId] || '';
+        const displayName =
+          customerName && String(customerName).trim() && customerName !== '—'
+            ? customerName
+            : fromPartner || `—`;
+        const phone = phoneByPartnerId[partnerId] || '';
         const orderDate =
           String(o?.commitment_date || '').trim() ||
           String(o?.date_order || '').trim() ||
@@ -92,16 +81,16 @@ export default function InvoicedCustomersScreen() {
         if (!byPartnerId.has(partnerId)) {
           byPartnerId.set(partnerId, {
             partnerId,
-            customerName: o
-              ? getLocalizedCustomerNameFromOrder(o, appLanguage)
-              : String(payloadEntry?.partnerName || payloadEntry?.customerName || '').trim() || `#${partnerId}`,
-            phone: phoneByPartnerId[partnerId] || '',
+            customerName: displayName,
+            phone,
             invoicedOrders: 0,
             latestOrderTs: Number.isFinite(orderTs) ? orderTs : 0,
           });
         }
         const current = byPartnerId.get(partnerId);
         current.invoicedOrders += 1;
+        if (displayName && current.customerName === '—') current.customerName = displayName;
+        if (phone && !current.phone) current.phone = phone;
         if ((Number.isFinite(orderTs) ? orderTs : 0) > (current.latestOrderTs || 0)) {
           current.latestOrderTs = orderTs;
         }
@@ -118,9 +107,11 @@ export default function InvoicedCustomersScreen() {
     }
   }, [appLanguage]);
 
-  useEffect(() => {
-    void loadData();
-  }, [loadData]);
+  useFocusEffect(
+    useCallback(() => {
+      void loadData();
+    }, [loadData])
+  );
 
   const styles = useMemo(
     () =>
@@ -201,7 +192,7 @@ export default function InvoicedCustomersScreen() {
           <Text style={styles.emptyText}>{t('invoicedcustomers.empty', 'No invoiced customers found yet.')}</Text>
         </View>
       ) : (
-        rows.map((row) => (
+        rows.map((row, index) => (
           <View key={String(row.partnerId)} style={styles.card}>
             <View style={styles.row}>
               <Text style={styles.customerName}>{row.customerName || `#${row.partnerId}`}</Text>
@@ -220,7 +211,7 @@ export default function InvoicedCustomersScreen() {
               <Ionicons name="call-outline" size={18} color={colors.primary} />
               <Text style={styles.phoneText}>{row.phone || t('invoicedcustomers.noPhone', 'No phone number')}</Text>
             </TouchableOpacity>
-            {rows[0]?.partnerId === row.partnerId ? (
+            {index === 0 ? (
               <View style={styles.latestBadge}>
                 <Ionicons name="sparkles-outline" size={14} color={colors.success || '#15803d'} />
                 <Text style={styles.latestBadgeText}>{t('invoicedcustomers.latest', 'Most recent invoiced customer')}</Text>

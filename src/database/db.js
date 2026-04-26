@@ -70,6 +70,7 @@ const SALE_ORDERS_COLUMNS = [
   { name: 'updated_at', def: 'TEXT' },
   { name: 'payload', def: 'TEXT' }, // legacy; we always write '' so NOT NULL if present is satisfied
   { name: 'payment_type', def: 'TEXT' }, // 'cash' | 'cheque' | 'credit' set when user completes payment
+  { name: 'invoice_number', def: 'TEXT' }, // Odoo sale.order custom invoice (e.g. INV/26-27/S01087)
 ];
 
 async function runMigrations(db) {
@@ -565,6 +566,20 @@ async function runMigrations(db) {
       console.warn('[Migration] vehicle_inventories incoming/outgoing:', e);
     }
     await db.runAsync('PRAGMA user_version = 23');
+  }
+
+  // Migration 24: Backend sale order invoice number (Odoo custom field) for tax invoice display
+  if (current < 24) {
+    try {
+      const info = await db.getAllAsync('PRAGMA table_info(sale_orders)');
+      const names = new Set((info || []).map((c) => c.name));
+      if (!names.has('invoice_number')) {
+        await db.runAsync('ALTER TABLE sale_orders ADD COLUMN invoice_number TEXT');
+      }
+    } catch (e) {
+      console.warn('[Migration] sale_orders invoice_number:', e);
+    }
+    await db.runAsync('PRAGMA user_version = 24');
   }
 }
 

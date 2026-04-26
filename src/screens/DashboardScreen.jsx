@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -43,6 +43,9 @@ import {
   getOrderLinesByOrderIdsFromDB,
   consumePostLoginSyncSuccessPending,
   saveUserSession,
+  isDashboardInitialLoadMemoryDone,
+  hydrateDashboardInitialLoadFromStorage,
+  markDashboardInitialLoadComplete,
 } from '../services/sync.service';
 import * as localPaymentsDb from '../database/localPayments.js';
 import * as localInvoicesDb from '../database/localInvoices.js';
@@ -79,7 +82,6 @@ import {
 } from '../services/checkoutResume.service';
 
 let lastDashboardSnapshot = null;
-let hasCompletedInitialDashboardLoad = false;
 
 // const SHOPS_TARGET = 60;
 // const GAS_TARGET = 6000;
@@ -234,7 +236,9 @@ export default function DashboardScreen({ navigation }) {
   const [profileModal, setProfileModal] = useState(null);
   const [postLoginSyncModalVisible, setPostLoginSyncModalVisible] = useState(false);
   const [notification, setNotification] = useState({ visible: false, title: '', message: '', type: 'info' });
-  const [initialLoadGateActive, setInitialLoadGateActive] = useState(() => !hasCompletedInitialDashboardLoad);
+  const [initialLoadGateActive, setInitialLoadGateActive] = useState(
+    () => !isDashboardInitialLoadMemoryDone()
+  );
   const lastSyncNotificationRef = React.useRef(null);
   const previousSyncedPaymentIdsRef = React.useRef(new Set());
   const initialSyncStartedRef = React.useRef(false);
@@ -732,15 +736,29 @@ export default function DashboardScreen({ navigation }) {
     };
   }, [user?.pendingInitialSync, isSyncing]);
 
+  // If the user already completed the one-time initial dashboard load (stored + memory), open without the full-screen gate
+  // after a cold start or when the Dashboard unmounts/remounts in the same app session.
+  useLayoutEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const { done } = await hydrateDashboardInitialLoadFromStorage();
+      if (cancelled) return;
+      if (done) setInitialLoadGateActive(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // One-time initial login gate:
   // show only full-screen loader (no empty dashboard) until first complete data load finishes.
   useEffect(() => {
     if (!initialLoadGateActive) return;
     if (loading) return;
     if (user?.pendingInitialSync) return;
-    hasCompletedInitialDashboardLoad = true;
+    void markDashboardInitialLoadComplete(user);
     setInitialLoadGateActive(false);
-  }, [initialLoadGateActive, loading, user?.pendingInitialSync]);
+  }, [initialLoadGateActive, loading, user?.pendingInitialSync, user]);
 
   // Safety: if first dashboard load is complete and sync is no longer running,
   // clear pendingInitialSync so full-screen blocker never repeats on later visits.
