@@ -78,6 +78,9 @@ import {
   pendingCheckoutSaleOrderIdsFromResumeMap,
 } from '../services/checkoutResume.service';
 
+let lastDashboardSnapshot = null;
+let hasCompletedInitialDashboardLoad = false;
+
 // const SHOPS_TARGET = 60;
 // const GAS_TARGET = 6000;
 
@@ -179,10 +182,10 @@ export default function DashboardScreen({ navigation }) {
   // Visibility from config file; user preference (theme/settings) can further hide when config allows
   const showCreateSalesOrder = dashboardConfig.showCreateSalesOrder && userShowCreate;
   const showReturnOrder = dashboardConfig.showReturnOrder && userShowReturn;
-  const [orders, setOrders] = useState([]);
-  const [user, setUser] = useState(null);
-  const [routes, setRoutes] = useState([]);
-  const [lineTotalsByOrder, setLineTotalsByOrder] = useState({});
+  const [orders, setOrders] = useState(() => lastDashboardSnapshot?.orders ?? []);
+  const [user, setUser] = useState(() => lastDashboardSnapshot?.user ?? null);
+  const [routes, setRoutes] = useState(() => lastDashboardSnapshot?.routes ?? []);
+  const [lineTotalsByOrder, setLineTotalsByOrder] = useState(() => lastDashboardSnapshot?.lineTotalsByOrder ?? {});
   const [pickingsBySaleId, setPickingsBySaleId] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -209,17 +212,20 @@ export default function DashboardScreen({ navigation }) {
   const [commissionRangeModalVisible, setCommissionRangeModalVisible] = useState(false);
   const [commissionRangeDraft, setCommissionRangeDraft] = useState({ dateFrom: '', dateTo: '' });
   const [commissionRangePickerField, setCommissionRangePickerField] = useState(null);
-  const [todayOrderLines, setTodayOrderLines] = useState([]);
-  const [orderSyncStats, setOrderSyncStats] = useState({
-    pendingOrders: 0,
-    localCompleted: 0,
-    syncedCompleted: 0,
-  });
+  const [todayOrderLines, setTodayOrderLines] = useState(() => lastDashboardSnapshot?.todayOrderLines ?? []);
+  const [orderSyncStats, setOrderSyncStats] = useState(
+    () =>
+      lastDashboardSnapshot?.orderSyncStats ?? {
+        pendingOrders: 0,
+        localCompleted: 0,
+        syncedCompleted: 0,
+      }
+  );
 
   // Stock overview (local lorry stock) computed from vehicle_inventories.
-  const [stockCards, setStockCards] = useState([]);
+  const [stockCards, setStockCards] = useState(() => lastDashboardSnapshot?.stockCards ?? []);
   const [productIdToImageUri, setProductIdToImageUri] = useState({});
-  const [emptyStockByKg, setEmptyStockByKg] = useState({});
+  const [emptyStockByKg, setEmptyStockByKg] = useState(() => lastDashboardSnapshot?.emptyStockByKg ?? {});
 
   // Collection cards: tap to expand one (shows full amount), tap again to collapse
   const [expandedCollectionCard, setExpandedCollectionCard] = useState(null);
@@ -228,6 +234,7 @@ export default function DashboardScreen({ navigation }) {
   const [profileModal, setProfileModal] = useState(null);
   const [postLoginSyncModalVisible, setPostLoginSyncModalVisible] = useState(false);
   const [notification, setNotification] = useState({ visible: false, title: '', message: '', type: 'info' });
+  const [initialLoadGateActive, setInitialLoadGateActive] = useState(() => !hasCompletedInitialDashboardLoad);
   const lastSyncNotificationRef = React.useRef(null);
   const previousSyncedPaymentIdsRef = React.useRef(new Set());
   const initialSyncStartedRef = React.useRef(false);
@@ -255,6 +262,19 @@ export default function DashboardScreen({ navigation }) {
     };
     return map[appLanguage] || map.en;
   }, [appLanguage]);
+
+  useEffect(() => {
+    lastDashboardSnapshot = {
+      orders,
+      user,
+      routes,
+      lineTotalsByOrder,
+      todayOrderLines,
+      orderSyncStats,
+      stockCards,
+      emptyStockByKg,
+    };
+  }, [orders, user, routes, lineTotalsByOrder, todayOrderLines, orderSyncStats, stockCards, emptyStockByKg]);
 
   const toggleCollectionCard = useCallback((key) => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
@@ -299,6 +319,20 @@ export default function DashboardScreen({ navigation }) {
           } catch (e) {
             console.warn('[Dashboard] porter avatar hydrate failed', e?.message ?? e);
           }
+        }
+      }
+      if (user && (!user.driverImageBase64 || String(user.driverImageBase64).trim() === '') && user?.driverId != null) {
+        try {
+          const employees = await getPortersEmployees();
+          const matchedDriver = (employees || []).find((e) => Number(e?.id) === Number(user.driverId));
+          if (matchedDriver?.imageBase64) {
+            user = { ...user, driverImageBase64: matchedDriver.imageBase64 };
+            try {
+              await saveUserSession(user);
+            } catch (_) {}
+          }
+        } catch (e) {
+          console.warn('[Dashboard] driver avatar hydrate failed', e?.message ?? e);
         }
       }
       setUser(user);
@@ -495,11 +529,26 @@ export default function DashboardScreen({ navigation }) {
           /** Always show the four default cylinder sizes; merge Odoo rows, fill missing with 0 on-hand / 0 remaining. */
           setStockCards(buildDefaultGasDashboardStockCards(Object.values(byProduct), productNameMap || {}));
         } else {
-          setStockCards([]);
+          setStockCards((prev) => (prev?.length ? prev : []));
         }
       } catch (_) {
-        setStockCards([]);
+        setStockCards((prev) => (prev?.length ? prev : []));
       }
+
+      lastDashboardSnapshot = {
+        orders: effectiveOrders || [],
+        user,
+        routes: Array.isArray(routesData) ? routesData : [],
+        lineTotalsByOrder: totals || {},
+        todayOrderLines: orderLines || [],
+        orderSyncStats: {
+          pendingOrders,
+          localCompleted,
+          syncedCompleted,
+        },
+        stockCards: Array.isArray(stockCards) ? stockCards : [],
+        emptyStockByKg: emptyStockByKg || {},
+      };
     } catch (err) {
       // Keep last known dashboard data on transient read failures.
       console.warn('[Dashboard] loadData failed, preserving previous view state', err?.message ?? err);
@@ -682,6 +731,37 @@ export default function DashboardScreen({ navigation }) {
       cancelled = true;
     };
   }, [user?.pendingInitialSync, isSyncing]);
+
+  // One-time initial login gate:
+  // show only full-screen loader (no empty dashboard) until first complete data load finishes.
+  useEffect(() => {
+    if (!initialLoadGateActive) return;
+    if (loading) return;
+    if (user?.pendingInitialSync) return;
+    hasCompletedInitialDashboardLoad = true;
+    setInitialLoadGateActive(false);
+  }, [initialLoadGateActive, loading, user?.pendingInitialSync]);
+
+  // Safety: if first dashboard load is complete and sync is no longer running,
+  // clear pendingInitialSync so full-screen blocker never repeats on later visits.
+  useEffect(() => {
+    if (!user?.pendingInitialSync) return;
+    if (loading || isSyncing) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const u = await getUserSession();
+        if (cancelled || !u?.pendingInitialSync) return;
+        await saveUserSession({ ...u, pendingInitialSync: false });
+      } catch (_) {}
+      if (!cancelled) {
+        setUser((prev) => (prev ? { ...prev, pendingInitialSync: false } : prev));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.pendingInitialSync, loading, isSyncing]);
 
   // Short delayed reload on first mount so dashboard amounts update immediately after first-time login
   useEffect(() => {
@@ -1753,7 +1833,23 @@ export default function DashboardScreen({ navigation }) {
     Linking.openURL(`tel:${s}`).catch(() => {});
   };
 
-  const shouldBlockDashboard = loading || !!user?.pendingInitialSync;
+  const shouldBlockDashboard = initialLoadGateActive && !!user?.pendingInitialSync;
+  const shouldShowInitialFullScreenLoader = initialLoadGateActive && (loading || !!user?.pendingInitialSync);
+
+  if (shouldShowInitialFullScreenLoader) {
+    return (
+      <View style={[styles.container, styles.initialSyncCenter]}>
+        <Ionicons name="cloud-download-outline" size={36} color={colors.primary} />
+        <Text style={[styles.initialSyncTitle, { color: colors.text }]}>
+          {t('dashboard.initialSyncTitle', 'Loading your data...')}
+        </Text>
+        <Text style={[styles.initialSyncSub, { color: colors.textSecondary }]}>
+          {t('dashboard.initialSyncSub', 'This only takes a moment.')}
+        </Text>
+        <ActivityIndicator style={{ marginTop: 16 }} size="large" color={colors.primary} />
+      </View>
+    );
+  }
 
   return (
     <>

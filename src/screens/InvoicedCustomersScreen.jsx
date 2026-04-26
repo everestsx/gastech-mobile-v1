@@ -21,15 +21,47 @@ export default function InvoicedCustomersScreen() {
     try {
       const user = await getUserSession();
       const vehicleId = user?.isAdmin ? null : user?.vehicleId ?? null;
-      const [orders, partners] = await Promise.all([
+      const [orders, partners, localInvoices] = await Promise.all([
         getCachedOrders(vehicleId),
         partnersDb.getAllPartners(),
+        localInvoicesDb.getAllLocalInvoices(false),
       ]);
-      const [syncedPaymentOrderIds, pendingOrderIds, localInvoiceOrderIds] = await Promise.all([
+      const [syncedPaymentOrderIds] = await Promise.all([
         syncQueueDb.getSyncedPaymentSaleOrderIds(),
-        syncQueueDb.getPendingSaleOrderIds(),
-        localInvoicesDb.getSaleOrderIdsWithLocalInvoices(),
       ]);
+      const syncedLocalInvoiceOrderIds = new Set(
+        (localInvoices || [])
+          .filter((inv) => inv?.synced_at || inv?.odoo_invoice_id)
+          .map((inv) => Number(inv?.sale_order_id))
+          .filter((id) => Number.isFinite(id) && id > 0)
+      );
+      const syncedOrderIds = new Set([
+        ...Array.from(syncedPaymentOrderIds || []),
+        ...Array.from(syncedLocalInvoiceOrderIds || []),
+      ]);
+      const backendInvoicedOrderIds = new Set(
+        (orders || [])
+          .filter((o) => String(o?.invoice_status || '').toLowerCase() === 'invoiced')
+          .map((o) => Number(o?.id))
+          .filter((id) => Number.isFinite(id) && id > 0)
+      );
+      const candidateOrderIds = new Set([
+        ...Array.from(syncedOrderIds),
+        ...Array.from(backendInvoicedOrderIds),
+      ]);
+      const localInvoiceBySaleOrderId = new Map(
+        (localInvoices || [])
+          .map((inv) => [Number(inv?.sale_order_id), inv])
+          .filter(([id]) => Number.isFinite(id) && id > 0)
+      );
+      const orderById = new Map(
+        (orders || [])
+          .map((o) => [Number(o?.id), o])
+          .filter(([id]) => Number.isFinite(id) && id > 0)
+      );
+      const paymentPayloadBySaleOrderId = await syncQueueDb.getLatestPaymentPayloadMapBySaleOrderIds(
+        Array.from(syncedOrderIds)
+      );
 
       const phoneByPartnerId = {};
       for (const p of partners || []) {
@@ -40,29 +72,29 @@ export default function InvoicedCustomersScreen() {
       }
 
       const byPartnerId = new Map();
-      for (const o of orders || []) {
-        if (String(o?.invoice_status || '').toLowerCase() !== 'invoiced') continue;
-        const soId = Number(o?.id);
+      for (const soId of Array.from(candidateOrderIds)) {
         if (!Number.isFinite(soId) || soId <= 0) continue;
-        // Include both backend-synced invoices and local completed invoices.
-        // Pending queue items are still valid completed deliveries for field users.
-        const isCompletedLocallyOrSynced =
-          syncedPaymentOrderIds.has(soId) ||
-          pendingOrderIds.has(soId) ||
-          localInvoiceOrderIds.has(soId);
-        if (!isCompletedLocallyOrSynced) continue;
-        const partnerIdRaw = Array.isArray(o?.partner_id) ? o.partner_id[0] : o?.partner_id;
+        const o = orderById.get(soId);
+        // Strictly show only completed + invoiced + synced customers.
+        if (!syncedOrderIds.has(soId) && !backendInvoicedOrderIds.has(soId)) continue;
+        const payloadEntry = paymentPayloadBySaleOrderId?.[soId]?.payload || {};
+        const payloadPartnerId = Number(payloadEntry?.partnerId ?? payloadEntry?.partner_id);
+        const partnerIdRaw = Array.isArray(o?.partner_id) ? o.partner_id[0] : (o?.partner_id ?? payloadPartnerId);
         const partnerId = Number(partnerIdRaw);
         if (!Number.isFinite(partnerId) || partnerId <= 0) continue;
+        const localInv = localInvoiceBySaleOrderId.get(soId);
         const orderDate =
           String(o?.commitment_date || '').trim() ||
           String(o?.date_order || '').trim() ||
+          String(localInv?.created_at || '').trim() ||
           '';
         const orderTs = orderDate ? Date.parse(orderDate) : 0;
         if (!byPartnerId.has(partnerId)) {
           byPartnerId.set(partnerId, {
             partnerId,
-            customerName: getLocalizedCustomerNameFromOrder(o, appLanguage),
+            customerName: o
+              ? getLocalizedCustomerNameFromOrder(o, appLanguage)
+              : String(payloadEntry?.partnerName || payloadEntry?.customerName || '').trim() || `#${partnerId}`,
             phone: phoneByPartnerId[partnerId] || '',
             invoicedOrders: 0,
             latestOrderTs: Number.isFinite(orderTs) ? orderTs : 0,
