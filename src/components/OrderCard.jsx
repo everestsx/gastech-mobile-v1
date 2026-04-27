@@ -54,6 +54,7 @@ export function getOrderTotalQty(order) {
 export default function OrderCard({
   order,
   onPress,
+  onCancelPress = null,
   isDelivered,
   orderLines = [],
   paymentSplit = null,
@@ -167,6 +168,22 @@ export default function OrderCard({
         },
         qtyBadgeText: { fontSize: 11, fontWeight: '600', color: colors.text },
         qtyBadgeSizeLabel: { fontSize: 12, fontWeight: '800', color: colors.text, marginRight: 2 },
+        actionsRow: {
+          marginTop: 2,
+          flexDirection: 'row',
+          justifyContent: 'flex-end',
+        },
+        cancelActionBtn: {
+          width: 26,
+          height: 26,
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'center',
+          borderRadius: 13,
+          backgroundColor: `${colors.error || '#dc2626'}18`,
+          borderWidth: 1,
+          borderColor: `${colors.error || '#dc2626'}40`,
+        },
       }),
     [colors]
   );
@@ -358,6 +375,20 @@ export default function OrderCard({
           </View>
         </View>
       )}
+
+      {typeof onCancelPress === 'function' ? (
+        <View style={styles.actionsRow}>
+          <TouchableOpacity
+            style={styles.cancelActionBtn}
+            onPress={() => onCancelPress(order)}
+            activeOpacity={0.8}
+            accessibilityRole="button"
+            accessibilityLabel={t('saleorderdetails.cancelOrder', 'Cancel order')}
+          >
+            <Ionicons name="trash-outline" size={14} color={colors.error || '#dc2626'} />
+          </TouchableOpacity>
+        </View>
+      ) : null}
     </TouchableOpacity>
   );
 }

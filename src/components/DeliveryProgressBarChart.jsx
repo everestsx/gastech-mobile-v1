@@ -1,5 +1,5 @@
-import React, { useMemo, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable } from 'react-native';
+import React, { useMemo, useRef, useState } from 'react';
+import { View, Text, StyleSheet, ScrollView, Pressable, Modal, Dimensions } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from '../context/ThemeContext';
@@ -33,7 +33,11 @@ export default function DeliveryProgressBarChart({ data = [], title = 'Delivery 
   const { t } = useTranslation();
   const { colors } = useTheme();
   const [selectedIndex, setSelectedIndex] = useState(null);
+  const [tooltipPosition, setTooltipPosition] = useState({ top: 80, left: 8 });
+  const barRefs = useRef([]);
   const barWidth = FIXED_BAR_WIDTH;
+  const tooltipWidth = 180;
+  const screenWidth = Dimensions.get('window').width;
   const sortedData = useMemo(() => {
     return [...(data || [])].sort((a, b) => {
       const deliveredA = Math.max(0, Number(a.delivered) || 0);
@@ -108,12 +112,14 @@ export default function DeliveryProgressBarChart({ data = [], title = 'Delivery 
         legendItem: { flexDirection: 'row', alignItems: 'center', gap: 4 },
         legendBox: { width: 12, height: 12, borderRadius: 2 },
         legendText: { fontSize: 11, fontWeight: '600' },
+        tooltipBackdrop: {
+          flex: 1,
+          backgroundColor: 'rgba(0,0,0,0.08)',
+        },
         tooltipWrap: {
           position: 'absolute',
-          left: spacing.sm,
-          right: spacing.sm,
-          top: 40,
-          zIndex: 10,
+          top: 0,
+          width: tooltipWidth,
           alignItems: 'center',
         },
         tooltip: {
@@ -163,46 +169,43 @@ export default function DeliveryProgressBarChart({ data = [], title = 'Delivery 
         <Text style={[styles.title, { flex: 1 }]}>{title || t('dashboard.deliveryProgress', 'Delivery Progress')}</Text>
         {rightElement}
       </View>
-      {selectedRow != null && (
-        <View style={styles.tooltipWrap} pointerEvents="box-none">
-          <View style={styles.tooltip}>
-            <View style={styles.tooltipRow}>
-              <Text style={[styles.tooltipValue, { flex: 1, marginLeft: 8, textAlign: 'left' }]} numberOfLines={2}>
-                {selectedRow.shopName || selectedRow.shopId || `Shop ${selectedIndex + 1}`}
-              </Text>
+      <Modal
+        visible={selectedRow != null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSelectedIndex(null)}
+      >
+        <Pressable style={styles.tooltipBackdrop} onPress={() => setSelectedIndex(null)}>
+          <Pressable
+            style={[
+              styles.tooltipWrap,
+              {
+                left: Math.max(8, Math.min(tooltipPosition.left, screenWidth - tooltipWidth - 8)),
+                top: Math.max(8, tooltipPosition.top),
+              },
+            ]}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <View style={styles.tooltip}>
+              <View style={styles.tooltipRow}>
+                <Text style={[styles.tooltipValue, { flex: 1, marginLeft: 8, textAlign: 'left' }]} numberOfLines={2}>
+                  {selectedRow?.shopName || selectedRow?.shopId || `Shop ${selectedIndex + 1}`}
+                </Text>
+              </View>
+              {gasKeys.map((k) => {
+                const qty = Number(selectedRow?.stacks?.[k]) || 0;
+                if (qty <= 0) return null;
+                return (
+                  <View style={styles.tooltipRow} key={`tip-${k}`}>
+                    <Text style={styles.tooltipLabel}>{k}</Text>
+                    <Text style={styles.tooltipValue}>{qty}</Text>
+                  </View>
+                );
+              })}
             </View>
-            {gasKeys.map((k) => {
-              const qty = Number(selectedRow?.stacks?.[k]) || 0;
-              if (qty <= 0) return null;
-              return (
-                <View style={styles.tooltipRow} key={`tip-${k}`}>
-                  <Text style={styles.tooltipLabel}>{k}</Text>
-                  <Text style={styles.tooltipValue}>{qty}</Text>
-                </View>
-              );
-            })}
-            <View style={styles.tooltipRow}>
-              <Text style={styles.tooltipLabel}>{t('common.deliveredQty', 'Delivered (qty)')}</Text>
-              <Text style={styles.tooltipValue}>{Math.max(0, Number(selectedRow.delivered) || 0)}</Text>
-            </View>
-            <View style={styles.tooltipRow}>
-              <Text style={styles.tooltipLabel}>{t('common.pendingQty', 'Pending (qty)')}</Text>
-              <Text style={styles.tooltipValue}>{Math.max(0, Number(selectedRow.pending) || 0)}</Text>
-            </View>
-            <View style={[styles.tooltipRow, { marginBottom: 0 }]}>
-              <Text style={styles.tooltipLabel}>{t('common.totalGas', 'Total gas')}</Text>
-              <Text style={styles.tooltipValue}>
-                {Math.max(
-                  0,
-                  Number(selectedRow.total) ||
-                    Object.values(selectedRow?.stacks || {}).reduce((s, n) => s + (Number(n) || 0), 0) ||
-                    (Math.max(0, Number(selectedRow.delivered) || 0) + Math.max(0, Number(selectedRow.pending) || 0))
-                )}
-              </Text>
-            </View>
-          </View>
-        </View>
-      )}
+          </Pressable>
+        </Pressable>
+      </Modal>
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
@@ -241,8 +244,30 @@ export default function DeliveryProgressBarChart({ data = [], title = 'Delivery 
 
               return (
                 <Pressable
+                  ref={(el) => {
+                    barRefs.current[i] = el;
+                  }}
                   key={row.shopId || i}
-                  onPress={() => setSelectedIndex(isSelected ? null : i)}
+                  onPress={() => {
+                    if (isSelected) {
+                      setSelectedIndex(null);
+                      return;
+                    }
+                    const node = barRefs.current[i];
+                    if (node?.measureInWindow) {
+                      node.measureInWindow((x, y, width) => {
+                        const left = x + width / 2 - tooltipWidth / 2;
+                        const top = y - 88;
+                        setTooltipPosition({
+                          left: Math.max(8, left),
+                          top: Math.max(8, top),
+                        });
+                        setSelectedIndex(i);
+                      });
+                      return;
+                    }
+                    setSelectedIndex(i);
+                  }}
                   style={({ pressed }) => ({
                     width: barWidth + BAR_GAP,
                     height: CHART_HEIGHT - LABEL_HEIGHT,

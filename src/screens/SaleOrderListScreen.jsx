@@ -11,6 +11,8 @@ import {
   TextInput,
   Modal,
   Pressable,
+  ScrollView,
+  Alert,
   Keyboard,
   KeyboardAvoidingView,
 } from 'react-native';
@@ -27,8 +29,15 @@ import {
   getPickingsBySaleIdsFromDB,
   getUserSession,
 } from '../services/sync.service';
+import {
+  cancelSaleOrderWithReason,
+  getCancellationReasonOptions,
+} from '../services/saleOrder.service';
 import OrderCard from '../components/OrderCard';
 import SyncHeaderBadge from '../components/SyncHeaderBadge';
+import * as saleOrdersDb from '../database/saleOrders.js';
+import * as stockPickingsDb from '../database/stockPickings.js';
+import * as syncQueueDb from '../database/syncQueue.js';
 import * as deliveryQtyDb from '../database/deliveryQty.js';
 import * as localPaymentsDb from '../database/localPayments.js';
 import * as offlineAttachmentsDb from '../database/offlineAttachments.js';
@@ -70,6 +79,14 @@ export default function SaleOrderListScreen({ route, navigation }) {
   const [searchField, setSearchField] = useState('customer');
   const [showFieldDropdown, setShowFieldDropdown] = useState(false);
   const [checkoutResumeMap, setCheckoutResumeMap] = useState({});
+  const [showCancelConfirmModal, setShowCancelConfirmModal] = useState(false);
+  const [showCancelModal, setShowCancelModal] = useState(false);
+  const [cancelTargetOrder, setCancelTargetOrder] = useState(null);
+  const [cancelReasons, setCancelReasons] = useState([]);
+  const [cancelReason, setCancelReason] = useState('');
+  const [cancelReasonsLoading, setCancelReasonsLoading] = useState(false);
+  const [cancelError, setCancelError] = useState(null);
+  const [canceling, setCanceling] = useState(false);
   // Orders tab: hide once invoiced or delivered — unless checkout (invoice / payment photo) is still in progress.
   const filteredOrders = useMemo(
     () =>
@@ -239,8 +256,188 @@ export default function SaleOrderListScreen({ route, navigation }) {
           gap: 8,
         },
         dropdownItemText: { fontSize: 15, fontWeight: '500', color: colors.text },
+        cancelConfirmBackdrop: {
+          flex: 1,
+          backgroundColor: 'rgba(0,0,0,0.35)',
+          justifyContent: 'center',
+          paddingHorizontal: spacing.lg,
+        },
+        cancelConfirmCard: {
+          backgroundColor: colors.surface,
+          borderRadius: borderRadius.lg,
+          padding: spacing.lg,
+          alignItems: 'center',
+          gap: 12,
+        },
+        cancelConfirmIconWrap: {
+          width: 52,
+          height: 52,
+          borderRadius: 26,
+          backgroundColor: `${colors.error || '#dc2626'}18`,
+          alignItems: 'center',
+          justifyContent: 'center',
+        },
+        cancelConfirmTitle: {
+          fontSize: 18,
+          fontWeight: '800',
+          color: colors.text,
+          textAlign: 'center',
+        },
+        cancelConfirmMessage: {
+          fontSize: 14,
+          lineHeight: 20,
+          color: colors.textSecondary,
+          textAlign: 'center',
+        },
+        cancelConfirmOrderLabel: {
+          fontSize: 13,
+          fontWeight: '700',
+          color: colors.text,
+          textAlign: 'center',
+        },
+        cancelConfirmActions: {
+          flexDirection: 'row',
+          gap: 10,
+          marginTop: 4,
+          alignSelf: 'stretch',
+        },
+        cancelConfirmBtn: {
+          flex: 1,
+          minHeight: 44,
+          borderRadius: borderRadius.md,
+          alignItems: 'center',
+          justifyContent: 'center',
+          paddingHorizontal: spacing.md,
+        },
+        cancelConfirmBtnSecondary: {
+          backgroundColor: colors.background,
+          borderWidth: 1,
+          borderColor: colors.border,
+        },
+        cancelConfirmBtnPrimary: {
+          backgroundColor: colors.error || '#dc2626',
+        },
+        cancelConfirmBtnTextSecondary: {
+          fontSize: 14,
+          fontWeight: '700',
+          color: colors.text,
+        },
+        cancelConfirmBtnTextPrimary: {
+          fontSize: 14,
+          fontWeight: '700',
+          color: '#fff',
+        },
+        cancelModalOverlay: {
+          flex: 1,
+          backgroundColor: 'rgba(0,0,0,0.35)',
+          justifyContent: 'flex-end',
+        },
+        cancelModalContent: {
+          backgroundColor: colors.surface,
+          borderTopLeftRadius: 24,
+          borderTopRightRadius: 24,
+          paddingHorizontal: spacing.lg,
+          paddingTop: spacing.lg,
+          paddingBottom: Math.max(spacing.lg, insets.bottom + spacing.md),
+        },
+        cancelModalHeaderIcon: {
+          width: 40,
+          height: 40,
+          borderRadius: 20,
+          backgroundColor: `${colors.primary}18`,
+          alignItems: 'center',
+          justifyContent: 'center',
+          marginBottom: spacing.sm,
+        },
+        cancelModalTitle: {
+          fontSize: 18,
+          fontWeight: '800',
+          color: colors.text,
+        },
+        cancelModalHint: {
+          fontSize: 13,
+          lineHeight: 18,
+          color: colors.textSecondary,
+          marginTop: 6,
+        },
+        cancelModalBody: {
+          marginTop: spacing.md,
+        },
+        cancelReasonList: {
+          gap: 8,
+        },
+        cancelReasonItem: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          paddingVertical: 12,
+          paddingHorizontal: 12,
+          borderRadius: borderRadius.md,
+          borderWidth: 1,
+          borderColor: colors.border,
+          backgroundColor: colors.background,
+          gap: 10,
+        },
+        cancelReasonItemSelected: {
+          borderColor: colors.primary,
+          backgroundColor: colors.primary + '12',
+        },
+        cancelReasonRadio: {
+          width: 18,
+          height: 18,
+          borderRadius: 9,
+          borderWidth: 2,
+          borderColor: colors.border,
+          alignItems: 'center',
+          justifyContent: 'center',
+        },
+        cancelReasonRadioSelected: {
+          borderColor: colors.primary,
+        },
+        cancelReasonRadioInner: {
+          width: 8,
+          height: 8,
+          borderRadius: 4,
+          backgroundColor: colors.primary,
+        },
+        cancelReasonText: {
+          flex: 1,
+          fontSize: 14,
+          fontWeight: '600',
+          color: colors.text,
+        },
+        cancelModalActions: {
+          flexDirection: 'row',
+          gap: 10,
+          marginTop: spacing.lg,
+        },
+        cancelModalBtn: {
+          flex: 1,
+          minHeight: 44,
+          borderRadius: borderRadius.md,
+          alignItems: 'center',
+          justifyContent: 'center',
+          paddingHorizontal: spacing.md,
+        },
+        cancelModalBtnSecondary: {
+          backgroundColor: colors.background,
+          borderWidth: 1,
+          borderColor: colors.border,
+        },
+        cancelModalBtnPrimary: {
+          backgroundColor: colors.error || '#dc2626',
+        },
+        cancelModalBtnTextSecondary: {
+          fontSize: 14,
+          fontWeight: '700',
+          color: colors.text,
+        },
+        cancelModalBtnTextPrimary: {
+          fontSize: 14,
+          fontWeight: '700',
+          color: '#fff',
+        },
       }),
-    [colors]
+    [colors, insets]
   );
 
   const loadOrders = useCallback(async () => {
@@ -358,6 +555,93 @@ export default function SaleOrderListScreen({ route, navigation }) {
     const unsub = navigation.addListener?.('focus', loadOrders);
     return () => unsub?.();
   }, [loadOrders, navigation]);
+
+  useEffect(() => {
+    if (!showCancelModal) return undefined;
+    let active = true;
+    const loadReasons = async () => {
+      setCancelReasonsLoading(true);
+      try {
+        const reasons = await getCancellationReasonOptions();
+        if (!active) return;
+        const normalized = Array.isArray(reasons) ? reasons : [];
+        setCancelReasons(normalized);
+        setCancelReason((prev) => prev || normalized[0]?.value || '');
+      } catch (_) {
+        if (!active) return;
+        setCancelReasons([]);
+      } finally {
+        if (active) setCancelReasonsLoading(false);
+      }
+    };
+    loadReasons();
+    return () => {
+      active = false;
+    };
+  }, [showCancelModal]);
+
+  const effectiveCancelReasons = cancelReasons.length > 0
+    ? cancelReasons
+    : [
+        { value: 'shop_closed', label: 'Shop closed' },
+        { value: 'customer_not_available', label: 'Customer not available' },
+        { value: 'customer_cancelled', label: 'Customer cancelled' },
+        { value: 'wrong_order', label: 'Wrong order' },
+        { value: 'duplicate_order', label: 'Duplicate order' },
+        { value: 'other', label: 'Other' },
+      ];
+
+  const closeCancelFlow = useCallback(() => {
+    setShowCancelConfirmModal(false);
+    setShowCancelModal(false);
+    setCancelTargetOrder(null);
+    setCancelReason('');
+    setCancelError(null);
+    setCancelReasons([]);
+    setCancelReasonsLoading(false);
+    setCanceling(false);
+  }, []);
+
+  const handleOpenCancelFlow = useCallback((order) => {
+    if (!order?.id) return;
+    if (String(order?.state || '') === 'cancel') return;
+    setCancelTargetOrder(order);
+    setCancelError(null);
+    setShowCancelConfirmModal(true);
+  }, []);
+
+  const openCancelReasonModal = useCallback(() => {
+    setShowCancelConfirmModal(false);
+    setCancelError(null);
+    setShowCancelModal(true);
+  }, []);
+
+  const handleCancelOrder = useCallback(async () => {
+    if (!cancelTargetOrder?.id || canceling || String(cancelTargetOrder?.state || '') === 'cancel') return;
+    if (!cancelReason) {
+      Alert.alert('Reason needed', 'Pick a cancel reason from the list.');
+      return;
+    }
+
+    setCancelError(null);
+    setCanceling(true);
+    try {
+      await cancelSaleOrderWithReason(cancelTargetOrder.id, cancelReason);
+      await saleOrdersDb.updateSaleOrderStateLocal(cancelTargetOrder.id, 'cancel');
+
+      const pickings = await stockPickingsDb.getStockPickingsBySaleId(cancelTargetOrder.id);
+      await Promise.all((pickings || []).map((p) => stockPickingsDb.updatePickingStateLocal(p.id, 'cancel')));
+
+      await syncQueueDb.deletePendingItemsBySaleOrderId(cancelTargetOrder.id);
+
+      closeCancelFlow();
+      await loadOrders();
+    } catch (err) {
+      setCancelError(err?.message ?? 'Cancel failed. Try again.');
+    } finally {
+      setCanceling(false);
+    }
+  }, [cancelReason, canceling, cancelTargetOrder, closeCancelFlow, loadOrders]);
 
   const canGoToNextDay = !isToday(selectedDate);
 
@@ -560,11 +844,139 @@ export default function SaleOrderListScreen({ route, navigation }) {
             order={item}
             orderLines={item.orderLines}
             onPress={onOrderPress}
+            onCancelPress={handleOpenCancelFlow}
             isDelivered={false}
             checkoutResumePhase={checkoutResumeMap[String(item.id)]?.phase ?? null}
           />
         )}
       />
+
+      <Modal
+        visible={showCancelConfirmModal}
+        transparent
+        animationType="fade"
+        onRequestClose={closeCancelFlow}
+      >
+        <Pressable
+          style={styles.cancelConfirmBackdrop}
+          onPress={closeCancelFlow}
+        >
+          <Pressable style={styles.cancelConfirmCard} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.cancelConfirmIconWrap}>
+              <Ionicons name="warning-outline" size={28} color={colors.error || '#dc2626'} />
+            </View>
+            <Text style={styles.cancelConfirmTitle}>Cancel this order?</Text>
+            <Text style={styles.cancelConfirmMessage}>
+              The order will be closed and taken off your delivery list. You can&apos;t undo this step.
+            </Text>
+            {cancelTargetOrder?.name ? (
+              <Text style={styles.cancelConfirmOrderLabel} numberOfLines={1}>
+                {cancelTargetOrder.name}
+              </Text>
+            ) : null}
+            <View style={styles.cancelConfirmActions}>
+              <TouchableOpacity
+                style={[styles.cancelConfirmBtn, styles.cancelConfirmBtnSecondary]}
+                onPress={closeCancelFlow}
+                activeOpacity={0.85}
+              >
+                <Text style={styles.cancelConfirmBtnTextSecondary}>Keep order</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.cancelConfirmBtn, styles.cancelConfirmBtnPrimary]}
+                onPress={openCancelReasonModal}
+                activeOpacity={0.85}
+              >
+                <Text style={styles.cancelConfirmBtnTextPrimary}>Continue</Text>
+              </TouchableOpacity>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <Modal
+        visible={showCancelModal}
+        transparent
+        animationType="slide"
+        onRequestClose={closeCancelFlow}
+      >
+        <Pressable style={styles.cancelModalOverlay} onPress={closeCancelFlow}>
+          <Pressable style={styles.cancelModalContent} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.cancelModalHeaderIcon}>
+              <Ionicons name="clipboard-outline" size={22} color={colors.primary} />
+            </View>
+            <Text style={styles.cancelModalTitle}>Reason for cancellation</Text>
+            <Text style={styles.cancelModalHint}>
+              Tap the reason that fits best. The order will be closed and removed from your list.
+            </Text>
+
+            <View style={styles.cancelModalBody}>
+              {cancelReasonsLoading ? (
+                <View style={{ paddingVertical: spacing.md, alignItems: 'center' }}>
+                  <ActivityIndicator size="small" color={colors.primary} />
+                  <Text style={{ marginTop: 8, color: colors.textSecondary }}>Loading reasons…</Text>
+                </View>
+              ) : (
+                <ScrollView
+                  style={{ maxHeight: 300 }}
+                  showsVerticalScrollIndicator={false}
+                  keyboardShouldPersistTaps="handled"
+                >
+                  <View style={styles.cancelReasonList}>
+                    {effectiveCancelReasons.map((item) => (
+                      <TouchableOpacity
+                        key={item.value}
+                        style={[
+                          styles.cancelReasonItem,
+                          cancelReason === item.value && styles.cancelReasonItemSelected,
+                        ]}
+                        onPress={() => setCancelReason(item.value)}
+                        activeOpacity={0.8}
+                      >
+                        <View style={[
+                          styles.cancelReasonRadio,
+                          cancelReason === item.value && styles.cancelReasonRadioSelected,
+                        ]}>
+                          {cancelReason === item.value && <View style={styles.cancelReasonRadioInner} />}
+                        </View>
+                        <Text style={styles.cancelReasonText}>{item.label}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </ScrollView>
+              )}
+
+              {cancelError ? (
+                <Text style={{ marginTop: spacing.sm, color: colors.error || '#c00', fontSize: 13 }}>
+                  {cancelError}
+                </Text>
+              ) : null}
+            </View>
+
+            <View style={styles.cancelModalActions}>
+              <TouchableOpacity
+                style={[styles.cancelModalBtn, styles.cancelModalBtnSecondary]}
+                onPress={closeCancelFlow}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.cancelModalBtnTextSecondary}>Keep order</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.cancelModalBtn, styles.cancelModalBtnPrimary]}
+                onPress={handleCancelOrder}
+                disabled={canceling}
+                activeOpacity={0.8}
+              >
+                {canceling ? (
+                  <ActivityIndicator color="#fff" size="small" />
+                ) : (
+                  <Text style={styles.cancelModalBtnTextPrimary}>Cancel order</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
     </KeyboardAvoidingView>
   );
