@@ -681,13 +681,6 @@ export default function DashboardScreen({ navigation }) {
           });
           return;
         }
-
-        setNotification({
-          visible: true,
-          title: t('common.syncSuccessfulTitle', 'Sync successful'),
-          message: t('common.syncSuccessfulBody', 'Data synced successfully.'),
-          type: 'success',
-        });
       })();
       return;
     }
