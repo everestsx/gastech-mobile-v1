@@ -52,9 +52,19 @@ export default function SplashScreenComponent({ navigation }) {
   useEffect(() => {
     (async () => {
       try {
-        await getDb();
+        // Race getDb() against a 5-second timeout.
+        // On native devices, SQLite opens in <100ms — this changes nothing.
+        // On web (Playwright tests), ExpoSQLite.openDatabaseAsync() hangs
+        // forever because the native module is unavailable. The timeout
+        // ensures the splash screen always proceeds to Login/Main.
+        await Promise.race([
+          getDb(),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('DB init timeout (web?)')), 5000)
+          ),
+        ]);
       } catch (_) {
-        /* continue */
+        /* continue — DB not available (web) or timed out */
       }
       let user = await getUserSession();
       if (user && isSessionExpired(user)) {
