@@ -588,7 +588,6 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
         keyboardShouldPersistTaps="handled"
       >
         <View style={styles.hero}>
-          <Ionicons name="cube-outline" size={22} color={colors.primary} style={styles.heroIcon} />
           <Text style={styles.title}>{t('emptycylindercollection.emptyCollectedCylinder', 'Empty Collected Cylinder')}</Text>
           <Text style={styles.heroText}>
             {t(

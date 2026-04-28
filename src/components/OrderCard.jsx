@@ -168,10 +168,23 @@ export default function OrderCard({
         },
         qtyBadgeText: { fontSize: 11, fontWeight: '600', color: colors.text },
         qtyBadgeSizeLabel: { fontSize: 12, fontWeight: '800', color: colors.text, marginRight: 2 },
+        dividerLine: {
+          height: 1,
+          backgroundColor: colors.border,
+          opacity: 0.4,
+          marginTop: spacing.sm,
+          marginBottom: spacing.sm,
+        },
         actionsRow: {
-          marginTop: 2,
+          marginTop: spacing.sm,
           flexDirection: 'row',
-          justifyContent: 'flex-end',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+        },
+        tapForDetailsText: {
+          fontSize: 12,
+          fontWeight: '600',
+          color: colors.textSecondary,
         },
         cancelActionBtn: {
           width: 26,
@@ -377,17 +390,21 @@ export default function OrderCard({
       )}
 
       {typeof onCancelPress === 'function' ? (
-        <View style={styles.actionsRow}>
-          <TouchableOpacity
-            style={styles.cancelActionBtn}
-            onPress={() => onCancelPress(order)}
-            activeOpacity={0.8}
-            accessibilityRole="button"
-            accessibilityLabel={t('saleorderdetails.cancelOrder', 'Cancel order')}
-          >
-            <Ionicons name="trash-outline" size={14} color={colors.error || '#dc2626'} />
-          </TouchableOpacity>
-        </View>
+        <>
+          <View style={styles.dividerLine} />
+          <View style={styles.actionsRow}>
+            <Text style={styles.tapForDetailsText}>{t('common.tapForDetails', 'Tap for details')}</Text>
+            <TouchableOpacity
+              style={styles.cancelActionBtn}
+              onPress={() => onCancelPress(order)}
+              activeOpacity={0.8}
+              accessibilityRole="button"
+              accessibilityLabel={t('saleorderdetails.cancelOrder', 'Cancel order')}
+            >
+              <Ionicons name="trash-outline" size={14} color={colors.error || '#dc2626'} />
+            </TouchableOpacity>
+          </View>
+        </>
       ) : null}
     </TouchableOpacity>
   );

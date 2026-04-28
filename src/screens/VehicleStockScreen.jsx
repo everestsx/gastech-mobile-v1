@@ -22,6 +22,8 @@ import { getProductImageSource } from '../utils/gasImage';
 import * as productsDb from '../database/products.js';
 import { canonicalKgFromName, isEmptyCylinderName, isGasCylinderName } from '../utils/cylinderCatalog';
 
+const STOCK_BADGE_BLUE = '#2563eb';
+
 const CARD_MIN_WIDTH = 160;
 const CARD_GAP = spacing.md;
 
@@ -123,8 +125,8 @@ function StockCard({ item, colors, cardWidth, isLeft, productImageUri, delivered
             </View>
           </View>
         ) : null}
-        <View style={[styles.badge, { backgroundColor: lowStock ? colors.error + '20' : accentColor + '20' }]}>
-          <Text style={[styles.badgeText, { color: lowStock ? colors.error : accentColor }]}>
+        <View style={[styles.badge, { backgroundColor: lowStock ? colors.error + '20' : STOCK_BADGE_BLUE + '20' }]}>
+          <Text style={[styles.badgeText, { color: lowStock ? colors.error : STOCK_BADGE_BLUE }]}>
             {lowStock ? 'Out of stock' : 'In stock'}
           </Text>
         </View>
