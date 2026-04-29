@@ -728,6 +728,44 @@ export default function LoginScreen({ navigation }) {
       color: colors.primary,
       fontWeight: '700',
     },
+    sectionEyebrow: {
+      fontSize: 12,
+      fontWeight: '800',
+      color: colors.textSecondary,
+      letterSpacing: 0.4,
+      textTransform: 'uppercase',
+      marginBottom: 8,
+      marginLeft: 4,
+    },
+    langCard: {
+      backgroundColor: colors.surface,
+      borderWidth: 1,
+      borderColor: colors.primary + '30',
+      borderRadius: borderRadius.lg,
+      padding: spacing.sm,
+      marginBottom: spacing.lg,
+      elevation: 1,
+      shadowColor: colors.primary,
+      shadowOffset: { width: 0, height: 1 },
+      shadowOpacity: 0.08,
+      shadowRadius: 2,
+    },
+    credentialsCard: {
+      backgroundColor: colors.surface,
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: borderRadius.lg,
+      padding: spacing.sm,
+      marginBottom: spacing.lg,
+      elevation: 1,
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 1 },
+      shadowOpacity: 0.05,
+      shadowRadius: 2,
+    },
+    inputGroupLast: {
+      marginBottom: 0,
+    },
 
   }), [colors]);
 
@@ -770,104 +808,138 @@ export default function LoginScreen({ navigation }) {
             </View>
 
             <View style={styles.formSection}>
-              <View
-                  style={styles.dropdownWrapper}
-              >
-                <Text style={styles.inputLabel}>{t('login.vehicleID', 'Vehicle ID')}</Text>
-
-                <TouchableOpacity
-                    ref={dropdownRef}
-                    style={[styles.inputGroup, dropdownVisible && { borderColor: colors.primary }]}
-                    onPress={toggleDropdown}
-                    activeOpacity={0.8}
-                >
-                  <Ionicons name="bus-outline" size={20} color={colors.primary} style={{ marginRight: 12 }} />
-                  <Text style={{ flex: 1, fontSize: 16, color: colors.text }}>{displayLabel}</Text>
-                  <Ionicons name={dropdownVisible ? "chevron-up" : "chevron-down"} size={20} color={colors.textSecondary} />
-                </TouchableOpacity>
-
-                <Modal visible={dropdownVisible} transparent animationType="fade">
-                  <TouchableOpacity
-                      style={[styles.fullScreenOverlay, { backgroundColor: 'transparent' }]}
-                      activeOpacity={1}
-                      onPress={() => setDropdownVisible(false)}
-                  >
-                    <View
-                        style={[
-                          styles.floatingMenu,
-                          {
-                            backgroundColor: colors.surface,
-                            top: dropdownPos.top,
-                            left: dropdownPos.left,
-                            width: dropdownPos.width,
-                          },
-                        ]}
+              {/* Language selector - now at top, only in credentials phase */}
+              {loginPhase === 'credentials' ? (
+                <>
+                  <Text style={styles.sectionEyebrow}>{t('login.preferences', 'Preferences')}</Text>
+                  <View style={styles.langCard}>
+                    <TouchableOpacity
+                      style={[styles.langSelectBtn, languageMenuVisible && styles.langSelectBtnOpen]}
+                      onPress={() => {
+                        Keyboard.dismiss();
+                        setLanguageMenuVisible(true);
+                      }}
+                      activeOpacity={0.85}
+                      accessibilityRole="button"
+                      accessibilityLabel="Language"
+                      accessibilityHint="Choose app language"
                     >
-                      <FlatList
-                          data={options}
-                          keyExtractor={(item) => String(item.id)}
-                          showsVerticalScrollIndicator={false}
-                          ListEmptyComponent={
-                            <View style={{ padding: 20, alignItems: 'center' }}>
-                              <Text style={{ color: colors.textSecondary }}>{t('login.noVehiclesFound', 'No vehicles found.')}</Text>
-                            </View>
-                          }
-                          renderItem={({ item }) => {
-                            const isSelected = selected?.id === item.id;
-                            return (
-                                <TouchableOpacity
-                                    style={[
-                                      styles.optionRow,
-                                      { borderBottomColor: colors.border },
-                                      isSelected && { backgroundColor: colors.primary + '10' },
-                                    ]}
-                                    onPress={() => {
-                                      setSelected(item);
-                                      setDropdownVisible(false);
-                                    }}
-                                >
-                                  <Text style={[
-                                    { flex: 1, fontSize: 15, color: colors.text },
-                                    isSelected && { fontWeight: '700', color: colors.primary }
-                                  ]}>
-                                    {item.license_plate || item.name}
-                                  </Text>
-
-                                  {isSelected && (
-                                      <Ionicons name="checkmark-circle" size={20} color={colors.primary} />
-                                  )}
-                                </TouchableOpacity>
-                            );
-                          }}
+                      <Ionicons name="language-outline" size={22} color={colors.primary} />
+                      <Text style={styles.langSelectLabel} numberOfLines={1}>
+                        {currentLanguageLabel}
+                      </Text>
+                      <Ionicons
+                        name={languageMenuVisible ? 'chevron-down' : 'chevron-up'}
+                        size={20}
+                        color={colors.textSecondary}
                       />
+                    </TouchableOpacity>
+                  </View>
+                </>
+              ) : null}
 
-                      <View
-                          pointerEvents="none"
-                          style={[styles.bottomFade, { backgroundColor: colors.surface }]}
-                      />
-                    </View>
+              {/* Vehicle and Driver credentials - grouped together */}
+              <Text style={styles.sectionEyebrow}>{t('login.credentials', 'Credentials')}</Text>
+              <View style={styles.credentialsCard}>
+                <View
+                    style={styles.dropdownWrapper}
+                >
+                  <Text style={styles.inputLabel}>{t('login.vehicleID', 'Vehicle ID')}</Text>
+
+                  <TouchableOpacity
+                      ref={dropdownRef}
+                      style={[styles.inputGroup, dropdownVisible && { borderColor: colors.primary }]}
+                      onPress={toggleDropdown}
+                      activeOpacity={0.8}
+                  >
+                    <Ionicons name="bus-outline" size={20} color={colors.primary} style={{ marginRight: 12 }} />
+                    <Text style={{ flex: 1, fontSize: 16, color: colors.text }}>{displayLabel}</Text>
+                    <Ionicons name={dropdownVisible ? "chevron-up" : "chevron-down"} size={20} color={colors.textSecondary} />
                   </TouchableOpacity>
-                </Modal>
-              </View>
-              <Text style={styles.inputLabel}>{t('login.driverPin', 'Driver pin')}</Text>
-              <View style={styles.inputGroup}>
-                <Ionicons name="key-outline" size={20} color={colors.primary} style={{ marginRight: 12 }} />
-                <TextInput
-                    style={{ flex: 1, fontSize: 16, color: colors.text }}
-                    placeholder={t('login.yourDriverPin', 'Your driver pin')}
-                    placeholderTextColor={colors.textSecondary}
-                    secureTextEntry={!showPassword}
-                    value={password}
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    returnKeyType="done"
-                    blurOnSubmit
-                    onChangeText={setPassword}
-                    onSubmitEditing={handleLogin}
-                />
-                <TouchableOpacity onPress={() => setShowPassword(!showPassword)}>
-                  <Ionicons name={showPassword ? "eye-off-outline" : "eye-outline"} size={22} color={colors.textSecondary} />
-                </TouchableOpacity>
+
+                  <Modal visible={dropdownVisible} transparent animationType="fade">
+                    <TouchableOpacity
+                        style={[styles.fullScreenOverlay, { backgroundColor: 'transparent' }]}
+                        activeOpacity={1}
+                        onPress={() => setDropdownVisible(false)}
+                    >
+                      <View
+                          style={[
+                            styles.floatingMenu,
+                            {
+                              backgroundColor: colors.surface,
+                              top: dropdownPos.top,
+                              left: dropdownPos.left,
+                              width: dropdownPos.width,
+                            },
+                          ]}
+                      >
+                        <FlatList
+                            data={options}
+                            keyExtractor={(item) => String(item.id)}
+                            showsVerticalScrollIndicator={false}
+                            ListEmptyComponent={
+                              <View style={{ padding: 20, alignItems: 'center' }}>
+                                <Text style={{ color: colors.textSecondary }}>{t('login.noVehiclesFound', 'No vehicles found.')}</Text>
+                              </View>
+                            }
+                            renderItem={({ item }) => {
+                              const isSelected = selected?.id === item.id;
+                              return (
+                                  <TouchableOpacity
+                                      style={[
+                                        styles.optionRow,
+                                        { borderBottomColor: colors.border },
+                                        isSelected && { backgroundColor: colors.primary + '10' },
+                                      ]}
+                                      onPress={() => {
+                                        setSelected(item);
+                                        setDropdownVisible(false);
+                                      }}
+                                  >
+                                    <Text style={[
+                                      { flex: 1, fontSize: 15, color: colors.text },
+                                      isSelected && { fontWeight: '700', color: colors.primary }
+                                    ]}>
+                                      {item.license_plate || item.name}
+                                    </Text>
+
+                                    {isSelected && (
+                                        <Ionicons name="checkmark-circle" size={20} color={colors.primary} />
+                                    )}
+                                  </TouchableOpacity>
+                              );
+                            }}
+                        />
+
+                        <View
+                            pointerEvents="none"
+                            style={[styles.bottomFade, { backgroundColor: colors.surface }]}
+                        />
+                      </View>
+                    </TouchableOpacity>
+                  </Modal>
+                </View>
+                <Text style={styles.inputLabel}>{t('login.driverPin', 'Driver pin')}</Text>
+                <View style={[styles.inputGroup, styles.inputGroupLast]}>
+                  <Ionicons name="key-outline" size={20} color={colors.primary} style={{ marginRight: 12 }} />
+                  <TextInput
+                      style={{ flex: 1, fontSize: 16, color: colors.text }}
+                      placeholder={t('login.yourDriverPin', 'Your driver pin')}
+                      placeholderTextColor={colors.textSecondary}
+                      secureTextEntry={!showPassword}
+                      value={password}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      returnKeyType="done"
+                      blurOnSubmit
+                      onChangeText={setPassword}
+                      onSubmitEditing={handleLogin}
+                  />
+                  <TouchableOpacity onPress={() => setShowPassword(!showPassword)}>
+                    <Ionicons name={showPassword ? "eye-off-outline" : "eye-outline"} size={22} color={colors.textSecondary} />
+                  </TouchableOpacity>
+                </View>
               </View>
 
               <TouchableOpacity
@@ -886,32 +958,6 @@ export default function LoginScreen({ navigation }) {
               </TouchableOpacity>
             </View>
             </View>
-
-            {loginPhase === 'credentials' ? (
-              <View style={[styles.langFooter, { paddingBottom: spacing.sm }]}>
-                <TouchableOpacity
-                  style={[styles.langSelectBtn, languageMenuVisible && styles.langSelectBtnOpen]}
-                  onPress={() => {
-                    Keyboard.dismiss();
-                    setLanguageMenuVisible(true);
-                  }}
-                  activeOpacity={0.85}
-                  accessibilityRole="button"
-                  accessibilityLabel="Language"
-                  accessibilityHint="Choose app language"
-                >
-                  <Ionicons name="language-outline" size={22} color={colors.primary} />
-                  <Text style={styles.langSelectLabel} numberOfLines={1}>
-                    {currentLanguageLabel}
-                  </Text>
-                  <Ionicons
-                    name={languageMenuVisible ? 'chevron-down' : 'chevron-up'}
-                    size={20}
-                    color={colors.textSecondary}
-                  />
-                </TouchableOpacity>
-              </View>
-            ) : null}
           </View>
         </KeyboardAvoidingView>
 

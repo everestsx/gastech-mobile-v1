@@ -1,0 +1,126 @@
+name: Playwright QA Tests
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TRIGGER
+# Runs automatically when:
+#   • A PR is opened/updated targeting the `qa` branch
+#   • Code is pushed directly to `qa`
+# ─────────────────────────────────────────────────────────────────────────────
+on:
+  push:
+    branches:
+      - qa
+  pull_request:
+    branches:
+      - qa
+
+# Prevent multiple runs stacking on the same branch
+concurrency:
+  group: playwright-qa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  playwright-tests:
+    name: Playwright Tests (QA Gate)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    # ── Environment variables ─────────────────────────────────────────────
+    # Store sensitive values in GitHub → Settings → Secrets and Variables → Actions
+    env:
+      # The Expo web server URL (set by webServer config in playwright.config.ts)
+      PLAYWRIGHT_BASE_URL: http://localhost:8081
+
+      # API base URL for API health checks
+      # Set this secret in GitHub: Settings > Secrets > API_BASE_URL
+      API_BASE_URL: ${{ secrets.API_BASE_URL }}
+
+      # Driver test credentials (for authenticated test flows)
+      # Set this secret in GitHub: Settings > Secrets > TEST_DRIVER_CODE
+      TEST_DRIVER_CODE: ${{ secrets.TEST_DRIVER_CODE }}
+
+      # Force staging variant for browser-based QA compatibility testing
+      APP_VARIANT: stage
+
+    steps:
+      # ── 1. Checkout code ────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ── 2. Set up Node.js ───────────────────────────────────────────────
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      # ── 3. Install dependencies ─────────────────────────────────────────
+      - name: Install npm dependencies
+        run: npm ci
+
+      # ── 4. Install Playwright browsers ──────────────────────────────────
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium firefox
+
+      # ── 5. Create test results directory ────────────────────────────────
+      - name: Prepare test output directories
+        run: |
+          mkdir -p test-results/screenshots
+          mkdir -p playwright-report
+
+      # ── 6. Run Playwright tests ──────────────────────────────────────────
+      # The webServer config in playwright.config.ts starts Expo automatically.
+      - name: Run Playwright tests
+        run: npx playwright test
+        # Do NOT fail the job here — we want the report to always upload
+        continue-on-error: true
+        id: playwright-run
+
+      # ── 7. Upload HTML test report ───────────────────────────────────────
+      - name: Upload Playwright HTML report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report-${{ github.run_number }}
+          path: playwright-report/
+          retention-days: 30
+
+      # ── 8. Upload test results (JSON + screenshots) ──────────────────────
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-${{ github.run_number }}
+          path: test-results/
+          retention-days: 30
+
+      # ── 9. Fail the job if tests failed ─────────────────────────────────
+      # This ensures the PR cannot be merged if tests failed,
+      # even though we let the report upload first (step 6).
+      - name: Fail if Playwright tests failed
+        if: steps.playwright-run.outcome == 'failure'
+        run: |
+          echo "❌ Playwright tests failed. Check the HTML report artifact for details."
+          echo "📄 Report uploaded as: playwright-report-${{ github.run_number }}"
+          exit 1
+
+      # ── 10. Post summary to job log ──────────────────────────────────────
+      - name: Post test summary
+        if: always()
+        run: |
+          if [ -f test-results/results.json ]; then
+            echo "## Playwright Test Results" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            node -e "
+              const r = require('./test-results/results.json');
+              const stats = r.stats || {};
+              console.log('| Metric | Count |');
+              console.log('|--------|-------|');
+              console.log('| ✅ Passed | ' + (stats.expected || 0) + ' |');
+              console.log('| ❌ Failed | ' + (stats.unexpected || 0) + ' |');
+              console.log('| ⏭️  Skipped | ' + (stats.skipped || 0) + ' |');
+              console.log('| ⏱️  Duration | ' + Math.round((stats.duration || 0) / 1000) + 's |');
+            " >> $GITHUB_STEP_SUMMARY || echo "Could not parse results.json"
+          fi

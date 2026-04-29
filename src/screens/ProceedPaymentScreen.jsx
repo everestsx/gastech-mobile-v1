@@ -64,7 +64,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   const [journals, setJournals] = useState([]);
   const [vehicleJournalIds, setVehicleJournalIds] = useState({ cashJournalId: null, chequeJournalId: null });
   const [hasSyncedOnce, setHasSyncedOnce] = useState(false);
-  const [selectedPaymentMethods, setSelectedPaymentMethods] = useState([PAYMENT_CASH]);
+  const [selectedPaymentMethods, setSelectedPaymentMethods] = useState([]);
   const [cashAmount, setCashAmount] = useState(() => (orderTotalRounded > 0 ? formatAmount(orderTotalRounded) : ''));
   const [checkAmount, setCheckAmount] = useState('');
   const [lastEditedAmount, setLastEditedAmount] = useState(PAYMENT_CASH);
@@ -452,10 +452,11 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       StyleSheet.create({
         container: { flex: 1, backgroundColor: colors.background },
         /* Extra bottom padding so the last controls stay above the home gesture / nav bar when fully scrolled.
+           We'll reserve space for a fixed footer so the confirm CTA doesn't sit under the keyboard or nav bar.
            Android: avoid stacking KeyboardAvoidingView `height` with softwareKeyboardLayoutMode resize (see app.json). */
         content: {
           padding: spacing.md,
-          paddingBottom: spacing.xl * 2 + insets.bottom + 200,
+          paddingBottom: 120 + insets.bottom,
         },
         title: { fontSize: 22, fontWeight: '800', color: colors.text, textAlign: 'center', marginBottom: spacing.lg },
         totalCard: {
@@ -728,6 +729,18 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           color: colors.primary,
           textAlign: 'center',
           marginBottom: spacing.sm,
+        },
+        footer: {
+          position: 'absolute',
+          left: 0,
+          right: 0,
+          bottom: 0,
+          paddingHorizontal: spacing.lg,
+          paddingTop: spacing.md,
+          paddingBottom: Math.max(insets.bottom, spacing.md) + 8,
+          backgroundColor: colors.surface,
+          borderTopWidth: 1,
+          borderTopColor: colors.border,
         },
         creditProofFollowUpCard: {
           flexDirection: 'row',
@@ -1022,25 +1035,29 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         </>
       ) : null}
 
-      <TouchableOpacity
-        style={[styles.payBtn, !canProceed && styles.payBtnDisabled]}
-        onPress={() => {
-          if (!canProceed) return;
-          void handleProceed();
-        }}
-        disabled={loading || !canProceed}
-        activeOpacity={0.8}
-      >
-        {loading ? (
-          <ActivityIndicator color="#fff" size="small" />
-        ) : (
-          <>
-            <Ionicons name="checkmark-done-outline" size={22} color="#fff" />
-            <Text style={styles.btnText}>{t('proceedpayment.confirmPayment', 'Confirm Payment')}</Text>
-          </>
-        )}
-      </TouchableOpacity>
     </ScrollView>
+
+      <View style={styles.footer}>
+        <TouchableOpacity
+          style={[styles.payBtn, !canProceed && styles.payBtnDisabled]}
+          onPress={() => {
+            if (!canProceed) return;
+            void handleProceed();
+          }}
+          disabled={loading || !canProceed}
+          activeOpacity={0.8}
+        >
+          {loading ? (
+            <ActivityIndicator color="#fff" size="small" />
+          ) : (
+            <>
+              <Ionicons name="checkmark-done-outline" size={22} color="#fff" />
+              <Text style={styles.btnText}>{t('proceedpayment.confirmPayment', 'Confirm Payment')}</Text>
+            </>
+          )}
+        </TouchableOpacity>
+      </View>
+
     </KeyboardAvoidingView>
   );
 }

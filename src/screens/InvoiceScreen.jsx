@@ -1627,6 +1627,11 @@ export default function InvoiceScreen({ route, navigation }) {
         sigCapBtnPrimary: { backgroundColor: colors.primary, borderColor: colors.primary },
         sigCapBtnText: { fontSize: 15, fontWeight: '600', color: colors.textSecondary },
         sigCapBtnTextLight: { fontSize: 15, fontWeight: '600', color: '#fff' },
+        sigCapBtnSaved: { 
+          backgroundColor: colors.primary + '20', 
+          borderColor: colors.primary + '40',
+        },
+        sigCapBtnTextSaved: { fontSize: 15, fontWeight: '600', color: colors.primary },
         sigCapDoneBtn: {
           flexDirection: 'row',
           alignItems: 'center',
@@ -1636,6 +1641,9 @@ export default function InvoiceScreen({ route, navigation }) {
           paddingVertical: 14,
           borderRadius: borderRadius.lg,
           marginTop: spacing.xs,
+        },
+        sigCapDoneBtnDisabled: {
+          opacity: 0.45,
         },
       }),
     [colors]
@@ -3182,11 +3190,14 @@ export default function InvoiceScreen({ route, navigation }) {
                     <Text style={styles.sigCapBtnText}>{t('invoice.clear', 'Clear')}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
-                    style={[styles.sigCapBtn, styles.sigCapBtnPrimary]}
+                    style={[
+                      styles.sigCapBtn,
+                      captureCustomerSaved ? styles.sigCapBtnSaved : styles.sigCapBtnPrimary
+                    ]}
                     onPress={() => captureCustomerRef.current?.readSignature()}
                   >
-                    <Text style={styles.sigCapBtnTextLight}>
-                      {captureCustomerSaved ? 'Continue' : 'Save customer'}
+                    <Text style={captureCustomerSaved ? styles.sigCapBtnTextSaved : styles.sigCapBtnTextLight}>
+                      {captureCustomerSaved ? 'Saved' : 'Save customer'}
                     </Text>
                   </TouchableOpacity>
                 </View>
@@ -3203,11 +3214,14 @@ export default function InvoiceScreen({ route, navigation }) {
                     <Text style={styles.sigCapBtnText}>{t('invoice.clear', 'Clear')}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
-                    style={[styles.sigCapBtn, styles.sigCapBtnPrimary]}
+                    style={[
+                      styles.sigCapBtn,
+                      captureDriverSaved ? styles.sigCapBtnSaved : styles.sigCapBtnPrimary
+                    ]}
                     onPress={() => captureDriverRef.current?.readSignature()}
                   >
-                    <Text style={styles.sigCapBtnTextLight}>
-                      {captureDriverSaved ? 'Continue' : 'Save driver'}
+                    <Text style={captureDriverSaved ? styles.sigCapBtnTextSaved : styles.sigCapBtnTextLight}>
+                      {captureDriverSaved ? 'Saved' : 'Save driver'}
                     </Text>
                   </TouchableOpacity>
                 </View>
@@ -3215,7 +3229,10 @@ export default function InvoiceScreen({ route, navigation }) {
             </View>
 
             <TouchableOpacity
-              style={styles.sigCapDoneBtn}
+              style={[
+                styles.sigCapDoneBtn,
+                (!captureCustomerSaved || !captureDriverSaved) && styles.sigCapDoneBtnDisabled,
+              ]}
               onPress={() => {
                 const custOk =
                   captureCustomerSig && String(captureCustomerSig).trim() !== '' && captureCustomerSaved;
@@ -3224,16 +3241,17 @@ export default function InvoiceScreen({ route, navigation }) {
                 if (!custOk || !drvOk) {
                   Alert.alert(
                     'Signatures',
-                    'Use Save customer and Save driver on each tab, then tap Save signatures.'
+                    'Use Save customer and Save driver on each tab, then tap Continue.'
                   );
                   return;
                 }
                 void persistCapturedSignatures(captureCustomerSig, captureDriverSig);
               }}
               activeOpacity={0.88}
+              disabled={!captureCustomerSaved || !captureDriverSaved}
             >
               <Ionicons name="checkmark-done-outline" size={22} color="#fff" />
-              <Text style={styles.evidenceSaveBtnText}>{t('invoice.saveSignatures', 'Save signatures')}</Text>
+              <Text style={styles.evidenceSaveBtnText}>{t('invoice.continue', 'Continue')}</Text>
             </TouchableOpacity>
           </View>
         </View>

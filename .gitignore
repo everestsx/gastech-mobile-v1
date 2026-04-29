@@ -57,3 +57,11 @@ android/captures/
 gastech.db
 *.db-shm
 *.db-wal
+
+# Playwright test outputs
+playwright-report/
+test-results/
+/tests/.auth/
+
+# Test env credentials — never commit real values
+.env.test
