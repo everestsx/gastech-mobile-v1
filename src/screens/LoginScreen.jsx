@@ -688,13 +688,15 @@ export default function LoginScreen({ navigation }) {
     langMenuBackdrop: {
       flex: 1,
       backgroundColor: 'rgba(15, 23, 42, 0.45)',
+      justifyContent: 'center',
+      alignItems: 'center',
+      paddingHorizontal: spacing.lg,
     },
     langMenuDismissArea: {
-      flex: 1,
+      ...StyleSheet.absoluteFillObject,
     },
     langMenuSheet: {
-      marginHorizontal: spacing.lg,
-      marginBottom: spacing.sm,
+      width: '100%',
       borderRadius: borderRadius.lg,
       backgroundColor: colors.surface,
       borderWidth: 1,
@@ -972,12 +974,7 @@ export default function LoginScreen({ navigation }) {
               style={styles.langMenuDismissArea}
               onPress={() => setLanguageMenuVisible(false)}
             />
-            <View
-              style={[
-                styles.langMenuSheet,
-                { marginBottom: Math.max(insets.bottom, spacing.sm) },
-              ]}
-            >
+            <View style={styles.langMenuSheet}>
               {LANGUAGE_OPTIONS.map((opt, index) => {
                 const on = appLanguage === opt.v;
                 return (

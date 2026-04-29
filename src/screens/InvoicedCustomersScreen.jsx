@@ -10,14 +10,9 @@ import * as partnersDb from '../database/partners.js';
 import * as localInvoicesDb from '../database/localInvoices.js';
 import { getLocalizedCustomerNameFromOrder } from '../utils/customerDisplayName';
 
-/** Sale order is fully invoiced for listing: Odoo `invoice_status` = invoiced, or a mobile invoice already linked in Odoo. */
-function isProvablyInvoicedForList(order, localInv) {
-  const st = String(order?.invoice_status || '').toLowerCase();
-  if (st === 'invoiced') return true;
-  const oid = localInv?.odoo_invoice_id;
-  const hasOdoo = oid != null && Number(oid) > 0;
-  const hasSynced = localInv?.synced_at != null && String(localInv.synced_at).trim() !== '';
-  return hasOdoo && hasSynced;
+/** Fully invoiced sale order for listing. Pending orders must be excluded. */
+function isFullyInvoicedOrder(order) {
+  return String(order?.invoice_status || '').toLowerCase() === 'invoiced';
 }
 
 export default function InvoicedCustomersScreen() {
@@ -36,11 +31,6 @@ export default function InvoicedCustomersScreen() {
         partnersDb.getAllPartners(),
         localInvoicesDb.getAllLocalInvoices(false),
       ]);
-      const localInvoiceBySaleOrderId = new Map();
-      for (const inv of localInvoices || []) {
-        const sid = Number(inv?.sale_order_id);
-        if (Number.isFinite(sid) && sid > 0) localInvoiceBySaleOrderId.set(sid, inv);
-      }
       const phoneByPartnerId = {};
       for (const p of partners || []) {
         const id = Number(p?.id);
@@ -60,8 +50,6 @@ export default function InvoicedCustomersScreen() {
       for (const o of orders || []) {
         const soId = Number(o?.id);
         if (!Number.isFinite(soId) || soId <= 0) continue;
-        const localInv = localInvoiceBySaleOrderId.get(soId);
-        if (!isProvablyInvoicedForList(o, localInv)) continue;
         const partnerIdRaw = Array.isArray(o?.partner_id) ? o.partner_id[0] : o?.partner_id;
         const partnerId = Number(partnerIdRaw);
         if (!Number.isFinite(partnerId) || partnerId <= 0) continue;
@@ -72,23 +60,21 @@ export default function InvoicedCustomersScreen() {
             ? customerName
             : fromPartner || `—`;
         const phone = phoneByPartnerId[partnerId] || '';
-        const orderDate =
-          String(o?.commitment_date || '').trim() ||
-          String(o?.date_order || '').trim() ||
-          String(localInv?.created_at || '').trim() ||
-          '';
+        const orderDate = String(o?.commitment_date || '').trim() || String(o?.date_order || '').trim() || '';
         const orderTs = orderDate ? Date.parse(orderDate) : 0;
         if (!byPartnerId.has(partnerId)) {
           byPartnerId.set(partnerId, {
             partnerId,
             customerName: displayName,
             phone,
+            totalOrders: 0,
             invoicedOrders: 0,
             latestOrderTs: Number.isFinite(orderTs) ? orderTs : 0,
           });
         }
         const current = byPartnerId.get(partnerId);
-        current.invoicedOrders += 1;
+        current.totalOrders += 1;
+        if (isFullyInvoicedOrder(o)) current.invoicedOrders += 1;
         if (displayName && current.customerName === '—') current.customerName = displayName;
         if (phone && !current.phone) current.phone = phone;
         if ((Number.isFinite(orderTs) ? orderTs : 0) > (current.latestOrderTs || 0)) {
@@ -96,7 +82,9 @@ export default function InvoicedCustomersScreen() {
         }
       }
 
-      const nextRows = Array.from(byPartnerId.values()).sort((a, b) => {
+      const nextRows = Array.from(byPartnerId.values())
+        .filter((row) => Number(row.totalOrders) > 0 && Number(row.invoicedOrders) === Number(row.totalOrders))
+        .sort((a, b) => {
         const byRecent = (Number(b.latestOrderTs) || 0) - (Number(a.latestOrderTs) || 0);
         if (byRecent !== 0) return byRecent;
         return String(a.customerName || '').localeCompare(String(b.customerName || ''));
