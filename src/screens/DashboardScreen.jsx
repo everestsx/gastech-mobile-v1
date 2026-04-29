@@ -1,5 +1,4 @@
-import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo } from 'react';
-import {
+import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from 'react';import {
   View,
   Text,
   StyleSheet,
@@ -239,12 +238,31 @@ export default function DashboardScreen({ navigation }) {
   const [initialLoadGateActive, setInitialLoadGateActive] = useState(
     () => !isDashboardInitialLoadMemoryDone()
   );
+  const dashboardSessionKeyRef = useRef(null);
   const lastSyncNotificationRef = React.useRef(null);
   const previousSyncedPaymentIdsRef = React.useRef(new Set());
   const initialSyncStartedRef = React.useRef(false);
 
+  // Compute session key as a stable string for use in useEffect
+  const sessionKey = useMemo(() => {
+    if (!user) return null;
+    if (user.isAdmin) {
+      return user.vehicleId != null ? `admin|${Number(user.vehicleId)}` : 'admin';
+    }
+    if (user.driverId == null && user.vehicleId == null) return null;
+    return `${Number(user.driverId) || 0}|${Number(user.vehicleId) || 0}`;
+  }, [user?.isAdmin, user?.vehicleId, user?.driverId]);
+
+  // Re-arm initial load gate when session changes (user/vehicle switched)
+  useEffect(() => {
+    if (!sessionKey) return;
+    if (dashboardSessionKeyRef.current === sessionKey) return;
+    dashboardSessionKeyRef.current = sessionKey;
+    setInitialLoadGateActive(true);
+  }, [sessionKey]);
+
   const postLoginSyncCopy = useMemo(() => {
-    const map = {
+    return {
       en: {
         title: "You're all synced",
         subtitle:
@@ -263,8 +281,14 @@ export default function DashboardScreen({ navigation }) {
           'මෙම උපාංගයෙන් ඇණවුම්, බෙදාහැරීම් සහ ගෙවීම් විස්තර යාවත්කාලීනයි.',
         button: 'හරි',
       },
+    }[appLanguage] || {
+      en: {
+        title: "You're all synced",
+        subtitle:
+          'Orders, deliveries, and payment breakdown are up to date on this device.',
+        button: 'Great',
+      },
     };
-    return map[appLanguage] || map.en;
   }, [appLanguage]);
 
   useEffect(() => {
@@ -1844,8 +1868,8 @@ export default function DashboardScreen({ navigation }) {
     Linking.openURL(`tel:${s}`).catch(() => {});
   };
 
-  const shouldBlockDashboard = initialLoadGateActive && !!user?.pendingInitialSync;
-  const shouldShowInitialFullScreenLoader = initialLoadGateActive && (loading || !!user?.pendingInitialSync);
+  const shouldBlockDashboard = initialLoadGateActive && (isSyncing || !!user?.pendingInitialSync);
+  const shouldShowInitialFullScreenLoader = initialLoadGateActive && (loading || isSyncing || !!user?.pendingInitialSync);
 
   if (shouldShowInitialFullScreenLoader) {
     return (
