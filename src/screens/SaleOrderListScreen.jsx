@@ -583,12 +583,12 @@ export default function SaleOrderListScreen({ route, navigation }) {
   const effectiveCancelReasons = cancelReasons.length > 0
     ? cancelReasons
     : [
-        { value: 'shop_closed', label: 'Shop closed' },
-        { value: 'customer_not_available', label: 'Customer not available' },
-        { value: 'customer_cancelled', label: 'Customer cancelled' },
-        { value: 'wrong_order', label: 'Wrong order' },
-        { value: 'duplicate_order', label: 'Duplicate order' },
-        { value: 'other', label: 'Other' },
+        { value: 'shop_closed', label: t('saleorder.cancelReasonShopClosed', 'Shop closed') },
+        { value: 'customer_not_available', label: t('saleorder.cancelReasonCustomerNotAvailable', 'Customer not available') },
+        { value: 'customer_cancelled', label: t('saleorder.cancelReasonCustomerCancelled', 'Customer cancelled') },
+        { value: 'wrong_order', label: t('saleorder.cancelReasonWrongOrder', 'Wrong order') },
+        { value: 'duplicate_order', label: t('saleorder.cancelReasonDuplicateOrder', 'Duplicate order') },
+        { value: 'other', label: t('saleorder.cancelReasonOther', 'Other') },
       ];
 
   const closeCancelFlow = useCallback(() => {
@@ -619,7 +619,10 @@ export default function SaleOrderListScreen({ route, navigation }) {
   const handleCancelOrder = useCallback(async () => {
     if (!cancelTargetOrder?.id || canceling || String(cancelTargetOrder?.state || '') === 'cancel') return;
     if (!cancelReason) {
-      Alert.alert('Reason needed', 'Pick a cancel reason from the list.');
+      Alert.alert(
+        t('saleorder.reasonNeededTitle', 'Reason needed'),
+        t('saleorder.reasonNeededMessage', 'Pick a cancel reason from the list.')
+      );
       return;
     }
 
@@ -637,7 +640,7 @@ export default function SaleOrderListScreen({ route, navigation }) {
       closeCancelFlow();
       await loadOrders();
     } catch (err) {
-      setCancelError(err?.message ?? 'Cancel failed. Try again.');
+      setCancelError(err?.message ?? t('saleorder.cancelFailedTryAgain', 'Cancel failed. Try again.'));
     } finally {
       setCanceling(false);
     }
@@ -865,9 +868,12 @@ export default function SaleOrderListScreen({ route, navigation }) {
             <View style={styles.cancelConfirmIconWrap}>
               <Ionicons name="warning-outline" size={28} color={colors.error || '#dc2626'} />
             </View>
-            <Text style={styles.cancelConfirmTitle}>Cancel this order?</Text>
+            <Text style={styles.cancelConfirmTitle}>{t('saleorder.cancelThisOrder', 'Cancel this order?')}</Text>
             <Text style={styles.cancelConfirmMessage}>
-              The order will be closed and taken off your delivery list. You can&apos;t undo this step.
+              {t(
+                'saleorder.cancelWarningMessage',
+                "The order will be closed and taken off your delivery list. You can't undo this step."
+              )}
             </Text>
             {cancelTargetOrder?.name ? (
               <Text style={styles.cancelConfirmOrderLabel} numberOfLines={1}>
@@ -880,14 +886,14 @@ export default function SaleOrderListScreen({ route, navigation }) {
                 onPress={closeCancelFlow}
                 activeOpacity={0.85}
               >
-                <Text style={styles.cancelConfirmBtnTextSecondary}>Keep order</Text>
+                <Text style={styles.cancelConfirmBtnTextSecondary}>{t('saleorder.keepOrder', 'Keep order')}</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.cancelConfirmBtn, styles.cancelConfirmBtnPrimary]}
                 onPress={openCancelReasonModal}
                 activeOpacity={0.85}
               >
-                <Text style={styles.cancelConfirmBtnTextPrimary}>Continue</Text>
+                <Text style={styles.cancelConfirmBtnTextPrimary}>{t('saleorder.continue', 'Continue')}</Text>
               </TouchableOpacity>
             </View>
           </Pressable>
@@ -905,16 +911,21 @@ export default function SaleOrderListScreen({ route, navigation }) {
             <View style={styles.cancelModalHeaderIcon}>
               <Ionicons name="clipboard-outline" size={22} color={colors.primary} />
             </View>
-            <Text style={styles.cancelModalTitle}>Reason for cancellation</Text>
+            <Text style={styles.cancelModalTitle}>{t('saleorder.reasonForCancellation', 'Reason for cancellation')}</Text>
             <Text style={styles.cancelModalHint}>
-              Tap the reason that fits best. The order will be closed and removed from your list.
+              {t(
+                'saleorder.reasonForCancellationHint',
+                'Tap the reason that fits best. The order will be closed and removed from your list.'
+              )}
             </Text>
 
             <View style={styles.cancelModalBody}>
               {cancelReasonsLoading ? (
                 <View style={{ paddingVertical: spacing.md, alignItems: 'center' }}>
                   <ActivityIndicator size="small" color={colors.primary} />
-                  <Text style={{ marginTop: 8, color: colors.textSecondary }}>Loading reasons…</Text>
+                  <Text style={{ marginTop: 8, color: colors.textSecondary }}>
+                    {t('saleorder.loadingReasons', 'Loading reasons…')}
+                  </Text>
                 </View>
               ) : (
                 <ScrollView
@@ -959,7 +970,7 @@ export default function SaleOrderListScreen({ route, navigation }) {
                 onPress={closeCancelFlow}
                 activeOpacity={0.8}
               >
-                <Text style={styles.cancelModalBtnTextSecondary}>Keep order</Text>
+                <Text style={styles.cancelModalBtnTextSecondary}>{t('saleorder.keepOrder', 'Keep order')}</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.cancelModalBtn, styles.cancelModalBtnPrimary]}
@@ -970,7 +981,7 @@ export default function SaleOrderListScreen({ route, navigation }) {
                 {canceling ? (
                   <ActivityIndicator color="#fff" size="small" />
                 ) : (
-                  <Text style={styles.cancelModalBtnTextPrimary}>Cancel order</Text>
+                  <Text style={styles.cancelModalBtnTextPrimary}>{t('saleorder.cancelOrder', 'Cancel order')}</Text>
                 )}
               </TouchableOpacity>
             </View>

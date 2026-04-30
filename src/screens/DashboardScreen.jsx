@@ -1012,6 +1012,26 @@ export default function DashboardScreen({ navigation }) {
     ]
   );
 
+  const deliveredTodayOrdersAllRoutes = useMemo(
+    () =>
+      todayOrders.filter((o) =>
+        orderIsDeliveryDoneForProgress(
+          o,
+          pickingStateBySaleId,
+          qtyDoneBySaleId,
+          backendQtyDeliveredOrderIds,
+          pendingCheckoutOrderIds
+        )
+      ),
+    [
+      todayOrders,
+      pickingStateBySaleId,
+      qtyDoneBySaleId,
+      backendQtyDeliveredOrderIds,
+      pendingCheckoutOrderIds,
+    ]
+  );
+
   const todayOrderLinesForDashboard = useMemo(() => {
     const ids = new Set(todayOrdersForDashboard.map((o) => Number(o.id)));
     return (todayOrderLines || []).filter((line) => {
@@ -1021,9 +1041,9 @@ export default function DashboardScreen({ navigation }) {
   }, [todayOrderLines, todayOrdersForDashboard]);
 
   const deliveredQtyByProductId = useMemo(() => {
-    const deliveredOrderIds = new Set(deliveredTodayOrders.map((o) => Number(o.id)));
+    const deliveredOrderIds = new Set(deliveredTodayOrdersAllRoutes.map((o) => Number(o.id)));
     const map = {};
-    (todayOrderLinesForDashboard || []).forEach((line) => {
+    (todayOrderLines || []).forEach((line) => {
       const orderId = Array.isArray(line.order_id) ? line.order_id[0] : line.order_id;
       const soId = orderId != null ? Number(orderId) : null;
       if (soId == null || !deliveredOrderIds.has(soId)) return;
@@ -1036,7 +1056,7 @@ export default function DashboardScreen({ navigation }) {
       map[pid] = (map[pid] || 0) + qty;
     });
     return map;
-  }, [deliveredTodayOrders, todayOrderLinesForDashboard]);
+  }, [deliveredTodayOrdersAllRoutes, todayOrderLines]);
 
   // const deliveredTodayOrders = todayOrders;
 
@@ -1138,14 +1158,14 @@ export default function DashboardScreen({ navigation }) {
   const commissionEarned = commissionProgress.achieved;
   const commissionPct = commissionProgress.percentage;
 
-  const shopsCompleted = deliveredTodayOrders.length;
-  const totalShopsToday = todayOrdersForDashboard.length;
+  const shopsCompleted = deliveredTodayOrdersAllRoutes.length;
+  const totalShopsToday = todayOrders.length;
   const shopsPct = totalShopsToday > 0 ? Math.min(100, Math.round((shopsCompleted / totalShopsToday) * 100)) : 0;
-  const totalGasDelivered = deliveredTodayOrders.reduce(
+  const totalGasDelivered = deliveredTodayOrdersAllRoutes.reduce(
       (s, o) => s + (Number(lineTotalsByOrder[o.id]) || 0),
       0
   );
-  const totalGasInOrders = todayOrdersForDashboard.reduce(
+  const totalGasInOrders = todayOrders.reduce(
       (s, o) => s + (Number(lineTotalsByOrder[o.id]) || 0),
       0
   );

@@ -92,12 +92,17 @@ export async function getPendingPaymentItemBySaleOrderId(saleOrderId) {
     [ACTION_PAYMENT]
   );
   const soId = Number(saleOrderId);
+  let best = null;
   for (const row of rows || []) {
     const p = safeParseJson(row.payload, {});
     const id = p.saleOrderId ?? p.sale_order_id;
-    if (id != null && Number(id) === soId) return { id: row.id, payload: p };
+    if (id != null && Number(id) === soId) {
+      if (!best || Number(row.id) > Number(best.id)) {
+        best = { id: row.id, payload: p };
+      }
+    }
   }
-  return null;
+  return best;
 }
 
 /** Get pending (unsynced) delivery queue item for a sale order, if any. Used to avoid duplicate delivery/qty. */
@@ -109,12 +114,17 @@ export async function getPendingDeliveryItemBySaleOrderId(saleOrderId) {
     [ACTION_DELIVERY]
   );
   const soId = Number(saleOrderId);
+  let best = null;
   for (const row of rows || []) {
     const p = safeParseJson(row.payload, {});
     const id = p.saleOrderId ?? p.sale_order_id;
-    if (id != null && Number(id) === soId) return { id: row.id, payload: p };
+    if (id != null && Number(id) === soId) {
+      if (!best || Number(row.id) > Number(best.id)) {
+        best = { id: row.id, payload: p };
+      }
+    }
   }
-  return null;
+  return best;
 }
 
 /** Get pending (unsynced) inventory_update queue item for a sale order, if any. */

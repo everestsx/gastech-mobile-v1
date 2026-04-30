@@ -1493,12 +1493,31 @@ async function processSyncQueue() {
               Number((q.payload || {}).saleOrderId ?? (q.payload || {}).sale_id) === soId &&
               (q.payload || {}).holdUntilPayment === true
           );
-          for (const h of heldDeliveriesForSo) {
+          if (heldDeliveriesForSo.length > 0) {
+            const sortedHeld = [...heldDeliveriesForSo].sort((a, b) => Number(a.id) - Number(b.id));
+            const latestHeld = sortedHeld[sortedHeld.length - 1];
+            const superseded = sortedHeld.slice(0, -1);
+
+            // Apply only the latest held payload snapshot to avoid stale line quantities
+            // from older duplicate queue rows overwriting delivery/invoice quantities.
             try {
-              const released = { ...h, payload: { ...(h.payload || {}), holdUntilPayment: false } };
+              const released = {
+                ...latestHeld,
+                payload: { ...(latestHeld.payload || {}), holdUntilPayment: false },
+              };
               await processOneDeliveryQueueItem(released);
             } catch (flushErr) {
               logWarn('queue delivery (flush before payment)', flushErr);
+            }
+
+            // Older rows for the same SO are superseded by the latest payload.
+            for (const older of superseded) {
+              try {
+                await syncQueueDb.markSynced(Number(older.id));
+                log('queue', `delivery superseded row synced id=${older.id} SO ${soId}`);
+              } catch (skipErr) {
+                logWarn('queue delivery (mark superseded)', skipErr);
+              }
             }
           }
 
