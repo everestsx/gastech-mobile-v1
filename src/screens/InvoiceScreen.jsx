@@ -1016,13 +1016,36 @@ export default function InvoiceScreen({ route, navigation }) {
 
   const effectiveInvoiceQtyRows = useMemo(() => {
     if (Array.isArray(invoiceLineQtys) && invoiceLineQtys.length > 0) return invoiceLineQtys;
+
     const delivered = deliveryPayload?.saleOrderLineDeliveredUpdates;
-    if (!Array.isArray(delivered) || delivered.length === 0) return [];
-    return delivered.map((u) => ({
-      lineId: u?.lineId,
-      qty: Number(u?.qty_delivered ?? 0),
-    }));
-  }, [invoiceLineQtys, deliveryPayload]);
+    if (Array.isArray(delivered) && delivered.length > 0) {
+      return delivered.map((u) => ({
+        lineId: u?.lineId,
+        qty: Number(u?.qty_delivered ?? 0),
+      }));
+    }
+
+    // Delivered screen opens InvoiceScreen without explicit qty overrides.
+    // For invoiced SOs, prefer synced qty_delivered so printed invoice matches back office.
+    const isInvoiced = String(order?.invoice_status || '').toLowerCase() === 'invoiced';
+    if (!isInvoiced || !Array.isArray(lines) || lines.length === 0) return [];
+
+    const rows = [];
+    let hasPositiveDelivered = false;
+    let hasDeliveredDiff = false;
+    for (const l of lines) {
+      const lineId = l?.id;
+      if (lineId == null) continue;
+      const deliveredQty = Number(l?.qty_delivered);
+      const orderedQty = Number(l?.product_uom_qty) || 0;
+      if (!Number.isFinite(deliveredQty)) continue;
+      if (deliveredQty > 0) hasPositiveDelivered = true;
+      if (Math.abs(deliveredQty - orderedQty) > 0.0001) hasDeliveredDiff = true;
+      rows.push({ lineId, qty: deliveredQty });
+    }
+    if (!hasPositiveDelivered || !hasDeliveredDiff) return [];
+    return rows;
+  }, [invoiceLineQtys, deliveryPayload, order?.invoice_status, lines]);
 
   const hasInvoiceQtyOverrides = effectiveInvoiceQtyRows.length > 0;
 
