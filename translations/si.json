@@ -1,5 +1,5 @@
 ﻿{
-  "version": "1.0.5",
+  "version": "1.0.6",
   "language": "si",
   "translation": {
     "bluetoothprinter": {
@@ -433,6 +433,7 @@
       "tapTheReasonThatFitsBestTheOrder": "වඩාත් ගැලපෙන හේතුව ටැප් කරන්න. ඕඩර් එක වසා ඔබේ ලිස්ට් එකෙන් ඉවත් කරනු ඇත.",
       "tapToContinue": "ඉදිරියට යාමට ටැප් කරන්න.",
       "theOrderWillBeClosedAndTakenOff": "ඕඩර් එක වසා ඔබේ බෙදාහැරීම් ලිස්ට් එකෙන් ඉවත් කරනු ඇත. පාරිභෝගිකයාට තවමත් බෙදාහැරීමක් අවශ්‍ය නම්, ඔවුන්ට නව ඕඩර් එකක් අවශ්‍ය වේ. ඔබට මෙම පියවර ආපසු හැරවිය නොහැක.",
+      "cancelFailedTryAgain": "කැන්සල් කිරීම අසාර්ථකයි. නැවත උත්සාහ කරන්න.",
       "thisOrderHasBeenCancelled": "මෙම ඕඩර් එක කැන්සල් කර ඇත.",
       "totalWithVat": "එකතුව (VAT සමඟ)",
       "unitPrice": "ඒකක මිල",
@@ -443,6 +444,25 @@
       "customerName": "පාරිභෝගිකයාගේ නම",
       "done": "අවසන්",
       "orderID": "ඕඩර් ID"
+    },
+    "saleorder": {
+      "cancelThisOrder": "මෙම ඕඩර් එක කැන්සල් කරන්නද?",
+      "cancelWarningMessage": "ඕඩර් එක වසා ඔබේ බෙදාහැරීම් ලිස්ට් එකෙන් ඉවත් කරනු ඇත. මෙම පියවර ආපසු හැරවිය නොහැක.",
+      "keepOrder": "ඕඩර් එක තබාගන්න",
+      "continue": "ඉදිරියට යන්න",
+      "reasonForCancellation": "කැන්සල් කිරීමට හේතුව",
+      "reasonForCancellationHint": "වඩාත් ගැලපෙන හේතුව ටැප් කරන්න. ඕඩර් එක වසා ඔබේ ලිස්ට් එකෙන් ඉවත් කරනු ඇත.",
+      "loadingReasons": "හේතු ලෝඩ් වෙමින්...",
+      "reasonNeededTitle": "හේතුවක් අවශ්‍යයි",
+      "reasonNeededMessage": "ලිස්ට් එකෙන් කැන්සල් කිරීමට හේතුවක් තෝරන්න.",
+      "cancelFailedTryAgain": "කැන්සල් කිරීම අසාර්ථකයි. නැවත උත්සාහ කරන්න.",
+      "cancelOrder": "ඕඩර් එක කැන්සල් කරන්න",
+      "fallbackReasonShopClosed": "කඩේ වහා ඇත",
+      "fallbackReasonCustomerNotAvailable": "පාරිභෝගිකයා ලබා ගත නොහැක",
+      "fallbackReasonCustomerCancelled": "පාරිභෝගිකයා ඕඩර් එක අවලංගු කළා",
+      "fallbackReasonWrongOrder": "වැරදි ඕඩර් එකක්",
+      "fallbackReasonDuplicateOrder": "ඕඩර් එක අනුපිටපත්",
+      "fallbackReasonOther": "වෙනත්"
     },
     "scanqrcode": {
       "cameraPermissionIsRequiredToScanCustomerQRCodes": "පාරිභෝගික QR කේත ස්කෑන් කිරීමට කැමරාවේ අවසරය අවශ්‍ය වේ.",

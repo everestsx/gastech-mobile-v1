@@ -815,15 +815,16 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
     }
   }, [navigation, order?.name, order?.id]);
 
+  /** Odoo-returned cancellation reasons stay as-is; only offline fallback options are translated. */
   const effectiveCancelReasons = cancelReasons.length > 0
     ? cancelReasons
     : [
-        { value: 'shop_closed', label: t('saleorder.cancelReasonShopClosed', 'Shop closed') },
-        { value: 'customer_not_available', label: t('saleorder.cancelReasonCustomerNotAvailable', 'Customer not available') },
-        { value: 'customer_cancelled', label: t('saleorder.cancelReasonCustomerCancelled', 'Customer cancelled') },
-        { value: 'wrong_order', label: t('saleorder.cancelReasonWrongOrder', 'Wrong order') },
-        { value: 'duplicate_order', label: t('saleorder.cancelReasonDuplicateOrder', 'Duplicate order') },
-        { value: 'other', label: t('saleorder.cancelReasonOther', 'Other') },
+        { value: 'shop_closed', label: t('saleorder.fallbackReasonShopClosed', 'Shop closed') },
+        { value: 'customer_not_available', label: t('saleorder.fallbackReasonCustomerNotAvailable', 'Customer not available') },
+        { value: 'customer_cancelled', label: t('saleorder.fallbackReasonCustomerCancelled', 'Customer cancelled') },
+        { value: 'wrong_order', label: t('saleorder.fallbackReasonWrongOrder', 'Wrong order') },
+        { value: 'duplicate_order', label: t('saleorder.fallbackReasonDuplicateOrder', 'Duplicate order') },
+        { value: 'other', label: t('saleorder.fallbackReasonOther', 'Other') },
       ];
 
   /**
@@ -1223,8 +1224,8 @@ const getStockWarning = useCallback((lineId) => {
     if (!order?.id || canceling || String(order?.state || '') === 'cancel') return;
     if (!cancelReason) {
       Alert.alert(
-        t('saleorder.reasonNeededTitle', 'Reason needed'),
-        t('saleorder.reasonNeededMessage', 'Pick a cancel reason from the list.')
+        t('saleorderdetails.reasonNeeded', 'Reason needed'),
+        t('saleorderdetails.pickACancelReasonFromTheList', 'Pick a cancel reason from the list.')
       );
       return;
     }
@@ -1243,7 +1244,7 @@ const getStockWarning = useCallback((lineId) => {
       setShowCancelModal(false);
       navigation.goBack();
     } catch (err) {
-      setCancelError(err?.message ?? t('saleorder.cancelFailedTryAgain', 'Cancel failed. Try again.'));
+      setCancelError(err?.message ?? t('saleorderdetails.cancelFailedTryAgain', 'Cancel failed. Try again.'));
     } finally {
       setCanceling(false);
     }
@@ -1734,7 +1735,7 @@ const handleProceedToPayment = useCallback(async () => {
             <Text style={styles.cancelConfirmTitle}>{t('saleorderdetails.cancelThisOrder', 'Cancel this order?')}</Text>
             <Text style={styles.cancelConfirmMessage}>
               {t(
-                'saleorder.cancelWarningMessageDetails',
+                'saleorderdetails.theOrderWillBeClosedAndTakenOff',
                 "The order will be closed and taken off your delivery list. If the customer still needs a delivery, they will need a new order. You can't undo this step."
               )}
             </Text>
@@ -1777,7 +1778,7 @@ const handleProceedToPayment = useCallback(async () => {
             <Text style={styles.cancelModalTitle}>{t('saleorderdetails.reasonForCancellation', 'Reason for cancellation')}</Text>
             <Text style={styles.cancelModalHint}>
               {t(
-                'saleorder.reasonForCancellationHint',
+                'saleorderdetails.tapTheReasonThatFitsBestTheOrder',
                 'Tap the reason that fits best. The order will be closed and removed from your list.'
               )}
             </Text>

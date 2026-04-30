@@ -580,15 +580,16 @@ export default function SaleOrderListScreen({ route, navigation }) {
     };
   }, [showCancelModal]);
 
+  /** Back-office reasons: show label as returned by API (no translation). Offline fallback list uses app strings. */
   const effectiveCancelReasons = cancelReasons.length > 0
     ? cancelReasons
     : [
-        { value: 'shop_closed', label: t('saleorder.cancelReasonShopClosed', 'Shop closed') },
-        { value: 'customer_not_available', label: t('saleorder.cancelReasonCustomerNotAvailable', 'Customer not available') },
-        { value: 'customer_cancelled', label: t('saleorder.cancelReasonCustomerCancelled', 'Customer cancelled') },
-        { value: 'wrong_order', label: t('saleorder.cancelReasonWrongOrder', 'Wrong order') },
-        { value: 'duplicate_order', label: t('saleorder.cancelReasonDuplicateOrder', 'Duplicate order') },
-        { value: 'other', label: t('saleorder.cancelReasonOther', 'Other') },
+        { value: 'shop_closed', label: t('saleorder.fallbackReasonShopClosed', 'Shop closed') },
+        { value: 'customer_not_available', label: t('saleorder.fallbackReasonCustomerNotAvailable', 'Customer not available') },
+        { value: 'customer_cancelled', label: t('saleorder.fallbackReasonCustomerCancelled', 'Customer cancelled') },
+        { value: 'wrong_order', label: t('saleorder.fallbackReasonWrongOrder', 'Wrong order') },
+        { value: 'duplicate_order', label: t('saleorder.fallbackReasonDuplicateOrder', 'Duplicate order') },
+        { value: 'other', label: t('saleorder.fallbackReasonOther', 'Other') },
       ];
 
   const closeCancelFlow = useCallback(() => {

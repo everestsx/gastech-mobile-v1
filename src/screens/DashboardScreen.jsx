@@ -1132,8 +1132,11 @@ export default function DashboardScreen({ navigation }) {
   const productRateMap = commissionPlan?.productRateMap || {};
 
   // Calculate totals for fallback commission calculation
-  const allOrdersTotal = todayOrdersForDashboard.reduce((s, o) => s + orderMoneyTotal(o), 0);
-  const deliveredOrdersTotal = deliveredTodayOrders.reduce((s, o) => s + orderMoneyTotal(o), 0);
+  const allOrdersTotal = todayOrders.reduce((s, o) => s + orderMoneyTotal(o), 0);
+  const deliveredOrdersTotal = deliveredTodayOrdersAllRoutes.reduce(
+    (s, o) => s + orderMoneyTotal(o),
+    0
+  );
 
   // Get order lines for delivered orders (for achieved commission)
   const deliveredOrderIds = new Set(deliveredTodayOrders.map((o) => o.id));
@@ -1901,8 +1904,15 @@ export default function DashboardScreen({ navigation }) {
     Linking.openURL(`tel:${s}`).catch(() => {});
   };
 
+  const hasAnyDashboardData =
+    (orders?.length || 0) > 0 ||
+    (todayOrderLines?.length || 0) > 0 ||
+    (stockCards?.length || 0) > 0 ||
+    Object.keys(lineTotalsByOrder || {}).length > 0;
   const shouldBlockDashboard = initialLoadGateActive && (isSyncing || !!user?.pendingInitialSync);
-  const shouldShowInitialFullScreenLoader = initialLoadGateActive && (loading || isSyncing || !!user?.pendingInitialSync);
+  const shouldShowInitialFullScreenLoader =
+    (initialLoadGateActive && (loading || isSyncing || !!user?.pendingInitialSync)) ||
+    (loading && !hasAnyDashboardData);
 
   if (shouldShowInitialFullScreenLoader) {
     return (

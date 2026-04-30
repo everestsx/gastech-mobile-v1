@@ -1,5 +1,5 @@
 {
-  "version": "1.0.5",
+  "version": "1.0.6",
   "language": "ta",
   "translation": {
     "bluetoothprinter": {
@@ -211,12 +211,36 @@
       "keepOrder": "ஆர்டரை வைத்திருக்கவும்",
       "continue": "தொடரவும்",
       "reasonForCancellation": "ரத்துசெய்ததற்கான காரணம்",
-      "loadingReasons": "காரணங்களை ஏற்றுகிறது..."
+      "loadingReasons": "காரணங்களை ஏற்றுகிறது...",
+      "pickACancelReasonFromTheList": "பட்டியலிலிருந்து ரத்துக்கான காரணத்தைத் தேர்ந்தெடுக்கவும்.",
+      "reasonNeeded": "காரணம் தேவை",
+      "theOrderWillBeClosedAndTakenOff": "ஆர்டர் மூடப்பட்டு உங்கள் டெலிவரி பட்டியலிலிருந்து நீக்கப்படும். வாடிக்கையாளருக்கு இன்னும் விநியோகம் வேண்டுமானால், புதிய ஆர்டர் தேவை. இந்தச் செயலைச் செயல்தவிர்க்க முடியாது.",
+      "tapTheReasonThatFitsBestTheOrder": "பொருத்தமான காரணத்தைத் தட்டவும். ஆர்டர் மூடப்பட்டு உங்கள் பட்டியலிலிருந்து நீக்கப்படும்.",
+      "cancelFailedTryAgain": "ரத்து செய்ய முடியவில்லை. மீண்டும் முயலவும்."
     },
     "saleorderlist": {
       "done": "முடிந்தது",
       "customerName": "வாடிக்கையாளர் பெயர்",
       "orderID": "ஆர்டர் எண்"
+    },
+    "saleorder": {
+      "cancelThisOrder": "இந்த ஆர்டரை ரத்துசெய்ய வேண்டுமா?",
+      "cancelWarningMessage": "ஆர்டர் மூடப்பட்டு உங்கள் டெலிவரி பட்டியலிலிருந்து நீக்கப்படும். இதைச் செயல்தவிர்க்க முடியாது.",
+      "keepOrder": "ஆர்டரை வைத்திருக்கவும்",
+      "continue": "தொடரவும்",
+      "reasonForCancellation": "ரத்துசெய்ததற்கான காரணம்",
+      "reasonForCancellationHint": "பொருந்தும் காரணத்தைத் தட்டவும். ஆர்டர் மூடப்பட்டு உங்கள் பட்டியலிலிருந்து நீக்கப்படும்.",
+      "loadingReasons": "காரணங்களை ஏற்றுகிறது...",
+      "reasonNeededTitle": "காரணம் தேவை",
+      "reasonNeededMessage": "பட்டியலிலிருந்து ரத்துசெய்வதற்கான காரணத்தைத் தேர்ந்தெடுக்கவும்.",
+      "cancelFailedTryAgain": "ரத்து செய்ய முடியவில்லை. மீண்டும் முயலவும்.",
+      "cancelOrder": "ஆர்டரை ரத்துசெய்",
+      "fallbackReasonShopClosed": "கடை மூடப்பட்டது",
+      "fallbackReasonCustomerNotAvailable": "வாடிக்கையாளர் இல்லை",
+      "fallbackReasonCustomerCancelled": "வாடிக்கையாளர் ரத்துசெய்தார்",
+      "fallbackReasonWrongOrder": "தவறான ஆர்டர்",
+      "fallbackReasonDuplicateOrder": "நகல் ஆர்டர்",
+      "fallbackReasonOther": "மற்றவை"
     },
     "scanqrcode": {
       "checkingCamera": "கேமராவைச் சரிபார்க்கிறது...",
