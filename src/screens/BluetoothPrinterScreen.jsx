@@ -18,19 +18,6 @@ import { usePrinterConnection } from '../context/PrinterConnectionContext';
 import { spacing, borderRadius } from '../constants/theme';
 import { findBluetoothPrinters } from '../services/printerService';
 
-function sortPrintersBySignal(list) {
-  return [...(Array.isArray(list) ? list : [])].sort((a, b) => {
-    const aRssi = Number(a?.rssi);
-    const bRssi = Number(b?.rssi);
-    const aHas = Number.isFinite(aRssi);
-    const bHas = Number.isFinite(bRssi);
-    if (aHas && bHas) return bRssi - aRssi;
-    if (bHas) return 1;
-    if (aHas) return -1;
-    return String(a?.name || '').localeCompare(String(b?.name || ''));
-  });
-}
-
 export default function BluetoothPrinterScreen() {
   const { t } = useTranslation();
   const { colors } = useTheme();
@@ -158,7 +145,7 @@ export default function BluetoothPrinterScreen() {
     setPairedPrinterRows([]);
     try {
       const list = await findBluetoothPrinters();
-      setPairedPrinterRows(sortPrintersBySignal(list));
+      setPairedPrinterRows(list);
     } catch (e) {
       Alert.alert('Bluetooth', e?.message || 'Could not list paired printers.');
     } finally {

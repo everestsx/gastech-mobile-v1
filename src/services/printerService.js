@@ -93,7 +93,7 @@ export async function requestBluetoothPermissions() {
 
 /**
  * Paired (bonded) Bluetooth printers from the native Rongta module.
- * @returns {Promise<Array<{ name: string, address: string, mac: string, connectionType: string, rssi?: number }>>}
+ * @returns {Promise<Array<{ name: string, address: string, mac: string, connectionType: string }>>}
  */
 export async function findBluetoothPrinters() {
   if (!isRongtaNativeAvailable()) {
@@ -113,10 +113,6 @@ export async function findBluetoothPrinters() {
     address: p.address || p.mac || '',
     mac: p.mac || p.address || '',
     connectionType: p.connectionType || 'Bluetooth',
-    rssi: (() => {
-      const n = Number(p.rssi ?? p.signalStrength);
-      return Number.isFinite(n) ? n : undefined;
-    })(),
   })).filter((p) => p.address);
 }
 
