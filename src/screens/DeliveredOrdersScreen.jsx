@@ -91,18 +91,26 @@ function buildDisplayDeliveredQtyByProduct(moveMap, orderLines, isInvoiced) {
   const fromMoves = { ...(moveMap || {}) };
   const fromDeliveredField = sumQtyByProductFromLines(orderLines, 'qty_delivered');
   const fromOrdered = sumQtyByProductFromLines(orderLines, 'product_uom_qty');
-  const pids = new Set([
+  const deliveredPids = new Set([
     ...Object.keys(fromMoves),
     ...Object.keys(fromDeliveredField),
-    ...(isInvoiced ? Object.keys(fromOrdered) : []),
   ]);
+  const hasDeliveredSource = Array.from(deliveredPids).some((k) => {
+    const p = Number(k);
+    return (Number(fromMoves[p]) || 0) > 0 || (Number(fromDeliveredField[p]) || 0) > 0;
+  });
+  const pids = new Set(
+    hasDeliveredSource
+      ? [...deliveredPids]
+      : [...deliveredPids, ...(isInvoiced ? Object.keys(fromOrdered) : [])]
+  );
   const out = {};
   for (const k of pids) {
     const p = Number(k);
     const move = Number(fromMoves[p]) || 0;
     const qd = Number(fromDeliveredField[p]) || 0;
     let v = Math.max(move, qd);
-    if (isInvoiced) {
+    if (!hasDeliveredSource && isInvoiced) {
       const ord = Number(fromOrdered[p]) || 0;
       v = Math.max(v, ord);
     }

@@ -70,7 +70,7 @@ import DeliveryProgressBarChart from '../components/DeliveryProgressBarChart';
 import SyncHeaderBadge from '../components/SyncHeaderBadge';
 import RichNotification from '../components/RichNotification';
 import { useSync } from '../context/SyncContext';
-import { odooImageToUri, getPortersEmployees } from '../services/employee.service';
+import { odooImageToUri, getDrivingEmployees, getPortersEmployees } from '../services/employee.service';
 import {
   mergePickingStateBySaleIdFromRows,
   orderIsDeliveryDoneForProgress,
@@ -81,6 +81,12 @@ import {
 } from '../services/checkoutResume.service';
 
 let lastDashboardSnapshot = null;
+
+function hasValidEmployeeImage(imageBase64) {
+  if (imageBase64 == null) return false;
+  const s = String(imageBase64).trim();
+  return !!s && s.toLowerCase() !== 'false' && s.toLowerCase() !== 'null';
+}
 
 // const SHOPS_TARGET = 60;
 // const GAS_TARGET = 6000;
@@ -349,10 +355,15 @@ export default function DashboardScreen({ navigation }) {
           }
         }
       }
-      if (user && (!user.driverImageBase64 || String(user.driverImageBase64).trim() === '') && user?.driverId != null) {
+      if (user && !hasValidEmployeeImage(user?.driverImageBase64) && user?.driverId != null) {
         try {
-          const employees = await getPortersEmployees();
-          const matchedDriver = (employees || []).find((e) => Number(e?.id) === Number(user.driverId));
+          let employees = await getDrivingEmployees();
+          let matchedDriver = (employees || []).find((e) => Number(e?.id) === Number(user.driverId));
+          // Defensive fallback: some DBs may have driver mis-assigned to another department.
+          if (!matchedDriver?.imageBase64) {
+            employees = await getPortersEmployees();
+            matchedDriver = (employees || []).find((e) => Number(e?.id) === Number(user.driverId));
+          }
           if (matchedDriver?.imageBase64) {
             user = { ...user, driverImageBase64: matchedDriver.imageBase64 };
             try {
@@ -1090,7 +1101,9 @@ export default function DashboardScreen({ navigation }) {
   const vehicleName = user?.licensePlate || user?.vehicleName || 'Vehicle';
   const driverName = user?.driverName;
   const driverPhone = user?.driverPhone != null && String(user.driverPhone).trim() !== '' ? String(user.driverPhone).trim() : '';
-  const driverHeaderUri = user?.driverImageBase64 ? odooImageToUri(user.driverImageBase64) : null;
+  const driverHeaderUri = hasValidEmployeeImage(user?.driverImageBase64)
+    ? odooImageToUri(user.driverImageBase64)
+    : null;
   const crewPorters = Array.isArray(user?.selectedPorters) ? user.selectedPorters : [];
 
 
