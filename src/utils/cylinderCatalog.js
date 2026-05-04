@@ -61,3 +61,24 @@ export function findEmptyCylinderProductIdForKg(productIdToName, kg) {
   }
   return null;
 }
+
+/**
+ * Same as findEmptyCylinderProductIdForKg but allows product names that contain "empty"
+ * and the canonical kg even when the word "cylinder" is missing (common catalog variants).
+ */
+export function findEmptyCylinderProductIdForKgRelaxed(productIdToName, kg) {
+  let id = findEmptyCylinderProductIdForKg(productIdToName, kg);
+  if (id != null) return id;
+  const target = canonicalKg(kg);
+  if (target == null) return null;
+  const entries = productIdToName && typeof productIdToName === 'object' ? Object.entries(productIdToName) : [];
+  for (const [pidStr, rawName] of entries) {
+    const pid = Number(pidStr);
+    if (!Number.isFinite(pid)) continue;
+    const s = normalize(rawName);
+    if (!s.includes('empty')) continue;
+    const c = canonicalKgFromName(rawName);
+    if (c != null && Math.abs(c - target) < 0.051) return pid;
+  }
+  return null;
+}

@@ -21,6 +21,7 @@ import {
   getVehicleLocationId,
   getCachedVehicleInventoryByLocation,
   getUserSession,
+  resolveLorryStockLocationForCompletion,
 } from '../services/sync.service';
 import * as syncQueueDb from '../database/syncQueue.js';
 import * as vehicleInventoriesDb from '../database/vehicleInventories.js';
@@ -29,7 +30,7 @@ import { setCheckoutResumeFromPayment } from '../services/checkoutResume.service
 import { buildEmptyCylinderChatterBody } from '../services/proofAttachment.service';
 import {
   canonicalKgFromName,
-  findEmptyCylinderProductIdForKg,
+  findEmptyCylinderProductIdForKgRelaxed,
   isEmptyCylinderName,
   isGasCylinderName,
   isNewIssueName,
@@ -155,9 +156,18 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
         if (isNewIssueName(rawName)) entry.newIssueQty += qty;
       }
 
+      const sessionForLoc = await getUserSession();
+      const plateHintLoad = String(
+        sessionForLoc?.licensePlate || sessionForLoc?.license_plate || sessionForLoc?.vehicleLicensePlate || ''
+      ).trim();
+      const vehicleIdForLocRaw = details?.order?.vehicle_id
+        ? Array.isArray(details.order.vehicle_id)
+          ? details.order.vehicle_id[0]
+          : details.order.vehicle_id
+        : null;
       const [locationId, productMap] = await Promise.all([
-        details?.order?.vehicle_id
-          ? getVehicleLocationId(Array.isArray(details.order.vehicle_id) ? details.order.vehicle_id[0] : details.order.vehicle_id)
+        vehicleIdForLocRaw != null
+          ? getVehicleLocationId(Number(vehicleIdForLocRaw), { licensePlateHint: plateHintLoad })
           : Promise.resolve(null),
         productsDb.getProductsMap(),
       ]);
@@ -187,7 +197,7 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
 
       for (const [, entry] of byKg) {
         if (entry.emptyProductId == null) {
-          const fromCatalog = findEmptyCylinderProductIdForKg(productMap, entry.kg);
+          const fromCatalog = findEmptyCylinderProductIdForKgRelaxed(productMap, entry.kg);
           if (fromCatalog != null) entry.emptyProductId = fromCatalog;
         }
       }
@@ -260,16 +270,26 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
         const order = details?.order || {};
         const session = await getUserSession();
         const orderVehicleId = parseVehicleIdFromOrder(order);
-        const sessionVehicleId = Number(session?.vehicleId);
-        const vehicleId =
-          orderVehicleId != null
-            ? orderVehicleId
-            : (Number.isFinite(sessionVehicleId) && sessionVehicleId > 0 ? sessionVehicleId : null);
-        const locationId = vehicleId != null ? await getVehicleLocationId(Number(vehicleId)) : null;
+        const sessionVehicleIdRaw = Number(session?.vehicleId);
+        const sessionVehicleId =
+          Number.isFinite(sessionVehicleIdRaw) && sessionVehicleIdRaw > 0 ? sessionVehicleIdRaw : null;
+        const plateFromSession = String(
+          session?.licensePlate || session?.license_plate || session?.vehicleLicensePlate || ''
+        ).trim();
+
+        const { locationId: resolvedLocationId, vehicleId: resolvedVehicleId } =
+          await resolveLorryStockLocationForCompletion({
+            orderVehicleId,
+            sessionVehicleId,
+            sessionLicensePlate: plateFromSession,
+          });
+
+        const vehicleId = resolvedVehicleId;
+        const locationId = resolvedLocationId;
 
         const emptyCylinderEntries = buildEntriesPayload();
 
-        if (locationId != null) {
+        if (locationId != null && vehicleId != null) {
           const inventory = await getCachedVehicleInventoryByLocation(locationId);
           const byProductId = {};
           const inventoryQueueUpdates = [];

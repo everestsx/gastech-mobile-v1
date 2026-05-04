@@ -351,18 +351,75 @@ export async function getCachedVehicleInventory(vehicleId) {
 }
 
 /**
- * Get the location_id (stock.location id) for a given vehicle from local DB.
- * @param {number} vehicleId
- * @returns {Promise<number|null>}
+ * Location id for fleet vehicle (SQLite vehicle_warehouses → Odoo stock.location id, usually …/Stock e.g. 146 for 0417/Stock).
+ * When FK is missing/outdated (common for LN-0417 naming), tries plate substring match then dominant synced quant row.
  */
-export async function getVehicleLocationId(vehicleId) {
+export async function getVehicleLocationId(vehicleId, options = {}) {
+  const vid = vehicleId != null ? Number(vehicleId) : null;
+  if (vid == null || !Number.isFinite(vid) || vid <= 0) return null;
   try {
-    const warehouse = await vehicleWarehousesDb.getVehicleWarehouseByVehicleId(vehicleId);
-    return warehouse?.id ?? null;
+    const warehouse = await vehicleWarehousesDb.getVehicleWarehouseByVehicleId(vid);
+    const fromFk = warehouse?.id != null ? Number(warehouse.id) : null;
+    if (fromFk != null && Number.isFinite(fromFk) && fromFk > 0) return fromFk;
+
+    const plateRaw =
+      typeof options.licensePlateHint === 'string'
+        ? options.licensePlateHint
+        : typeof options.license_plate_hint === 'string'
+          ? options.license_plate_hint
+          : '';
+    if (String(plateRaw).trim()) {
+      const byPlate = await vehicleWarehousesDb.findVehicleWarehouseLocationIdByPlateHint(plateRaw);
+      if (byPlate != null) {
+        const n = Number(byPlate);
+        if (Number.isFinite(n) && n > 0) return n;
+      }
+    } else {
+      const storedPlate = await vehiclesDb.getVehicleLicensePlateById(vid);
+      if (storedPlate && String(storedPlate).trim()) {
+        const byStored = await vehicleWarehousesDb.findVehicleWarehouseLocationIdByPlateHint(String(storedPlate));
+        if (byStored != null) {
+          const n = Number(byStored);
+          if (Number.isFinite(n) && n > 0) return n;
+        }
+      }
+    }
+
+    const fromQuant = await vehicleInventoriesDb.getDominantLocationIdForVehicle(vid);
+    if (fromQuant != null) {
+      const n = Number(fromQuant);
+      if (Number.isFinite(n) && n > 0) return n;
+    }
+    return null;
   } catch (e) {
     console.warn('getVehicleLocationId', e);
     return null;
   }
+}
+
+/**
+ * Resolve vehicle + `{code}/Stock` location for empty-cylinder queue payloads.
+ */
+export async function resolveLorryStockLocationForCompletion(params = {}) {
+  const orderVid = params?.orderVehicleId != null ? Number(params.orderVehicleId) : null;
+  const sessionVid = params?.sessionVehicleId != null ? Number(params.sessionVehicleId) : null;
+  const vehicleId =
+    orderVid != null && Number.isFinite(orderVid) && orderVid > 0
+      ? orderVid
+      : sessionVid != null && Number.isFinite(sessionVid) && sessionVid > 0
+        ? sessionVid
+        : null;
+
+  let plateHint = '';
+  if (typeof params.sessionLicensePlate === 'string') plateHint = params.sessionLicensePlate.trim();
+  if (!plateHint && vehicleId != null) {
+    const p = await vehiclesDb.getVehicleLicensePlateById(Number(vehicleId));
+    if (p) plateHint = String(p).trim();
+  }
+
+  const locationId =
+    vehicleId != null ? await getVehicleLocationId(Number(vehicleId), { licensePlateHint: plateHint }) : null;
+  return { vehicleId, locationId };
 }
 
 /**
@@ -876,6 +933,220 @@ async function pullSaleOrderHeaderAfterPayment(saleOrderId) {
   }
 }
 
+function pickFirstOdooLocationId(raw) {
+  if (raw == null) return null;
+  if (Array.isArray(raw)) return raw[0] != null ? Number(raw[0]) : null;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/**
+ * Prefer the real customer delivery (internal → customer), not the latest misc transfer on the SO (e.g. replenishment).
+ */
+async function resolveEmptyReturnLocationsForSaleOrder(callOdoo, saleOrderId, payloadLocationId) {
+  const payloadLoc = payloadLocationId != null ? Number(payloadLocationId) : null;
+
+  let fallbackCustomer = null;
+  try {
+    const rows = await callOdoo(
+      'stock.location',
+      'search_read',
+      [[['usage', '=', 'customer']]],
+      { fields: ['id'], limit: 1 }
+    );
+    fallbackCustomer =
+      Array.isArray(rows) && rows[0]?.id != null ? Number(rows[0].id) : null;
+  } catch (_) {
+    fallbackCustomer = null;
+  }
+
+  let pickRows = [];
+  try {
+    pickRows = await callOdoo(
+      'stock.picking',
+      'search_read',
+      [[['sale_id', '=', Number(saleOrderId)]]],
+      {
+        fields: ['id', 'location_id', 'location_dest_id', 'state'],
+        order: 'id desc',
+        limit: 60,
+      }
+    );
+  } catch (_) {
+    pickRows = [];
+  }
+
+  const locIds = new Set();
+  for (const pr of pickRows || []) {
+    const a = pickFirstOdooLocationId(pr?.location_id);
+    const b = pickFirstOdooLocationId(pr?.location_dest_id);
+    if (a != null) locIds.add(a);
+    if (b != null) locIds.add(b);
+  }
+
+  const usageById = {};
+  if (locIds.size > 0) {
+    try {
+      const locRead = await callOdoo('stock.location', 'read', [Array.from(locIds)], { fields: ['id', 'usage'] });
+      for (const row of locRead || []) {
+        usageById[Number(row.id)] = String(row.usage || '').toLowerCase();
+      }
+    } catch (_) {
+      /* ignore */
+    }
+  }
+
+  for (const pr of pickRows || []) {
+    const src = pickFirstOdooLocationId(pr?.location_id);
+    const dst = pickFirstOdooLocationId(pr?.location_dest_id);
+    if (src == null || dst == null) continue;
+    const uSrc = usageById[src] || '';
+    const uDst = usageById[dst] || '';
+    if (uDst === 'customer' && (uSrc === 'internal' || uSrc === 'transit' || uSrc === 'view')) {
+      return { srcLocId: dst, destLocId: src };
+    }
+  }
+
+  const base = Array.isArray(pickRows) && pickRows.length > 0 ? pickRows[0] : null;
+  if (base) {
+    const src = pickFirstOdooLocationId(base?.location_id);
+    const dst = pickFirstOdooLocationId(base?.location_dest_id);
+    if (src != null && dst != null) {
+      const uDst = usageById[dst] || '';
+      const uSrc = usageById[src] || '';
+      if (uDst === 'customer') {
+        return { srcLocId: dst, destLocId: src };
+      }
+      if (uSrc === 'customer') {
+        return { srcLocId: src, destLocId: dst };
+      }
+    }
+  }
+
+  return {
+    srcLocId:
+      fallbackCustomer != null && Number.isFinite(fallbackCustomer) ? fallbackCustomer : null,
+    destLocId:
+      payloadLoc != null && Number.isFinite(payloadLoc) && payloadLoc > 0 ? payloadLoc : null,
+  };
+}
+
+function deliveryQtyMatchesExpected(expected, actual) {
+  const ex = Math.round(Number(expected) * 1e4) / 1e4;
+  const ac = Math.round(Number(actual) * 1e4) / 1e4;
+  return Number.isFinite(ex) && Number.isFinite(ac) && Math.abs(ex - ac) < 0.0001;
+}
+
+/**
+ * Do not post an invoice while any stock.picking on the sale order is still open (not done/cancel).
+ */
+async function verifySalePickingsClosedForInvoice(saleOrderId) {
+  const soId = Number(saleOrderId);
+  if (!Number.isFinite(soId) || soId <= 0) return { ok: true };
+  let list;
+  try {
+    const { getPickingBySaleOrder } = await import('./delivery.service');
+    list = await getPickingBySaleOrder(soId);
+  } catch (e) {
+    return { ok: false, reason: `cannot read pickings: ${String(e?.message || e).slice(0, 120)}` };
+  }
+  const open = (Array.isArray(list) ? list : []).filter((p) => {
+    const s = String(p?.state || '').toLowerCase();
+    return s && s !== 'done' && s !== 'cancel';
+  });
+  if (open.length === 0) return { ok: true };
+  const ids = open
+    .map((p) => p?.id)
+    .filter((id) => id != null)
+    .join(', ');
+  return {
+    ok: false,
+    reason: `open delivery pickings [${ids}] — complete validate before invoice (SO ${soId})`,
+  };
+}
+
+/**
+ * Ensure Odoo sale.order.line qty_delivered matches the mobile snapshot before invoicing (retries writes).
+ */
+async function reconcileOdooSaleLinesToExpectedDelivered(expectedSaleLineDelivered, logQueue) {
+  const list = Array.isArray(expectedSaleLineDelivered) ? expectedSaleLineDelivered : [];
+  const updates = list
+    .filter((u) => u?.lineId != null && u.qty_delivered != null)
+    .map((u) => ({ lineId: Number(u.lineId), qty_delivered: Number(u.qty_delivered) }));
+  if (updates.length === 0) return { ok: true };
+  const lineIds = [...new Set(updates.map((u) => u.lineId))].filter((id) => Number.isFinite(id) && id > 0);
+
+  const {
+    readSaleOrderLinesDeliveredSnapshot,
+    updateSaleOrderLineQtyDelivered,
+  } = await import('./saleOrderLine.service');
+
+  const maxPasses = 3;
+  for (let pass = 0; pass < maxPasses; pass++) {
+    let snap;
+    try {
+      snap = await readSaleOrderLinesDeliveredSnapshot(lineIds);
+    } catch (readErr) {
+      return {
+        ok: false,
+        reason: `read qty_delivered failed: ${String(readErr?.message || readErr).slice(0, 160)}`,
+      };
+    }
+    const mismatches = [];
+    for (const u of updates) {
+      const actual = snap.get(u.lineId);
+      if (actual === undefined) {
+        mismatches.push(u);
+        continue;
+      }
+      if (!deliveryQtyMatchesExpected(u.qty_delivered, actual)) mismatches.push(u);
+    }
+    if (mismatches.length === 0) {
+      if (pass > 0 && typeof logQueue === 'function') {
+        logQueue('queue', `qty_delivered reconciled after ${pass} repair pass(es)`);
+      }
+      return { ok: true };
+    }
+    for (const u of mismatches) {
+      try {
+        await updateSaleOrderLineQtyDelivered(u.lineId, u.qty_delivered);
+      } catch (wErr) {
+        logWarn(
+          'queue payment (qty_delivered repair)',
+          new Error(`line ${u.lineId}: ${String(wErr?.message || wErr).slice(0, 160)}`)
+        );
+      }
+    }
+  }
+  let snapFinal;
+  try {
+    snapFinal = await readSaleOrderLinesDeliveredSnapshot(lineIds);
+  } catch (_) {
+    snapFinal = new Map();
+  }
+  const bad = [];
+  for (const u of updates) {
+    const actual = snapFinal.get(u.lineId);
+    if (actual === undefined || !deliveryQtyMatchesExpected(u.qty_delivered, actual)) {
+      bad.push(`${u.lineId}: want ${u.qty_delivered} got ${actual ?? '?'}`);
+    }
+  }
+  return {
+    ok: false,
+    reason: `qty_delivered mismatch after ${maxPasses} repair passes: ${bad.slice(0, 8).join('; ')}`,
+  };
+}
+
+/** Do not finish delivery sync until qty_delivered matches mobile and delivery pickings are terminal (retry whole delivery next sync otherwise). */
+async function assertOdooDeliveredQtyAndPickingsOrThrow(saleOrderId, saleOrderLineDeliveredUpdates, logFn = log) {
+  const ups = Array.isArray(saleOrderLineDeliveredUpdates) ? saleOrderLineDeliveredUpdates : [];
+  if (!ups.length) return;
+  const rep = await reconcileOdooSaleLinesToExpectedDelivered(ups, logFn);
+  if (!rep.ok) throw new Error(rep.reason);
+  const pg = await verifySalePickingsClosedForInvoice(saleOrderId);
+  if (!pg.ok) throw new Error(pg.reason);
+}
+
 /** Process pending sync queue: push delivery and payment actions to Odoo. Run at start of runSync. */
 async function processSyncQueue() {
   if (_processSyncQueuePromise) {
@@ -916,6 +1187,33 @@ async function processSyncQueue() {
           continue;
         }
         dedupedPayment.push(item);
+      }
+
+      // Same as payments: stale duplicate delivery rows (older id) corrupt Odoo — keep latest only.
+      const latestDeliveryItemBySaleOrder = new Map();
+      for (const item of delivery) {
+        const p = item.payload || {};
+        const saleOrderId = p.saleOrderId ?? p.sale_id;
+        const soId = saleOrderId != null ? Number(saleOrderId) : NaN;
+        if (Number.isNaN(soId)) continue;
+        latestDeliveryItemBySaleOrder.set(soId, item);
+      }
+      const dedupedDelivery = [];
+      for (const item of delivery) {
+        const p = item.payload || {};
+        const saleOrderId = p.saleOrderId ?? p.sale_id;
+        const soId = saleOrderId != null ? Number(saleOrderId) : NaN;
+        if (Number.isNaN(soId)) {
+          dedupedDelivery.push(item);
+          continue;
+        }
+        const latest = latestDeliveryItemBySaleOrder.get(soId);
+        if (latest && Number(latest.id) !== Number(item.id)) {
+          await syncQueueDb.markSynced(Number(item.id));
+          log('queue', `skip stale pending delivery id=${item.id} (SO ${soId}); latest id=${latest.id}`);
+          continue;
+        }
+        dedupedDelivery.push(item);
       }
 
       async function tryAttachPrintedInvoicePdfToSaleOrder(soId, invoiceId, orderName = '') {
@@ -1041,6 +1339,10 @@ async function processSyncQueue() {
         const hasPickings = blocks.length > 0;
         if (!hasPickings) {
           await applySoLineDeliveredQty();
+          if (saleOrderLineDeliveredUpdates?.length > 0) {
+            await applySoLineDeliveredQty();
+          }
+          await assertOdooDeliveredQtyAndPickingsOrThrow(saleOrderId, saleOrderLineDeliveredUpdates, log);
           {
             const soCrew = saleOrderId != null ? Number(saleOrderId) : NaN;
             if (Number.isFinite(soCrew) && soCrew > 0) await writeSaleOrderCrewFromPaymentPayload(soCrew, p);
@@ -1215,22 +1517,77 @@ async function processSyncQueue() {
           }
         }
 
-        if (validatedAnyPicking && saleOrderId != null) {
+        await applySoLineDeliveredQty();
+        /** Second pass: Odoo may recompute qty_delivered from stock after validate (or when picking was already done). */
+        if (saleOrderLineDeliveredUpdates?.length > 0) {
+          await applySoLineDeliveredQty();
+        }
+
+        /**
+         * After SO line writes: cancel stray transfers not in this payload — empty moves OR zombie backorders
+         * (sale order fully fulfilled per product but Odoo still has an extra open picking).
+         */
+        if (hasPickings && saleOrderId != null) {
           try {
+            const { readSaleOrderLineQtyAggregatesByProduct } = await import('./saleOrderLine.service');
+            let agg = null;
+            try {
+              agg = await readSaleOrderLineQtyAggregatesByProduct(saleOrderId);
+            } catch (aggErr) {
+              log(
+                'queue',
+                `delivery backorder aggregates skipped: ${String(aggErr?.message || aggErr).slice(0, 90)}`
+              );
+            }
             const refreshedPickings = await getPickingBySaleOrder(saleOrderId);
+            const epsRow = 0.01;
             for (const pick of refreshedPickings || []) {
-              const pid = pick?.id != null ? Number(pick.id) : null;
+              const pidPick = pick?.id != null ? Number(pick.id) : null;
               const state = String(pick?.state || '').toLowerCase();
-              if (pid == null) continue;
+              if (pidPick == null) continue;
               if (state === 'done' || state === 'cancel') continue;
-              if (targetPickingIds.has(pid)) continue;
+              if (targetPickingIds.has(pidPick)) continue;
               try {
-                await actionCancelPicking(pid);
-                log('queue', `delivery auto-cancelled backorder picking ${pid} for SO ${saleOrderId}`);
+                const movesStill = await getStockMovesByPickingId(pidPick);
+                const activeMoves = (movesStill || []).filter((m) => {
+                  const st = String(m?.state || '').toLowerCase();
+                  return st !== 'cancel' && st !== 'done';
+                });
+                const hasOpenDemand = activeMoves.some((m) => Number(m.product_uom_qty) > epsRow);
+                let shouldCancel = !hasOpenDemand;
+
+                if (!shouldCancel && agg != null && activeMoves.length > 0) {
+                  shouldCancel = true;
+                  for (const m of activeMoves) {
+                    const dem = Number(m.product_uom_qty) || 0;
+                    if (dem <= epsRow) continue;
+                    const pr = Array.isArray(m.product_id) ? m.product_id[0] : m.product_id;
+                    if (!Number.isFinite(Number(pr))) {
+                      shouldCancel = false;
+                      break;
+                    }
+                    const ordered = agg.orderedByProduct.get(Number(pr)) || 0;
+                    const delivered = agg.deliveredByProduct.get(Number(pr)) || 0;
+                    if (delivered + 0.0001 < ordered - epsRow) {
+                      shouldCancel = false;
+                      break;
+                    }
+                  }
+                }
+
+                if (!shouldCancel) {
+                  log(
+                    'queue',
+                    `delivery skip auto-cancel picking ${pidPick}: open demand or partial SO qty (SO ${saleOrderId})`
+                  );
+                  continue;
+                }
+                await actionCancelPicking(pidPick);
+                log('queue', `delivery auto-cancelled backorder picking ${pidPick} for SO ${saleOrderId}`);
               } catch (cancelErr) {
                 log(
                   'queue',
-                  `delivery backorder cancel skipped for picking ${pid}: ${String(cancelErr?.message || cancelErr).slice(0, 120)}`
+                  `delivery backorder cancel skipped for picking ${pidPick}: ${String(cancelErr?.message || cancelErr).slice(0, 120)}`
                 );
               }
             }
@@ -1242,7 +1599,7 @@ async function processSyncQueue() {
           }
         }
 
-        await applySoLineDeliveredQty();
+        await assertOdooDeliveredQtyAndPickingsOrThrow(saleOrderId, saleOrderLineDeliveredUpdates, log);
         {
           const soCrew = saleOrderId != null ? Number(saleOrderId) : NaN;
           if (Number.isFinite(soCrew) && soCrew > 0) await writeSaleOrderCrewFromPaymentPayload(soCrew, p);
@@ -1251,7 +1608,7 @@ async function processSyncQueue() {
         log('queue', `delivery synced id=${item.id} (${blocks.length} picking block(s))`);
       };
 
-      for (const item of delivery) {
+      for (const item of dedupedDelivery) {
         const p0 = item.payload || {};
         if (p0.holdUntilPayment === true) {
           log('queue', `delivery id=${item.id} SO ${p0.saleOrderId ?? p0.sale_id} held until payment — skip`);
@@ -1291,39 +1648,26 @@ async function processSyncQueue() {
             }))
             .filter((u) => Number.isFinite(u.productId) && Number.isFinite(u.qty) && u.qty > 0);
 
+          const emptyReturnProductIds = new Set(
+            emptyReturnLines.map((l) => l.productId).filter((id) => Number.isFinite(id))
+          );
+
           let movedByPicking = false;
           if (saleOrderId != null && emptyReturnLines.length > 0) {
             try {
               const { callOdoo, callOdooArgs } = await import('./index.service.js');
-              const salePickings = await callOdoo(
-                'stock.picking',
-                'search_read',
-                [[['sale_id', '=', saleOrderId]]],
-                {
-                  fields: ['id', 'name', 'picking_type_id', 'location_id', 'location_dest_id'],
-                  order: 'id desc',
-                  limit: 1,
-                }
+              const payloadLocationIdHint = locationId != null ? Number(locationId) : null;
+              const resolved = await resolveEmptyReturnLocationsForSaleOrder(
+                callOdoo,
+                saleOrderId,
+                payloadLocationIdHint
               );
-              const basePicking = Array.isArray(salePickings) ? salePickings[0] : null;
-              const vehicleLocationId = Array.isArray(basePicking?.location_id)
-                ? basePicking.location_id[0]
-                : basePicking?.location_id;
-              const customerLocationId = Array.isArray(basePicking?.location_dest_id)
-                ? basePicking.location_dest_id[0]
-                : basePicking?.location_dest_id;
-              const fallbackCustomerLocRows = await callOdoo(
-                'stock.location',
-                'search_read',
-                [[['usage', '=', 'customer']]],
-                { fields: ['id'], limit: 1 }
-              );
-              const fallbackCustomerLocationId = Array.isArray(fallbackCustomerLocRows) && fallbackCustomerLocRows[0]?.id != null
-                ? Number(fallbackCustomerLocRows[0].id)
-                : null;
-              const srcLocId =
-                customerLocationId != null ? Number(customerLocationId) : fallbackCustomerLocationId;
-              const destLocId = vehicleLocationId != null ? Number(vehicleLocationId) : null;
+              let srcLocId = resolved.srcLocId;
+              let destLocId =
+                resolved.destLocId != null && Number(resolved.destLocId) > 0 ? Number(resolved.destLocId) : null;
+              if (destLocId == null && payloadLocationIdHint != null && payloadLocationIdHint > 0) {
+                destLocId = payloadLocationIdHint;
+              }
 
               if (srcLocId && destLocId) {
                 const internalType = await callOdoo(
@@ -1411,8 +1755,8 @@ async function processSyncQueue() {
           }
 
           let allInventoryUpdatesSynced = true;
+          const { setQuantQuantityAtLocation, adjustQuantQuantityAtLocation } = await import('./vehicleInventory.service.js');
           if (!movedByPicking) {
-            const { setQuantQuantityAtLocation, adjustQuantQuantityAtLocation } = await import('./vehicleInventory.service.js');
             for (const u of updates) {
               const productId = u?.productId != null ? Number(u.productId) : null;
               if (productId == null) continue;
@@ -1434,10 +1778,30 @@ async function processSyncQueue() {
               }
             }
           } else {
+            /** Empty qty was applied via validated internal picking — still push gas / absolute rows (incrementQuantity 0) that were wrongly skipped before. */
             for (const u of updates) {
               const productId = u?.productId != null ? Number(u.productId) : null;
               if (productId == null) continue;
-              await vehicleInventoriesDb.clearLocalModificationFlagByLocation(locationId, productId);
+              if (emptyReturnProductIds.has(Number(productId))) {
+                await vehicleInventoriesDb.clearLocalModificationFlagByLocation(locationId, productId);
+                continue;
+              }
+              const inc = Number(u?.incrementQuantity);
+              const targetQty = Number(u?.newQuantity);
+              try {
+                if (Number.isFinite(inc) && inc !== 0) {
+                  await adjustQuantQuantityAtLocation(locationId, productId, inc);
+                } else if (Number.isFinite(targetQty)) {
+                  await setQuantQuantityAtLocation(locationId, productId, targetQty);
+                }
+                await vehicleInventoriesDb.clearLocalModificationFlagByLocation(locationId, productId);
+              } catch (invErr) {
+                allInventoryUpdatesSynced = false;
+                logWarn(
+                  'queue inventory_update upload (after empty return)',
+                  new Error(`loc=${locationId} product=${productId}: ${String(invErr?.message || invErr).slice(0, 160)}`)
+                );
+              }
             }
           }
 
@@ -1537,6 +1901,29 @@ async function processSyncQueue() {
               `payment id=${item.id} SO ${soId} delayed: waiting for delivery sync (${remainingDeliveryForSo.length} pending)`
             );
             continue;
+          }
+
+          /**
+           * Pre-invoice contract: picking validate done → Odoo qty_delivered matches mobile (expectedSaleLineDelivered).
+           * Blocks create_invoices when pickings still open or server lines diverge after delivery sync / recompute.
+           */
+          if (!alreadySyncedSaleOrderIds.has(soId)) {
+            const expectedDel =
+              Array.isArray(p.expectedSaleLineDelivered) && p.expectedSaleLineDelivered.length > 0
+                ? p.expectedSaleLineDelivered
+                : null;
+            if (expectedDel) {
+              const pickGuard = await verifySalePickingsClosedForInvoice(soId);
+              if (!pickGuard.ok) {
+                log('queue', `payment id=${item.id} SO ${soId} delayed — ${pickGuard.reason}`);
+                continue;
+              }
+              const rep = await reconcileOdooSaleLinesToExpectedDelivered(expectedDel, log);
+              if (!rep.ok) {
+                logWarn('queue payment', new Error(`${rep.reason} (SO ${soId})`));
+                continue;
+              }
+            }
           }
 
           const payments = p.payments || [];

@@ -7,7 +7,7 @@ import { empty, num, iso } from './dbHelpers.js';
 
 /** Delivery: validate picking + stock moves/lines. Payload: { saleOrderId, pickingId, pickings[], orderLineUpdates (product_uom_qty — Modify only), saleOrderLineDeliveredUpdates ({ lineId, qty_delivered }), moveUpdates, moveLineUpdates, holdUntilPayment?: true } — when true, sync.service skips until a payment queue item runs (then flushes to Odoo before invoice). */
 export const ACTION_DELIVERY = 'delivery';
-/** Payment: create invoice and payments. Payload: { saleOrderId, partnerId, orderName, total, payments[], deliveryPhotoUris? } */
+/** Payment: create invoice and payments. Payload: { saleOrderId, partnerId, orderName, total, payments[], expectedSaleLineDelivered?: [{ lineId, qty_delivered }], ... } — expectedSaleLineDelivered anchors pre-invoice reconciliation on Odoo. */
 export const ACTION_PAYMENT = 'payment';
 /** Vehicle inventory update after delivery. Payload: { vehicleId, locationId, updates[] } */
 export const ACTION_INVENTORY_UPDATE = 'inventory_update';
@@ -127,7 +127,7 @@ export async function getPendingDeliveryItemBySaleOrderId(saleOrderId) {
   return best;
 }
 
-/** Get pending (unsynced) inventory_update queue item for a sale order, if any. */
+/** Get pending (unsynced) inventory_update queue item for a sale order, if any. Prefer highest id (latest merged payload). */
 export async function getPendingInventoryUpdateItemBySaleOrderId(saleOrderId) {
   if (saleOrderId == null) return null;
   const db = await getDb();
@@ -136,12 +136,17 @@ export async function getPendingInventoryUpdateItemBySaleOrderId(saleOrderId) {
     [ACTION_INVENTORY_UPDATE]
   );
   const soId = Number(saleOrderId);
+  let best = null;
   for (const row of rows || []) {
     const p = safeParseJson(row.payload, {});
     const id = p.saleOrderId ?? p.sale_order_id;
-    if (id != null && Number(id) === soId) return { id: row.id, payload: p };
+    if (id != null && Number(id) === soId) {
+      if (!best || Number(row.id) > Number(best.id)) {
+        best = { id: row.id, payload: p };
+      }
+    }
   }
-  return null;
+  return best;
 }
 
 /** Update payload of an existing queue item (e.g. to merge payment updates for same sale order). */

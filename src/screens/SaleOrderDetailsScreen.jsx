@@ -20,7 +20,13 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { getSaleOrderDetailsFromDB, getCachedVehicleInventoryByLocation, getVehicleLocationId, getDeliveryDataFromDB } from '../services/sync.service';
+import {
+  getSaleOrderDetailsFromDB,
+  getCachedVehicleInventoryByLocation,
+  getVehicleLocationId,
+  getDeliveryDataFromDB,
+  getUserSession,
+} from '../services/sync.service';
 import * as saleOrderLinesDb from '../database/saleOrderLines.js';
 import * as saleOrdersDb from '../database/saleOrders.js';
 import * as stockMoveLinesDb from '../database/stockMoveLines.js';
@@ -610,8 +616,9 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
       return;
     }
 
-    // Get location_id for this vehicle
-    const locationId = await getVehicleLocationId(vehicleId);
+    const sess = await getUserSession();
+    const plateHint = String(sess?.licensePlate || sess?.license_plate || sess?.vehicleLicensePlate || '').trim();
+    const locationId = await getVehicleLocationId(vehicleId, { licensePlateHint: plateHint });
     if (locationId == null) {
       console.warn(`No location_id found for vehicle ${vehicleId}`);
       return;
@@ -732,8 +739,9 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
 
         if (vehicleId != null) {
           try {
-            // Get location_id for this vehicle and fetch inventory by location
-            const locationId = await getVehicleLocationId(vehicleId);
+            const sess = await getUserSession();
+            const plateHint = String(sess?.licensePlate || sess?.license_plate || sess?.vehicleLicensePlate || '').trim();
+            const locationId = await getVehicleLocationId(vehicleId, { licensePlateHint: plateHint });
             console.log(`[UI Debug] Vehicle ${vehicleId} has location_id: ${locationId}`);
 
             if (locationId) {

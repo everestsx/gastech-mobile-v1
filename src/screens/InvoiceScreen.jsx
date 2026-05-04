@@ -1057,13 +1057,20 @@ export default function InvoiceScreen({ route, navigation }) {
     return m;
   }, [effectiveInvoiceQtyRows]);
 
-  /** Apply explicit invoice qty overrides whenever provided (from delivery/payment flow). */
+  /**
+   * Apply explicit invoice qty overrides when provided. Lines missing from override map still get a sensible qty
+   * (delivered or ordered) so gas/hose/regulator rows are never dropped or left at 0 while only PACK has an override.
+   */
   const displayLines = useMemo(() => {
     const useQtyOverride = hasInvoiceQtyOverrides;
     if (!useQtyOverride) return lines;
     return lines.map((l) => {
-      const q = qtyByLineId[String(l.id)];
-      if (q === undefined) return { ...l };
+      let q = qtyByLineId[String(l.id)];
+      if (q === undefined) {
+        const d = Number(l.qty_delivered);
+        const ordered = Number(l.product_uom_qty) || 0;
+        q = Number.isFinite(d) ? d : ordered;
+      }
       const origQ = Number(l.product_uom_qty) || 0;
       if (origQ > 0) {
         const scale = q / origQ;
@@ -1726,40 +1733,35 @@ export default function InvoiceScreen({ route, navigation }) {
       try {
         const allProducts = await productsDb.getAllProductsForInvoice();
         if (Array.isArray(allProducts) && allProducts.length > 0) {
-          const byProductId = new Map();
+          const catalogProductIds = new Set(allProducts.map((p) => Number(p.id)).filter((n) => Number.isFinite(n) && n > 0));
+
+          /** Keep every sale order line from DB (fixes duplicate-catalog-product lines disappearing). */
+          const orderPid = new Set();
           for (const line of rawLines) {
             const pid = Array.isArray(line?.product_id) ? Number(line.product_id[0]) : Number(line?.product_id);
-            if (Number.isFinite(pid) && pid > 0 && !byProductId.has(pid)) {
-              byProductId.set(pid, line);
-            }
+            if (Number.isFinite(pid) && pid > 0) orderPid.add(pid);
           }
 
-          const catalogRows = allProducts
-            .map((p) => {
-              const existing = byProductId.get(Number(p.id));
-              if (existing) return existing;
-              if (!shouldAlwaysShowInvoiceCatalogRow(p?.name)) return null;
-              return {
-                id: `catalog-${p.id}`,
-                order_id: [Number(saleOrderId), null],
-                product_id: [Number(p.id), p.name || '—'],
-                name: p.name || '',
-                product_uom_qty: 0,
-                price_unit: Number(p.list_price) || 0,
-                price_subtotal: 0,
-                price_total: 0,
-                qty_delivered: 0,
-              };
-            })
-            .filter(Boolean);
+          const fillerRows = [];
+          for (const p of allProducts) {
+            const pid = Number(p.id);
+            if (!Number.isFinite(pid) || pid <= 0 || orderPid.has(pid)) continue;
+            if (!catalogProductIds.has(pid)) continue;
+            if (!shouldAlwaysShowInvoiceCatalogRow(p?.name)) continue;
+            fillerRows.push({
+              id: `catalog-${pid}`,
+              order_id: [Number(saleOrderId), null],
+              product_id: [pid, p.name || '—'],
+              name: p.name || '',
+              product_uom_qty: 0,
+              price_unit: Number(p.list_price) || 0,
+              price_subtotal: 0,
+              price_total: 0,
+              qty_delivered: 0,
+            });
+          }
 
-          const catalogProductIds = new Set(allProducts.map((p) => Number(p.id)).filter((n) => Number.isFinite(n) && n > 0));
-          const nonCatalogRows = rawLines.filter((line) => {
-            const pid = Array.isArray(line?.product_id) ? Number(line.product_id[0]) : Number(line?.product_id);
-            return !(Number.isFinite(pid) && pid > 0 && catalogProductIds.has(pid));
-          });
-
-          nextLines = [...catalogRows, ...nonCatalogRows];
+          nextLines = [...rawLines, ...fillerRows];
         }
       } catch (e) {
         console.warn('[InvoiceScreen] could not load product catalog rows', e?.message ?? e);

@@ -401,6 +401,12 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         ...(driverEmployeeId != null && Number.isFinite(driverEmployeeId) && driverEmployeeId > 0
           ? { driverEmployeeId }
           : {}),
+        /** Mobile snapshot of delivered qty per SO line — sync verifies/repairs Odoo before create_invoices. */
+        ...(needsDeliverySync &&
+        Array.isArray(deliveryPayload?.saleOrderLineDeliveredUpdates) &&
+        deliveryPayload.saleOrderLineDeliveredUpdates.length > 0
+          ? { expectedSaleLineDelivered: deliveryPayload.saleOrderLineDeliveredUpdates }
+          : {}),
       };
       const existingPending = await syncQueueDb.getPendingPaymentItemBySaleOrderId(soId);
       if (existingPending) {

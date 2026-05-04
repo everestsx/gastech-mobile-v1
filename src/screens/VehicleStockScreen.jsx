@@ -296,7 +296,8 @@ const load = useCallback(async (forceRefresh = false) => {
   const vId = session?.vehicleId ? Number(session.vehicleId) : null;
 
   if (vId) {
-    const locationId = await getVehicleLocationId(vId);
+    const plateHint = String(session?.licensePlate || session?.license_plate || session?.vehicleLicensePlate || '').trim();
+    const locationId = await getVehicleLocationId(vId, { licensePlateHint: plateHint });
     console.log(`[UI Debug] Vehicle ${vId} has location_id: ${locationId}`);
 
     const orders = await getCachedOrders(vId);

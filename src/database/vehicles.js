@@ -150,6 +150,19 @@ export async function getVehicleJournalsByVehicleId(vehicleId) {
   };
 }
 
+/** Local fleet.vehicle licence plate for resolving stock.location when vehicle_warehouses FK is stale. */
+export async function getVehicleLicensePlateById(vehicleId) {
+  if (vehicleId == null) return null;
+  const db = await getDb();
+  const row = await db.getFirstAsync('SELECT license_plate, name FROM vehicles WHERE id = ? LIMIT 1', [
+    Number(vehicleId),
+  ]);
+  const p = row?.license_plate != null ? String(row.license_plate).trim() : '';
+  if (p) return p;
+  const n = row?.name != null ? String(row.name).split('/').pop().trim() : '';
+  return n || null;
+}
+
 /**
  * Update vehicle's journal ids in local DB (e.g. after fetching from API).
  * @param {string} licensePlate
