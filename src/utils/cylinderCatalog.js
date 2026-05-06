@@ -17,7 +17,8 @@ function normalize(raw) {
 
 export function isEmptyCylinderName(raw) {
   const s = normalize(raw);
-  return s.includes('empty') && s.includes('cylinder');
+  if (!s.includes('empty')) return false;
+  return s.includes('cylinder') || s.includes('cyl') || s.includes('bottle');
 }
 
 export function isNewIssueName(raw) {

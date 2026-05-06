@@ -20,6 +20,7 @@ import {
   getSaleOrderDetailsFromDB,
   getVehicleLocationId,
   getCachedVehicleInventoryByLocation,
+  getCachedVehicleInventory,
   getUserSession,
 } from '../services/sync.service';
 import * as syncQueueDb from '../database/syncQueue.js';
@@ -265,21 +266,45 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
           orderVehicleId != null
             ? orderVehicleId
             : (Number.isFinite(sessionVehicleId) && sessionVehicleId > 0 ? sessionVehicleId : null);
-        const locationId = vehicleId != null ? await getVehicleLocationId(Number(vehicleId)) : null;
+        let locationId = vehicleId != null ? await getVehicleLocationId(Number(vehicleId)) : null;
 
         const emptyCylinderEntries = buildEntriesPayload();
+        const positiveEmptyRows = emptyCylinderEntries.filter((r) => Number(r.emptyCollectedQty) > 0);
+
+        if (locationId == null && vehicleId != null) {
+          // Fallback for vehicles missing warehouse mapping but already having local inventory rows.
+          const inventoryByVehicle = await getCachedVehicleInventory(Number(vehicleId));
+          const derivedLocationId = (inventoryByVehicle || [])
+            .map((r) => Number(r?.location_id))
+            .find((id) => Number.isFinite(id) && id > 0);
+          if (derivedLocationId != null) locationId = derivedLocationId;
+        }
+
+        if (positiveEmptyRows.length > 0 && locationId == null) {
+          throw new Error(
+            t(
+              'emptycylindercollection.vehicleStockLocationMissing',
+              'Vehicle stock location is missing for this order. Empty cylinder stock was not saved to avoid incorrect inventory.'
+            )
+          );
+        }
 
         if (locationId != null) {
           const inventory = await getCachedVehicleInventoryByLocation(locationId);
           const byProductId = {};
           const inventoryQueueUpdates = [];
+          const unresolvedKg = [];
           for (const item of inventory || []) {
             const pid = item?.product_id != null ? Number(item.product_id) : null;
             if (!Number.isFinite(pid)) continue;
             byProductId[pid] = Number(item.quantity) || 0;
           }
           for (const row of emptyCylinderEntries) {
-            if (row.emptyProductId == null || row.emptyCollectedQty <= 0) continue;
+            if (row.emptyCollectedQty <= 0) continue;
+            if (row.emptyProductId == null) {
+              unresolvedKg.push(row.kg);
+              continue;
+            }
             const current = Number(byProductId[row.emptyProductId]) || 0;
             const nextQty = Math.max(0, current + Number(row.emptyCollectedQty));
             const emptyName = (await productsDb.getProductById(Number(row.emptyProductId)))?.name || '';
@@ -296,6 +321,14 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
               newQuantity: nextQty,
               incrementQuantity: Math.abs(Number(row.emptyCollectedQty) || 0),
             });
+          }
+          if (unresolvedKg.length > 0) {
+            throw new Error(
+              t(
+                'emptycylindercollection.emptyProductMissingForSizes',
+                `Empty-cylinder product mapping is missing for size(s): ${unresolvedKg.join(', ')} kg. Please sync master data and try again.`
+              )
+            );
           }
           if (inventoryQueueUpdates.length > 0) {
             const inventoryPayload = {

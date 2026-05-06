@@ -29,3 +29,25 @@ export const getProductsByIds = (ids) => {
     limit: ids.length,
   });
 };
+
+/**
+ * Fetch mandatory empty-cylinder products by canonical kg labels.
+ * Keeps empty-cylinder mapping available even when order-targeted product sync omits them.
+ */
+export const getMandatoryEmptyCylinderProducts = async (kgSizes = [2.4, 5, 12.5, 37.5]) => {
+  const out = [];
+  const seen = new Set();
+  for (const kg of kgSizes || []) {
+    const rows = await callOdoo('product.product', 'search_read', [[['name', 'ilike', `Empty ${kg}`]]], {
+      fields: PRODUCT_FIELDS,
+      limit: 20,
+    });
+    for (const r of rows || []) {
+      const id = Number(r?.id);
+      if (!Number.isFinite(id) || seen.has(id)) continue;
+      seen.add(id);
+      out.push(r);
+    }
+  }
+  return out;
+};

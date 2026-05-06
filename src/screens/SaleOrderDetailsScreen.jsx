@@ -1093,7 +1093,7 @@ const validateQuantities = useCallback(() => {
             }
             if (nextDone !== prevDone) {
               await stockMoveLinesDb.updateMoveLineQtyLocal(moveLineId, nextDone);
-              moveLineUpdates.push({ moveLineId, qty_done: nextDone });
+              moveLineUpdates.push({ moveLineId, moveId, productId, qty_done: nextDone });
               qtyDoneByMoveLineId[moveLineId] = nextDone;
             }
           }

@@ -28,3 +28,16 @@ export async function getStockLocationByVehicle(licensePlate) {
     { fields: ['id', 'name', 'complete_name'] }
   );
 }
+
+/**
+ * Get all stock warehouses with their lot stock location.
+ * This is the most reliable source for vehicle -> stock location mapping.
+ */
+export async function getStockWarehouses() {
+  return callOdoo(
+    'stock.warehouse',
+    'search_read',
+    [[]],
+    { fields: ['id', 'name', 'code', 'lot_stock_id', 'company_id'], order: 'id asc' }
+  );
+}

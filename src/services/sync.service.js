@@ -4,11 +4,11 @@
  */
 import { getCustomers, getPartnersByIds } from './customer.service';
 import { getAllSaleOrders, getSaleOrdersByVehicle } from './saleOrder.service';
-import { getAllProducts, getProductsByIds } from './product.service';
+import { getAllProducts, getProductsByIds, getMandatoryEmptyCylinderProducts } from './product.service';
 import { getJournals } from './journal.service';
 import { getRoutes } from './route.service';
 import { getVehicles, getVehicleById } from './vehicle.service';
-import { getStockLocationByVehicle } from './vehicleWarehouse.service';
+import { getStockLocationByVehicle, getStockWarehouses } from './vehicleWarehouse.service';
 import { getVehicleInventoryByLocation } from './vehicleInventory.service';
 import * as partnersDb from '../database/partners.js';
 import * as saleOrdersDb from '../database/saleOrders.js';
@@ -1089,19 +1089,37 @@ async function processSyncQueue() {
               await updateStockMoveQty(u.moveId, u.product_uom_qty);
             }
             const hasMoveLineUpdates = Array.isArray(moveLineUpdates) && moveLineUpdates.length > 0;
-            if (!hasMoveLineUpdates && deliveryLines.length > 0) {
+            const updatedMoveIds = new Set();
+            if (hasMoveLineUpdates) {
+              for (const u of moveLineUpdates) {
+                await updateMoveLineQty(u.moveLineId, u.qty_done);
+                if (u?.moveId != null && Number.isFinite(Number(u.moveId))) {
+                  updatedMoveIds.add(Number(u.moveId));
+                }
+              }
+            }
+            /**
+             * Mixed edge case (critical):
+             * some products can already have move lines while others do not.
+             * Old logic used either update OR create path; missing lines were skipped.
+             * Always ensure each delivery line exists when qty_done > 0.
+             */
+            if (deliveryLines.length > 0) {
               for (const line of deliveryLines) {
                 const moveId = line.moveId ?? line.move_id;
                 const productId = line.productId ?? line.product_id;
                 const qty = line.qty_done;
                 const qtyN = qty != null ? Number(qty) : NaN;
-                if (moveId != null && productId != null && Number.isFinite(qtyN) && qtyN > 0) {
-                  await createMoveLine(pickingId, moveId, productId, qtyN);
+                if (moveId == null || productId == null || !Number.isFinite(qtyN) || qtyN <= 0) continue;
+                if (updatedMoveIds.has(Number(moveId))) continue;
+                try {
+                  await createMoveLine(pickingId, Number(moveId), Number(productId), qtyN);
+                } catch (createErr) {
+                  log(
+                    'queue',
+                    `delivery createMoveLine skipped for move ${moveId}: ${String(createErr?.message || createErr).slice(0, 100)}`
+                  );
                 }
-              }
-            } else {
-              for (const u of moveLineUpdates) {
-                await updateMoveLineQty(u.moveLineId, u.qty_done);
               }
             }
             /** Ensure stock.move.quantity_done matches payload (avoids validating a "zero" transfer when move_line ids were wrong locally). */
@@ -2428,6 +2446,22 @@ async function runSyncInternal() {
         log('fetch', 'product.product (full catalog fallback)');
         products = await getAllProducts();
       }
+      try {
+        const mandatoryEmpty = await getMandatoryEmptyCylinderProducts([2.4, 5, 12.5, 37.5]);
+        if (mandatoryEmpty?.length) {
+          const byId = new Map();
+          for (const p of products || []) {
+            if (p?.id != null) byId.set(Number(p.id), p);
+          }
+          for (const p of mandatoryEmpty) {
+            if (p?.id != null) byId.set(Number(p.id), p);
+          }
+          products = Array.from(byId.values());
+          log('fetch', `mandatory empty products merged (${mandatoryEmpty.length})`);
+        }
+      } catch (emptyErr) {
+        logWarn('fetch mandatory empty products', emptyErr);
+      }
       if (products?.length) {
         log('db', `products (${products.length})`);
         await productsDb.upsertProducts(products);
@@ -2496,49 +2530,94 @@ async function runSyncInternal() {
     const allVehicleWarehouses = [];
     const allVehicleInventories = [];
     const vehiclesToFetchInventory = vehiclesList;
+    const normalizeKey = (v) => String(v || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const stockWarehouses = await getStockWarehouses().catch((e) => {
+      logWarn('fetch stock warehouses', e);
+      return [];
+    });
+    const warehouseByNameKey = new Map();
+    const warehouseByCodeKey = new Map();
+    for (const wh of stockWarehouses || []) {
+      const nameKey = normalizeKey(wh?.name);
+      const codeKey = normalizeKey(wh?.code);
+      if (nameKey && !warehouseByNameKey.has(nameKey)) warehouseByNameKey.set(nameKey, wh);
+      if (codeKey && !warehouseByCodeKey.has(codeKey)) warehouseByCodeKey.set(codeKey, wh);
+    }
     for (const v of vehiclesToFetchInventory) {
       const vId = v.id;
       const licensePlate = v.license_plate || (v.name || '').split('/').pop() || '';
       if (!licensePlate) continue;
       try {
         log('fetch', `vehicle warehouse ${licensePlate}`);
-        const locations = await getStockLocationByVehicle(licensePlate).catch(() => []);
-        const loc = locations && locations[0] ? locations[0] : null;
-        if (loc) {
+        const plateKey = normalizeKey(licensePlate);
+        const vehicleNameKey = normalizeKey(v?.name);
+        const afterHyphen = String(licensePlate).split('-').pop() || '';
+        const codeKey = normalizeKey(afterHyphen);
+        let resolvedLocationId = null;
+        let resolvedLocationName = '';
+        let resolvedLocationCompleteName = '';
+
+        const matchedWarehouse =
+          warehouseByNameKey.get(plateKey) ||
+          warehouseByNameKey.get(vehicleNameKey) ||
+          warehouseByCodeKey.get(codeKey) ||
+          null;
+        if (matchedWarehouse?.lot_stock_id != null) {
+          const lot = matchedWarehouse.lot_stock_id;
+          const lotId = Array.isArray(lot) ? Number(lot[0]) : Number(lot);
+          const lotName = Array.isArray(lot) ? String(lot[1] || '') : '';
+          if (Number.isFinite(lotId) && lotId > 0) {
+            resolvedLocationId = lotId;
+            resolvedLocationName = lotName || String(matchedWarehouse?.name || '');
+            resolvedLocationCompleteName = lotName || String(matchedWarehouse?.name || '');
+          }
+        }
+
+        if (resolvedLocationId == null) {
+          const locations = await getStockLocationByVehicle(licensePlate).catch(() => []);
+          const loc = locations && locations[0] ? locations[0] : null;
+          if (loc?.id != null) {
+            resolvedLocationId = Number(loc.id);
+            resolvedLocationName = String(loc.name || '');
+            resolvedLocationCompleteName = String(loc.complete_name || loc.name || '');
+          }
+        }
+
+        if (resolvedLocationId != null) {
           allVehicleWarehouses.push({
-            id: loc.id,
+            id: resolvedLocationId,
             vehicle_id: vId,
-            name: loc.name,
-            complete_name: loc.complete_name,
+            name: resolvedLocationName,
+            complete_name: resolvedLocationCompleteName,
           });
-          log('fetch', `vehicle inventory location ${loc.id}  ${vId}`);
+          log('fetch', `vehicle inventory location ${resolvedLocationId}  ${vId}`);
           let quants = [];
           let inventoryFetchOk = false;
           try {
-            quants = await getVehicleInventoryByLocation(loc.id);
+            quants = await getVehicleInventoryByLocation(resolvedLocationId);
             inventoryFetchOk = true;
           } catch (invErr) {
             inventoryFetchOk = false;
-            logWarn(`vehicle inventory fetch location ${loc.id}`, invErr);
+            logWarn(`vehicle inventory fetch location ${resolvedLocationId}`, invErr);
           }
           const inventoryRowsForLocation = (quants || []).map((q) => ({
             ...q,
-            location_id: loc.id,
+            location_id: resolvedLocationId,
             vehicle_id: vId,
           }));
           allVehicleInventories.push(...inventoryRowsForLocation);
           if (inventoryFetchOk) {
             await vehicleInventoriesDb.pruneInventoryForLocationToIds(
-              loc.id,
+              resolvedLocationId,
               inventoryRowsForLocation.map((r) => r.id)
             );
             if (inventoryRowsForLocation.length > 0) {
               await vehicleInventoriesDb.upsertVehicleInventories(inventoryRowsForLocation);
             } else {
-              log('sync', `vehicle inventory location ${loc.id}: synced empty quants (stock now zero where applicable)`);
+              log('sync', `vehicle inventory location ${resolvedLocationId}: synced empty quants (stock now zero where applicable)`);
             }
           } else {
-            log('sync', `vehicle inventory location ${loc.id}: fetch failed, keep existing local rows`);
+            log('sync', `vehicle inventory location ${resolvedLocationId}: fetch failed, keep existing local rows`);
           }
         }
       } catch (e) {
