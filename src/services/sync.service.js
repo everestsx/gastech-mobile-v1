@@ -1069,7 +1069,13 @@ async function processSyncQueue() {
         const saleOrderId = p.saleOrderId ?? p.sale_id;
         const orderLineUpdates = p.orderLineUpdates || [];
         const saleOrderLineDeliveredUpdates = p.saleOrderLineDeliveredUpdates || [];
-        const blocks = pickingsBlocksFromPayload(p);
+        const requestedQtyByProduct = p.requestedQtyByProduct || {};
+        let blocks = pickingsBlocksFromPayload(p);
+        const requestedDeliveryRemainingByProduct = new Map(
+          Object.entries(requestedQtyByProduct || {})
+            .map(([pidRaw, qtyRaw]) => [Number(pidRaw), Number(qtyRaw) || 0])
+            .filter(([pid, qty]) => Number.isFinite(pid) && qty > 0)
+        );
         let validatedAnyPicking = false;
         const targetPickingIds = new Set();
 
@@ -1101,8 +1107,30 @@ async function processSyncQueue() {
           throw soLineErr;
         }
 
+        if (blocks.length === 0 && requestedDeliveryRemainingByProduct.size > 0 && saleOrderId != null) {
+          try {
+            const picks = await getPickingBySaleOrder(saleOrderId);
+            blocks = (picks || [])
+              .filter((pk) => pk?.id != null)
+              .map((pk) => ({
+                pickingId: Number(pk.id),
+                moveUpdates: [],
+                moveLineUpdates: [],
+                deliveryLines: [],
+              }));
+          } catch (_) {
+            /* keep empty blocks; handled below */
+          }
+        }
+
         const hasPickings = blocks.length > 0;
         if (!hasPickings) {
+          if (requestedDeliveryRemainingByProduct.size > 0) {
+            log(
+              'queue',
+              `delivery fallback: no pickings for SO ${saleOrderId}; apply SO delivered qty only (requested map size=${requestedDeliveryRemainingByProduct.size})`
+            );
+          }
           await applySoLineDeliveredQty();
           {
             const soCrew = saleOrderId != null ? Number(saleOrderId) : NaN;
@@ -1145,9 +1173,151 @@ async function processSyncQueue() {
 
           const moveUpdates = block.moveUpdates || [];
           const moveLineUpdates = block.moveLineUpdates || [];
-          const deliveryLines = block.deliveryLines || [];
+          const deliveryLines = Array.isArray(block.deliveryLines) ? [...block.deliveryLines] : [];
+
+          /**
+           * Edge case: line demand changed from 0 -> >0 while offline may leave payload without a concrete move mapping.
+           * Rebuild missing delivery lines from requested product totals using current picking moves.
+           */
+          const topUpDeliveryLinesFromRequested = async () => {
+            for (const line of deliveryLines) {
+              const pid = Number(line?.productId ?? line?.product_id);
+              const q = Number(line?.qty_done) || 0;
+              if (!Number.isFinite(pid) || q <= 0 || !requestedDeliveryRemainingByProduct.has(pid)) continue;
+              const prev = Number(requestedDeliveryRemainingByProduct.get(pid)) || 0;
+              requestedDeliveryRemainingByProduct.set(pid, Math.max(0, prev - q));
+            }
+
+            const moves = await getStockMovesByPickingId(pickingId).catch(() => []);
+            const moveIdsByProduct = new Map();
+            for (const mv of moves || []) {
+              const pid = Number(Array.isArray(mv?.product_id) ? mv.product_id[0] : mv?.product_id);
+              const mid = Number(mv?.id);
+              if (!Number.isFinite(pid) || !Number.isFinite(mid)) continue;
+              const list = moveIdsByProduct.get(pid) || [];
+              list.push(mid);
+              moveIdsByProduct.set(pid, list);
+            }
+
+            /**
+             * Critical fallback for 0 -> positive offline edits:
+             * some Odoo DBs do not have a stock.move row yet when demand was initially zero.
+             * Create a move in the target picking so qty_done can be posted and invoiced correctly.
+             */
+            const createMissingMoveForProduct = async (productId, qty) => {
+              try {
+                const { callOdoo, callOdooArgs } = await import('./index.service.js');
+                const picks = await callOdoo(
+                  'stock.picking',
+                  'search_read',
+                  [[['id', '=', Number(pickingId)]]],
+                  { fields: ['id', 'location_id', 'location_dest_id'], limit: 1 }
+                );
+                const pick = Array.isArray(picks) ? picks[0] : null;
+                const srcLoc = Array.isArray(pick?.location_id) ? pick.location_id[0] : pick?.location_id;
+                const dstLoc = Array.isArray(pick?.location_dest_id) ? pick.location_dest_id[0] : pick?.location_dest_id;
+                if (!srcLoc || !dstLoc) return null;
+                let productUomId = null;
+                try {
+                  const pRows = await callOdoo(
+                    'product.product',
+                    'search_read',
+                    [[['id', '=', Number(productId)]]],
+                    { fields: ['uom_id'], limit: 1 }
+                  );
+                  const p = Array.isArray(pRows) ? pRows[0] : null;
+                  productUomId = Array.isArray(p?.uom_id) ? p.uom_id[0] : p?.uom_id;
+                } catch (_) {
+                  /* non-fatal; try create without explicit uom */
+                }
+                const moveId = await callOdooArgs('stock.move', 'create', [[{
+                  name: `SO ${saleOrderId || ''} offline delivery`,
+                  picking_id: Number(pickingId),
+                  product_id: Number(productId),
+                  product_uom_qty: Number(qty),
+                  ...(productUomId ? { product_uom: Number(productUomId) } : {}),
+                  location_id: Number(srcLoc),
+                  location_dest_id: Number(dstLoc),
+                }]]);
+                const mid = Number(moveId);
+                if (!Number.isFinite(mid) || mid <= 0) return null;
+                const list = moveIdsByProduct.get(Number(productId)) || [];
+                list.push(mid);
+                moveIdsByProduct.set(Number(productId), list);
+                log('queue', `delivery created missing move ${mid} for product ${productId} on picking ${pickingId}`);
+                return mid;
+              } catch (e) {
+                log(
+                  'queue',
+                  `delivery create missing move failed for product ${productId} on picking ${pickingId}: ${String(e?.message || e).slice(0, 120)}`
+                );
+                try {
+                  const { callOdoo, callOdooArgs } = await import('./index.service.js');
+                  const picks = await callOdoo(
+                    'stock.picking',
+                    'search_read',
+                    [[['id', '=', Number(pickingId)]]],
+                    { fields: ['id', 'location_id', 'location_dest_id'], limit: 1 }
+                  );
+                  const pick = Array.isArray(picks) ? picks[0] : null;
+                  const srcLoc = Array.isArray(pick?.location_id) ? pick.location_id[0] : pick?.location_id;
+                  const dstLoc = Array.isArray(pick?.location_dest_id) ? pick.location_dest_id[0] : pick?.location_dest_id;
+                  if (srcLoc && dstLoc) {
+                    const moveLineId = await callOdooArgs('stock.move.line', 'create', [[{
+                      picking_id: Number(pickingId),
+                      product_id: Number(productId),
+                      qty_done: Number(qty),
+                      location_id: Number(srcLoc),
+                      location_dest_id: Number(dstLoc),
+                    }]]);
+                    const mlid = Number(moveLineId);
+                    if (Number.isFinite(mlid) && mlid > 0) {
+                      log('queue', `delivery direct move line fallback created id=${mlid} product=${productId} picking=${pickingId}`);
+                      return -1;
+                    }
+                  }
+                } catch (e2) {
+                  log(
+                    'queue',
+                    `delivery direct move line fallback failed for product ${productId} on picking ${pickingId}: ${String(e2?.message || e2).slice(0, 120)}`
+                  );
+                }
+                return null;
+              }
+            };
+
+            for (const [productId, remainingQty] of requestedDeliveryRemainingByProduct.entries()) {
+              let missing = Number(remainingQty) || 0;
+              if (missing <= 0.0001) continue;
+              let mids = moveIdsByProduct.get(productId) || [];
+              if (mids.length === 0) {
+                const createdMid = await createMissingMoveForProduct(productId, missing);
+                if (createdMid === -1) {
+                  requestedDeliveryRemainingByProduct.set(productId, 0);
+                  continue;
+                }
+                mids = createdMid != null ? [createdMid] : [];
+              }
+              if (mids.length === 0) continue;
+
+              // Attach the missing quantity to the last move for this product in this picking.
+              const targetMoveId = Number(mids[mids.length - 1]);
+              const existingLine = deliveryLines.find((l) => Number(l?.moveId ?? l?.move_id) === targetMoveId);
+              if (existingLine) {
+                existingLine.qty_done = (Number(existingLine.qty_done) || 0) + missing;
+              } else {
+                deliveryLines.push({
+                  moveId: targetMoveId,
+                  productId,
+                  qty_done: missing,
+                });
+              }
+              requestedDeliveryRemainingByProduct.set(productId, 0);
+            }
+          };
 
           try {
+            await topUpDeliveryLinesFromRequested();
             for (const u of moveUpdates) {
               await updateStockMoveQty(u.moveId, u.product_uom_qty);
             }
@@ -1294,6 +1464,16 @@ async function processSyncQueue() {
               throw validateErr;
             }
           }
+        }
+
+        const unresolvedRequested = Array.from(requestedDeliveryRemainingByProduct.entries())
+          .filter(([_, rem]) => Number(rem) > 0.0001)
+          .map(([pid, rem]) => `${pid}:${Number(rem).toFixed(3)}`);
+        if (unresolvedRequested.length > 0) {
+          log(
+            'queue',
+            `delivery unresolved requested quantities for SO ${saleOrderId} (${unresolvedRequested.join(', ')}) — continuing with validated moves + SO qty_delivered`
+          );
         }
 
         if (validatedAnyPicking && saleOrderId != null) {

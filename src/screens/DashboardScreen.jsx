@@ -425,7 +425,19 @@ export default function DashboardScreen({ navigation }) {
       function orderCountsAsCompletedToday(order) {
         const oid = Number(order?.id);
         if (Number.isFinite(oid) && pendingCheckoutSaleOrderIds.has(oid)) return false;
-        if (Number.isFinite(oid) && pendingPaymentOrderIds.has(oid)) return true;
+        if (Number.isFinite(oid) && pendingPaymentOrderIds.has(oid)) {
+          const deliveryDone = orderIsDeliveryDoneForProgress(
+            order,
+            saleIdToPickState,
+            qtyDoneMap,
+            backendDeliveredSet,
+            pendingCheckoutSaleOrderIds
+          );
+          const isInvoiced =
+            String(order?.invoice_status || '').toLowerCase() === 'invoiced' ||
+            localInvoiceSaleOrderIds.has(oid);
+          return isInvoiced || deliveryDone;
+        }
         if (Number.isFinite(oid) && localInvoiceSaleOrderIds.has(oid)) return true;
         return orderIsDeliveryDoneForProgress(
           order,

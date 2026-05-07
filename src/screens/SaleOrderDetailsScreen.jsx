@@ -1206,8 +1206,26 @@ const validateQuantities = useCallback(() => {
         saleOrderId: order.id,
         orderLineUpdates,
         saleOrderLineDeliveredUpdates,
+        requestedQtyByProduct: { ...requestedQtyByProductId },
         pickings: pickingsOut,
       };
+      /**
+       * Edge case: product demand can be raised from 0 while no local move row exists yet.
+       * Keep target picking ids in payload so sync can re-read backend moves and attach qty_done.
+       */
+      if (!demandEdit && pickingsOut.length === 0) {
+        const hasPositiveRequestedQty = Object.values(requestedQtyByProductId).some((q) => Number(q) > 0);
+        if (hasPositiveRequestedQty) {
+          payload.pickings = (targets || [])
+            .filter((p) => p?.id != null)
+            .map((p) => ({
+              pickingId: Number(p.id),
+              moveUpdates: [],
+              moveLineUpdates: [],
+              deliveryLines: [],
+            }));
+        }
+      }
       if (pickingsOut[0]?.pickingId != null) {
         payload.pickingId = pickingsOut[0].pickingId;
       }
