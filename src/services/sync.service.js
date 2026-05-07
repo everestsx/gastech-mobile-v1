@@ -884,12 +884,75 @@ async function processSyncQueue() {
   }
   _processSyncQueuePromise = (async () => {
     try {
-      const pending = await syncQueueDb.getPending();
-      if (!pending.length) return;
-      log('queue', `processing ${pending.length} pending`);
-      const delivery = pending.filter((p) => p.action_type === syncQueueDb.ACTION_DELIVERY);
-      const payment = pending.filter((p) => p.action_type === syncQueueDb.ACTION_PAYMENT);
-      const inventoryUpdate = pending.filter((p) => p.action_type === syncQueueDb.ACTION_INVENTORY_UPDATE);
+      let queueSnap = await syncQueueDb.getPending();
+      if (!queueSnap.length) return;
+      log('queue', `processing ${queueSnap.length} pending`);
+
+      const saleOrderIdFromQueuePayload = (payload) => {
+        const raw = payload?.saleOrderId ?? payload?.sale_id ?? payload?.orderId ?? payload?.order_id;
+        const n = raw != null ? Number(raw) : NaN;
+        return Number.isFinite(n) && n > 0 ? n : null;
+      };
+
+      /**
+       * Several UI paths enqueue queue rows concurrently (double tap).
+       * Running two delivery syncs for one SO validates stock twice and duplicates qty_done / valuations.
+       * Keep the newest pending row per SO for **non-held** deliveries; supersede older ones without Odoo RPC.
+       */
+      const supersedeStaleQueueRows = async (items, label, { allowHeldPayload = false } = {}) => {
+        const keeperBySo = new Map();
+        const sortedAsc = [...items].sort((a, b) => Number(a?.id ?? 0) - Number(b?.id ?? 0));
+        for (const it of sortedAsc) {
+          const soId = saleOrderIdFromQueuePayload(it.payload || {});
+          if (soId == null) continue;
+          keeperBySo.set(soId, it);
+        }
+        const keepIds = new Set(
+          Array.from(keeperBySo.values())
+            .filter((row) => row != null && row.id != null)
+            .map((row) => Number(row.id))
+        );
+        for (const it of items) {
+          const payload = it.payload || {};
+          if (
+            !allowHeldPayload &&
+            (payload?.holdUntilPayment === true || payload?.holdUntilComplete === true)
+          )
+            continue;
+          const soId = saleOrderIdFromQueuePayload(payload);
+          if (soId == null) continue;
+          if (!keepIds.has(Number(it.id))) {
+            try {
+              await syncQueueDb.markSynced(Number(it.id));
+              log('queue', `${label} superseded duplicate id=${it.id} SO ${soId} (newer snapshot kept)`);
+            } catch (_) {
+              /* ignore */
+            }
+          }
+        }
+      };
+
+      let deliveryPre = queueSnap.filter((p) => p.action_type === syncQueueDb.ACTION_DELIVERY);
+      let inventoryPre = queueSnap.filter((p) => p.action_type === syncQueueDb.ACTION_INVENTORY_UPDATE);
+
+      const deliveryOpen = deliveryPre.filter((d) => !(d.payload || {}).holdUntilPayment);
+      await supersedeStaleQueueRows(deliveryOpen, 'delivery');
+      const inventoryOpen = inventoryPre.filter((d) => !(d.payload || {}).holdUntilComplete);
+      await supersedeStaleQueueRows(inventoryOpen, 'inventory_update');
+      /** Held empty-return rows can duplicate if Confirm is tapped twice; keep latest snapshot before sync clears hold. */
+      const inventoryHeldAll = inventoryPre.filter((d) => (d.payload || {}).holdUntilComplete === true);
+      await supersedeStaleQueueRows(inventoryHeldAll, 'inventory_update (held)', {
+        allowHeldPayload: true,
+      });
+
+      queueSnap = await syncQueueDb.getPending();
+      if (!queueSnap.length) return;
+
+      const delivery = queueSnap.filter((p) => p.action_type === syncQueueDb.ACTION_DELIVERY);
+      const payment = queueSnap.filter((p) => p.action_type === syncQueueDb.ACTION_PAYMENT);
+      const inventoryUpdate = queueSnap.filter((p) => p.action_type === syncQueueDb.ACTION_INVENTORY_UPDATE);
+
+      log('queue', `after dedupe ${queueSnap.length} pending`);
 
       // Keep only the latest pending payment item per sale order to avoid duplicate chatter posts.
       const latestPaymentItemBySaleOrder = new Map();

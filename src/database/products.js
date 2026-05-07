@@ -56,21 +56,50 @@ export async function getProductById(id) {
   return row ? { id: row.id, name: row.name, list_price: row.list_price, image_1920: row.image_1920 } : null;
 }
 
+/**
+ * REG, PACK, HOSE must always appear on the tax invoice row table (qty 0 if not sold).
+ * Odoo types may differ from `consu`; include by id regardless. Order: REG → PACK → HOSE after gas lines (see sortInvoiceLinesByGasKgAsc).
+ */
+export const INVOICE_ACCESSORY_PRODUCT_IDS = Object.freeze([44, 43, 38]);
+
+const INVOICE_ACCESSORY_FALLBACK_ROWS = Object.freeze([
+  { id: 44, name: 'REG', list_price: 1200 },
+  { id: 43, name: 'PACK', list_price: 2658.474 },
+  { id: 38, name: 'HOSE', list_price: 300 },
+]);
+
+/** Ensures accessory catalog rows exist when products are missing from SQLite (offline / not synced yet). */
+export function mergeInvoiceAccessoryCatalogStubs(products) {
+  const list = Array.isArray(products) ? [...products] : [];
+  const seen = new Set(list.map((p) => num(p?.id)).filter((id) => id > 0));
+  for (const stub of INVOICE_ACCESSORY_FALLBACK_ROWS) {
+    if (seen.has(stub.id)) continue;
+    list.push({ ...stub, type: 'consu' });
+    seen.add(stub.id);
+  }
+  return list;
+}
+
 /** Full product list for catalog-style invoice rows (all products with unit price). */
 export async function getAllProductsForInvoice() {
   const db = await getDb();
+  const acc = [...INVOICE_ACCESSORY_PRODUCT_IDS];
+  const ph = acc.map(() => '?').join(', ');
   const rows = await db.getAllAsync(
     `SELECT id, name, list_price, type
      FROM products
      WHERE LOWER(COALESCE(type, '')) = 'consu'
-     ORDER BY name COLLATE NOCASE ASC, id ASC`
+        OR id IN (${ph})
+     ORDER BY name COLLATE NOCASE ASC, id ASC`,
+    acc
   );
-  return (rows || []).map((r) => ({
+  const mapped = (rows || []).map((r) => ({
     id: r.id,
     name: r.name ?? '',
     list_price: num(r.list_price),
     type: r.type ?? '',
   }));
+  return mergeInvoiceAccessoryCatalogStubs(mapped);
 }
 
 /** @returns {Promise<Record<number, string>>} Map product id -> name for display (e.g. sale order cards). */

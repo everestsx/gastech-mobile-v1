@@ -78,7 +78,7 @@ export async function upsertSaleOrderLines(rows, options = {}) {
       let price_unit = num(r.price_unit);
       let price_subtotal = num(r.price_subtotal);
       let price_total = num(r.price_total);
-      const qty_delivered = num(r.qty_delivered);
+      let qty_delivered = num(r.qty_delivered);
 
       if (orderIdNum != null && preserveSet.has(orderIdNum)) {
         const local = localByLineId.get(lineId);
@@ -87,6 +87,12 @@ export async function upsertSaleOrderLines(rows, options = {}) {
           price_unit = num(local.price_unit);
           price_subtotal = num(local.price_subtotal);
           price_total = num(local.price_total);
+          const localQd = num(local.qty_delivered);
+          const remoteQd = num(r.qty_delivered);
+          qty_delivered = Math.max(
+            Number.isFinite(localQd) ? localQd : 0,
+            Number.isFinite(remoteQd) ? remoteQd : 0
+          );
         }
       }
 
@@ -165,6 +171,18 @@ export async function getSaleOrderIdsWithPositiveQtyDelivered(orderIds) {
 /**
  * Update one sale order line quantity locally (offline). Recomputes price_subtotal and price_total, preserving tax proportionally.
  */
+/**
+ * Update delivered qty on a sale order line locally (offline). Does not change ordered qty or prices.
+ */
+export async function updateSaleOrderLineQtyDeliveredLocal(lineId, qtyDelivered) {
+  const db = await getDb();
+  const q = num(qtyDelivered);
+  await db.runAsync(
+    `UPDATE sale_order_lines SET qty_delivered = ?, updated_at = ? WHERE id = ?`,
+    [q, iso(), num(lineId)]
+  );
+}
+
 export async function updateSaleOrderLineQtyLocal(lineId, qty) {
   const db = await getDb();
   const qtyNum = num(qty);

@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -42,6 +42,7 @@ export default function PaymentProofScreen({ route, navigation }) {
   const [photos, setPhotos] = useState([]);
   const [saving, setSaving] = useState(false);
   const [confirmVisible, setConfirmVisible] = useState(false);
+  const completeGuardRef = useRef(false);
 
   const canComplete = !creditProofRequired || photos.length > 0;
 
@@ -184,6 +185,8 @@ export default function PaymentProofScreen({ route, navigation }) {
       Alert.alert('Photo required', 'Add at least one photo for credit payment.');
       return;
     }
+    if (completeGuardRef.current) return;
+    completeGuardRef.current = true;
     setSaving(true);
     try {
       await persistPhotos();
@@ -197,6 +200,7 @@ export default function PaymentProofScreen({ route, navigation }) {
     } catch (e) {
       Alert.alert('Error', e?.message || 'Something went wrong. Try again.');
     } finally {
+      completeGuardRef.current = false;
       setSaving(false);
     }
   }, [soId, creditProofRequired, photos.length, persistPhotos, releaseHeldQueueItemsAndFinalizeLocal, navigation]);

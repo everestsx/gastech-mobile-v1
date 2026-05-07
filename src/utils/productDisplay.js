@@ -152,6 +152,11 @@ export function sortInvoiceLinesByGasKgAsc(lines) {
     if (s.includes('new issue')) return { w: 199000, t: label };
     const kg = parseKgFromProductName(label);
     if (kg != null && Number.isFinite(kg)) return { w: kg, t: label };
+    /** REG, PACK, HOSE: fixed order after other non-kg invoice rows (requested for tax invoice accessories). */
+    const plain = String(getProductDisplayName(label)).trim().toLowerCase();
+    if (plain === 'reg') return { w: 100010, t: label };
+    if (plain === 'pack') return { w: 100011, t: label };
+    if (plain === 'hose') return { w: 100012, t: label };
     return { w: 100000, t: label };
   };
   return [...lines].sort((a, b) => {

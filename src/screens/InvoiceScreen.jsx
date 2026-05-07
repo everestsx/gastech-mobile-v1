@@ -39,7 +39,8 @@ import SyncHeaderBadge from '../components/SyncHeaderBadge';
 import SignatureCanvas from 'react-native-signature-canvas';
 import { resolveInvoiceCustomerDisplayName, odooLocalizedText } from '../utils/customerDisplayName';
 import { lineSubtotalAtQuantity, lineTaxAtQuantity } from '../utils/orderLineTax.js';
-import { setCheckoutResumePhase, clearCheckoutResume } from '../services/checkoutResume.service';
+import { setCheckoutResumePhase, clearCheckoutResume, getCheckoutResumeEntry } from '../services/checkoutResume.service';
+import * as syncQueueDb from '../database/syncQueue.js';
 
 /**
  * Expo `printToFileAsync` defaults to US Letter width (612pt), so a 104mm-wide layout sits in a
@@ -1013,9 +1014,12 @@ export default function InvoiceScreen({ route, navigation }) {
   const { setHideSyncIndicator } = useSync();
   const [order, setOrder] = useState(null);
   const [lines, setLines] = useState([]);
+  /** When route omits invoiceLineQtys (e.g. opened from Delivered tab), restore from payment queue or checkout resume. */
+  const [resolvedInvoiceLineQtys, setResolvedInvoiceLineQtys] = useState(null);
 
   const effectiveInvoiceQtyRows = useMemo(() => {
     if (Array.isArray(invoiceLineQtys) && invoiceLineQtys.length > 0) return invoiceLineQtys;
+    if (Array.isArray(resolvedInvoiceLineQtys) && resolvedInvoiceLineQtys.length > 0) return resolvedInvoiceLineQtys;
 
     const delivered = deliveryPayload?.saleOrderLineDeliveredUpdates;
     if (Array.isArray(delivered) && delivered.length > 0) {
@@ -1031,7 +1035,6 @@ export default function InvoiceScreen({ route, navigation }) {
     if (!isInvoiced || !Array.isArray(lines) || lines.length === 0) return [];
 
     const rows = [];
-    let hasPositiveDelivered = false;
     let hasDeliveredDiff = false;
     for (const l of lines) {
       const lineId = l?.id;
@@ -1039,13 +1042,13 @@ export default function InvoiceScreen({ route, navigation }) {
       const deliveredQty = Number(l?.qty_delivered);
       const orderedQty = Number(l?.product_uom_qty) || 0;
       if (!Number.isFinite(deliveredQty)) continue;
-      if (deliveredQty > 0) hasPositiveDelivered = true;
       if (Math.abs(deliveredQty - orderedQty) > 0.0001) hasDeliveredDiff = true;
       rows.push({ lineId, qty: deliveredQty });
     }
-    if (!hasPositiveDelivered || !hasDeliveredDiff) return [];
+    /** If every line matches ordered qty, totals already match Odoo — no override. Includes full delivery / full zero when both match. */
+    if (!hasDeliveredDiff) return [];
     return rows;
-  }, [invoiceLineQtys, deliveryPayload, order?.invoice_status, lines]);
+  }, [invoiceLineQtys, resolvedInvoiceLineQtys, deliveryPayload, order?.invoice_status, lines]);
 
   const hasInvoiceQtyOverrides = effectiveInvoiceQtyRows.length > 0;
 
@@ -1711,6 +1714,27 @@ export default function InvoiceScreen({ route, navigation }) {
     }
     setLoading(true);
     try {
+      let extraInvoiceQtys = route.params?.invoiceLineQtys;
+      if (!Array.isArray(extraInvoiceQtys) || extraInvoiceQtys.length === 0) {
+        try {
+          const pending = await syncQueueDb.getPendingPaymentItemBySaleOrderId(Number(saleOrderId));
+          const fromPay = pending?.payload?.invoiceLineQtys;
+          if (Array.isArray(fromPay) && fromPay.length > 0) extraInvoiceQtys = fromPay;
+        } catch (_) {
+          /* ignore */
+        }
+      }
+      if (!Array.isArray(extraInvoiceQtys) || extraInvoiceQtys.length === 0) {
+        try {
+          const entry = await getCheckoutResumeEntry(Number(saleOrderId));
+          const fromResume = entry?.invoiceParams?.invoiceLineQtys;
+          if (Array.isArray(fromResume) && fromResume.length > 0) extraInvoiceQtys = fromResume;
+        } catch (_) {
+          /* ignore */
+        }
+      }
+      setResolvedInvoiceLineQtys(Array.isArray(extraInvoiceQtys) && extraInvoiceQtys.length > 0 ? extraInvoiceQtys : null);
+
       const data = await getSaleOrderDetailsFromDB(saleOrderId);
       setOrder(data.order);
       const orderName = data?.order?.name;
@@ -1850,7 +1874,7 @@ export default function InvoiceScreen({ route, navigation }) {
     } finally {
       setLoading(false);
     }
-  }, [saleOrderId, route.params?.invoiceNumber]);
+  }, [saleOrderId, route.params?.invoiceNumber, route.params?.invoiceLineQtys]);
 
   useEffect(() => {
     loadInvoice();

@@ -127,7 +127,10 @@ export async function getPendingDeliveryItemBySaleOrderId(saleOrderId) {
   return best;
 }
 
-/** Get pending (unsynced) inventory_update queue item for a sale order, if any. */
+/**
+ * Get pending (unsynced) inventory_update queue item for a sale order, if any.
+ * Returns the latest queue row id for that SO — same semantics as delivery/payment (avoids patching stale duplicates).
+ */
 export async function getPendingInventoryUpdateItemBySaleOrderId(saleOrderId) {
   if (saleOrderId == null) return null;
   const db = await getDb();
@@ -136,12 +139,17 @@ export async function getPendingInventoryUpdateItemBySaleOrderId(saleOrderId) {
     [ACTION_INVENTORY_UPDATE]
   );
   const soId = Number(saleOrderId);
+  let best = null;
   for (const row of rows || []) {
     const p = safeParseJson(row.payload, {});
     const id = p.saleOrderId ?? p.sale_order_id;
-    if (id != null && Number(id) === soId) return { id: row.id, payload: p };
+    if (id != null && Number(id) === soId) {
+      if (!best || Number(row.id) > Number(best.id)) {
+        best = { id: row.id, payload: p };
+      }
+    }
   }
-  return null;
+  return best;
 }
 
 /** Update payload of an existing queue item (e.g. to merge payment updates for same sale order). */
