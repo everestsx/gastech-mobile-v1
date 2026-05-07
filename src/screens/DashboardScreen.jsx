@@ -265,6 +265,7 @@ export default function DashboardScreen({ navigation }) {
     if (dashboardSessionKeyRef.current === sessionKey) return;
     dashboardSessionKeyRef.current = sessionKey;
     setInitialLoadGateActive(true);
+    setLoading(true);
   }, [sessionKey]);
 
   const postLoginSyncCopy = useMemo(() => {
@@ -324,6 +325,7 @@ export default function DashboardScreen({ navigation }) {
   }, [syncDateField]);
 
   const loadData = useCallback(async () => {
+    setLoading(true);
     try {
       const [userData, routesData] = await Promise.all([
         getUserSession(),

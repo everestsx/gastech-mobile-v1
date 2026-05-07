@@ -2084,90 +2084,116 @@ async function processSyncQueue() {
           }
 
           if (!p._paymentProofChatterPosted) {
-          const offlineAttachmentsDb = await import('../database/offlineAttachments.js');
-          const pendingAttachments = await offlineAttachmentsDb.getPendingBySaleOrderId(soId);
-          const FileSystem = await import('expo-file-system');
+            const offlineAttachmentsDb = await import('../database/offlineAttachments.js');
+            const pendingAttachments = await offlineAttachmentsDb.getPendingBySaleOrderId(soId);
+            const FileSystem = await import('expo-file-system');
 
-          if (!(Number.isFinite(Number(postedInvoiceId)) && Number(postedInvoiceId) > 0)) {
+            if (!(Number.isFinite(Number(postedInvoiceId)) && Number(postedInvoiceId) > 0)) {
+              try {
+                const maybeIds = normalizeSaleOrderInvoiceIds(await getSaleOrderInvoiceIds(soId));
+                if (maybeIds.length > 0) {
+                  postedInvoiceId = Number(maybeIds[0]);
+                }
+              } catch (_) {
+                postedInvoiceId = null;
+              }
+            }
+
+            const attachmentIds = [];
+            const syncedAttachmentIds = [];
+            const pendingCount = (pendingAttachments || []).length;
+
+            // Doc: read pending URIs from offline_attachments → base64 → ir.attachment.create → collect ids → message_post(attachment_ids).
+            log('queue', `payment proof (SO ${soId}): ${pendingCount} pending in offline_attachments — URI→base64→create→message_post`);
+
+            for (const att of pendingAttachments || []) {
+              if (!att.local_file_path || !att.file_name) continue;
+              try {
+                const file = new FileSystem.File(att.local_file_path);
+                if (!file.exists) {
+                  await offlineAttachmentsDb.markFailed(Number(att.id), `File missing: ${att.local_file_path}`);
+                  logWarn('queue payment proof', new Error('File missing'));
+                  continue;
+                }
+                const normalized = await imageFileToBase64String(FileSystem, att.local_file_path);
+                if (!normalized) {
+                  await offlineAttachmentsDb.markFailed(Number(att.id), 'Invalid or too short base64');
+                  logWarn('queue payment proof', new Error('Invalid base64'));
+                  continue;
+                }
+                const aid = await createProofAttachment(soId, normalized, att.file_name);
+                attachmentIds.push(aid);
+                syncedAttachmentIds.push(att.id);
+                log('queue', `ir.attachment.create SO ${soId} → attachment_id=${aid}`);
+              } catch (attErr) {
+                await offlineAttachmentsDb.incrementRetry(att.id, attErr?.message || 'Upload error');
+                logWarn('queue payment proof attachment', attErr);
+              }
+            }
+
+            if (pendingCount > 0 && attachmentIds.length === 0) {
+              logWarn(
+                'queue payment proof',
+                new Error(
+                  'Pending proof photos could not be uploaded (missing file or API error). Posting chatter without attachments so invoice/payment still completes; attachments stay pending for retry.'
+                )
+              );
+              // Do not continue: previously this left the queue item unsynced forever even when Odoo already had the payment.
+            }
+
+            // Auto-attach printed invoice PDF from Odoo report when order is completed and payment sync runs.
+            if (Number.isFinite(Number(postedInvoiceId)) && Number(postedInvoiceId) > 0) {
+              const invoicePdfAttachmentId = await tryAttachPrintedInvoicePdfToSaleOrder(
+                soId,
+                Number(postedInvoiceId),
+                orderName
+              );
+              if (invoicePdfAttachmentId != null) {
+                attachmentIds.push(Number(invoicePdfAttachmentId));
+                log('queue', `invoice PDF attached for SO ${soId} from invoice ${postedInvoiceId}`);
+              }
+            }
+
+            const hasProof = attachmentIds.length > 0;
+
+            // API 2: Post message(s) to sale order chatter. Partial payment = one message per payment type.
             try {
-              const maybeIds = normalizeSaleOrderInvoiceIds(await getSaleOrderInvoiceIds(soId));
-              if (maybeIds.length > 0) {
-                postedInvoiceId = Number(maybeIds[0]);
-              }
-            } catch (_) {
-              postedInvoiceId = null;
-            }
-          }
-
-          const attachmentIds = [];
-          const syncedAttachmentIds = [];
-          const pendingCount = (pendingAttachments || []).length;
-
-          // Doc: read pending URIs from offline_attachments → base64 → ir.attachment.create → collect ids → message_post(attachment_ids).
-          log('queue', `payment proof (SO ${soId}): ${pendingCount} pending in offline_attachments — URI→base64→create→message_post`);
-
-          for (const att of pendingAttachments || []) {
-            if (!att.local_file_path || !att.file_name) continue;
-            try {
-              const file = new FileSystem.File(att.local_file_path);
-              if (!file.exists) {
-                await offlineAttachmentsDb.markFailed(Number(att.id), `File missing: ${att.local_file_path}`);
-                logWarn('queue payment proof', new Error('File missing'));
-                continue;
-              }
-              const normalized = await imageFileToBase64String(FileSystem, att.local_file_path);
-              if (!normalized) {
-                await offlineAttachmentsDb.markFailed(Number(att.id), 'Invalid or too short base64');
-                logWarn('queue payment proof', new Error('Invalid base64'));
-                continue;
-              }
-              const aid = await createProofAttachment(soId, normalized, att.file_name);
-              attachmentIds.push(aid);
-              syncedAttachmentIds.push(att.id);
-              log('queue', `ir.attachment.create SO ${soId} → attachment_id=${aid}`);
-            } catch (attErr) {
-              await offlineAttachmentsDb.incrementRetry(att.id, attErr?.message || 'Upload error');
-              logWarn('queue payment proof attachment', attErr);
-            }
-          }
-
-          if (pendingCount > 0 && attachmentIds.length === 0) {
-            logWarn(
-              'queue payment proof',
-              new Error(
-                'Pending proof photos could not be uploaded (missing file or API error). Posting chatter without attachments so invoice/payment still completes; attachments stay pending for retry.'
-              )
-            );
-            // Do not continue: previously this left the queue item unsynced forever even when Odoo already had the payment.
-          }
-
-          // Auto-attach printed invoice PDF from Odoo report when order is completed and payment sync runs.
-          if (Number.isFinite(Number(postedInvoiceId)) && Number(postedInvoiceId) > 0) {
-            const invoicePdfAttachmentId = await tryAttachPrintedInvoicePdfToSaleOrder(
-              soId,
-              Number(postedInvoiceId),
-              orderName
-            );
-            if (invoicePdfAttachmentId != null) {
-              attachmentIds.push(Number(invoicePdfAttachmentId));
-              log('queue', `invoice PDF attached for SO ${soId} from invoice ${postedInvoiceId}`);
-            }
-          }
-
-          const hasProof = attachmentIds.length > 0;
-
-          // API 2: Post message(s) to sale order chatter. Partial payment = one message per payment type.
-          try {
-            if (isPartialPayment && paymentsForMessage.length > 0) {
-              log('queue', `message_post API (sale.order) SO ${soId} — ${paymentsForMessage.length} separate messages (Cash/Cheque/Credit)`);
-              for (let i = 0; i < paymentsForMessage.length; i++) {
-                const pm = paymentsForMessage[i];
-                const attachToThisMessage = i === 0 ? attachmentIds : [];
+              if (isPartialPayment && paymentsForMessage.length > 0) {
+                log('queue', `message_post API (sale.order) SO ${soId} — ${paymentsForMessage.length} separate messages (Cash/Cheque/Credit)`);
+                for (let i = 0; i < paymentsForMessage.length; i++) {
+                  const pm = paymentsForMessage[i];
+                  const attachToThisMessage = i === 0 ? attachmentIds : [];
+                  const body =
+                    buildSinglePaymentMessageBody(pm, { hasProof: attachToThisMessage.length > 0 }) +
+                    (i === 0 ? invoicePendingNote : '');
+                  await postPaymentProofToChatterWithAttachmentIds(soId, { body, attachmentIds: attachToThisMessage });
+                  if (attachToThisMessage.length > 0) {
+                    const pendingById = new Map((pendingAttachments || []).map((a) => [Number(a.id), a]));
+                    for (const id of syncedAttachmentIds) {
+                      const idNum = Number(id);
+                      await offlineAttachmentsDb.markSynced(idNum);
+                      const att = pendingById.get(idNum);
+                      if (att?.local_file_path) {
+                        try {
+                          const fileToDelete = new FileSystem.File(att.local_file_path);
+                          if (fileToDelete.exists) fileToDelete.delete();
+                        } catch (_) { }
+                      }
+                    }
+                  }
+                }
+              } else {
+                log('queue', `message_post API (sale.order) SO ${soId} attachment_ids=[${attachmentIds.join(', ')}]`);
                 const body =
-                  buildSinglePaymentMessageBody(pm, { hasProof: attachToThisMessage.length > 0 }) +
-                  (i === 0 ? invoicePendingNote : '');
-                await postPaymentProofToChatterWithAttachmentIds(soId, { body, attachmentIds: attachToThisMessage });
-                if (attachToThisMessage.length > 0) {
+                  buildPaymentProofMessageBody({
+                    paymentMethod,
+                    chequeBankName: paymentMethod === 'cheque' ? chequeBankName : undefined,
+                    checkNumber: paymentMethod === 'cheque' ? (chequeNumber || undefined) : undefined,
+                    payments: paymentsForMessage,
+                    hasProof,
+                  }) + invoicePendingNote;
+                await postPaymentProofToChatterWithAttachmentIds(soId, { body, attachmentIds });
+                if (attachmentIds.length > 0) {
                   const pendingById = new Map((pendingAttachments || []).map((a) => [Number(a.id), a]));
                   for (const id of syncedAttachmentIds) {
                     const idNum = Number(id);
@@ -2182,61 +2208,35 @@ async function processSyncQueue() {
                   }
                 }
               }
-            } else {
-              log('queue', `message_post API (sale.order) SO ${soId} attachment_ids=[${attachmentIds.join(', ')}]`);
-              const body =
-                buildPaymentProofMessageBody({
-                  paymentMethod,
-                  chequeBankName: paymentMethod === 'cheque' ? chequeBankName : undefined,
-                  checkNumber: paymentMethod === 'cheque' ? (chequeNumber || undefined) : undefined,
-                  payments: paymentsForMessage,
-                  hasProof,
-                }) + invoicePendingNote;
-              await postPaymentProofToChatterWithAttachmentIds(soId, { body, attachmentIds });
-              if (attachmentIds.length > 0) {
-                const pendingById = new Map((pendingAttachments || []).map((a) => [Number(a.id), a]));
-                for (const id of syncedAttachmentIds) {
-                  const idNum = Number(id);
-                  await offlineAttachmentsDb.markSynced(idNum);
-                  const att = pendingById.get(idNum);
-                  if (att?.local_file_path) {
-                    try {
-                      const fileToDelete = new FileSystem.File(att.local_file_path);
-                      if (fileToDelete.exists) fileToDelete.delete();
-                    } catch (_) { }
-                  }
+              const emptyCylinderNote = (p.emptyCylinderChatterBody || p.emptyCylinderChatterNote || '').trim();
+              if (emptyCylinderNote) {
+                try {
+                  await postPaymentProofToChatterWithAttachmentIds(soId, {
+                    body: emptyCylinderNote,
+                    attachmentIds: [],
+                  });
+                  log('queue', `empty cylinder note message_post SO ${soId}`);
+                } catch (emptyChatterErr) {
+                  logWarn('queue payment empty-cylinder chatter', emptyChatterErr);
                 }
               }
-            }
-            const emptyCylinderNote = (p.emptyCylinderChatterBody || p.emptyCylinderChatterNote || '').trim();
-            if (emptyCylinderNote) {
-              try {
-                await postPaymentProofToChatterWithAttachmentIds(soId, {
-                  body: emptyCylinderNote,
-                  attachmentIds: [],
-                });
-                log('queue', `empty cylinder note message_post SO ${soId}`);
-              } catch (emptyChatterErr) {
-                logWarn('queue payment empty-cylinder chatter', emptyChatterErr);
-              }
-            }
 
-            chatterPostedInThisRun.add(soId);
-            log('queue', `chatter posted to SO ${soId}${isPartialPayment ? ` (${paymentsForMessage.length} messages)` : ` (${attachmentIds.length} images)`}`);
-            if (invoiceBlockFailedNoItemsToInvoice) {
-              try {
-                await syncQueueDb.updateQueueItemPayload(item.id, { ...(item.payload || {}), _paymentProofChatterPosted: true });
-              } catch (upErr) {
-                logWarn('queue payment _paymentProofChatterPosted', upErr);
+              chatterPostedInThisRun.add(soId);
+              log('queue', `chatter posted to SO ${soId}${isPartialPayment ? ` (${paymentsForMessage.length} messages)` : ` (${attachmentIds.length} images)`}`);
+              if (invoiceBlockFailedNoItemsToInvoice) {
+                try {
+                  await syncQueueDb.updateQueueItemPayload(item.id, { ...(item.payload || {}), _paymentProofChatterPosted: true });
+                } catch (upErr) {
+                  logWarn('queue payment _paymentProofChatterPosted', upErr);
+                }
               }
+            } catch (chatterErr) {
+              for (const id of syncedAttachmentIds) {
+                await offlineAttachmentsDb.incrementRetry(Number(id), chatterErr?.message || 'API error');
+              }
+              logWarn('queue payment chatter', chatterErr);
+              continue;
             }
-          } catch (chatterErr) {
-            for (const id of syncedAttachmentIds) {
-              await offlineAttachmentsDb.incrementRetry(Number(id), chatterErr?.message || 'API error');
-            }
-            logWarn('queue payment chatter', chatterErr);
-            continue;
-          }
           } else {
             log(
               'queue',
@@ -2500,11 +2500,13 @@ async function runSyncInternal() {
     let orders = [];
     let customers = [];
     let orderFetchFailed = false;
+    let orderFetchError = null;
 
     if (vehicleId != null) {
       log('fetch', `orders for vehicle ${vehicleId} only`);
       orders = await getSaleOrdersByVehicle(vehicleId, dateFromFilter, syncDateField).catch((e) => {
         orderFetchFailed = true;
+        orderFetchError = e?.message || String(e || 'Order sync failed');
         logWarn('fetch orders by vehicle', e);
         return [];
       });
@@ -2523,6 +2525,7 @@ async function runSyncInternal() {
         }),
         getAllSaleOrders(dateFromFilter, syncDateField).catch((e) => {
           orderFetchFailed = true;
+          orderFetchError = e?.message || String(e || 'Order sync failed');
           logWarn('fetch orders', e);
           return [];
         }),
@@ -2535,6 +2538,11 @@ async function runSyncInternal() {
     // so offline-completed orders do not disappear when commitment_date is missing.
     result.orders = (orders || []).length;
     log('fetch', `customers=${result.customers} orders=${result.orders}`);
+    if (orderFetchFailed) {
+      const err = orderFetchError || 'Order sync failed';
+      result.error = err;
+      throw new Error(err);
+    }
     if (isLoggingOut) return { error: 'Logout in progress' };
     // Dashboard and order lists read from local DB only; preserve local state for orders with pending upload.
     const pendingSaleOrderIds = await syncQueueDb.getPendingSaleOrderIds();
