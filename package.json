@@ -10,13 +10,14 @@
     "run:android": "npx expo run:android",
     "android:assemble-debug": "cd android && gradlew.bat clean assembleDebug",
     "prebuild:android": "npx expo prebuild --platform android",
-    "test": "playwright test",
-    "test:headed": "playwright test --headed",
-    "test:ui": "playwright test --ui",
-    "test:report": "playwright show-report",
-    "test:smoke": "playwright test tests/smoke",
-    "test:auth": "playwright test tests/auth",
-    "test:api": "playwright test tests/api"
+    "test:e2e": "wdio run e2e/wdio.conf.ts",
+    "test:e2e:smoke": "wdio run e2e/wdio.conf.ts --spec e2e/specs/smoke/",
+    "test:e2e:auth": "wdio run e2e/wdio.conf.ts --spec e2e/specs/auth/",
+    "test:e2e:nav": "wdio run e2e/wdio.conf.ts --spec e2e/specs/navigation/",
+    "test:e2e:api": "wdio run e2e/wdio.conf.ts --spec e2e/specs/api/",
+    "test:e2e:journey": "wdio run e2e/wdio.conf.ts --spec e2e/specs/journeys/",
+    "appium:start": "appium --relaxed-security",
+    "appium:inspect": "npx start-appium-inspector"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",
@@ -53,7 +54,6 @@
     "react-native-web": "^0.21.0"
   },
   "devDependencies": {
-    "@playwright/test": "^1.59.1",
     "@types/react": "~19.1.0",
     "babel-preset-expo": "^54.0.10",
     "typescript": "~5.9.2"
