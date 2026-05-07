@@ -109,8 +109,17 @@ function buildDisplayDeliveredQtyByProduct(moveMap, orderLines, isInvoiced) {
     const p = Number(k);
     const move = Number(fromMoves[p]) || 0;
     const qd = Number(fromDeliveredField[p]) || 0;
-    let v = Math.max(move, qd);
-    if (!hasDeliveredSource && isInvoiced) {
+    let v;
+    if (isInvoiced && qd > 0) {
+      /**
+       * For invoiced orders, SO line qty_delivered is more stable than move-map snapshots
+       * (move lines can be stale/duplicated during offline retries).
+       */
+      v = qd;
+    } else {
+      v = Math.max(move, qd);
+    }
+    if ((!hasDeliveredSource || v <= 0) && isInvoiced) {
       const ord = Number(fromOrdered[p]) || 0;
       v = Math.max(v, ord);
     }
@@ -605,12 +614,24 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
   };
 
   const onOrderPress = (order) => {
+    const deliveredMap = qtyDoneBySaleAndProduct?.[order?.id] || {};
+    const lines = Array.isArray(order?.orderLines) ? order.orderLines : [];
+    const invoiceLineQtys = [];
+    for (const line of lines) {
+      const lineId = line?.id;
+      const pid = Array.isArray(line?.product_id) ? Number(line.product_id[0]) : Number(line?.product_id);
+      if (lineId == null || !Number.isFinite(pid)) continue;
+      const q = Number(deliveredMap?.[pid]);
+      if (!Number.isFinite(q) || q <= 0) continue;
+      invoiceLineQtys.push({ lineId: Number(lineId), qty: q });
+    }
     navigation.navigate('InvoiceScreen', {
       saleOrderId: order.id,
       invoiceNumber: order?.invoice_number || null,
       total: order.amount_total,
       skipEvidenceModal: true,
       promptSignatures: false,
+      ...(invoiceLineQtys.length > 0 ? { invoiceLineQtys } : {}),
     });
   };
 
