@@ -5,8 +5,7 @@ pluginManagement {
       commandLine("node", "--print", "require.resolve('@react-native/gradle-plugin/package.json', { paths: [require.resolve('react-native/package.json')] })")
     }.standardOutput.asText.get().trim()
   ).getParentFile().absolutePath
-  includeBuild(reactNativeGradlePlugin)
-  
+
   def expoPluginsPath = new File(
     providers.exec {
       workingDir(rootDir)
@@ -14,12 +13,21 @@ pluginManagement {
     }.standardOutput.asText.get().trim(),
     "../android/expo-gradle-plugin"
   ).absolutePath
+
+  settings.ext.reactNativeGradlePlugin = reactNativeGradlePlugin
+  includeBuild(reactNativeGradlePlugin)
   includeBuild(expoPluginsPath)
 }
 
 plugins {
   id("com.facebook.react.settings")
   id("expo-autolinking-settings")
+}
+
+includeBuild(settings.ext.reactNativeGradlePlugin) {
+  dependencySubstitution {
+    substitute(module("com.facebook.react:react-native-gradle-plugin")).using(project(":react-native-gradle-plugin"))
+  }
 }
 
 extensions.configure(com.facebook.react.ReactSettingsExtension) { ex ->
@@ -36,4 +44,4 @@ rootProject.name = 'GasTechMobile'
 expoAutolinking.useExpoVersionCatalog()
 
 include ':app'
-includeBuild(expoAutolinking.reactNativeGradlePlugin)
+

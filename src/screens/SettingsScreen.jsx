@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -9,6 +9,8 @@ import {
   Alert,
   Modal,
   Image,
+  TextInput,
+  ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTranslation } from 'react-i18next';
@@ -16,6 +18,7 @@ import { useTheme } from '../context/ThemeContext';
 import { getUserSession } from '../services/sync.service';
 import { odooImageToUri } from '../services/employee.service';
 import { spacing, borderRadius } from '../constants/theme';
+import * as saleOrderLinesDb from '../database/saleOrderLines.js';
 
 export default function SettingsScreen({ navigation }) {
   const {
@@ -41,10 +44,35 @@ export default function SettingsScreen({ navigation }) {
   const [showSyncDateFieldModal, setShowSyncDateFieldModal] = useState(false);
   const [showSyncIntervalModal, setShowSyncIntervalModal] = useState(false);
   const [showLanguageModal, setShowLanguageModal] = useState(false);
+  const [showLocalDbModal, setShowLocalDbModal] = useState(false);
+  const [localDbLoading, setLocalDbLoading] = useState(false);
+  const [localDbError, setLocalDbError] = useState('');
+  const [localDbOrderId, setLocalDbOrderId] = useState('');
+  const [localDbSnapshot, setLocalDbSnapshot] = useState([]);
 
   useEffect(() => {
     getUserSession().then(setUser);
   }, []);
+
+  const loadLocalDbSnapshot = useCallback(async (override = {}) => {
+    const orderIdRaw = override.orderId != null ? override.orderId : localDbOrderId;
+    const orderIdNum = Number(orderIdRaw);
+    const orderId = Number.isFinite(orderIdNum) && orderIdNum > 0 ? orderIdNum : null;
+    setLocalDbLoading(true);
+    setLocalDbError('');
+    try {
+      const data = await saleOrderLinesDb.getOrderLineQtySnapshot({
+        orderId,
+        limitOrders: 20,
+      });
+      setLocalDbSnapshot(Array.isArray(data) ? data : []);
+    } catch (err) {
+      setLocalDbSnapshot([]);
+      setLocalDbError(err?.message || t('settings.localDbError', 'Failed to load local database.'));
+    } finally {
+      setLocalDbLoading(false);
+    }
+  }, [localDbOrderId, t]);
 
   const sectionTitle = (label) => (
     <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>{label}</Text>
@@ -446,6 +474,131 @@ export default function SettingsScreen({ navigation }) {
         <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
       </TouchableOpacity>
 
+      {sectionTitle(t('settings.localDb', 'Local DB'))}
+      <TouchableOpacity
+        style={[styles.menuRow, { backgroundColor: colors.surface, borderColor: colors.border }]}
+        onPress={() => {
+          setShowLocalDbModal(true);
+          loadLocalDbSnapshot();
+        }}
+        activeOpacity={0.8}
+      >
+        <Ionicons name="server-outline" size={22} color={colors.primary} />
+        <Text style={[styles.menuRowText, { color: colors.text }]}>
+          {t('settings.localDbOrderLines', 'Order line quantities')}
+        </Text>
+        <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
+      </TouchableOpacity>
+
+      <Modal
+        visible={showLocalDbModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowLocalDbModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { backgroundColor: colors.surface, maxHeight: '85%' }]}>
+            <View style={styles.localDbTitleRow}>
+              <Text style={[styles.modalTitle, styles.localDbTitleText, { color: colors.text }]}>
+                {t('settings.localDbOrderLinesTitle', 'Local DB - Order line quantities')}
+              </Text>
+              <TouchableOpacity
+                style={styles.localDbIconBtn}
+                onPress={() => loadLocalDbSnapshot()}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="refresh" size={18} color={colors.primary} />
+              </TouchableOpacity>
+            </View>
+            <View style={styles.localDbFilterRow}>
+              <TextInput
+                value={localDbOrderId}
+                onChangeText={setLocalDbOrderId}
+                placeholder={t('settings.localDbOrderIdPlaceholder', 'Order ID (optional)')}
+                placeholderTextColor={colors.textSecondary}
+                keyboardType="numeric"
+                style={[
+                  styles.localDbInput,
+                  { color: colors.text, borderColor: colors.border, backgroundColor: colors.background },
+                ]}
+              />
+            </View>
+            {localDbError ? (
+              <Text style={[styles.localDbErrorText, { color: colors.error || '#c00' }]}>{localDbError}</Text>
+            ) : null}
+            {localDbLoading ? (
+              <View style={styles.localDbLoading}>
+                <ActivityIndicator size="small" color={colors.primary} />
+              </View>
+            ) : (
+              <ScrollView
+                style={styles.localDbList}
+                contentContainerStyle={{ paddingBottom: spacing.md, paddingHorizontal: spacing.md }}
+              >
+                {localDbSnapshot.length === 0 ? (
+                  <Text style={[styles.localDbEmptyText, { color: colors.textSecondary }]}>
+                    {t('settings.localDbEmpty', 'No local order lines found.')}
+                  </Text>
+                ) : (
+                  localDbSnapshot.map((order) => (
+                    <View
+                      key={`order-${order.orderId}`}
+                      style={[styles.localDbOrderCard, { borderColor: colors.border }]}
+                    >
+                      <View style={styles.localDbOrderHeader}>
+                        <Text style={[styles.localDbOrderTitle, { color: colors.text }]} numberOfLines={1}>
+                          {t('settings.localDbOrderLabel', 'Order')} #{order.orderId}
+                          {order.orderName ? ` · ${order.orderName}` : ''}
+                        </Text>
+                        <Text style={[styles.localDbOrderBadge, { color: colors.primary }]}>
+                          {order.lines.length} {t('settings.localDbLines', 'lines')}
+                        </Text>
+                      </View>
+                      {order.partnerName ? (
+                        <Text style={[styles.localDbOrderSub, { color: colors.textSecondary }]}>
+                          {order.partnerName}
+                        </Text>
+                      ) : null}
+                      {order.lines.map((line) => (
+                        <View key={`line-${order.orderId}-${line.lineId}`} style={styles.localDbLineRow}>
+                          <View style={styles.localDbLineLeft}>
+                            <Text style={[styles.localDbLineName, { color: colors.text }]} numberOfLines={1}>
+                              {line.productName || line.lineName || t('settings.localDbLine', 'Line')}
+                            </Text>
+                            {line.lineName ? (
+                              <Text style={[styles.localDbLineSub, { color: colors.textSecondary }]} numberOfLines={1}>
+                                {line.lineName}
+                              </Text>
+                            ) : null}
+                          </View>
+                          <View style={styles.localDbLineRight}>
+                            <View style={[styles.localDbQtyPill, { backgroundColor: colors.primaryLight }]}>
+                              <Text style={[styles.localDbQtyText, { color: colors.primary }]}>Qty {line.qty}</Text>
+                            </View>
+                            {line.qtyDelivered ? (
+                              <Text style={[styles.localDbLineDelivered, { color: colors.textSecondary }]}>
+                                {t('settings.localDbQtyDelivered', 'Delivered')} {line.qtyDelivered}
+                              </Text>
+                            ) : null}
+                          </View>
+                        </View>
+                      ))}
+                    </View>
+                  ))
+                )}
+              </ScrollView>
+            )}
+            <TouchableOpacity
+              style={[styles.modalCloseBtn, { backgroundColor: colors.primaryLight }]}
+              onPress={() => setShowLocalDbModal(false)}
+              activeOpacity={0.7}
+            >
+              <Text style={[styles.modalCloseBtnText, { color: colors.primary }]}>{t('settings.close')}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
       <View style={styles.bottomSpacer} />
     </ScrollView>
   );
@@ -513,6 +666,74 @@ const styles = StyleSheet.create({
   rowRight: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   syncPeriodValue: { fontSize: 14, fontWeight: '500', marginRight: 8 },
   bottomSpacer: { height: 40 },
+  localDbFilterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginTop: spacing.sm,
+    paddingHorizontal: spacing.lg,
+  },
+  localDbTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.md,
+  },
+  localDbTitleText: {
+    flex: 1,
+    paddingHorizontal: 0,
+    paddingBottom: 0,
+  },
+  localDbIconBtn: {
+    padding: 6,
+    borderRadius: 999,
+  },
+  localDbInput: {
+    flex: 1,
+    borderWidth: 1,
+    borderRadius: borderRadius.md,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 8,
+    fontSize: 14,
+  },
+  localDbLoading: { paddingVertical: spacing.md },
+  localDbErrorText: { marginTop: spacing.sm, fontSize: 13, fontWeight: '600' },
+  localDbList: { marginTop: spacing.sm },
+  localDbEmptyText: { fontSize: 14, textAlign: 'center', marginTop: spacing.md },
+  localDbOrderCard: {
+    borderWidth: 1,
+    borderRadius: borderRadius.md,
+    padding: spacing.md,
+    marginBottom: spacing.sm,
+  },
+  localDbOrderHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+  },
+  localDbOrderTitle: { fontSize: 14, fontWeight: '700', flex: 1 },
+  localDbOrderBadge: { fontSize: 12, fontWeight: '700' },
+  localDbOrderSub: { fontSize: 12, marginTop: 2 },
+  localDbLineRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: spacing.sm,
+    gap: spacing.sm,
+  },
+  localDbLineLeft: { flex: 1 },
+  localDbLineRight: { alignItems: 'flex-end' },
+  localDbLineName: { fontSize: 13, fontWeight: '600' },
+  localDbLineSub: { fontSize: 11, marginTop: 2 },
+  localDbQtyPill: {
+    paddingVertical: 4,
+    paddingHorizontal: spacing.sm,
+    borderRadius: 999,
+  },
+  localDbQtyText: { fontSize: 12, fontWeight: '700' },
+  localDbLineDelivered: { fontSize: 11, marginTop: 4 },
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.5)',
@@ -522,7 +743,8 @@ const styles = StyleSheet.create({
   modalContent: {
     borderRadius: borderRadius.lg,
     minWidth: 280,
-    maxWidth: '80%',
+    width: '96%',
+    maxWidth: '96%',
     paddingVertical: spacing.lg,
     elevation: 8,
     shadowColor: '#000',

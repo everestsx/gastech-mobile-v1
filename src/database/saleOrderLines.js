@@ -217,3 +217,81 @@ export async function updateSaleOrderLineQtyLocal(lineId, qty) {
     [qtyNum, priceSubtotal, priceTotal, iso(), num(lineId)]
   );
 }
+
+export async function getOrderLineQtySnapshot(options = {}) {
+  const limitOrders = num(options.limitOrders ?? 20) || 20;
+  const orderId = num(options.orderId);
+  const db = await getDb();
+
+  let orderIds = [];
+  if (orderId > 0) {
+    orderIds = [orderId];
+  } else {
+    const rows = await db.getAllAsync(
+      'SELECT id FROM sale_orders ORDER BY id DESC LIMIT ?',
+      [limitOrders]
+    );
+    orderIds = (rows || []).map((r) => num(r.id)).filter((n) => n > 0);
+  }
+
+  if (orderIds.length === 0) return [];
+
+  const placeholders = orderIds.map(() => '?').join(',');
+  const rows = await db.getAllAsync(
+    `SELECT
+      so.id AS order_id,
+      so.name AS order_name,
+      so.partner_name AS partner_name,
+      sol.id AS line_id,
+      sol.product_id AS product_id,
+      sol.product_name AS product_name,
+      sol.name AS line_name,
+      sol.product_uom_qty AS product_uom_qty,
+      sol.qty_delivered AS qty_delivered
+     FROM sale_order_lines sol
+     LEFT JOIN sale_orders so ON so.id = sol.order_id
+     WHERE sol.order_id IN (${placeholders})
+     ORDER BY so.id DESC, sol.id ASC`,
+    orderIds
+  );
+
+  const productNames = await getProductsMap();
+  const byOrder = new Map();
+  for (const oid of orderIds) {
+    byOrder.set(oid, {
+      orderId: oid,
+      orderName: null,
+      partnerName: null,
+      lines: [],
+    });
+  }
+
+  for (const row of rows || []) {
+    const oid = num(row.order_id);
+    const entry = byOrder.get(oid) || {
+      orderId: oid,
+      orderName: null,
+      partnerName: null,
+      lines: [],
+    };
+    entry.orderName = row.order_name ?? entry.orderName;
+    entry.partnerName = row.partner_name ?? entry.partnerName;
+    const productName =
+      (row.product_name && String(row.product_name).trim()) ||
+      productNames[num(row.product_id)] ||
+      '';
+    entry.lines.push({
+      lineId: num(row.line_id),
+      productId: num(row.product_id),
+      productName,
+      lineName: row.line_name ?? null,
+      qty: num(row.product_uom_qty),
+      qtyDelivered: row.qty_delivered != null ? num(row.qty_delivered) : 0,
+    });
+    byOrder.set(oid, entry);
+  }
+
+  return orderIds
+    .map((oid) => byOrder.get(oid))
+    .filter((entry) => entry && entry.lines.length > 0);
+}
