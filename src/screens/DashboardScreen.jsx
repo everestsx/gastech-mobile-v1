@@ -1958,6 +1958,10 @@ export default function DashboardScreen({ navigation }) {
       (loading || (!hasAnyDashboardData && (isSyncing || !!user?.pendingInitialSync)))) ||
     (loading && !hasAnyDashboardData);
 
+  /** Blur overlay on first-session sync when dashboard shell is visible but data sync is still in flight */
+  const shouldBlockDashboard =
+    initialLoadGateActive && (isSyncing || !!user?.pendingInitialSync);
+
   if (shouldShowInitialFullScreenLoader) {
     return (
       <View style={[styles.container, styles.initialSyncCenter]}>
