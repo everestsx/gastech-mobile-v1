@@ -30,6 +30,7 @@ import { SRI_LANKA_BANKS } from '../constants/sriLankaBanks';
 import { formatAmount } from '../utils/format';
 import { getOrAssignInvoiceNumber } from '../utils/invoiceNumber';
 import { empty, sqliteIntegerFkOrNull, num, odooRecordId } from '../database/dbHelpers.js';
+import { testProps } from '../utils/testProps';
 
 const PAYMENT_CASH = 'cash';
 const PAYMENT_CHECK = 'cheque';
@@ -807,6 +808,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           style={[styles.radioOption, selectedPaymentMethods.includes(PAYMENT_CASH) && styles.checkboxOptionSelected]}
           onPress={() => togglePaymentMethod(PAYMENT_CASH)}
           activeOpacity={0.8}
+          {...testProps('proceedpayment-method-cash')}
         >
           <View style={[styles.checkboxBox, selectedPaymentMethods.includes(PAYMENT_CASH) && styles.checkboxBoxSelected]}>
             {selectedPaymentMethods.includes(PAYMENT_CASH) && <Ionicons name="checkmark" size={14} color="#fff" />}
@@ -819,6 +821,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           style={[styles.radioOption, selectedPaymentMethods.includes(PAYMENT_CHECK) && styles.checkboxOptionSelected]}
           onPress={() => togglePaymentMethod(PAYMENT_CHECK)}
           activeOpacity={0.8}
+          {...testProps('proceedpayment-method-cheque')}
         >
           <View style={[styles.checkboxBox, selectedPaymentMethods.includes(PAYMENT_CHECK) && styles.checkboxBoxSelected]}>
             {selectedPaymentMethods.includes(PAYMENT_CHECK) && <Ionicons name="checkmark" size={14} color="#fff" />}
@@ -831,6 +834,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           style={[styles.radioOption, selectedPaymentMethods.includes(PAYMENT_CREDIT) && styles.checkboxOptionSelected]}
           onPress={() => togglePaymentMethod(PAYMENT_CREDIT)}
           activeOpacity={0.8}
+          {...testProps('proceedpayment-method-credit')}
         >
           <View style={[styles.checkboxBox, selectedPaymentMethods.includes(PAYMENT_CREDIT) && styles.checkboxBoxSelected]}>
             {selectedPaymentMethods.includes(PAYMENT_CREDIT) && <Ionicons name="checkmark" size={14} color="#fff" />}
@@ -862,6 +866,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
                   placeholder={t('proceedpayment.cash', 'Cash')}
                   placeholderTextColor={colors.textSecondary}
                   keyboardType="decimal-pad"
+                  {...testProps('proceedpayment-cash-input')}
                 />
               </View>
             ) : null}
@@ -884,6 +889,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
                   placeholder={t('proceedpayment.cheque', 'Cheque')}
                   placeholderTextColor={colors.textSecondary}
                   keyboardType="decimal-pad"
+                  {...testProps('proceedpayment-cheque-input')}
                 />
               </View>
             ) : null}
@@ -930,6 +936,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
                     returnKeyType="search"
                     blurOnSubmit
                     onSubmitEditing={() => Keyboard.dismiss()}
+                    {...testProps('proceedpayment-bank-search')}
                   />
                   {bankSearchQuery.length > 0 ? (
                     <TouchableOpacity onPress={() => setBankSearchQuery('')} style={styles.searchClear} hitSlop={8}>
@@ -1012,6 +1019,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
                       scrollRef.current?.scrollToEnd({ animated: true });
                     }, 200);
                   }}
+                  {...testProps('proceedpayment-cheque-number')}
                 />
               </View>
             </>
@@ -1046,6 +1054,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           }}
           disabled={loading || !canProceed}
           activeOpacity={0.8}
+          {...testProps('proceedpayment-confirm')}
         >
           {loading ? (
             <ActivityIndicator color="#fff" size="small" />

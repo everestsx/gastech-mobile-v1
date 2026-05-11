@@ -35,6 +35,7 @@ import * as localPaymentsDb from '../database/localPayments.js';
 import * as deliveryQtyDb from '../database/deliveryQty.js';
 import OrderCard from '../components/OrderCard';
 import SyncHeaderBadge from '../components/SyncHeaderBadge';
+import { testProps } from '../utils/testProps';
 import {
   getCheckoutResumeMap,
   pendingCheckoutSaleOrderIdsFromResumeMap,
@@ -637,10 +638,20 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
         </View>
         <View style={styles.headerCenter}>
           <View style={styles.dateNav}>
-            <TouchableOpacity onPress={goToPreviousDay} style={styles.dateNavChevron} activeOpacity={0.7}>
+            <TouchableOpacity
+              onPress={goToPreviousDay}
+              style={styles.dateNavChevron}
+              activeOpacity={0.7}
+              {...testProps('delivered-date-prev')}
+            >
               <Ionicons name="chevron-back" size={24} color={colors.primary} />
             </TouchableOpacity>
-            <TouchableOpacity style={styles.dateNavDateTouch} onPress={() => setShowPicker(true)} activeOpacity={0.7}>
+            <TouchableOpacity
+              style={styles.dateNavDateTouch}
+              onPress={() => setShowPicker(true)}
+              activeOpacity={0.7}
+              {...testProps('delivered-date-picker')}
+            >
               <Text style={styles.dateNavText}>{formatDate(selectedDate)}</Text>
             </TouchableOpacity>
             <TouchableOpacity
@@ -648,6 +659,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
               disabled={!canGoToNextDay}
               style={[styles.dateNavChevron, !canGoToNextDay && styles.dateNavChevronDisabled]}
               activeOpacity={0.7}
+              {...testProps('delivered-date-next')}
             >
               <Ionicons name="chevron-forward" size={24} color={colors.primary} />
             </TouchableOpacity>
@@ -667,6 +679,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
             }
             style={[styles.headerBtn, { alignItems: 'flex-end' }]}
             accessibilityLabel="Scan customer QR to filter delivered orders"
+            {...testProps('delivered-scan-qr')}
           >
             <Ionicons name="qr-code-outline" size={28} color={colors.primary} />
           </TouchableOpacity>
@@ -728,11 +741,13 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
           returnKeyType="search"
           blurOnSubmit
           onSubmitEditing={() => Keyboard.dismiss()}
+          {...testProps('delivered-search-input')}
         />
         <TouchableOpacity
           style={styles.searchFieldBtn}
           onPress={() => setShowFieldDropdown(true)}
           activeOpacity={0.8}
+          {...testProps('delivered-search-field')}
         >
           <Text style={styles.searchFieldBtnText} numberOfLines={1}>
             {searchFieldLabels[searchField] || t('deliveredorders.field', 'Field')}
@@ -787,6 +802,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
             style={[styles.tab, activeTab === TAB_ALL && styles.tabActive]}
             onPress={() => setActiveTab(TAB_ALL)}
             activeOpacity={0.8}
+            {...testProps('delivered-tab-all')}
           >
             <Ionicons name="list-outline" size={18} color={activeTab === TAB_ALL ? '#fff' : colors.text} />
             <Text style={[styles.tabText, activeTab === TAB_ALL && styles.tabTextActive]}>{t('deliveredorders.all', 'All')}</Text>
@@ -800,6 +816,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
             style={[styles.tab, activeTab === TAB_CASH && styles.tabActive]}
             onPress={() => setActiveTab(TAB_CASH)}
             activeOpacity={0.8}
+            {...testProps('delivered-tab-cash')}
           >
             <Ionicons name="cash-outline" size={18} color={activeTab === TAB_CASH ? '#fff' : colors.text} />
             <Text style={[styles.tabText, activeTab === TAB_CASH && styles.tabTextActive]}>{t('deliveredorders.cash', 'Cash')}</Text>
@@ -813,6 +830,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
             style={[styles.tab, activeTab === TAB_CHEQUE && styles.tabActive]}
             onPress={() => setActiveTab(TAB_CHEQUE)}
             activeOpacity={0.8}
+            {...testProps('delivered-tab-cheque')}
           >
             <Ionicons name="card-outline" size={18} color={activeTab === TAB_CHEQUE ? '#fff' : colors.text} />
             <Text style={[styles.tabText, activeTab === TAB_CHEQUE && styles.tabTextActive]}>{t('deliveredorders.cheque', 'Cheque')}</Text>
@@ -826,6 +844,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
             style={[styles.tab, activeTab === TAB_CREDIT && styles.tabActive]}
             onPress={() => setActiveTab(TAB_CREDIT)}
             activeOpacity={0.8}
+            {...testProps('delivered-tab-credit')}
           >
             <Ionicons name="wallet-outline" size={18} color={activeTab === TAB_CREDIT ? '#fff' : colors.text} />
             <Text style={[styles.tabText, activeTab === TAB_CREDIT && styles.tabTextActive]}>{t('deliveredorders.credit', 'Credit')}</Text>
@@ -846,6 +865,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
         automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
+        {...testProps('delivered-list')}
         ListEmptyComponent={
           <View style={styles.empty}>
             <Ionicons
@@ -883,6 +903,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
             isDelivered={true}
             paymentSplit={item.paymentSplit}
             qtyDoneByProductId={qtyDoneBySaleAndProduct[item.id] || null}
+            testID={`delivered-card-${item.id}`}
           />
         )}
       />

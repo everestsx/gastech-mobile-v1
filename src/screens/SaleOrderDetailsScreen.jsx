@@ -44,6 +44,7 @@ import { getProductImageSource } from '../utils/gasImage';
 import { isNewIssueName } from '../utils/cylinderCatalog';
 import { lineTaxAtQuantity } from '../utils/orderLineTax.js';
 import { getCheckoutResumeEntry } from '../services/checkoutResume.service';
+import { testProps } from '../utils/testProps';
 
 function formatCurrency(amount) {
     const n = Number(amount);
@@ -1364,7 +1365,10 @@ const handleProceedToPayment = useCallback(async () => {
     const imageSource = backendImageUri ? { uri: backendImageUri } : getProductImageSource(productName);
 
     return (
-      <View style={[styles.lineCard]}>
+      <View
+        style={[styles.lineCard]}
+        {...testProps(`saleorderdetail-line-${item.id}`)}
+      >
         <View style={styles.lineCardInnerRow}>
           {/* Left: circular gas image centered in circle */}
           {imageSource != null && (
@@ -1419,6 +1423,7 @@ const handleProceedToPayment = useCallback(async () => {
                       blurOnSubmit
                       onSubmitEditing={() => Keyboard.dismiss()}
                       editable
+                      {...testProps(`saleorderdetail-qty-${item.id}`)}
                     />
                     <TouchableOpacity
                       style={styles.qtyIconBtn}
@@ -1555,7 +1560,7 @@ const handleProceedToPayment = useCallback(async () => {
         )}
 
         {/* Order ID + Customer */}
-          <View style={styles.customerRow}>
+          <View style={styles.customerRow} {...testProps('saleorderdetail-customer')}>
               <View style={styles.customerLeft}>
                   <View style={{ flex: 1 }}>
                       {(order.name || order.id) && (
@@ -1618,6 +1623,7 @@ const handleProceedToPayment = useCallback(async () => {
                 onPress={updateQty}
                 disabled={updating}
                 activeOpacity={0.8}
+                {...testProps('saleorderdetail-save')}
               >
                 {updating ? (
                   <ActivityIndicator size="small" color={colors.primary} />
@@ -1630,6 +1636,7 @@ const handleProceedToPayment = useCallback(async () => {
                 style={styles.modifyUpdateBtn}
                 onPress={() => setModifyEnabled(true)}
                 activeOpacity={0.8}
+                {...testProps('saleorderdetail-modify')}
               >
                 <Text style={styles.modifyUpdateBtnText}>{t('saleorderdetails.modifyOrder', 'Modify Order')}</Text>
               </TouchableOpacity>
@@ -1699,6 +1706,7 @@ const handleProceedToPayment = useCallback(async () => {
             }}
             disabled={modifyEnabled || updating || orderIsCancelled}
             activeOpacity={0.8}
+            {...testProps('saleorderdetail-proceed-payment')}
           >
             <Ionicons name="card-outline" size={22} color="#fff" />
             <Text style={styles.payBtnText}>{t('saleorderdetails.proceedToPayment', 'Proceed to payment')}</Text>
@@ -1710,6 +1718,7 @@ const handleProceedToPayment = useCallback(async () => {
               onPress={handleOpenCancelFlow}
               disabled={!canCancel}
               activeOpacity={0.8}
+              {...testProps('saleorderdetail-cancel')}
             >
               <Ionicons name="close-circle-outline" size={20} color={colors.error || '#c00'} />
               <Text style={styles.cancelBtnText}>{t('saleorderdetails.cancelOrder', 'Cancel order')}</Text>

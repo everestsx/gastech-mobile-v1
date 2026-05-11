@@ -6,6 +6,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AppLogo from '../components/AppLogo';
 import { getUserSession, logout, isSessionExpired } from '../services/sync.service';
 import { getDb } from '../database/db';
+import { testProps } from '../utils/testProps';
 
 const { width: W } = Dimensions.get('window');
 
@@ -90,11 +91,18 @@ export default function SplashScreenComponent({ navigation }) {
           ]}
         >
           <View style={styles.logoCard}>
-            <AppLogo size={200} useImage />
+            <AppLogo size={200} useImage {...testProps('splash-logo')} />
           </View>
-          <Text style={styles.brand}>{t('splash.gasTech', 'GasTech')}</Text>
+          <Text style={styles.brand} {...testProps('splash-brand-text')}>
+            {t('splash.gasTech', 'GasTech')}
+          </Text>
           <Text style={styles.tagline}>{t('splash.smartCylinderDelivery', 'Smart cylinder delivery')}</Text>
-          <ActivityIndicator size="large" color={SPLASH.glow} style={styles.spinner} />
+          <ActivityIndicator
+            size="large"
+            color={SPLASH.glow}
+            style={styles.spinner}
+            {...testProps('splash-spinner')}
+          />
         </View>
       </View>
     );

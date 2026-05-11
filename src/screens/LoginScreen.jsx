@@ -22,6 +22,7 @@ import { Ionicons } from '@expo/vector-icons';
 import AppLogo from '../components/AppLogo';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
+import { testProps } from '../utils/testProps';
 import {
   getCachedVehicles,
   getLastVehicleId,
@@ -825,6 +826,7 @@ export default function LoginScreen({ navigation }) {
                       accessibilityRole="button"
                       accessibilityLabel="Language"
                       accessibilityHint="Choose app language"
+                      {...testProps('login-language-switcher')}
                     >
                       <Ionicons name="language-outline" size={22} color={colors.primary} />
                       <Text style={styles.langSelectLabel} numberOfLines={1}>
@@ -853,6 +855,7 @@ export default function LoginScreen({ navigation }) {
                       style={[styles.inputGroup, dropdownVisible && { borderColor: colors.primary }]}
                       onPress={toggleDropdown}
                       activeOpacity={0.8}
+                      {...testProps('login-vehicle-dropdown')}
                   >
                     <Ionicons name="bus-outline" size={20} color={colors.primary} style={{ marginRight: 12 }} />
                     <Text style={{ flex: 1, fontSize: 16, color: colors.text }}>{displayLabel}</Text>
@@ -937,6 +940,7 @@ export default function LoginScreen({ navigation }) {
                       blurOnSubmit
                       onChangeText={setPassword}
                       onSubmitEditing={handleLogin}
+                      {...testProps('login-driver-input')}
                   />
                   <TouchableOpacity onPress={() => setShowPassword(!showPassword)}>
                     <Ionicons name={showPassword ? "eye-off-outline" : "eye-outline"} size={22} color={colors.textSecondary} />
@@ -949,6 +953,7 @@ export default function LoginScreen({ navigation }) {
                   onPress={handleLogin}
                   disabled={loading || syncing || loginPhase !== 'credentials'}
                   activeOpacity={0.8}
+                  {...testProps('login-submit-button')}
               >
                 {loading || syncing ? (
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
@@ -1030,10 +1035,16 @@ export default function LoginScreen({ navigation }) {
                     setPassword('');
                   }}
                   activeOpacity={0.85}
+                  {...testProps('login-driver-review-back')}
                 >
                   <Text style={styles.modalBtnSecondaryText}>{t('login.back', 'Back')}</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.modalBtnPrimary} onPress={openPorterSelection} activeOpacity={0.85}>
+                <TouchableOpacity
+                  style={styles.modalBtnPrimary}
+                  onPress={openPorterSelection}
+                  activeOpacity={0.85}
+                  {...testProps('login-driver-review-continue')}
+                >
                   <Text style={styles.modalBtnPrimaryText}>{t('login.continue', 'Continue')}</Text>
                 </TouchableOpacity>
               </View>
@@ -1066,6 +1077,7 @@ export default function LoginScreen({ navigation }) {
                     returnKeyType="search"
                     blurOnSubmit
                     onSubmitEditing={() => Keyboard.dismiss()}
+                    {...testProps('login-porter-search')}
                   />
                   {porterSearchQuery.length > 0 ? (
                     <TouchableOpacity onPress={() => setPorterSearchQuery('')} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
@@ -1217,6 +1229,7 @@ export default function LoginScreen({ navigation }) {
                   onPress={finishLoginWithPorters}
                   disabled={!canGoDashboard}
                   activeOpacity={0.85}
+                  {...testProps('login-porter-finish')}
                 >
                   {loading ? (
                     <ActivityIndicator color="#fff" />
@@ -1235,6 +1248,7 @@ export default function LoginScreen({ navigation }) {
             message={alertConfig.message}
             buttons={alertConfig.buttons}
             onClose={hideAlert}
+          {...testProps('login-alert-modal')}
         />
       </SafeAreaView>
   );

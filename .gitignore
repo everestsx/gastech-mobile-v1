@@ -61,6 +61,7 @@ gastech.db
 # Appium / WebDriverIO outputs
 e2e/allure-results/
 e2e/allure-report/
+e2e/artifacts/
 .env.test
 
 # Appium logs

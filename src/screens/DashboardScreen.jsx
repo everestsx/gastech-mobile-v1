@@ -71,6 +71,7 @@ import SyncHeaderBadge from '../components/SyncHeaderBadge';
 import RichNotification from '../components/RichNotification';
 import { useSync } from '../context/SyncContext';
 import { odooImageToUri, getDrivingEmployees, getPortersEmployees } from '../services/employee.service';
+import { testProps } from '../utils/testProps';
 import {
   mergePickingStateBySaleIdFromRows,
   orderIsDeliveryDoneForProgress,
@@ -1962,6 +1963,7 @@ export default function DashboardScreen({ navigation }) {
                   imageBase64: user?.driverImageBase64,
                 })
               }
+              {...testProps('dashboard-profile')}
             >
               {driverHeaderUri ? (
                 <Image source={{ uri: driverHeaderUri }} style={styles.driverHeaderAvatar} resizeMode="cover" />
@@ -1996,6 +1998,7 @@ export default function DashboardScreen({ navigation }) {
                 activeOpacity={0.85}
                 accessibilityRole="button"
                 accessibilityLabel={t('dashboard.chooseRouteForToday', 'Choose route for today')}
+                {...testProps('dashboard-route-picker')}
               >
                 <Ionicons name="location-outline" size={16} color="rgba(255,255,255,0.95)" />
                 <Text style={styles.routePillText} numberOfLines={1}>
@@ -2080,7 +2083,7 @@ export default function DashboardScreen({ navigation }) {
                     </View>
                   </View>
                 </View>
-                <View style={styles.syncingUnderSync}>
+                <View style={styles.syncingUnderSync} {...testProps('dashboard-sync-indicator')}>
                   <SyncHeaderBadge variant="dashboard" />
                 </View>
               </View>
@@ -2213,6 +2216,7 @@ export default function DashboardScreen({ navigation }) {
               expandedCollectionCard != null && expandedCollectionCard !== 'cash' && styles.collectionCardSqueezed,
             ]}
             onPress={() => toggleCollectionCard('cash')}
+            {...testProps('dashboard-collection-cash')}
           >
             <Ionicons name="cash-outline" size={20} color={colors.cash ?? '#059669'} />
             {(expandedCollectionCard == null || expandedCollectionCard === 'cash') && (
@@ -2242,6 +2246,7 @@ export default function DashboardScreen({ navigation }) {
               expandedCollectionCard != null && expandedCollectionCard !== 'cheque' && styles.collectionCardSqueezed,
             ]}
             onPress={() => toggleCollectionCard('cheque')}
+            {...testProps('dashboard-collection-cheque')}
           >
             <Ionicons name="card-outline" size={20} color={colors.cheque ?? '#d97706'} />
             {(expandedCollectionCard == null || expandedCollectionCard === 'cheque') && (
@@ -2271,6 +2276,7 @@ export default function DashboardScreen({ navigation }) {
               expandedCollectionCard != null && expandedCollectionCard !== 'credit' && styles.collectionCardSqueezed,
             ]}
             onPress={() => toggleCollectionCard('credit')}
+            {...testProps('dashboard-collection-credit')}
           >
             <Ionicons name="wallet-outline" size={20} color={colors.credit ?? '#6366f1'} />
             {(expandedCollectionCard == null || expandedCollectionCard === 'credit') && (
@@ -2301,6 +2307,7 @@ export default function DashboardScreen({ navigation }) {
             style={styles.shopsGasCard}
             onPress={() => navigation.navigate('Orders')}
             activeOpacity={0.8}
+            {...testProps('dashboard-orders-completed')}
           >
             <View style={{ flexDirection: 'row', alignItems: 'baseline' }}>
               <Text style={[styles.shopsGasValue, { color: colors.primary }]}>{shopsCompleted}</Text>
@@ -2313,6 +2320,7 @@ export default function DashboardScreen({ navigation }) {
             style={styles.shopsGasCard}
             onPress={() => navigation.navigate('DeliveredOrders')}
             activeOpacity={0.8}
+            {...testProps('dashboard-gas-delivered')}
           >
             <View style={{ flexDirection: 'row', alignItems: 'baseline' }}>
               <Text style={[styles.shopsGasValue, { color: colors.warning ?? '#d97706' }]}>
@@ -2560,6 +2568,7 @@ export default function DashboardScreen({ navigation }) {
                       style={styles.actionCard}
                       onPress={() => navigation.navigate('Orders', { customerId: null })}
                       activeOpacity={0.8}
+                      {...testProps('dashboard-create-order')}
                   >
                     <View style={styles.actionIconWrap}>
                       <Ionicons name="add" size={32} color={colors.primary} />
@@ -2572,6 +2581,7 @@ export default function DashboardScreen({ navigation }) {
                       style={styles.actionCard}
                       onPress={() => navigation.navigate('Orders')}
                       activeOpacity={0.8}
+                      {...testProps('dashboard-return-order')}
                   >
                     <View style={styles.actionIconWrap}>
                       <Ionicons name="return-down-back-outline" size={28} color={colors.primary} />

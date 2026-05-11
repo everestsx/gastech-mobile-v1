@@ -35,6 +35,7 @@ import {
 } from '../services/saleOrder.service';
 import OrderCard from '../components/OrderCard';
 import SyncHeaderBadge from '../components/SyncHeaderBadge';
+import { testProps } from '../utils/testProps';
 import * as saleOrdersDb from '../database/saleOrders.js';
 import * as stockPickingsDb from '../database/stockPickings.js';
 import * as syncQueueDb from '../database/syncQueue.js';
@@ -708,6 +709,7 @@ export default function SaleOrderListScreen({ route, navigation }) {
               onPress={goToPreviousDay}
               style={styles.dateNavChevron}
               activeOpacity={0.7}
+              {...testProps('saleorders-date-prev')}
             >
               <Ionicons name="chevron-back" size={24} color={colors.primary} />
             </TouchableOpacity>
@@ -715,6 +717,7 @@ export default function SaleOrderListScreen({ route, navigation }) {
               style={styles.dateNavDateTouch}
               onPress={() => setShowPicker(true)}
               activeOpacity={0.7}
+              {...testProps('saleorders-date-picker')}
             >
               <Text style={styles.dateNavText}>{formatDate(selectedDate)}</Text>
             </TouchableOpacity>
@@ -723,6 +726,7 @@ export default function SaleOrderListScreen({ route, navigation }) {
               disabled={!canGoToNextDay}
               style={[styles.dateNavChevron, !canGoToNextDay && styles.dateNavChevronDisabled]}
               activeOpacity={0.7}
+              {...testProps('saleorders-date-next')}
             >
               <Ionicons name="chevron-forward" size={24} color={colors.primary} />
             </TouchableOpacity>
@@ -738,6 +742,7 @@ export default function SaleOrderListScreen({ route, navigation }) {
           <TouchableOpacity
             onPress={() => navigation.navigate('ScanQRCode')}
             style={[styles.headerBtn, styles.headerBtnRight]}
+            {...testProps('saleorders-scan-qr')}
           >
             <Ionicons name="qr-code-outline" size={28} color={colors.primary} />
           </TouchableOpacity>
@@ -773,11 +778,13 @@ export default function SaleOrderListScreen({ route, navigation }) {
           returnKeyType="search"
           blurOnSubmit
           onSubmitEditing={() => Keyboard.dismiss()}
+          {...testProps('saleorders-search-input')}
         />
         <TouchableOpacity
           style={styles.searchFieldBtn}
           onPress={() => setShowFieldDropdown(true)}
           activeOpacity={0.8}
+          {...testProps('saleorders-search-field')}
         >
           <Text style={styles.searchFieldBtnText} numberOfLines={1}>
             {searchFieldLabels[searchField] || 'Field'}
@@ -824,6 +831,7 @@ export default function SaleOrderListScreen({ route, navigation }) {
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
         automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
+        {...testProps('saleorders-list')}
         ListEmptyComponent={
           <View style={styles.empty}>
             <Ionicons name="cube-outline" size={48} color={colors.textSecondary} />
@@ -851,6 +859,7 @@ export default function SaleOrderListScreen({ route, navigation }) {
             onCancelPress={handleOpenCancelFlow}
             isDelivered={false}
             checkoutResumePhase={checkoutResumeMap[String(item.id)]?.phase ?? null}
+            testID={`saleorder-card-${item.id}`}
           />
         )}
       />

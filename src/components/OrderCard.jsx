@@ -13,6 +13,7 @@ import {
 import { formatCurrency } from '../utils/format';
 import { getLocalizedCustomerNameFromOrder } from '../utils/customerDisplayName';
 import { getOrderDisplayTotal } from '../utils/orderLineTotals';
+import { testProps } from '../utils/testProps';
 
 /** Format date_order (ISO or date string) for display. */
 function formatOrderDate(dateOrder) {
@@ -59,6 +60,7 @@ export default function OrderCard({
   orderLines = [],
   paymentSplit = null,
   deliveryBannerText = null,
+  testID = null,
   /** When set on delivered tab: show only products with qty_done > 0 as "X kg — N delivered". */
   qtyDoneByProductId = null,
   /** 'invoice' | 'payment_proof' — checkout in progress after payment (resume from list). */
@@ -262,12 +264,14 @@ export default function OrderCard({
 
   const state = order.state || 'draft';
   const displayDate = syncDateField === 'delivery_date' ? order.commitment_date : order.date_order;
+  const cardProps = testID ? testProps(testID) : {};
 
   return (
     <TouchableOpacity
       style={styles.card}
       onPress={() => onPress?.(order)}
       activeOpacity={0.8}
+      {...cardProps}
     >
       {deliveryBannerText ? (
         <View style={styles.deliveryBanner}>

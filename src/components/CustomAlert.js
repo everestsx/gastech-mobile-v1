@@ -8,17 +8,19 @@ import {
     Dimensions,
 } from 'react-native';
 import { useTheme } from '../context/ThemeContext';
-import {spacing, borderRadius, colors} from '../constants/theme';
+import { spacing, borderRadius, colors } from '../constants/theme';
 
 const { width } = Dimensions.get('window');
 
 export default function CustomAlert({
-                                        visible,
-                                        title,
-                                        message,
-                                        onClose,
-                                        buttons = [], // Array of { text, onPress, style: 'cancel' | 'default' | 'destructive' }
-                                    }) {
+    visible,
+    title,
+    message,
+    onClose,
+    testID,
+    accessibilityLabel,
+    buttons = [], // Array of { text, onPress, style: 'cancel' | 'default' | 'destructive' }
+}) {
     const { colors } = useTheme();
 
     if (!visible) return null;
@@ -26,7 +28,11 @@ export default function CustomAlert({
     return (
         <Modal transparent visible={visible} animationType="fade">
             <View style={styles.overlay}>
-                <View style={[styles.alertBox, { backgroundColor: colors.surface }]}>
+                <View
+                    style={[styles.alertBox, { backgroundColor: colors.surface }]}
+                    testID={testID}
+                    accessibilityLabel={accessibilityLabel || testID}
+                >
                     <Text style={[styles.title, { color: colors.text }]}>{title}</Text>
                     <Text style={[styles.message, { color: colors.textSecondary }]}>{message}</Text>
 
@@ -107,6 +113,6 @@ const styles = StyleSheet.create({
     buttonText: {
         fontSize: 15,
         fontWeight: '700',
-        color : '#fff'
+        color: '#fff'
     },
 });
