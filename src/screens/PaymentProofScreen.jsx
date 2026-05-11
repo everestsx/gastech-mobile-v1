@@ -27,7 +27,7 @@ import * as syncQueueDb from '../database/syncQueue.js';
 import * as vehicleInventoriesDb from '../database/vehicleInventories.js';
 import { getSaleOrderDetailsFromDB } from '../services/sync.service';
 import { empty } from '../database/dbHelpers.js';
-import { runSync } from '../services/sync.service';
+import { runSync, flushPendingUploadsNow } from '../services/sync.service';
 import { getOrAssignInvoiceNumber } from '../utils/invoiceNumber';
 import { clearCheckoutResume } from '../services/checkoutResume.service';
 
@@ -192,6 +192,11 @@ export default function PaymentProofScreen({ route, navigation }) {
       await persistPhotos();
       await releaseHeldQueueItemsAndFinalizeLocal();
       await clearCheckoutResume(soId);
+      // Try immediate queue upload while connection is healthy, but never block UX for long.
+      await Promise.race([
+        flushPendingUploadsNow({ includeAttachments: true }),
+        new Promise((resolve) => setTimeout(resolve, 4500)),
+      ]);
       runSync().catch((e) => console.warn('[PaymentProof] sync', e?.message ?? e));
       navigation.reset({
         index: 0,

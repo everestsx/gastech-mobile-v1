@@ -1063,6 +1063,57 @@ async function processSyncQueue() {
         return [];
       };
 
+      const roundQty3 = (q) => Math.round(Number(q) * 1000) / 1000;
+
+      /**
+       * After delivery RPCs, insist every Odoo transfer on this SO is done/cancel — otherwise invoice can
+       * post with wrong delivered qty while transfers still queue (intermittent back-office/mobile mismatch).
+       */
+      const verifyAllSaleOrderPickingsAreTerminal = async (soIdRaw) => {
+        const sid = Number(soIdRaw);
+        if (!Number.isFinite(sid) || sid <= 0) return;
+        const picks = await getPickingBySaleOrder(sid);
+        const allowed = new Set(['done', 'cancel']);
+        for (const pk of picks || []) {
+          const st = String(pk?.state ?? '')
+            .trim()
+            .toLowerCase();
+          if (!st || allowed.has(st)) continue;
+          throw new Error(
+            `Delivery incomplete: transfer ${pk?.id ?? '?'} (${String(pk?.name ?? '').slice(0, 40)}) is still "${st}" in Odoo. Sync will retry.`
+          );
+        }
+      };
+
+      /** Ensure sale.order.line qty_delivered matches what the driver completed — catches silent write failures. */
+      const verifySaleOrderLineDeliveredAgainstPayload = async (deliveredUpdates) => {
+        if (!Array.isArray(deliveredUpdates) || deliveredUpdates.length === 0) return;
+        const ids = [
+          ...new Set(deliveredUpdates.map((u) => Number(u.lineId)).filter((n) => Number.isFinite(n) && n > 0)),
+        ];
+        if (!ids.length) return;
+        const { callOdoo } = await import('./index.service.js');
+        const rows =
+          (await callOdoo('sale.order.line', 'read', [ids], {
+            fields: ['id', 'qty_delivered'],
+          })) || [];
+        const list = Array.isArray(rows) ? rows : [];
+        const byId = new Map(list.map((r) => [Number(r.id), r]));
+        const tol = 0.02;
+        for (const u of deliveredUpdates) {
+          const lid = Number(u.lineId);
+          const exp = roundQty3(u.qty_delivered);
+          if (!Number.isFinite(lid) || lid <= 0 || u.qty_delivered == null || !Number.isFinite(Number(exp))) continue;
+          const row = byId.get(lid);
+          const actual = row != null ? roundQty3(row.qty_delivered) : NaN;
+          if (!Number.isFinite(actual) || Math.abs(actual - exp) > tol) {
+            throw new Error(
+              `Delivered qty mismatch on SO line ${lid}: driver payload ${exp}, Odoo read ${actual}. Invoice would be wrong — sync retries.`
+            );
+          }
+        }
+      };
+
       /** Push one delivery queue row to Odoo and mark synced. Used from main delivery pass and pre-payment flush. */
       const processOneDeliveryQueueItem = async (item) => {
         const p = item.payload || {};
@@ -1098,6 +1149,12 @@ async function processSyncQueue() {
               );
             }
           }
+        };
+
+        /** Cross-check warehouse + SOL after writes; throws so queue retries instead of drifting from mobile. */
+        const finalizeDeliveryConsistencyCheck = async () => {
+          await verifyAllSaleOrderPickingsAreTerminal(saleOrderId);
+          await verifySaleOrderLineDeliveredAgainstPayload(saleOrderLineDeliveredUpdates);
         };
 
         try {
@@ -1136,6 +1193,7 @@ async function processSyncQueue() {
             const soCrew = saleOrderId != null ? Number(saleOrderId) : NaN;
             if (Number.isFinite(soCrew) && soCrew > 0) await writeSaleOrderCrewFromPaymentPayload(soCrew, p);
           }
+          await finalizeDeliveryConsistencyCheck();
           await syncQueueDb.markSynced(Number(item.id));
           log(
             'queue',
@@ -1167,6 +1225,7 @@ async function processSyncQueue() {
             const pick = Array.isArray(stateRows) ? stateRows[0] : stateRows;
             if (pick?.state === 'done') {
               log('queue', `delivery picking ${pickingId} already done — skip block`);
+              validatedAnyPicking = true;
               continue;
             }
           } catch (_) { }
@@ -1388,14 +1447,20 @@ async function processSyncQueue() {
               cancel_backorder: true,
             });
           };
+          /** Avoid swallowing hard validate failures behind a broad "already..." match (Odoo qty/invoice mismatches). */
           const validateMsgOkToSkip = (msg) => {
             const v = (msg || '').toLowerCase();
             return (
               v.includes('does not exist') ||
               v.includes('has been deleted') ||
-              v.includes('already') ||
-              v.includes('nothing to') ||
-              (v.includes('done') && v.includes('picking'))
+              v.includes('nothing to validate') ||
+              v.includes('nothing backorder') ||
+              v.includes('has already been validated') ||
+              v.includes('already been validated') ||
+              v.includes('transfer has already been processed') ||
+              v.includes('picking has already been processed') ||
+              (v.includes('done') &&
+                (v.includes('transfer') || v.includes('picking') || v.includes('already')))
             );
           };
           const mightBeStockReservation = (msg) => {
@@ -1508,6 +1573,7 @@ async function processSyncQueue() {
           const soCrew = saleOrderId != null ? Number(saleOrderId) : NaN;
           if (Number.isFinite(soCrew) && soCrew > 0) await writeSaleOrderCrewFromPaymentPayload(soCrew, p);
         }
+        await finalizeDeliveryConsistencyCheck();
         await syncQueueDb.markSynced(Number(item.id));
         log('queue', `delivery synced id=${item.id} (${blocks.length} picking block(s))`);
       };
@@ -1761,23 +1827,28 @@ async function processSyncQueue() {
 
             // Apply only the latest held payload snapshot to avoid stale line quantities
             // from older duplicate queue rows overwriting delivery/invoice quantities.
+            let flushOk = false;
             try {
               const released = {
                 ...latestHeld,
                 payload: { ...(latestHeld.payload || {}), holdUntilPayment: false },
               };
               await processOneDeliveryQueueItem(released);
+              flushOk = true;
             } catch (flushErr) {
               logWarn('queue delivery (flush before payment)', flushErr);
             }
 
-            // Older rows for the same SO are superseded by the latest payload.
-            for (const older of superseded) {
-              try {
-                await syncQueueDb.markSynced(Number(older.id));
-                log('queue', `delivery superseded row synced id=${older.id} SO ${soId}`);
-              } catch (skipErr) {
-                logWarn('queue delivery (mark superseded)', skipErr);
+            // Older held rows are noise once the latest snapshot applies; only clear them if flush succeeded
+            // so a failed delivery retry is not left with every duplicate marked "synced" and no real upload.
+            if (flushOk && superseded.length > 0) {
+              for (const older of superseded) {
+                try {
+                  await syncQueueDb.markSynced(Number(older.id));
+                  log('queue', `delivery superseded row synced id=${older.id} SO ${soId}`);
+                } catch (skipErr) {
+                  logWarn('queue delivery (mark superseded)', skipErr);
+                }
               }
             }
           }
@@ -2951,6 +3022,29 @@ export async function runSync() {
     return await _runSyncPromise;
   } finally {
     _runSyncPromise = null;
+  }
+}
+
+/**
+ * Fast-path upload: process only pending queue + attachments without full pull sync.
+ * Used when the user just completed an order and is online, so backend updates can
+ * happen immediately without waiting for the next interval.
+ */
+export async function flushPendingUploadsNow(options = {}) {
+  const includeAttachments = options?.includeAttachments !== false;
+  try {
+    await processSyncQueue();
+    if (includeAttachments) {
+      await processStandaloneOfflineAttachments();
+    }
+  } catch (e) {
+    logWarn('flushPendingUploadsNow', e);
+  }
+  try {
+    const pendingCount = await syncQueueDb.getPendingCount();
+    return { pendingCount };
+  } catch (_) {
+    return { pendingCount: null };
   }
 }
 

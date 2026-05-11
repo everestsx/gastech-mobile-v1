@@ -196,6 +196,7 @@ export default function DashboardScreen({ navigation }) {
   const [pickingsBySaleId, setPickingsBySaleId] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
   const [lastSyncTime, setLastSyncTime] = useState(null);
   const [syncLog, setSyncLog] = useState([]);
   const [selectedChartDate, setSelectedChartDate] = useState(() => formatLocalYyyyMmDd(new Date()));
@@ -332,51 +333,57 @@ export default function DashboardScreen({ navigation }) {
         getCachedRoutes(),
       ]);
       let user = userData || null;
-      if (user && Array.isArray(user.selectedPorters) && user.selectedPorters.length > 0) {
-        const needImages = user.selectedPorters.some((p) => !p?.imageBase64);
-        if (needImages) {
+      setUser(user);
+      // Do not block dashboard data load on employee image API calls.
+      // Hydrate missing crew images in background so first screen paints fast.
+      if (user) {
+        void (async () => {
           try {
-            const withImages = await getPortersEmployees();
-            if (Array.isArray(withImages) && withImages.length) {
-              const byId = new Map(withImages.map((p) => [Number(p.id), p]));
-              user = {
-                ...user,
-                selectedPorters: user.selectedPorters.map((p) => {
-                  const full = byId.get(Number(p?.id));
-                  if (!full) return p;
-                  return {
-                    ...p,
-                    imageBase64: p.imageBase64 || full.imageBase64,
-                    phone: (p.phone && String(p.phone).trim()) ? p.phone : (full.phone || ''),
+            let nextUser = user;
+            if (Array.isArray(nextUser.selectedPorters) && nextUser.selectedPorters.length > 0) {
+              const needImages = nextUser.selectedPorters.some((p) => !p?.imageBase64);
+              if (needImages) {
+                const withImages = await getPortersEmployees();
+                if (Array.isArray(withImages) && withImages.length) {
+                  const byId = new Map(withImages.map((p) => [Number(p.id), p]));
+                  nextUser = {
+                    ...nextUser,
+                    selectedPorters: nextUser.selectedPorters.map((p) => {
+                      const full = byId.get(Number(p?.id));
+                      if (!full) return p;
+                      return {
+                        ...p,
+                        imageBase64: p.imageBase64 || full.imageBase64,
+                        phone: (p.phone && String(p.phone).trim()) ? p.phone : (full.phone || ''),
+                      };
+                    }),
                   };
-                }),
-              };
+                }
+              }
+            }
+            if (!hasValidEmployeeImage(nextUser?.driverImageBase64) && nextUser?.driverId != null) {
+              let employees = await getDrivingEmployees();
+              let matchedDriver = (employees || []).find((e) => Number(e?.id) === Number(nextUser.driverId));
+              // Defensive fallback: some DBs may have driver mis-assigned to another department.
+              if (!matchedDriver?.imageBase64) {
+                employees = await getPortersEmployees();
+                matchedDriver = (employees || []).find((e) => Number(e?.id) === Number(nextUser.driverId));
+              }
+              if (matchedDriver?.imageBase64) {
+                nextUser = { ...nextUser, driverImageBase64: matchedDriver.imageBase64 };
+              }
+            }
+            if (nextUser !== user) {
+              try {
+                await saveUserSession(nextUser);
+              } catch (_) {}
+              setUser((prev) => (prev ? { ...prev, ...nextUser } : nextUser));
             }
           } catch (e) {
-            console.warn('[Dashboard] porter avatar hydrate failed', e?.message ?? e);
+            console.warn('[Dashboard] employee media hydrate failed', e?.message ?? e);
           }
-        }
+        })();
       }
-      if (user && !hasValidEmployeeImage(user?.driverImageBase64) && user?.driverId != null) {
-        try {
-          let employees = await getDrivingEmployees();
-          let matchedDriver = (employees || []).find((e) => Number(e?.id) === Number(user.driverId));
-          // Defensive fallback: some DBs may have driver mis-assigned to another department.
-          if (!matchedDriver?.imageBase64) {
-            employees = await getPortersEmployees();
-            matchedDriver = (employees || []).find((e) => Number(e?.id) === Number(user.driverId));
-          }
-          if (matchedDriver?.imageBase64) {
-            user = { ...user, driverImageBase64: matchedDriver.imageBase64 };
-            try {
-              await saveUserSession(user);
-            } catch (_) {}
-          }
-        } catch (e) {
-          console.warn('[Dashboard] driver avatar hydrate failed', e?.message ?? e);
-        }
-      }
-      setUser(user);
       setRoutes(Array.isArray(routesData) ? routesData : []);
       const vehicleId = user?.isAdmin === false ? user.vehicleId : null;
       const [ordersRes, resumeRes] = await Promise.allSettled([getCachedOrders(vehicleId), getCheckoutResumeMap()]);
@@ -1403,6 +1410,29 @@ export default function DashboardScreen({ navigation }) {
           minHeight: 32,
           justifyContent: 'center',
         },
+        syncNowBtn: {
+          alignSelf: 'flex-end',
+          marginTop: 8,
+          minHeight: 34,
+          borderRadius: 18,
+          paddingHorizontal: 12,
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 6,
+          borderWidth: 1,
+          borderColor: 'rgba(255,255,255,0.65)',
+          backgroundColor: 'rgba(255,255,255,0.12)',
+        },
+        syncNowBtnDisabled: {
+          opacity: 0.65,
+        },
+        syncNowBtnText: {
+          fontSize: 12,
+          fontWeight: '800',
+          color: '#fff',
+          letterSpacing: 0.2,
+        },
         lastSyncedLabel: {
           fontSize: 10,
           fontWeight: '600',
@@ -1923,9 +1953,9 @@ export default function DashboardScreen({ navigation }) {
     (todayOrderLines?.length || 0) > 0 ||
     (stockCards?.length || 0) > 0 ||
     Object.keys(lineTotalsByOrder || {}).length > 0;
-  const shouldBlockDashboard = initialLoadGateActive && (isSyncing || !!user?.pendingInitialSync);
   const shouldShowInitialFullScreenLoader =
-    (initialLoadGateActive && (loading || isSyncing || !!user?.pendingInitialSync)) ||
+    (initialLoadGateActive &&
+      (loading || (!hasAnyDashboardData && (isSyncing || !!user?.pendingInitialSync)))) ||
     (loading && !hasAnyDashboardData);
 
   if (shouldShowInitialFullScreenLoader) {
@@ -2097,6 +2127,23 @@ export default function DashboardScreen({ navigation }) {
                 <View style={styles.syncingUnderSync}>
                   <SyncHeaderBadge variant="dashboard" />
                 </View>
+                <TouchableOpacity
+                  style={[styles.syncNowBtn, (syncing || isSyncing) && styles.syncNowBtnDisabled]}
+                  onPress={onSync}
+                  activeOpacity={0.85}
+                  disabled={syncing || isSyncing}
+                  accessibilityRole="button"
+                  accessibilityLabel={t('dashboard.syncNow', 'Sync now')}
+                >
+                  {syncing || isSyncing ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <>
+                      <Ionicons name="sync-outline" size={14} color="#fff" />
+                      <Text style={styles.syncNowBtnText}>{t('dashboard.syncNow', 'Sync now')}</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
               </View>
             {/* //Daily Visit Keep Commented for now */}
             {/* <TouchableOpacity
