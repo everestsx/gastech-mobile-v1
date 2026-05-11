@@ -6,6 +6,8 @@ import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useR
   ScrollView,
   RefreshControl,
   ActivityIndicator,
+  Animated,
+  Easing,
   Platform,
   LayoutAnimation,
   UIManager,
@@ -67,7 +69,6 @@ import * as productsDb from '../database/products.js';
 import * as deliveryQtyDb from '../database/deliveryQty.js';
 import * as saleOrderLinesDb from '../database/saleOrderLines.js';
 import DeliveryProgressBarChart from '../components/DeliveryProgressBarChart';
-import SyncHeaderBadge from '../components/SyncHeaderBadge';
 import RichNotification from '../components/RichNotification';
 import { useSync } from '../context/SyncContext';
 import { odooImageToUri, getDrivingEmployees, getPortersEmployees } from '../services/employee.service';
@@ -249,6 +250,34 @@ export default function DashboardScreen({ navigation }) {
   const lastSyncNotificationRef = React.useRef(null);
   const previousSyncedPaymentIdsRef = React.useRef(new Set());
   const initialSyncStartedRef = React.useRef(false);
+  const syncSpinAnim = useRef(new Animated.Value(0)).current;
+  /** Single sync control uses this rotation while manual or background sync runs (no separate badge spinner). */
+  useEffect(() => {
+    const busy = syncing || isSyncing;
+    if (!busy) {
+      syncSpinAnim.stopAnimation();
+      syncSpinAnim.setValue(0);
+      return;
+    }
+    const loop = Animated.loop(
+      Animated.timing(syncSpinAnim, {
+        toValue: 1,
+        duration: 1000,
+        easing: Easing.linear,
+        useNativeDriver: true,
+      })
+    );
+    syncSpinAnim.setValue(0);
+    loop.start();
+    return () => {
+      loop.stop();
+      syncSpinAnim.setValue(0);
+    };
+  }, [syncing, isSyncing, syncSpinAnim]);
+  const syncSpinDeg = syncSpinAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['0deg', '360deg'],
+  });
 
   // Compute session key as a stable string for use in useEffect
   const sessionKey = useMemo(() => {
@@ -1404,16 +1433,11 @@ export default function DashboardScreen({ navigation }) {
         greeting: { fontSize: 22, fontWeight: '800', color: colors.text },
         hint: { fontSize: 14, color: colors.textSecondary, marginTop: 2 },
         lastSyncedBlock: { alignItems: 'flex-end' },
-        syncingUnderSync: {
-          alignSelf: 'flex-end',
-          marginTop: 4,
-          minHeight: 32,
-          justifyContent: 'center',
-        },
         syncNowBtn: {
           alignSelf: 'flex-end',
           marginTop: 8,
-          minHeight: 34,
+          minHeight: 36,
+          minWidth: 36,
           borderRadius: 18,
           paddingHorizontal: 12,
           flexDirection: 'row',
@@ -1424,8 +1448,13 @@ export default function DashboardScreen({ navigation }) {
           borderColor: 'rgba(255,255,255,0.65)',
           backgroundColor: 'rgba(255,255,255,0.12)',
         },
+        syncNowBtnBusy: {
+          width: 38,
+          minWidth: 38,
+          paddingHorizontal: 0,
+        },
         syncNowBtnDisabled: {
-          opacity: 0.65,
+          opacity: 0.9,
         },
         syncNowBtnText: {
           fontSize: 12,
@@ -1953,9 +1982,10 @@ export default function DashboardScreen({ navigation }) {
     (todayOrderLines?.length || 0) > 0 ||
     (stockCards?.length || 0) > 0 ||
     Object.keys(lineTotalsByOrder || {}).length > 0;
+  /** Until first-session gate clears: stay on full-screen loader while DB load runs or login sync runs (avoid empty dashboard flash). */
   const shouldShowInitialFullScreenLoader =
     (initialLoadGateActive &&
-      (loading || (!hasAnyDashboardData && (isSyncing || !!user?.pendingInitialSync)))) ||
+      (loading || !!user?.pendingInitialSync || isSyncing)) ||
     (loading && !hasAnyDashboardData);
 
   /** Blur overlay on first-session sync when dashboard shell is visible but data sync is still in flight */
@@ -1994,7 +2024,7 @@ export default function DashboardScreen({ navigation }) {
         <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.primary]} />
       }
     >
-      {/* 1. Top bar: date + route left; sync indicator (when syncing) + Last Synced right */}
+      {/* 1. Top bar: date + route left; last synced + Sync now (icon spins while syncing) right */}
       <View style={[styles.topBar, { paddingTop: spacing.lg + insets.top }]}>
         <View style={[styles.topBarRow, styles.topBarRowWithMargin]}>
           <View style={styles.topBarLeft}>
@@ -2128,19 +2158,27 @@ export default function DashboardScreen({ navigation }) {
                     </View>
                   </View>
                 </View>
-                <View style={styles.syncingUnderSync}>
-                  <SyncHeaderBadge variant="dashboard" />
-                </View>
                 <TouchableOpacity
-                  style={[styles.syncNowBtn, (syncing || isSyncing) && styles.syncNowBtnDisabled]}
+                  style={[
+                    styles.syncNowBtn,
+                    (syncing || isSyncing) && styles.syncNowBtnBusy,
+                    (syncing || isSyncing) && styles.syncNowBtnDisabled,
+                  ]}
                   onPress={onSync}
                   activeOpacity={0.85}
                   disabled={syncing || isSyncing}
                   accessibilityRole="button"
-                  accessibilityLabel={t('dashboard.syncNow', 'Sync now')}
+                  accessibilityLabel={
+                    syncing || isSyncing
+                      ? t('common.syncing', 'Syncing')
+                      : t('dashboard.syncNow', 'Sync now')
+                  }
+                  accessibilityHint={t('dashboard.syncNowHint', 'Tap to synchronize with the server')}
                 >
-                  {syncing || isSyncing ? (
-                    <ActivityIndicator size="small" color="#fff" />
+                  {(syncing || isSyncing) ? (
+                    <Animated.View style={{ transform: [{ rotate: syncSpinDeg }] }}>
+                      <Ionicons name="sync" size={20} color="#fff" accessibilityElementsHidden />
+                    </Animated.View>
                   ) : (
                     <>
                       <Ionicons name="sync-outline" size={14} color="#fff" />
