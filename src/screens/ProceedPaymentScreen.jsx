@@ -15,7 +15,7 @@ import {
   Keyboard,
 } from 'react-native';
 import { useHeaderHeight } from '@react-navigation/elements';
-import { setCheckoutResumeFromPayment } from '../services/checkoutResume.service';
+import { setCheckoutResumeFromPayment, setCheckoutResumePaymentStarted } from '../services/checkoutResume.service';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
@@ -79,6 +79,16 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   const [editingField, setEditingField] = useState(null);
   /** Blocks double submit: two parallel runs can enqueue duplicate delivery rows (sync then applies twice in Odoo). */
   const proceedGuardRef = useRef(false);
+
+  useEffect(() => {
+    const soId = saleOrderId != null ? Number(saleOrderId) : NaN;
+    if (!Number.isFinite(soId) || soId <= 0) return;
+    void setCheckoutResumePaymentStarted(soId, {
+      total: orderTotalRounded,
+      subtotal: orderSubtotal,
+      tax: orderTax,
+    });
+  }, [saleOrderId, orderTotalRounded, orderSubtotal, orderTax]);
 
   // Use only vehicle-specific journals for Cash and Cheque (cash_journal_id / check_journal_id from fleet.vehicle).
   const cashJournals = useMemo(() => {

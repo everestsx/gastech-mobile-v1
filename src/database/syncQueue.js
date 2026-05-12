@@ -83,6 +83,25 @@ export async function getPendingSaleOrderIds() {
   return ids;
 }
 
+/** Sale order ids with a payment row still waiting to upload (used to avoid clearing checkout resume too early). */
+export async function getPendingPaymentSaleOrderIds() {
+  const db = await getDb();
+  const rows = await db.getAllAsync(
+    `SELECT payload FROM sync_queue WHERE action_type = ? AND COALESCE(is_uploaded, 0) = 0 AND synced_at IS NULL`,
+    [ACTION_PAYMENT]
+  );
+  const ids = new Set();
+  for (const row of rows || []) {
+    const p = safeParseJson(row.payload, {});
+    const soId = p.saleOrderId ?? p.sale_order_id;
+    if (soId != null) {
+      const n = Number(soId);
+      if (Number.isFinite(n)) ids.add(n);
+    }
+  }
+  return ids;
+}
+
 /** Get pending (unsynced) payment queue item for a sale order, if any. Returns { id, payload } or null. Used to avoid duplicate queue entries. */
 export async function getPendingPaymentItemBySaleOrderId(saleOrderId) {
   if (saleOrderId == null) return null;

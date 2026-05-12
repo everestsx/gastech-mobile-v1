@@ -41,7 +41,8 @@ import * as syncQueueDb from '../database/syncQueue.js';
 import * as deliveryQtyDb from '../database/deliveryQty.js';
 import * as localPaymentsDb from '../database/localPayments.js';
 import * as offlineAttachmentsDb from '../database/offlineAttachments.js';
-import { getCheckoutResumeMap } from '../services/checkoutResume.service';
+import { getCheckoutResumeMap, pruneStaleCheckoutResumeEntries } from '../services/checkoutResume.service';
+import { useSync } from '../context/SyncContext';
 
 const TAB_TO_DELIVER = 'to_deliver';
 
@@ -87,13 +88,15 @@ export default function SaleOrderListScreen({ route, navigation }) {
   const [cancelReasonsLoading, setCancelReasonsLoading] = useState(false);
   const [cancelError, setCancelError] = useState(null);
   const [canceling, setCanceling] = useState(false);
+  const { syncCompleteTimestamp } = useSync();
   // Orders tab: hide once invoiced or delivered — unless checkout (invoice / payment photo) is still in progress.
   const filteredOrders = useMemo(
     () =>
       orders.filter((o) => {
         if (String(o.state || '') === 'cancel') return false;
         const rid = String(o.id);
-        if (checkoutResumeMap[rid]?.invoiceParams) return true;
+        const resumeEntry = checkoutResumeMap[rid];
+        if (resumeEntry?.invoiceParams || resumeEntry?.phase === 'payment') return true;
         const inv = String(o.invoice_status || '').toLowerCase() === 'invoiced';
         const st = String(o.pickingState || '').toLowerCase();
         // Do not treat qty_done > 0 as delivered before explicit completion.
@@ -445,11 +448,12 @@ export default function SaleOrderListScreen({ route, navigation }) {
     try {
       const user = await getUserSession();
       const vehicleId = user?.isAdmin === false ? user.vehicleId : null;
-      const [data, cachedCustomers, resumeMap] = await Promise.all([
+      const [data, cachedCustomers] = await Promise.all([
         getCachedOrders(vehicleId),
         customerId != null ? getCachedCustomers() : Promise.resolve([]),
-        getCheckoutResumeMap(),
       ]);
+      await pruneStaleCheckoutResumeEntries();
+      const resumeMap = await getCheckoutResumeMap();
       setCheckoutResumeMap(resumeMap && typeof resumeMap === 'object' ? resumeMap : {});
       const all = Array.isArray(data) ? data : [];
       const dateStr = formatDate(selectedDate);
@@ -485,12 +489,13 @@ export default function SaleOrderListScreen({ route, navigation }) {
         const rid = String(id);
         const entry = resumeForSort[rid];
         if (entry?.phase === 'payment_proof') return 0;
-        if (entry?.phase === 'invoice') return 1;
+        if (entry?.phase === 'payment') return 1;
+        if (entry?.phase === 'invoice') return 2;
         const split = paymentSplits[id] ?? paymentSplits[String(id)];
         const cred = Number(split?.credit) || 0;
         const att = Number(attachCounts[id] ?? attachCounts[String(id)] ?? 0) || 0;
-        if (cred > 0 && att === 0) return 2;
-        if (pendingUploadSet.has(id)) return 3;
+        if (cred > 0 && att === 0) return 3;
+        if (pendingUploadSet.has(id)) return 4;
         return 10;
       };
       const saleIdToPickingState = {};
@@ -522,8 +527,8 @@ export default function SaleOrderListScreen({ route, navigation }) {
         if (d !== 0) return d;
         const ra = resumeForSort[String(a.id)];
         const rb = resumeForSort[String(b.id)];
-        const hasA = Boolean(ra?.invoiceParams);
-        const hasB = Boolean(rb?.invoiceParams);
+        const hasA = Boolean(ra?.invoiceParams || ra?.phase === 'payment');
+        const hasB = Boolean(rb?.invoiceParams || rb?.phase === 'payment');
         if (hasA && hasB) {
           const ta = Number(ra.updatedAt) || 0;
           const tb = Number(rb.updatedAt) || 0;
@@ -555,6 +560,10 @@ export default function SaleOrderListScreen({ route, navigation }) {
     const unsub = navigation.addListener?.('focus', loadOrders);
     return () => unsub?.();
   }, [loadOrders, navigation]);
+
+  useEffect(() => {
+    if (syncCompleteTimestamp > 0) loadOrders();
+  }, [syncCompleteTimestamp, loadOrders]);
 
   useEffect(() => {
     if (!showCancelModal) return undefined;

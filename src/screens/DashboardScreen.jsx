@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from 'react';import {
+import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from 'react';
+import {
   View,
   Text,
   StyleSheet,
@@ -7,7 +8,6 @@ import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useR
   RefreshControl,
   ActivityIndicator,
   Animated,
-  Easing,
   Platform,
   LayoutAnimation,
   UIManager,
@@ -79,6 +79,7 @@ import {
 import {
   getCheckoutResumeMap,
   pendingCheckoutSaleOrderIdsFromResumeMap,
+  pruneStaleCheckoutResumeEntries,
 } from '../services/checkoutResume.service';
 
 let lastDashboardSnapshot = null;
@@ -250,34 +251,6 @@ export default function DashboardScreen({ navigation }) {
   const lastSyncNotificationRef = React.useRef(null);
   const previousSyncedPaymentIdsRef = React.useRef(new Set());
   const initialSyncStartedRef = React.useRef(false);
-  const syncSpinAnim = useRef(new Animated.Value(0)).current;
-  /** Single sync control uses this rotation while manual or background sync runs (no separate badge spinner). */
-  useEffect(() => {
-    const busy = syncing || isSyncing;
-    if (!busy) {
-      syncSpinAnim.stopAnimation();
-      syncSpinAnim.setValue(0);
-      return;
-    }
-    const loop = Animated.loop(
-      Animated.timing(syncSpinAnim, {
-        toValue: 1,
-        duration: 1000,
-        easing: Easing.linear,
-        useNativeDriver: true,
-      })
-    );
-    syncSpinAnim.setValue(0);
-    loop.start();
-    return () => {
-      loop.stop();
-      syncSpinAnim.setValue(0);
-    };
-  }, [syncing, isSyncing, syncSpinAnim]);
-  const syncSpinDeg = syncSpinAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: ['0deg', '360deg'],
-  });
 
   // Compute session key as a stable string for use in useEffect
   const sessionKey = useMemo(() => {
@@ -415,11 +388,15 @@ export default function DashboardScreen({ navigation }) {
       }
       setRoutes(Array.isArray(routesData) ? routesData : []);
       const vehicleId = user?.isAdmin === false ? user.vehicleId : null;
-      const [ordersRes, resumeRes] = await Promise.allSettled([getCachedOrders(vehicleId), getCheckoutResumeMap()]);
-      const data = ordersRes.status === 'fulfilled' ? ordersRes.value : [];
-      const resumeMap = resumeRes.status === 'fulfilled' ? resumeRes.value : {};
-      const pendingCheckoutSaleOrderIds = pendingCheckoutSaleOrderIdsFromResumeMap(resumeMap);
-      setPendingCheckoutOrderIds(pendingCheckoutSaleOrderIds);
+      let data = [];
+      try {
+        data = (await getCachedOrders(vehicleId)) || [];
+      } catch (_) {
+        data = [];
+      }
+      await pruneStaleCheckoutResumeEntries();
+      const resumeMap = await getCheckoutResumeMap();
+      let pendingCheckoutSaleOrderIds = pendingCheckoutSaleOrderIdsFromResumeMap(resumeMap);
       setOrders(Array.isArray(data) ? data : []);
       const allCachedOrderIds = (Array.isArray(data) ? data : [])
         .map((o) => Number(o?.id))
@@ -459,6 +436,8 @@ export default function DashboardScreen({ navigation }) {
       );
 
       const localInvoiceSaleOrderIds = await localInvoicesDb.getSaleOrderIdsWithLocalInvoices().catch(() => new Set());
+
+      setPendingCheckoutOrderIds(pendingCheckoutSaleOrderIds);
 
       function orderCountsAsCompletedToday(order) {
         const oid = Number(order?.id);
@@ -939,8 +918,31 @@ export default function DashboardScreen({ navigation }) {
     setRefreshing(false);
   };
 
+  const syncButtonActive = syncing || isSyncing;
+  const syncSpin = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    if (!syncButtonActive) {
+      syncSpin.setValue(0);
+      return undefined;
+    }
+    const loop = Animated.loop(
+      Animated.timing(syncSpin, {
+        toValue: 1,
+        duration: 900,
+        useNativeDriver: true,
+      })
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [syncButtonActive, syncSpin]);
+
+  const syncSpinDeg = syncSpin.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['0deg', '360deg'],
+  });
+
   const onSync = async () => {
-    if (syncing) return;
+    if (syncing || isSyncing) return;
     setSyncing(true);
     setLastSyncResult(null);
     try {
@@ -1437,24 +1439,22 @@ export default function DashboardScreen({ navigation }) {
           alignSelf: 'flex-end',
           marginTop: 8,
           minHeight: 36,
-          minWidth: 36,
+          minWidth: 108,
           borderRadius: 18,
-          paddingHorizontal: 12,
+          paddingHorizontal: 14,
           flexDirection: 'row',
           alignItems: 'center',
           justifyContent: 'center',
-          gap: 6,
           borderWidth: 1,
           borderColor: 'rgba(255,255,255,0.65)',
           backgroundColor: 'rgba(255,255,255,0.12)',
         },
-        syncNowBtnBusy: {
-          width: 38,
-          minWidth: 38,
+        syncNowBtnSyncing: {
+          minWidth: 40,
+          width: 40,
+          height: 40,
           paddingHorizontal: 0,
-        },
-        syncNowBtnDisabled: {
-          opacity: 0.9,
+          borderRadius: 20,
         },
         syncNowBtnText: {
           fontSize: 12,
@@ -1982,10 +1982,9 @@ export default function DashboardScreen({ navigation }) {
     (todayOrderLines?.length || 0) > 0 ||
     (stockCards?.length || 0) > 0 ||
     Object.keys(lineTotalsByOrder || {}).length > 0;
-  /** Until first-session gate clears: stay on full-screen loader while DB load runs or login sync runs (avoid empty dashboard flash). */
+  /** Keep full-screen loader until first dashboard load finishes (same as earlier behavior). */
   const shouldShowInitialFullScreenLoader =
-    (initialLoadGateActive &&
-      (loading || !!user?.pendingInitialSync || isSyncing)) ||
+    (initialLoadGateActive && (loading || isSyncing || !!user?.pendingInitialSync)) ||
     (loading && !hasAnyDashboardData);
 
   /** Blur overlay on first-session sync when dashboard shell is visible but data sync is still in flight */
@@ -2024,7 +2023,7 @@ export default function DashboardScreen({ navigation }) {
         <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.primary]} />
       }
     >
-      {/* 1. Top bar: date + route left; last synced + Sync now (icon spins while syncing) right */}
+      {/* 1. Top bar: date + route left; last synced + sync counters + Sync now (same control shows rotating icon while sync runs) */}
       <View style={[styles.topBar, { paddingTop: spacing.lg + insets.top }]}>
         <View style={[styles.topBarRow, styles.topBarRowWithMargin]}>
           <View style={styles.topBarLeft}>
@@ -2159,31 +2158,23 @@ export default function DashboardScreen({ navigation }) {
                   </View>
                 </View>
                 <TouchableOpacity
-                  style={[
-                    styles.syncNowBtn,
-                    (syncing || isSyncing) && styles.syncNowBtnBusy,
-                    (syncing || isSyncing) && styles.syncNowBtnDisabled,
-                  ]}
+                  style={[styles.syncNowBtn, syncButtonActive && styles.syncNowBtnSyncing]}
                   onPress={onSync}
                   activeOpacity={0.85}
-                  disabled={syncing || isSyncing}
+                  disabled={syncButtonActive}
                   accessibilityRole="button"
                   accessibilityLabel={
-                    syncing || isSyncing
+                    syncButtonActive
                       ? t('common.syncing', 'Syncing')
                       : t('dashboard.syncNow', 'Sync now')
                   }
-                  accessibilityHint={t('dashboard.syncNowHint', 'Tap to synchronize with the server')}
                 >
-                  {(syncing || isSyncing) ? (
+                  {syncButtonActive ? (
                     <Animated.View style={{ transform: [{ rotate: syncSpinDeg }] }}>
-                      <Ionicons name="sync" size={20} color="#fff" accessibilityElementsHidden />
+                      <Ionicons name="sync" size={20} color="#fff" />
                     </Animated.View>
                   ) : (
-                    <>
-                      <Ionicons name="sync-outline" size={14} color="#fff" />
-                      <Text style={styles.syncNowBtnText}>{t('dashboard.syncNow', 'Sync now')}</Text>
-                    </>
+                    <Text style={styles.syncNowBtnText}>{t('dashboard.syncNow', 'Sync now')}</Text>
                   )}
                 </TouchableOpacity>
               </View>

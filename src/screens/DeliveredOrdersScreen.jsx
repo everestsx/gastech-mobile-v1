@@ -28,17 +28,23 @@ import {
   getOrderLinesByOrderIdsFromDB,
   getPickingsBySaleIdsFromDB,
   getUserSession,
+  refreshSaleOrderInvoiceHeaderFromOdoo,
+  refreshPaymentTypesFromOdoo,
 } from '../services/sync.service';
-import { mergePickingStateBySaleIdFromRows, orderIsDeliveryDoneForProgress } from '../utils/deliveryProgress';
+import * as syncQueueDb from '../database/syncQueue.js';
+import { mergePickingStateBySaleIdFromRows, orderAppearsInDeliveredTab } from '../utils/deliveryProgress';
 import * as saleOrderLinesDb from '../database/saleOrderLines.js';
 import * as localPaymentsDb from '../database/localPayments.js';
+import * as localInvoicesDb from '../database/localInvoices.js';
 import * as deliveryQtyDb from '../database/deliveryQty.js';
 import OrderCard from '../components/OrderCard';
 import SyncHeaderBadge from '../components/SyncHeaderBadge';
 import {
   getCheckoutResumeMap,
   pendingCheckoutSaleOrderIdsFromResumeMap,
+  pruneStaleCheckoutResumeEntries,
 } from '../services/checkoutResume.service';
+import { useSync } from '../context/SyncContext';
 
 const TAB_CASH = 'cash';
 const TAB_CHEQUE = 'cheque';
@@ -165,6 +171,9 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
   const [qtyDoneBySaleAndProduct, setQtyDoneBySaleAndProduct] = useState({});
   const [backendQtyDeliveredOrderIds, setBackendQtyDeliveredOrderIds] = useState(() => new Set());
   const [pendingCheckoutOrderIds, setPendingCheckoutOrderIds] = useState(() => new Set());
+  const [localInvoicedSaleOrderIds, setLocalInvoicedSaleOrderIds] = useState(() => new Set());
+  const [syncedPaymentOrderIds, setSyncedPaymentOrderIds] = useState(() => new Set());
+  const { syncCompleteTimestamp } = useSync();
   const [journals, setJournals] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedDate, setSelectedDate] = useState(() => {
@@ -187,15 +196,25 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
   const deliveredOrders = useMemo(
     () =>
       orders.filter((o) =>
-        orderIsDeliveryDoneForProgress(
+        orderAppearsInDeliveredTab(
           o,
           pickingStateBySaleId,
           qtyDoneBySaleId,
           backendQtyDeliveredOrderIds,
-          pendingCheckoutOrderIds
+          pendingCheckoutOrderIds,
+          localInvoicedSaleOrderIds,
+          syncedPaymentOrderIds
         )
       ),
-    [orders, pickingStateBySaleId, qtyDoneBySaleId, backendQtyDeliveredOrderIds, pendingCheckoutOrderIds]
+    [
+      orders,
+      pickingStateBySaleId,
+      qtyDoneBySaleId,
+      backendQtyDeliveredOrderIds,
+      pendingCheckoutOrderIds,
+      localInvoicedSaleOrderIds,
+      syncedPaymentOrderIds,
+    ]
   );
 
   const searchFieldLabels = {
@@ -455,27 +474,74 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
     try {
       const user = await getUserSession();
       const vehicleId = user?.isAdmin === false ? user.vehicleId : null;
-      const [data, cachedCustomers, resumeMap] = await Promise.all([
+      const [data, cachedCustomers] = await Promise.all([
         getCachedOrders(vehicleId),
         customerId != null ? getCachedCustomers() : Promise.resolve([]),
-        getCheckoutResumeMap(),
       ]);
+      await pruneStaleCheckoutResumeEntries();
+      const resumeMap = await getCheckoutResumeMap();
+      const localInvoiced = await localInvoicesDb.getSaleOrderIdsWithLocalInvoices().catch(() => new Set());
+      setLocalInvoicedSaleOrderIds(localInvoiced instanceof Set ? localInvoiced : new Set());
       setPendingCheckoutOrderIds(pendingCheckoutSaleOrderIdsFromResumeMap(resumeMap));
       const all = Array.isArray(data) ? data : [];
       const dateStr = formatDate(selectedDate);
-      let list = all.filter((o) => {
-        const selectedDateValue = syncDateField === 'delivery_date'
-          ? (o.commitment_date || o.date_order)
-          : (o.date_order || o.commitment_date);
-        return String(selectedDateValue || '').startsWith(dateStr);
+      const buildFilteredList = (rows) => {
+        let out = (Array.isArray(rows) ? rows : []).filter((o) => {
+          const primary =
+            syncDateField === 'delivery_date'
+              ? (o.commitment_date || o.date_order)
+              : (o.date_order || o.commitment_date);
+          const secondary =
+            syncDateField === 'delivery_date' ? o.date_order : o.commitment_date;
+          const p = String(primary || '').startsWith(dateStr);
+          const s = String(secondary || '').trim();
+          const q = s.length > 0 && s.startsWith(dateStr);
+          return p || q;
+        });
+        if (customerId != null) {
+          out = out.filter((o) => o.partner_id?.[0] === customerId);
+          const partner = Array.isArray(cachedCustomers)
+            ? cachedCustomers.find((c) => c.id === customerId)
+            : null;
+          if (partner?.name) setCustomerNameForEmpty((prev) => prev || partner.name);
+        }
+        return out;
+      };
+      let list = buildFilteredList(all);
+
+      const [syncedPaymentIds, pendingSaleOrderIds] = await Promise.all([
+        syncQueueDb.getSyncedPaymentSaleOrderIds().catch(() => new Set()),
+        syncQueueDb.getPendingSaleOrderIds().catch(() => new Set()),
+      ]);
+      setSyncedPaymentOrderIds(
+        syncedPaymentIds instanceof Set ? new Set(syncedPaymentIds) : new Set(Array.from(syncedPaymentIds || []))
+      );
+      const needsInvoiceHeader = list.filter((o) => {
+        const id = Number(o.id);
+        if (!Number.isFinite(id)) return false;
+        if (!syncedPaymentIds.has(id)) return false;
+        if (pendingSaleOrderIds.has(id)) return false;
+        return String(o.invoice_status || '').toLowerCase() !== 'invoiced';
       });
-      if (customerId != null) {
-        list = list.filter((o) => o.partner_id?.[0] === customerId);
-        const partner = Array.isArray(cachedCustomers)
-          ? cachedCustomers.find((c) => c.id === customerId)
-          : null;
-        if (partner?.name) setCustomerNameForEmpty((prev) => prev || partner.name);
+      if (needsInvoiceHeader.length > 0) {
+        await Promise.all(needsInvoiceHeader.map((o) => refreshSaleOrderInvoiceHeaderFromOdoo(o.id).catch(() => {})));
+        const dataHdr = await getCachedOrders(vehicleId);
+        list = buildFilteredList(Array.isArray(dataHdr) ? dataHdr : []);
       }
+
+      const paymentRefreshSkipIds = new Set();
+      for (const id of pendingSaleOrderIds) {
+        const n = Number(id);
+        if (Number.isFinite(n)) paymentRefreshSkipIds.add(n);
+      }
+      const unsyncedInvoiceSoIds = await localInvoicesDb.getUnsyncedLocalInvoiceSaleOrderIds().catch(() => new Set());
+      for (const soId of unsyncedInvoiceSoIds) {
+        const idNum = Number(soId);
+        if (Number.isFinite(idNum) && idNum > 0) paymentRefreshSkipIds.add(idNum);
+      }
+      await refreshPaymentTypesFromOdoo(list, { skipOrderIds: paymentRefreshSkipIds }).catch(() => {});
+      const dataPay = await getCachedOrders(vehicleId);
+      list = buildFilteredList(Array.isArray(dataPay) ? dataPay : []);
       const orderIds = list.map((o) => o.id);
       const [totals, pickings, allLines, paymentSplits, journalsList, qtyMap, qtyByProductMap, backendDeliveredSet] =
         await Promise.all([
@@ -563,6 +629,8 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
       setQtyDoneBySaleAndProduct({});
       setBackendQtyDeliveredOrderIds(new Set());
       setPendingCheckoutOrderIds(new Set());
+      setLocalInvoicedSaleOrderIds(new Set());
+      setSyncedPaymentOrderIds(new Set());
     } finally {
       setLoading(false);
     }
@@ -580,6 +648,10 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
     const unsub = navigation.addListener?.('focus', loadOrders);
     return () => unsub?.();
   }, [loadOrders, navigation]);
+
+  useEffect(() => {
+    if (syncCompleteTimestamp > 0) loadOrders();
+  }, [syncCompleteTimestamp, loadOrders]);
 
   const canGoToNextDay = !isToday(selectedDate);
 

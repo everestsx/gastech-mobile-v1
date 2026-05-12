@@ -876,6 +876,11 @@ async function pullSaleOrderHeaderAfterPayment(saleOrderId) {
   }
 }
 
+/** Re-read sale.order invoice header from Odoo into SQLite (e.g. after payment sync or Delivered tab load). */
+export async function refreshSaleOrderInvoiceHeaderFromOdoo(saleOrderId) {
+  return pullSaleOrderHeaderAfterPayment(saleOrderId);
+}
+
 /** Process pending sync queue: push delivery and payment actions to Odoo. Run at start of runSync. */
 async function processSyncQueue() {
   if (_processSyncQueuePromise) {
@@ -1140,14 +1145,7 @@ async function processSyncQueue() {
         const applySoLineDeliveredQty = async () => {
           for (const u of saleOrderLineDeliveredUpdates) {
             if (u.lineId == null || u.qty_delivered == null) continue;
-            try {
-              await updateSaleOrderLineQtyDelivered(u.lineId, Number(u.qty_delivered));
-            } catch (qdErr) {
-              logWarn(
-                'queue delivery (sale.order.line qty_delivered)',
-                new Error(`line ${u.lineId}: ${String(qdErr?.message || qdErr).slice(0, 120)}`)
-              );
-            }
+            await updateSaleOrderLineQtyDelivered(u.lineId, Number(u.qty_delivered));
           }
         };
 
@@ -2142,6 +2140,52 @@ async function processSyncQueue() {
             bankName: pm.type === 'check' ? chequeBankName : undefined,
           }));
           const isPartialPayment = paymentsForMessage.length > 1;
+          /** Separate sale.order chatter (not appended to payment proof). */
+          const buildGasDeliveredCountMessageBody = async () => {
+            const raw = Array.isArray(p?.invoiceLineQtys) ? p.invoiceLineQtys : [];
+            const entries = raw
+              .map((x) => ({
+                lineId: Number(x?.lineId),
+                qty: Number(x?.qty),
+              }))
+              .filter((x) => Number.isFinite(x.lineId) && x.lineId > 0 && Number.isFinite(x.qty) && x.qty > 0);
+            if (!entries.length) return null;
+
+            const orderLines = await saleOrderLinesDb.getSaleOrderLinesByOrderIds([soId]).catch(() => []);
+            const lineById = new Map(
+              (orderLines || [])
+                .filter((l) => l?.id != null)
+                .map((l) => [Number(l.id), l])
+            );
+
+            const qtyByProductLabel = new Map();
+            const formatQty = (q) => {
+              const n = Number(q) || 0;
+              const s = n.toFixed(3).replace(/\.?0+$/, '');
+              return s === '' ? '0' : s;
+            };
+
+            for (const it of entries) {
+              const line = lineById.get(it.lineId);
+              const productName =
+                (line?.product_name && String(line.product_name).trim()) ||
+                (line?.name && String(line.name).trim()) ||
+                `Line ${it.lineId}`;
+              const prev = Number(qtyByProductLabel.get(productName)) || 0;
+              qtyByProductLabel.set(productName, prev + Number(it.qty));
+            }
+            if (qtyByProductLabel.size === 0) return null;
+
+            const sep = '────────────────────────────────────────';
+            const lines = [];
+            lines.push('Gas Delivered Count');
+            lines.push(sep);
+            for (const [label, qty] of qtyByProductLabel.entries()) {
+              lines.push(`${label} = ${formatQty(qty)} qty delevired || `);
+            }
+            return lines.join('\n');
+          };
+          const gasDeliveredCountBody = await buildGasDeliveredCountMessageBody().catch(() => null);
           const invoicePendingNote = invoiceBlockFailedNoItemsToInvoice
             ? '\n\n— Invoice / delivery not fully synced in Odoo yet; confirm quantities in the office if needed. Payment proof is attached above. —'
             : '';
@@ -2279,6 +2323,17 @@ async function processSyncQueue() {
                   }
                 }
               }
+              if (gasDeliveredCountBody) {
+                try {
+                  await postPaymentProofToChatterWithAttachmentIds(soId, {
+                    body: gasDeliveredCountBody,
+                    attachmentIds: [],
+                  });
+                  log('queue', `message_post Gas Delivered Count SO ${soId}`);
+                } catch (gasDelErr) {
+                  logWarn('queue payment gas-delivered chatter', gasDelErr);
+                }
+              }
               const emptyCylinderNote = (p.emptyCylinderChatterBody || p.emptyCylinderChatterNote || '').trim();
               if (emptyCylinderNote) {
                 try {
@@ -2328,6 +2383,12 @@ async function processSyncQueue() {
         }
       }
     } finally {
+      try {
+        const { pruneStaleCheckoutResumeEntries } = await import('./checkoutResume.service.js');
+        await pruneStaleCheckoutResumeEntries();
+      } catch (_) {
+        /* ignore */
+      }
       _processSyncQueuePromise = null;
     }
   })();
@@ -2636,6 +2697,17 @@ async function runSyncInternal() {
       }
     }
 
+    /** Do not skip Odoo payment split refresh for SOs that only have a synced mobile payment — otherwise Cash/Cheque/Credit tabs stay wrong. */
+    const paymentRefreshSkipIds = new Set();
+    for (const id of pendingSaleOrderIds) {
+      const n = Number(id);
+      if (Number.isFinite(n)) paymentRefreshSkipIds.add(n);
+    }
+    for (const soId of unsyncedInvoiceSoIds) {
+      const idNum = Number(soId);
+      if (Number.isFinite(idNum) && idNum > 0) paymentRefreshSkipIds.add(idNum);
+    }
+
     // Remove stale local orders only when order fetch is healthy and non-empty.
     // This prevents accidental local wipe if backend temporarily returns empty/error.
     if (!orderFetchFailed && fetchedOrderIds.length > 0) {
@@ -2649,7 +2721,7 @@ async function runSyncInternal() {
     log('db', 'sale_orders');
     await saleOrdersDb.upsertSaleOrders(orders || [], { preserveLocalForSaleOrderIds: preserveLocalSaleOrderIds });
 
-    await refreshPaymentTypesFromOdoo(orders || [], { skipOrderIds: preserveLocalSaleOrderIds });
+    await refreshPaymentTypesFromOdoo(orders || [], { skipOrderIds: paymentRefreshSkipIds });
 
     const orderIds = (orders || []).map((o) => o.id);
     let allLines = [];
@@ -3036,6 +3108,28 @@ export async function flushPendingUploadsNow(options = {}) {
     await processSyncQueue();
     if (includeAttachments) {
       await processStandaloneOfflineAttachments();
+    }
+    try {
+      const session = await getUserSession();
+      if (session) {
+        const vehicleId = session?.vehicleId != null && session?.isAdmin !== true ? session.vehicleId : null;
+        const orders = (await getCachedOrders(vehicleId)) || [];
+        const pendingSaleOrderIds = await syncQueueDb.getPendingSaleOrderIds();
+        const localInvoicesMod = await import('../database/localInvoices.js');
+        const unsyncedInvoiceSoIds = await localInvoicesMod.getUnsyncedLocalInvoiceSaleOrderIds();
+        const paymentRefreshSkipIds = new Set();
+        for (const id of pendingSaleOrderIds) {
+          const n = Number(id);
+          if (Number.isFinite(n)) paymentRefreshSkipIds.add(n);
+        }
+        for (const soId of unsyncedInvoiceSoIds) {
+          const idNum = Number(soId);
+          if (Number.isFinite(idNum) && idNum > 0) paymentRefreshSkipIds.add(idNum);
+        }
+        await refreshPaymentTypesFromOdoo(orders, { skipOrderIds: paymentRefreshSkipIds });
+      }
+    } catch (refreshErr) {
+      logWarn('flushPendingUploadsNow payment refresh', refreshErr);
     }
   } catch (e) {
     logWarn('flushPendingUploadsNow', e);

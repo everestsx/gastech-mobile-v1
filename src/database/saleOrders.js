@@ -136,11 +136,11 @@ export async function getAllSaleOrders(vehicleId = null, sortField = 'date_order
       ? `SELECT so.*, p.name_tamil AS partner_name_tamil, p.name_sinhala AS partner_name_sinhala
          FROM sale_orders so
          LEFT JOIN partners p ON so.partner_id = p.id
-         WHERE so.vehicle_id = ? ORDER BY so.${orderColumn} DESC, so.id DESC LIMIT 500`
+         WHERE so.vehicle_id = ? ORDER BY so.${orderColumn} DESC, so.id DESC LIMIT 1000`
       : `SELECT so.*, p.name_tamil AS partner_name_tamil, p.name_sinhala AS partner_name_sinhala
          FROM sale_orders so
          LEFT JOIN partners p ON so.partner_id = p.id
-         ORDER BY so.${orderColumn} DESC, so.id DESC LIMIT 500`;
+         ORDER BY so.${orderColumn} DESC, so.id DESC LIMIT 1000`;
   const args = vehicleId != null ? [vehicleId] : [];
   try {
     const rows = await db.getAllAsync(sql, args);
