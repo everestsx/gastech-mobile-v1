@@ -32,13 +32,15 @@ export const initI18n = async (defaultLanguage = 'en') => {
     resources = fallbackResources;
   }
 
+  const supportedLngs = Object.keys(resources || fallbackResources);
+
   await i18n
     .use(initReactI18next)
     .init({
       resources,
       lng: defaultLanguage,
       fallbackLng: 'en',
-      supportedLngs: ['en', 'si', 'ta'],
+      supportedLngs,
       ns: ['translation'],
       defaultNS: 'translation',
       debug: false,

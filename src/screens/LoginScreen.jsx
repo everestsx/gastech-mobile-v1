@@ -8,6 +8,7 @@ import {
   TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
+  AppState,
   FlatList,
   TextInput,
   KeyboardAvoidingView,
@@ -22,6 +23,7 @@ import { Ionicons } from '@expo/vector-icons';
 import AppLogo from '../components/AppLogo';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
+import { syncLanguageDictionaries } from '../services/language.service';
 import {
   getCachedVehicles,
   getLastVehicleId,
@@ -64,7 +66,7 @@ function isTransientNetworkLikeError(error) {
 }
 
 export default function LoginScreen({ navigation }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { colors, appLanguage, setAppLanguage } = useTheme();
   const insets = useSafeAreaInsets();
   const [vehicles, setVehicles] = useState([]);
@@ -143,6 +145,32 @@ export default function LoginScreen({ navigation }) {
   useEffect(() => {
     initData();
   }, [initData]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const refreshTranslations = async () => {
+      const resources = await syncLanguageDictionaries();
+      if (!resources || !isMounted) return;
+
+      Object.entries(resources).forEach(([lang, data]) => {
+        if (!data?.translation) return;
+        i18n.addResourceBundle(lang, 'translation', data.translation, true, true);
+      });
+    };
+
+    void refreshTranslations();
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        void refreshTranslations();
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      subscription.remove();
+    };
+  }, [i18n]);
 
   const togglePorter = useCallback((id) => {
     setSelectedPorterIds((prev) => {
