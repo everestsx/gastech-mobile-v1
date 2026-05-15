@@ -79,6 +79,7 @@ function MainTabs() {
         component={DashboardScreen}
         options={{
           tabBarLabel: t('navigation.home', 'Home'),
+          tabBarTestID: 'tab-dashboard',
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="home-outline" size={size} color={color} />
           ),
@@ -89,6 +90,7 @@ function MainTabs() {
         component={SaleOrderListScreen}
         options={{
           tabBarLabel: t('navigation.orders', 'Orders'),
+          tabBarTestID: 'tab-orders',
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="cart-outline" size={size} color={color} />
           ),
@@ -99,6 +101,7 @@ function MainTabs() {
         component={DeliveredOrdersScreen}
         options={{
           tabBarLabel: t('navigation.delivered', 'Delivered'),
+          tabBarTestID: 'tab-delivered',
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="checkmark-done-outline" size={size} color={color} />
           ),
@@ -119,6 +122,7 @@ function MainTabs() {
         component={MenuScreen}
         options={{
           tabBarLabel: t('navigation.menu', 'Menu'),
+          tabBarTestID: 'tab-menu',
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="menu-outline" size={size} color={color} />
           ),

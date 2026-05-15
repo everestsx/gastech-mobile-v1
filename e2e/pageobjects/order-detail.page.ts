@@ -1,8 +1,28 @@
-import { browser } from '@wdio/globals';
+import { $ } from '@wdio/globals';
 
 class OrderDetailPage {
+    get proceedPaymentBtn() {
+        return $('~saleorderdetail-proceed-payment');
+    }
+
+    get modifyBtn() {
+        return $('~saleorderdetail-modify');
+    }
+
+    get saveBtn() {
+        return $('~saleorderdetail-save');
+    }
+
+    get cancelBtn() {
+        return $('~saleorderdetail-cancel');
+    }
+
+    async getQtyInput(lineId: string | number) {
+        return $(`~saleorderdetail-qty-${lineId}`);
+    }
+
     async waitForLoaded() {
-        await browser.pause(1000);
+        await this.proceedPaymentBtn.waitForDisplayed({ timeout: 15000 });
     }
 }
 

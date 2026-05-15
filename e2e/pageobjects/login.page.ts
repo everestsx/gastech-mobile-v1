@@ -37,10 +37,16 @@ class LoginPage {
         return $('~login-porter-finish');
     }
 
-    get alertModalClose() {
-        // Assuming CustomAlert has a standard 'OK' button, or we can just tap the background.
-        // Let's rely on the alert modal being visible.
-        return $('~login-alert-modal');
+    get alertOkButton() {
+        return $('~login-alert-modal-ok');
+    }
+
+    async dismissAlert() {
+        const okBtn = await this.alertOkButton;
+        await okBtn.waitForDisplayed({ timeout: 5000 });
+        await okBtn.click();
+        // Wait for the modal to disappear
+        await driver.pause(300);
     }
 
     async waitForLoaded() {
@@ -48,15 +54,22 @@ class LoginPage {
         await this.driverInput.waitForDisplayed({ timeout: 30000 });
     }
 
-    async selectFirstVehicle() {
+    async selectVehicle(vehicleName?: string) {
         await this.vehicleDropdown.click();
         // Wait for dropdown animation
         await driver.pause(500);
-        // Click the first vehicle item using XPath since IDs are dynamic, 
-        // or just click the first one that appears containing 'login-vehicle-item'
-        const firstVehicle = await $('//*[contains(@content-desc, "login-vehicle-item-")]');
-        await firstVehicle.waitForDisplayed();
-        await firstVehicle.click();
+        
+        let targetVehicle;
+        if (vehicleName) {
+            // Find the text element matching the vehicle name
+            targetVehicle = await $(`//*[contains(@text, "${vehicleName}")]/ancestor-or-self::*[@content-desc and contains(@content-desc, "login-vehicle-item-")] | //*[contains(@text, "${vehicleName}")]`);
+        } else {
+            // Click the first vehicle item
+            targetVehicle = await $('//*[contains(@content-desc, "login-vehicle-item-")]');
+        }
+        
+        await targetVehicle.waitForDisplayed();
+        await targetVehicle.click();
     }
 
     async enterDriverCode(code: string) {

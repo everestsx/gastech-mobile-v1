@@ -26,6 +26,7 @@ import CustomAlert from '../components/CustomAlert';
 import { usePrinterConnection } from '../context/PrinterConnectionContext';
 import { useFocusEffect } from '@react-navigation/native';
 import { odooImageToUri } from '../services/employee.service';
+import { testProps } from '../utils/testProps';
 
 export default function MenuScreen({ navigation }) {
   const { t } = useTranslation();
@@ -292,6 +293,7 @@ export default function MenuScreen({ navigation }) {
 
       <TouchableOpacity
         style={[styles.syncBtn, { backgroundColor: colors.primary }]}
+        {...testProps('menu-sync-btn')}
         onPress={handleSync}
         disabled={syncing}
         activeOpacity={0.8}

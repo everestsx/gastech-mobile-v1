@@ -26,8 +26,13 @@ describe('Auth - login', () => {
         await LoginPage.driverInput.clearValue();
         await LoginPage.tapLogin();
         
-        // Assuming CustomAlert appears
-        await expect(LoginPage.alertModalClose).toBeDisplayed();
+        // Wait for CustomAlert to appear
+        const alertModal = await LoginPage.alertModal;
+        await alertModal.waitForDisplayed({ timeout: 5000 });
+        await expect(alertModal).toBeDisplayed();
+
+        // Dismiss the alert by tapping the OK button
+        await LoginPage.dismissAlert();
     });
 
     it('completes full login flow to dashboard', async function () {
@@ -38,8 +43,9 @@ describe('Auth - login', () => {
             return;
         }
 
+        const vehicleName = process.env.TEST_VEHICLE_NAME;
         // 1. Select vehicle
-        await LoginPage.selectFirstVehicle();
+        await LoginPage.selectVehicle(vehicleName);
         
         // 2. Enter code
         await LoginPage.enterDriverCode(driverCode);

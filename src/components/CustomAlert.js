@@ -58,7 +58,12 @@ export default function CustomAlert({
                                 </TouchableOpacity>
                             ))
                         ) : (
-                            <TouchableOpacity style={[styles.button, { backgroundColor: colors.primary }]} onPress={onClose}>
+                            <TouchableOpacity
+                                style={[styles.button, { backgroundColor: colors.primary }]}
+                                onPress={onClose}
+                                testID={testID ? `${testID}-ok` : 'alert-ok'}
+                                accessibilityLabel={testID ? `${testID}-ok` : 'alert-ok'}
+                            >
                                 <Text style={styles.buttonText}>OK</Text>
                             </TouchableOpacity>
                         )}
