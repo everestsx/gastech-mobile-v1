@@ -12,9 +12,48 @@ describe('Auth - login', () => {
         await expect(LoginPage.languageSwitcher).toBeDisplayed();
     });
 
-    it('skips full login flow without credentials', async function () {
-        if (!process.env.TEST_DRIVER_CODE) {
+    it('shows vehicle list on tap', async () => {
+        await LoginPage.vehicleDropdown.click();
+        const firstVehicle = await $('//*[contains(@content-desc, "login-vehicle-item-")]');
+        await expect(firstVehicle).toBeDisplayed();
+        
+        // Dismiss dropdown by clicking background or selecting an item
+        await firstVehicle.click();
+    });
+
+    it('shows validation alert on empty form submission', async () => {
+        // Need to make sure input is empty
+        await LoginPage.driverInput.clearValue();
+        await LoginPage.tapLogin();
+        
+        // Assuming CustomAlert appears
+        await expect(LoginPage.alertModalClose).toBeDisplayed();
+    });
+
+    it('completes full login flow to dashboard', async function () {
+        const driverCode = process.env.TEST_DRIVER_CODE;
+        if (!driverCode) {
+            console.warn('Skipping full login test: TEST_DRIVER_CODE not set');
             this.skip();
+            return;
         }
+
+        // 1. Select vehicle
+        await LoginPage.selectFirstVehicle();
+        
+        // 2. Enter code
+        await LoginPage.enterDriverCode(driverCode);
+        
+        // 3. Submit
+        await LoginPage.tapLogin();
+        
+        // 4. Driver Review & Porter selection
+        await LoginPage.completePorterSelection();
+
+        // 5. Verify we reached Dashboard (Dashboard element visible)
+        // Wait for dashboard to load
+        const dashboardTab = await $('~dashboard-profile');
+        await dashboardTab.waitForDisplayed({ timeout: 15000 });
+        await expect(dashboardTab).toBeDisplayed();
     });
 });

@@ -117,6 +117,7 @@ module.exports = () => {
             cameraPermission: "Allow GasTech to scan customer QR codes",
           },
         ],
+        "expo-sqlite",
       ],
       build: {
         preview: {

@@ -901,6 +901,7 @@ export default function LoginScreen({ navigation }) {
                                         setSelected(item);
                                         setDropdownVisible(false);
                                       }}
+                                      {...testProps(`login-vehicle-item-${item.id}`)}
                                   >
                                     <Text style={[
                                       { flex: 1, fontSize: 15, color: colors.text },
@@ -1182,6 +1183,7 @@ export default function LoginScreen({ navigation }) {
                           style={[styles.porterRow, on && styles.porterRowSelected]}
                           onPress={() => togglePorter(id)}
                           activeOpacity={0.75}
+                          {...testProps(`login-porter-item-${id}`)}
                         >
                           <View style={[styles.porterAvatar, on && { borderColor: colors.primary, borderWidth: 2 }]}>
                             {uri ? (

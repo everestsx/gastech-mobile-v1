@@ -1,6 +1,9 @@
 import fs from 'fs';
 import path from 'path';
 import { browser } from '@wdio/globals';
+import dotenv from 'dotenv';
+dotenv.config({ path: '.env.test' });
+dotenv.config();
 
 const apkPath = path.resolve(
     __dirname,
@@ -10,14 +13,14 @@ const apkPath = path.resolve(
     'build',
     'outputs',
     'apk',
-    'debug',
-    'app-debug.apk'
+    'release',
+    'app-release.apk'
 );
 
 const ensureApkExists = () => {
     if (!fs.existsSync(apkPath)) {
         throw new Error(
-            `APK not found at ${apkPath}. Build it first: cd android && .\\gradlew.bat assembleDebug`
+            `APK not found at ${apkPath}.\nBuild it first:\n  cd android && .\\gradlew.bat assembleRelease`
         );
     }
 };
@@ -46,13 +49,16 @@ export const config: WebdriverIO.Config = {
             'appium:avd': 'Medium_Phone',
             'appium:platformVersion': '16',
             'appium:app': apkPath,
-            'appium:appActivity': 'expo.modules.devlauncher.launcher.DevLauncherActivity',
-            'appium:appWaitActivity': 'com.gastech.mobile.*',
-            'appium:appWaitDuration': 60000,
-            'appium:noReset': false,
+            // Use the real main activity — NOT DevLauncherActivity (debug-only, crashes on Appium restart)
+            'appium:appActivity': 'com.gastech.mobile.MainActivity',
+            'appium:appWaitActivity': 'com.gastech.mobile.MainActivity',
+            'appium:appWaitDuration': 30000,
+            'appium:noReset': false,          // Clear app data before each test session so it always starts at login
+            'appium:dontStopAppOnReset': false,
             'appium:fullReset': false,
-            'appium:newCommandTimeout': 120,
+            'appium:newCommandTimeout': 300,
             'appium:autoGrantPermissions': true,
+            'appium:adbExecTimeout': 90000,   // Give adb more time on slow emulators
         },
     ],
 

@@ -31,14 +31,14 @@
     "expo-asset": "~12.0.12",
     "expo-blur": "~15.0.7",
     "expo-camera": "^17.0.10",
-    "expo-dev-client": "~6.0.20",
+    "expo-dev-client": "~6.0.21",
     "expo-file-system": "~19.0.21",
     "expo-image-manipulator": "~14.0.8",
-    "expo-image-picker": "~17.0.10",
+    "expo-image-picker": "~17.0.11",
     "expo-media-library": "^18.2.1",
     "expo-print": "~15.0.8",
     "expo-splash-screen": "~31.0.13",
-    "expo-sqlite": "~15.0.0",
+    "expo-sqlite": "~16.0.10",
     "expo-status-bar": "~3.0.9",
     "expo-updates": "~29.0.16",
     "i18next": "^26.0.6",
@@ -52,7 +52,8 @@
     "react-native-screens": "~4.16.0",
     "react-native-signature-canvas": "^5.0.2",
     "react-native-svg": "^15.12.1",
-    "react-native-web": "^0.21.0"
+    "react-native-web": "^0.21.0",
+    "react-native-webview": "^13.16.1"
   },
   "devDependencies": {
     "@types/react": "~19.1.0",

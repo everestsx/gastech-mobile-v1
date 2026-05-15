@@ -6,7 +6,7 @@ pluginManagement {
     }.standardOutput.asText.get().trim()
   ).getParentFile().absolutePath
   includeBuild(reactNativeGradlePlugin)
-  
+
   def expoPluginsPath = new File(
     providers.exec {
       workingDir(rootDir)
@@ -37,3 +37,9 @@ expoAutolinking.useExpoVersionCatalog()
 
 include ':app'
 includeBuild(expoAutolinking.reactNativeGradlePlugin)
+
+// Temporary explicit include: expo-dev-client expects this Android project.
+include ':expo-dev-menu-interface'
+project(':expo-dev-menu-interface').projectDir = new File('../node_modules/expo-dev-menu-interface/android')
+include ':expo-dev-launcher'
+project(':expo-dev-launcher').projectDir = new File('../node_modules/expo-dev-launcher/android')
