@@ -83,6 +83,25 @@ export async function getPendingSaleOrderIds() {
   return ids;
 }
 
+/** Sale order ids with a payment row still waiting to upload (used to avoid clearing checkout resume too early). */
+export async function getPendingPaymentSaleOrderIds() {
+  const db = await getDb();
+  const rows = await db.getAllAsync(
+    `SELECT payload FROM sync_queue WHERE action_type = ? AND COALESCE(is_uploaded, 0) = 0 AND synced_at IS NULL`,
+    [ACTION_PAYMENT]
+  );
+  const ids = new Set();
+  for (const row of rows || []) {
+    const p = safeParseJson(row.payload, {});
+    const soId = p.saleOrderId ?? p.sale_order_id;
+    if (soId != null) {
+      const n = Number(soId);
+      if (Number.isFinite(n)) ids.add(n);
+    }
+  }
+  return ids;
+}
+
 /** Get pending (unsynced) payment queue item for a sale order, if any. Returns { id, payload } or null. Used to avoid duplicate queue entries. */
 export async function getPendingPaymentItemBySaleOrderId(saleOrderId) {
   if (saleOrderId == null) return null;
@@ -127,7 +146,10 @@ export async function getPendingDeliveryItemBySaleOrderId(saleOrderId) {
   return best;
 }
 
-/** Get pending (unsynced) inventory_update queue item for a sale order, if any. */
+/**
+ * Get pending (unsynced) inventory_update queue item for a sale order, if any.
+ * Returns the latest queue row id for that SO — same semantics as delivery/payment (avoids patching stale duplicates).
+ */
 export async function getPendingInventoryUpdateItemBySaleOrderId(saleOrderId) {
   if (saleOrderId == null) return null;
   const db = await getDb();
@@ -136,12 +158,17 @@ export async function getPendingInventoryUpdateItemBySaleOrderId(saleOrderId) {
     [ACTION_INVENTORY_UPDATE]
   );
   const soId = Number(saleOrderId);
+  let best = null;
   for (const row of rows || []) {
     const p = safeParseJson(row.payload, {});
     const id = p.saleOrderId ?? p.sale_order_id;
-    if (id != null && Number(id) === soId) return { id: row.id, payload: p };
+    if (id != null && Number(id) === soId) {
+      if (!best || Number(row.id) > Number(best.id)) {
+        best = { id: row.id, payload: p };
+      }
+    }
   }
-  return null;
+  return best;
 }
 
 /** Update payload of an existing queue item (e.g. to merge payment updates for same sale order). */

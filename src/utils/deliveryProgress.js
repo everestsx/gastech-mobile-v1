@@ -49,3 +49,47 @@ export function orderIsDeliveryDoneForProgress(
   if ((Number(qtyDoneBySaleIdMap[order?.id]) || 0) > 0) return true;
   return false;
 }
+
+/**
+ * Delivered Orders tab: completed work the driver should see here (not only strict SQLite invoice_status).
+ * - Invoiced locally or on cached Odoo header, or
+ * - Payment queue row already synced (mobile completion uploaded), or
+ * - Same delivery signals as dashboard (picking done / qty_done / Odoo qty_delivered / invoiced).
+ * Checkout in progress (resume) is always excluded.
+ */
+export function orderAppearsInDeliveredTab(
+  order,
+  pickingStateBySaleIdMap,
+  qtyDoneBySaleIdMap,
+  saleOrderIdsWithBackendQtyDelivered,
+  pendingCheckoutSaleOrderIds,
+  localInvoicedSaleOrderIds,
+  syncedPaymentSaleOrderIds
+) {
+  const oid = Number(order?.id);
+  if (
+    pendingCheckoutSaleOrderIds instanceof Set &&
+    Number.isFinite(oid) &&
+    pendingCheckoutSaleOrderIds.has(oid)
+  ) {
+    return false;
+  }
+  const odooInvoiced = String(order?.invoice_status || '').toLowerCase() === 'invoiced';
+  const localInvoiced =
+    localInvoicedSaleOrderIds instanceof Set && Number.isFinite(oid) && localInvoicedSaleOrderIds.has(oid);
+  if (odooInvoiced || localInvoiced) return true;
+  if (
+    syncedPaymentSaleOrderIds instanceof Set &&
+    Number.isFinite(oid) &&
+    syncedPaymentSaleOrderIds.has(oid)
+  ) {
+    return true;
+  }
+  return orderIsDeliveryDoneForProgress(
+    order,
+    pickingStateBySaleIdMap,
+    qtyDoneBySaleIdMap,
+    saleOrderIdsWithBackendQtyDelivered,
+    pendingCheckoutSaleOrderIds
+  );
+}

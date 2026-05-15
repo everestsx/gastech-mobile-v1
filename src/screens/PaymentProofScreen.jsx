@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -27,7 +27,7 @@ import * as syncQueueDb from '../database/syncQueue.js';
 import * as vehicleInventoriesDb from '../database/vehicleInventories.js';
 import { getSaleOrderDetailsFromDB } from '../services/sync.service';
 import { empty } from '../database/dbHelpers.js';
-import { runSync } from '../services/sync.service';
+import { runSync, flushPendingUploadsNow } from '../services/sync.service';
 import { getOrAssignInvoiceNumber } from '../utils/invoiceNumber';
 import { clearCheckoutResume } from '../services/checkoutResume.service';
 
@@ -42,6 +42,7 @@ export default function PaymentProofScreen({ route, navigation }) {
   const [photos, setPhotos] = useState([]);
   const [saving, setSaving] = useState(false);
   const [confirmVisible, setConfirmVisible] = useState(false);
+  const completeGuardRef = useRef(false);
 
   const canComplete = !creditProofRequired || photos.length > 0;
 
@@ -74,50 +75,58 @@ export default function PaymentProofScreen({ route, navigation }) {
   }, [photos, soId]);
 
   const releaseHeldQueueItemsAndFinalizeLocal = useCallback(async () => {
-    const pendingPayment = await syncQueueDb.getPendingPaymentItemBySaleOrderId(soId);
-    const pendingDelivery = await syncQueueDb.getPendingDeliveryItemBySaleOrderId(soId);
-    const pendingInventory = await syncQueueDb.getPendingInventoryUpdateItemBySaleOrderId(soId);
-    const paymentPayload = pendingPayment?.payload || {};
+    const queueRows = await syncQueueDb.getPending().catch(() => []);
+    const rowsForSo = (queueRows || []).filter((row) => {
+      const p = row?.payload || {};
+      const id = Number(p.saleOrderId ?? p.sale_order_id);
+      return Number.isFinite(id) && id === soId;
+    });
+    const latestPayment = [...rowsForSo]
+      .filter((row) => row?.action_type === syncQueueDb.ACTION_PAYMENT)
+      .sort((a, b) => Number(a?.id ?? 0) - Number(b?.id ?? 0))
+      .pop();
+    const paymentPayload = latestPayment?.payload || {};
 
-    if (pendingPayment?.id != null) {
-      const next = { ...paymentPayload };
-      delete next.holdUntilComplete;
-      await syncQueueDb.updateQueueItemPayload(pendingPayment.id, next);
-    }
-    if (pendingDelivery?.id != null) {
-      const next = { ...(pendingDelivery.payload || {}) };
-      delete next.holdUntilPayment;
-      await syncQueueDb.updateQueueItemPayload(pendingDelivery.id, next);
-
-      const pickings = Array.isArray(next.pickings) ? next.pickings : [];
-      if (pickings.length > 0) {
-        for (const p of pickings) {
-          if (p?.pickingId != null) {
-            await stockPickingsDb.updatePickingStateLocal(Number(p.pickingId), 'done');
+    for (const row of rowsForSo) {
+      const payload = { ...(row?.payload || {}) };
+      if (row.action_type === syncQueueDb.ACTION_PAYMENT) {
+        delete payload.holdUntilComplete;
+        await syncQueueDb.updateQueueItemPayload(row.id, payload);
+        continue;
+      }
+      if (row.action_type === syncQueueDb.ACTION_DELIVERY) {
+        delete payload.holdUntilPayment;
+        await syncQueueDb.updateQueueItemPayload(row.id, payload);
+        const pickings = Array.isArray(payload.pickings) ? payload.pickings : [];
+        if (pickings.length > 0) {
+          for (const p of pickings) {
+            if (p?.pickingId != null) {
+              await stockPickingsDb.updatePickingStateLocal(Number(p.pickingId), 'done');
+            }
+          }
+        } else if (payload.pickingId != null) {
+          await stockPickingsDb.updatePickingStateLocal(Number(payload.pickingId), 'done');
+        }
+        continue;
+      }
+      if (row.action_type === syncQueueDb.ACTION_INVENTORY_UPDATE) {
+        const locationId = Number(payload.locationId);
+        const updates = Array.isArray(payload.updates) ? payload.updates : [];
+        if (Number.isFinite(locationId) && locationId > 0 && updates.length > 0) {
+          for (const update of updates) {
+            const productId = Number(update?.productId);
+            const newQuantity = Number(update?.newQuantity);
+            if (!Number.isFinite(productId) || productId <= 0 || !Number.isFinite(newQuantity)) continue;
+            await vehicleInventoriesDb.updateVehicleInventoryQuantityByLocation(
+              locationId,
+              productId,
+              Math.max(0, newQuantity)
+            );
           }
         }
-      } else if (next.pickingId != null) {
-        await stockPickingsDb.updatePickingStateLocal(Number(next.pickingId), 'done');
+        delete payload.holdUntilComplete;
+        await syncQueueDb.updateQueueItemPayload(row.id, payload);
       }
-    }
-    if (pendingInventory?.id != null) {
-      const next = { ...(pendingInventory.payload || {}) };
-      const locationId = Number(next.locationId);
-      const updates = Array.isArray(next.updates) ? next.updates : [];
-      if (Number.isFinite(locationId) && locationId > 0 && updates.length > 0) {
-        for (const update of updates) {
-          const productId = Number(update?.productId);
-          const newQuantity = Number(update?.newQuantity);
-          if (!Number.isFinite(productId) || productId <= 0 || !Number.isFinite(newQuantity)) continue;
-          await vehicleInventoriesDb.updateVehicleInventoryQuantityByLocation(
-            locationId,
-            productId,
-            Math.max(0, newQuantity)
-          );
-        }
-      }
-      delete next.holdUntilComplete;
-      await syncQueueDb.updateQueueItemPayload(pendingInventory.id, next);
     }
 
     const data = await getSaleOrderDetailsFromDB(soId);
@@ -184,11 +193,20 @@ export default function PaymentProofScreen({ route, navigation }) {
       Alert.alert('Photo required', 'Add at least one photo for credit payment.');
       return;
     }
+    if (completeGuardRef.current) return;
+    completeGuardRef.current = true;
     setSaving(true);
     try {
       await persistPhotos();
       await releaseHeldQueueItemsAndFinalizeLocal();
       await clearCheckoutResume(soId);
+      // Defensive second clear after queue release to avoid stale "pending checkout" flags.
+      await clearCheckoutResume(soId);
+      // Try immediate queue upload while connection is healthy, but never block UX for long.
+      await Promise.race([
+        flushPendingUploadsNow({ includeAttachments: true }),
+        new Promise((resolve) => setTimeout(resolve, 4500)),
+      ]);
       runSync().catch((e) => console.warn('[PaymentProof] sync', e?.message ?? e));
       navigation.reset({
         index: 0,
@@ -197,6 +215,7 @@ export default function PaymentProofScreen({ route, navigation }) {
     } catch (e) {
       Alert.alert('Error', e?.message || 'Something went wrong. Try again.');
     } finally {
+      completeGuardRef.current = false;
       setSaving(false);
     }
   }, [soId, creditProofRequired, photos.length, persistPhotos, releaseHeldQueueItemsAndFinalizeLocal, navigation]);

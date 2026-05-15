@@ -15,7 +15,7 @@ import {
   Keyboard,
 } from 'react-native';
 import { useHeaderHeight } from '@react-navigation/elements';
-import { setCheckoutResumeFromPayment } from '../services/checkoutResume.service';
+import { setCheckoutResumeFromPayment, setCheckoutResumePaymentStarted } from '../services/checkoutResume.service';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
@@ -78,6 +78,18 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   const scrollRef = useRef(null);
   const checkNumberInputRef = useRef(null);
   const [editingField, setEditingField] = useState(null);
+  /** Blocks double submit: two parallel runs can enqueue duplicate delivery rows (sync then applies twice in Odoo). */
+  const proceedGuardRef = useRef(false);
+
+  useEffect(() => {
+    const soId = saleOrderId != null ? Number(saleOrderId) : NaN;
+    if (!Number.isFinite(soId) || soId <= 0) return;
+    void setCheckoutResumePaymentStarted(soId, {
+      total: orderTotalRounded,
+      subtotal: orderSubtotal,
+      tax: orderTax,
+    });
+  }, [saleOrderId, orderTotalRounded, orderSubtotal, orderTax]);
 
   // Use only vehicle-specific journals for Cash and Cheque (cash_journal_id / check_journal_id from fleet.vehicle).
   const cashJournals = useMemo(() => {
@@ -315,6 +327,8 @@ export default function ProceedPaymentScreen({ route, navigation }) {
     const needsCheck = chequePayAmount > 0 && checkJournalId != null;
     const needsCredit = creditAmountNum > 0 && selectedPaymentMethods.includes(PAYMENT_CREDIT);
     if (!needsCash && !needsCheck && !needsCredit) return;
+    if (proceedGuardRef.current) return;
+    proceedGuardRef.current = true;
     try {
       setLoading(true);
 
@@ -388,6 +402,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         orderName: empty(orderName),
         invoiceNumber: empty(invoiceNumber),
         total: orderTotalRounded,
+        ...(Array.isArray(invoiceLineQtys) && invoiceLineQtys.length > 0 ? { invoiceLineQtys } : {}),
         payments: payments.map((p) => ({
           type: String(p.type || ''),
           amount: num(p.amount),
@@ -444,6 +459,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       console.error(err);
       Alert.alert('Payment could not be saved', userFacingPaymentError(err));
     } finally {
+      proceedGuardRef.current = false;
       setLoading(false);
     }
   };

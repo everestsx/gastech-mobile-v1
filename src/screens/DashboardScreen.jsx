@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from 'react';import {
+import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from 'react';
+import {
   View,
   Text,
   StyleSheet,
@@ -6,6 +7,7 @@ import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useR
   ScrollView,
   RefreshControl,
   ActivityIndicator,
+  Animated,
   Platform,
   LayoutAnimation,
   UIManager,
@@ -67,7 +69,6 @@ import * as productsDb from '../database/products.js';
 import * as deliveryQtyDb from '../database/deliveryQty.js';
 import * as saleOrderLinesDb from '../database/saleOrderLines.js';
 import DeliveryProgressBarChart from '../components/DeliveryProgressBarChart';
-import SyncHeaderBadge from '../components/SyncHeaderBadge';
 import RichNotification from '../components/RichNotification';
 import { useSync } from '../context/SyncContext';
 import { odooImageToUri, getDrivingEmployees, getPortersEmployees } from '../services/employee.service';
@@ -79,6 +80,7 @@ import {
 import {
   getCheckoutResumeMap,
   pendingCheckoutSaleOrderIdsFromResumeMap,
+  pruneStaleCheckoutResumeEntries,
 } from '../services/checkoutResume.service';
 
 let lastDashboardSnapshot = null;
@@ -197,6 +199,7 @@ export default function DashboardScreen({ navigation }) {
   const [pickingsBySaleId, setPickingsBySaleId] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
   const [lastSyncTime, setLastSyncTime] = useState(null);
   const [syncLog, setSyncLog] = useState([]);
   const [selectedChartDate, setSelectedChartDate] = useState(() => formatLocalYyyyMmDd(new Date()));
@@ -266,6 +269,7 @@ export default function DashboardScreen({ navigation }) {
     if (dashboardSessionKeyRef.current === sessionKey) return;
     dashboardSessionKeyRef.current = sessionKey;
     setInitialLoadGateActive(true);
+    setLoading(true);
   }, [sessionKey]);
 
   const postLoginSyncCopy = useMemo(() => {
@@ -325,64 +329,75 @@ export default function DashboardScreen({ navigation }) {
   }, [syncDateField]);
 
   const loadData = useCallback(async () => {
+    setLoading(true);
     try {
       const [userData, routesData] = await Promise.all([
         getUserSession(),
         getCachedRoutes(),
       ]);
       let user = userData || null;
-      if (user && Array.isArray(user.selectedPorters) && user.selectedPorters.length > 0) {
-        const needImages = user.selectedPorters.some((p) => !p?.imageBase64);
-        if (needImages) {
+      setUser(user);
+      // Do not block dashboard data load on employee image API calls.
+      // Hydrate missing crew images in background so first screen paints fast.
+      if (user) {
+        void (async () => {
           try {
-            const withImages = await getPortersEmployees();
-            if (Array.isArray(withImages) && withImages.length) {
-              const byId = new Map(withImages.map((p) => [Number(p.id), p]));
-              user = {
-                ...user,
-                selectedPorters: user.selectedPorters.map((p) => {
-                  const full = byId.get(Number(p?.id));
-                  if (!full) return p;
-                  return {
-                    ...p,
-                    imageBase64: p.imageBase64 || full.imageBase64,
-                    phone: (p.phone && String(p.phone).trim()) ? p.phone : (full.phone || ''),
+            let nextUser = user;
+            if (Array.isArray(nextUser.selectedPorters) && nextUser.selectedPorters.length > 0) {
+              const needImages = nextUser.selectedPorters.some((p) => !p?.imageBase64);
+              if (needImages) {
+                const withImages = await getPortersEmployees();
+                if (Array.isArray(withImages) && withImages.length) {
+                  const byId = new Map(withImages.map((p) => [Number(p.id), p]));
+                  nextUser = {
+                    ...nextUser,
+                    selectedPorters: nextUser.selectedPorters.map((p) => {
+                      const full = byId.get(Number(p?.id));
+                      if (!full) return p;
+                      return {
+                        ...p,
+                        imageBase64: p.imageBase64 || full.imageBase64,
+                        phone: (p.phone && String(p.phone).trim()) ? p.phone : (full.phone || ''),
+                      };
+                    }),
                   };
-                }),
-              };
+                }
+              }
+            }
+            if (!hasValidEmployeeImage(nextUser?.driverImageBase64) && nextUser?.driverId != null) {
+              let employees = await getDrivingEmployees();
+              let matchedDriver = (employees || []).find((e) => Number(e?.id) === Number(nextUser.driverId));
+              // Defensive fallback: some DBs may have driver mis-assigned to another department.
+              if (!matchedDriver?.imageBase64) {
+                employees = await getPortersEmployees();
+                matchedDriver = (employees || []).find((e) => Number(e?.id) === Number(nextUser.driverId));
+              }
+              if (matchedDriver?.imageBase64) {
+                nextUser = { ...nextUser, driverImageBase64: matchedDriver.imageBase64 };
+              }
+            }
+            if (nextUser !== user) {
+              try {
+                await saveUserSession(nextUser);
+              } catch (_) {}
+              setUser((prev) => (prev ? { ...prev, ...nextUser } : nextUser));
             }
           } catch (e) {
-            console.warn('[Dashboard] porter avatar hydrate failed', e?.message ?? e);
+            console.warn('[Dashboard] employee media hydrate failed', e?.message ?? e);
           }
-        }
+        })();
       }
-      if (user && !hasValidEmployeeImage(user?.driverImageBase64) && user?.driverId != null) {
-        try {
-          let employees = await getDrivingEmployees();
-          let matchedDriver = (employees || []).find((e) => Number(e?.id) === Number(user.driverId));
-          // Defensive fallback: some DBs may have driver mis-assigned to another department.
-          if (!matchedDriver?.imageBase64) {
-            employees = await getPortersEmployees();
-            matchedDriver = (employees || []).find((e) => Number(e?.id) === Number(user.driverId));
-          }
-          if (matchedDriver?.imageBase64) {
-            user = { ...user, driverImageBase64: matchedDriver.imageBase64 };
-            try {
-              await saveUserSession(user);
-            } catch (_) {}
-          }
-        } catch (e) {
-          console.warn('[Dashboard] driver avatar hydrate failed', e?.message ?? e);
-        }
-      }
-      setUser(user);
       setRoutes(Array.isArray(routesData) ? routesData : []);
       const vehicleId = user?.isAdmin === false ? user.vehicleId : null;
-      const [ordersRes, resumeRes] = await Promise.allSettled([getCachedOrders(vehicleId), getCheckoutResumeMap()]);
-      const data = ordersRes.status === 'fulfilled' ? ordersRes.value : [];
-      const resumeMap = resumeRes.status === 'fulfilled' ? resumeRes.value : {};
-      const pendingCheckoutSaleOrderIds = pendingCheckoutSaleOrderIdsFromResumeMap(resumeMap);
-      setPendingCheckoutOrderIds(pendingCheckoutSaleOrderIds);
+      let data = [];
+      try {
+        data = (await getCachedOrders(vehicleId)) || [];
+      } catch (_) {
+        data = [];
+      }
+      await pruneStaleCheckoutResumeEntries();
+      const resumeMap = await getCheckoutResumeMap();
+      let pendingCheckoutSaleOrderIds = pendingCheckoutSaleOrderIdsFromResumeMap(resumeMap);
       setOrders(Array.isArray(data) ? data : []);
       const allCachedOrderIds = (Array.isArray(data) ? data : [])
         .map((o) => Number(o?.id))
@@ -423,10 +438,24 @@ export default function DashboardScreen({ navigation }) {
 
       const localInvoiceSaleOrderIds = await localInvoicesDb.getSaleOrderIdsWithLocalInvoices().catch(() => new Set());
 
+      setPendingCheckoutOrderIds(pendingCheckoutSaleOrderIds);
+
       function orderCountsAsCompletedToday(order) {
         const oid = Number(order?.id);
         if (Number.isFinite(oid) && pendingCheckoutSaleOrderIds.has(oid)) return false;
-        if (Number.isFinite(oid) && pendingPaymentOrderIds.has(oid)) return true;
+        if (Number.isFinite(oid) && pendingPaymentOrderIds.has(oid)) {
+          const deliveryDone = orderIsDeliveryDoneForProgress(
+            order,
+            saleIdToPickState,
+            qtyDoneMap,
+            backendDeliveredSet,
+            pendingCheckoutSaleOrderIds
+          );
+          const isInvoiced =
+            String(order?.invoice_status || '').toLowerCase() === 'invoiced' ||
+            localInvoiceSaleOrderIds.has(oid);
+          return isInvoiced || deliveryDone;
+        }
         if (Number.isFinite(oid) && localInvoiceSaleOrderIds.has(oid)) return true;
         return orderIsDeliveryDoneForProgress(
           order,
@@ -890,8 +919,31 @@ export default function DashboardScreen({ navigation }) {
     setRefreshing(false);
   };
 
+  const syncButtonActive = syncing || isSyncing;
+  const syncSpin = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    if (!syncButtonActive) {
+      syncSpin.setValue(0);
+      return undefined;
+    }
+    const loop = Animated.loop(
+      Animated.timing(syncSpin, {
+        toValue: 1,
+        duration: 900,
+        useNativeDriver: true,
+      })
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [syncButtonActive, syncSpin]);
+
+  const syncSpinDeg = syncSpin.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['0deg', '360deg'],
+  });
+
   const onSync = async () => {
-    if (syncing) return;
+    if (syncing || isSyncing) return;
     setSyncing(true);
     setLastSyncResult(null);
     try {
@@ -1384,11 +1436,32 @@ export default function DashboardScreen({ navigation }) {
         greeting: { fontSize: 22, fontWeight: '800', color: colors.text },
         hint: { fontSize: 14, color: colors.textSecondary, marginTop: 2 },
         lastSyncedBlock: { alignItems: 'flex-end' },
-        syncingUnderSync: {
+        syncNowBtn: {
           alignSelf: 'flex-end',
-          marginTop: 4,
-          minHeight: 32,
+          marginTop: 8,
+          minHeight: 36,
+          minWidth: 108,
+          borderRadius: 18,
+          paddingHorizontal: 14,
+          flexDirection: 'row',
+          alignItems: 'center',
           justifyContent: 'center',
+          borderWidth: 1,
+          borderColor: 'rgba(255,255,255,0.65)',
+          backgroundColor: 'rgba(255,255,255,0.12)',
+        },
+        syncNowBtnSyncing: {
+          minWidth: 40,
+          width: 40,
+          height: 40,
+          paddingHorizontal: 0,
+          borderRadius: 20,
+        },
+        syncNowBtnText: {
+          fontSize: 12,
+          fontWeight: '800',
+          color: '#fff',
+          letterSpacing: 0.2,
         },
         lastSyncedLabel: {
           fontSize: 10,
@@ -1910,10 +1983,14 @@ export default function DashboardScreen({ navigation }) {
     (todayOrderLines?.length || 0) > 0 ||
     (stockCards?.length || 0) > 0 ||
     Object.keys(lineTotalsByOrder || {}).length > 0;
-  const shouldBlockDashboard = initialLoadGateActive && (isSyncing || !!user?.pendingInitialSync);
+  /** Keep full-screen loader until first dashboard load finishes (same as earlier behavior). */
   const shouldShowInitialFullScreenLoader =
     (initialLoadGateActive && (loading || isSyncing || !!user?.pendingInitialSync)) ||
     (loading && !hasAnyDashboardData);
+
+  /** Blur overlay on first-session sync when dashboard shell is visible but data sync is still in flight */
+  const shouldBlockDashboard =
+    initialLoadGateActive && (isSyncing || !!user?.pendingInitialSync);
 
   if (shouldShowInitialFullScreenLoader) {
     return (
@@ -1947,7 +2024,7 @@ export default function DashboardScreen({ navigation }) {
         <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.primary]} />
       }
     >
-      {/* 1. Top bar: date + route left; sync indicator (when syncing) + Last Synced right */}
+      {/* 1. Top bar: date + route left; last synced + sync counters + Sync now (same control shows rotating icon while sync runs) */}
       <View style={[styles.topBar, { paddingTop: spacing.lg + insets.top }]}>
         <View style={[styles.topBarRow, styles.topBarRowWithMargin]}>
           <View style={styles.topBarLeft}>
@@ -2083,9 +2160,27 @@ export default function DashboardScreen({ navigation }) {
                     </View>
                   </View>
                 </View>
-                <View style={styles.syncingUnderSync} {...testProps('dashboard-sync-indicator')}>
-                  <SyncHeaderBadge variant="dashboard" />
-                </View>
+                <TouchableOpacity
+                  style={[styles.syncNowBtn, syncButtonActive && styles.syncNowBtnSyncing]}
+                  onPress={onSync}
+                  activeOpacity={0.85}
+                  disabled={syncButtonActive}
+                  accessibilityRole="button"
+                  {...testProps('dashboard-sync-button')}
+                  accessibilityLabel={
+                    syncButtonActive
+                      ? t('common.syncing', 'Syncing')
+                      : t('dashboard.syncNow', 'Sync now')
+                  }
+                >
+                  {syncButtonActive ? (
+                    <Animated.View style={{ transform: [{ rotate: syncSpinDeg }] }}>
+                      <Ionicons name="sync" size={20} color="#fff" />
+                    </Animated.View>
+                  ) : (
+                    <Text style={styles.syncNowBtnText}>{t('dashboard.syncNow', 'Sync now')}</Text>
+                  )}
+                </TouchableOpacity>
               </View>
             {/* //Daily Visit Keep Commented for now */}
             {/* <TouchableOpacity

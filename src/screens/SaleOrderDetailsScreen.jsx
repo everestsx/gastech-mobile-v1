@@ -29,10 +29,6 @@ import * as stockPickingsDb from '../database/stockPickings.js';
 import * as syncQueueDb from '../database/syncQueue.js';
 import * as productsDb from '../database/products.js';
 import {
-  buildProductIdToMoveLineIdMap,
-  buildProductIdToMoveIdMap,
-} from '../services/delivery.service';
-import {
   cancelSaleOrderWithReason,
   getCancellationReasonOptions,
 } from '../services/saleOrder.service';
@@ -996,7 +992,13 @@ const validateQuantities = useCallback(() => {
         throw new Error('No delivery order found for this sale order. Confirm the order first.');
       }
       const openPickings = pickings.filter((p) => String(p.state || '').toLowerCase() !== 'done');
-      const targets = openPickings.length > 0 ? openPickings : [];
+      /**
+       * Critical fallback:
+       * local state can be "done" before backend finishes syncing (offline completion flow).
+       * If we send no picking blocks, backend may miss delivered lines and invoice only partial values.
+       * Keep all pickings as targets when no local "open" picking exists; sync layer already skips truly done backend pickings.
+       */
+      const targets = openPickings.length > 0 ? openPickings : pickings;
 
       const orderLineUpdates = [];
       for (let i = 0; i < lines.length; i++) {
@@ -1031,38 +1033,114 @@ const validateQuantities = useCallback(() => {
 
       const pickingsOut = [];
 
-      for (const picking of targets) {
+      /**
+       * Odoo can split one SO into several pickings (backorders). Writing the full requested qty on every
+       * picking doubles qty_done in the back office. Split across moves in stable order; drain remainder.
+       */
+      const remainingByProduct = {};
+      for (const [pidRaw, q] of Object.entries(requestedQtyByProductId)) {
+        remainingByProduct[pidRaw] = Number(q) || 0;
+      }
+      const sortedTargets = [...targets].sort((a, b) => Number(a?.id ?? 0) - Number(b?.id ?? 0));
+
+      const allocationSlots = [];
+      for (const picking of sortedTargets) {
         const moves = await stockMovesDb.getStockMovesByPickingId(picking.id);
         if (!moves?.length) continue;
-
-        /** Use real stock.move ids from this picking only — not picking.move_ids (can be wrong or Many2one tuples in DB). */
         const idsForLines = moves.map((m) => m.id).filter((id) => id != null);
         const moveLines = await stockMoveLinesDb.getStockMoveLinesByMoveIds(idsForLines);
-        const productIdToMoveLineId = buildProductIdToMoveLineIdMap(moves, moveLines);
-        const productIdToMoveId = buildProductIdToMoveIdMap(moves);
-        const moveByProductId = {};
-        (moves || []).forEach((m) => {
-          const pid = Array.isArray(m.product_id) ? m.product_id[0] : m.product_id;
-          if (pid != null) moveByProductId[pid] = m;
-        });
+        const moveIdToMoveLineId = {};
+        for (const ml of moveLines || []) {
+          const mid = Array.isArray(ml.move_id) ? ml.move_id[0] : ml.move_id;
+          if (mid == null) continue;
+          if (moveIdToMoveLineId[mid] == null) moveIdToMoveLineId[mid] = ml.id;
+        }
+        const sortedMoves = [...(moves || [])].sort((a, b) => Number(a?.id ?? 0) - Number(b?.id ?? 0));
+        for (const moveRow of sortedMoves) {
+          const productIdRaw = Array.isArray(moveRow.product_id) ? moveRow.product_id[0] : moveRow.product_id;
+          const productId = Number(productIdRaw);
+          if (!Number.isFinite(productId)) continue;
+          if (!Object.prototype.hasOwnProperty.call(requestedQtyByProductId, String(productId))) continue;
+          allocationSlots.push({
+            pickingId: picking.id,
+            moveId: moveRow.id,
+            moveRow,
+            moveLineId: moveIdToMoveLineId[moveRow.id],
+            productId,
+            cap: Number(moveRow.product_uom_qty) || 0,
+          });
+        }
+      }
+
+      for (const slot of allocationSlots) {
+        const pidKey = String(slot.productId);
+        const totalRequested = Number(requestedQtyByProductId[pidKey]) || 0;
+        let remainingAmt = Number(remainingByProduct[pidKey]);
+        if (!Number.isFinite(remainingAmt)) remainingAmt = 0;
+        const cap = slot.cap;
+        let alloc;
+        if (totalRequested <= 0) {
+          alloc = 0;
+        } else if (remainingAmt <= 0) {
+          alloc = 0;
+        } else if (cap > 0) {
+          alloc = Math.min(remainingAmt, cap);
+        } else {
+          alloc = remainingAmt;
+        }
+        remainingByProduct[pidKey] = remainingAmt - alloc;
+        slot.allocatedQty = alloc;
+      }
+
+      for (const pidKey of Object.keys(remainingByProduct)) {
+        const leftover = Number(remainingByProduct[pidKey]) || 0;
+        if (leftover <= 0.0001) continue;
+        for (let i = allocationSlots.length - 1; i >= 0; i--) {
+          if (String(allocationSlots[i].productId) !== pidKey) continue;
+          allocationSlots[i].allocatedQty = (Number(allocationSlots[i].allocatedQty) || 0) + leftover;
+          break;
+        }
+        remainingByProduct[pidKey] = 0;
+      }
+
+      const slotsByPickingId = {};
+      for (const slot of allocationSlots) {
+        const pk = slot.pickingId;
+        if (!slotsByPickingId[pk]) slotsByPickingId[pk] = [];
+        slotsByPickingId[pk].push(slot);
+      }
+
+      for (const picking of sortedTargets) {
+        const slots = slotsByPickingId[picking.id];
+        if (!slots?.length) continue;
+
+        const moves = await stockMovesDb.getStockMovesByPickingId(picking.id);
+        if (!moves?.length) continue;
+        const idsForLines = moves.map((m) => m.id).filter((id) => id != null);
+        const moveLines = await stockMoveLinesDb.getStockMoveLinesByMoveIds(idsForLines);
+        const moveIdToMoveLineId = {};
+        for (const ml of moveLines || []) {
+          const mid = Array.isArray(ml.move_id) ? ml.move_id[0] : ml.move_id;
+          if (mid == null) continue;
+          if (moveIdToMoveLineId[mid] == null) moveIdToMoveLineId[mid] = ml.id;
+        }
         const qtyDoneByMoveLineId = {};
-        (moveLines || []).forEach((ml) => {
+        for (const ml of moveLines || []) {
           qtyDoneByMoveLineId[ml.id] = Number(ml.qty_done) || 0;
-        });
+        }
 
         const moveUpdates = [];
         const moveLineUpdates = [];
         const deliveryLines = [];
 
-        for (const [pidRaw, totalRequestedQty] of Object.entries(requestedQtyByProductId)) {
-          const productId = Number(pidRaw);
-          const newVal = Number(totalRequestedQty) || 0;
-          if (!Number.isFinite(productId)) continue;
+        const sortedSlots = [...slots].sort((a, b) => Number(a.moveId ?? 0) - Number(b.moveId ?? 0));
+        for (const slot of sortedSlots) {
+          const newVal = Number(slot.allocatedQty) || 0;
+          const productId = slot.productId;
+          const moveId = slot.moveId;
+          const moveRow = slot.moveRow;
+          const moveLineId = slot.moveLineId ?? moveIdToMoveLineId[moveId];
 
-          const moveId = productIdToMoveId[productId];
-          if (moveId == null) continue;
-
-          const moveRow = moveByProductId[productId];
           const currentMoveDemand = Number(moveRow?.product_uom_qty) || 0;
 
           if (demandEdit) {
@@ -1071,10 +1149,6 @@ const validateQuantities = useCallback(() => {
               moveUpdates.push({ moveId, product_uom_qty: newVal });
             }
           } else if (newVal !== currentMoveDemand) {
-            /**
-             * Proceed-to-payment path: keep stock.move demand aligned to delivered qty, even when reduced.
-             * If demand stays higher than qty_done, Odoo treats the gap as remaining quantity (backorder/not fully invoiced).
-             */
             await stockMovesDb.updateStockMoveQtyLocal(moveId, newVal);
             moveUpdates.push({ moveId, product_uom_qty: newVal });
           }
@@ -1083,7 +1157,6 @@ const validateQuantities = useCallback(() => {
             deliveryLines.push({ moveId, productId, qty_done: newVal });
           }
 
-          const moveLineId = productIdToMoveLineId[productId];
           if (moveLineId != null) {
             const prevDone = qtyDoneByMoveLineId[moveLineId] ?? 0;
             let nextDone;
@@ -1122,13 +1195,38 @@ const validateQuantities = useCallback(() => {
           saleOrderLineDeliveredUpdates.push({ lineId: l.id, qty_delivered: Number(newVal) });
         }
       }
+      /** Persist delivered qty locally so invoice / delivered-tab UI match before Odoo sync; sync merge preserves vs server 0 during pending queues. */
+      if (!demandEdit && saleOrderLineDeliveredUpdates.length > 0) {
+        for (const u of saleOrderLineDeliveredUpdates) {
+          if (u.lineId == null || u.qty_delivered == null || !Number.isFinite(Number(u.qty_delivered))) continue;
+          await saleOrderLinesDb.updateSaleOrderLineQtyDeliveredLocal(u.lineId, Number(u.qty_delivered));
+        }
+      }
 
       const payload = {
         saleOrderId: order.id,
         orderLineUpdates,
         saleOrderLineDeliveredUpdates,
+        requestedQtyByProduct: { ...requestedQtyByProductId },
         pickings: pickingsOut,
       };
+      /**
+       * Edge case: product demand can be raised from 0 while no local move row exists yet.
+       * Keep target picking ids in payload so sync can re-read backend moves and attach qty_done.
+       */
+      if (!demandEdit && pickingsOut.length === 0) {
+        const hasPositiveRequestedQty = Object.values(requestedQtyByProductId).some((q) => Number(q) > 0);
+        if (hasPositiveRequestedQty) {
+          payload.pickings = (targets || [])
+            .filter((p) => p?.id != null)
+            .map((p) => ({
+              pickingId: Number(p.id),
+              moveUpdates: [],
+              moveLineUpdates: [],
+              deliveryLines: [],
+            }));
+        }
+      }
       if (pickingsOut[0]?.pickingId != null) {
         payload.pickingId = pickingsOut[0].pickingId;
       }
