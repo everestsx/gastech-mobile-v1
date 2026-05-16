@@ -35,7 +35,17 @@ import BluetoothPrinterScreen from '../screens/BluetoothPrinterScreen';
 import SyncHeaderBadge from '../components/SyncHeaderBadge';
 
 import { useTheme } from '../context/ThemeContext';
-import { runSync, getSyncIntervalMs, getUserSession, logout, isSessionExpired } from '../services/sync.service';
+import {
+  runSync,
+  getSyncIntervalMs,
+  getUserSession,
+  logout,
+  isSessionExpired,
+  flushPendingUploadsNow,
+  PENDING_QUEUE_FAST_RETRY_MS,
+  PENDING_QUEUE_FAST_RETRY_WINDOW_MS,
+} from '../services/sync.service';
+import * as syncQueueDb from '../database/syncQueue.js';
 
 export const rootNavigationRef = createNavigationContainerRef();
 
@@ -264,6 +274,19 @@ export default function AppNavigator() {
       runSync().catch(() => {});
     };
 
+    const runFastPending = async () => {
+      if (hideSyncRef.current) return;
+      try {
+        const pending = await syncQueueDb.getPendingCount();
+        if (pending <= 0) return;
+        const ageMs = await syncQueueDb.getOldestPendingQueueAgeMs();
+        const passes = ageMs <= PENDING_QUEUE_FAST_RETRY_WINDOW_MS ? 4 : 3;
+        await flushPendingUploadsNow({ includeAttachments: true, queuePasses: passes });
+      } catch (_) {
+        /* ignore */
+      }
+    };
+
     const sub = AppState.addEventListener('change', (nextState) => {
       if (nextState === 'active' && appStateRef.current !== 'active') {
         void enforceSessionNotExpired();
@@ -284,9 +307,14 @@ export default function AppNavigator() {
       syncIntervalRef.current = setInterval(run, intervalMs);
     }
 
+    const fastPendingId = setInterval(() => {
+      if (AppState.currentState === 'active') void runFastPending();
+    }, PENDING_QUEUE_FAST_RETRY_MS);
+
     return () => {
       sub?.remove?.();
       if (syncIntervalRef.current) clearInterval(syncIntervalRef.current);
+      clearInterval(fastPendingId);
     };
   }, [syncInterval]);
 

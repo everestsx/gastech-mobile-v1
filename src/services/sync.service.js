@@ -136,6 +136,13 @@ const SYNC_INTERVAL_MAP = {
   '2hour': 2 * 60 * 60 * 1000,
 };
 
+/** When sync_queue has pending rows, retry uploads on this interval (while app is active). */
+export const PENDING_QUEUE_FAST_RETRY_MS = 45 * 1000;
+/** Prefer fast retries for at least this long after the oldest pending row was created. */
+export const PENDING_QUEUE_FAST_RETRY_WINDOW_MS = 15 * 60 * 1000;
+/** Immediate extra passes inside one sync run when the queue is not empty. */
+const QUEUE_PROCESS_MAX_PASSES = 4;
+
 const LOG_TAG = '[Sync]';
 
 function log(step, detail = '') {
@@ -879,6 +886,107 @@ async function pullSaleOrderHeaderAfterPayment(saleOrderId) {
 /** Re-read sale.order invoice header from Odoo into SQLite (e.g. after payment sync or Delivered tab load). */
 export async function refreshSaleOrderInvoiceHeaderFromOdoo(saleOrderId) {
   return pullSaleOrderHeaderAfterPayment(saleOrderId);
+}
+
+/**
+ * Odoo must be fully invoiced (not "to invoice") and transfers terminal before we clear the mobile payment queue.
+ * Prevents partial sync: delivery/qty on server but invoice step never finished.
+ */
+async function verifySaleOrderFullyCompletedOnOdoo(saleOrderId, paymentPayload = {}) {
+  const soId = Number(saleOrderId);
+  if (!Number.isFinite(soId) || soId <= 0) {
+    return { ok: false, reason: 'invalid sale order id' };
+  }
+  const { getPickingBySaleOrder } = await import('./delivery.service.js');
+  const {
+    getSaleOrderForPayment,
+    getSaleOrderInvoiceIds,
+    normalizeSaleOrderInvoiceIds,
+    getInvoiceState,
+  } = await import('./invoice.service.js');
+
+  const orderInfo = await getSaleOrderForPayment(soId).catch(() => null);
+  if (!orderInfo) {
+    return { ok: false, reason: 'sale order not found in Odoo' };
+  }
+  const invStatus = String(orderInfo.invoice_status || '').toLowerCase();
+  if (invStatus !== 'invoiced') {
+    return { ok: false, reason: `invoice_status="${invStatus}" (expected invoiced)` };
+  }
+
+  const picks = await getPickingBySaleOrder(soId).catch(() => []);
+  const terminal = new Set(['done', 'cancel']);
+  for (const pk of picks || []) {
+    const st = String(pk?.state ?? '').trim().toLowerCase();
+    if (st && !terminal.has(st)) {
+      return { ok: false, reason: `picking ${pk.id} still "${st}"` };
+    }
+  }
+
+  const payments = Array.isArray(paymentPayload?.payments) ? paymentPayload.payments : [];
+  const needsPostedInvoice = payments.some((pm) => pm.type === 'cash' || pm.type === 'check');
+  if (needsPostedInvoice) {
+    const rawIds = await getSaleOrderInvoiceIds(soId).catch(() => []);
+    const ids = normalizeSaleOrderInvoiceIds(rawIds);
+    if (!ids.length) {
+      return { ok: false, reason: 'no invoice linked to sale order' };
+    }
+    let posted = false;
+    for (const invId of ids) {
+      const inv = await getInvoiceState(invId).catch(() => ({}));
+      if (String(inv?.state || '').toLowerCase() === 'posted') {
+        posted = true;
+        break;
+      }
+    }
+    if (!posted) {
+      return { ok: false, reason: 'no posted account.move invoice' };
+    }
+  }
+
+  return { ok: true };
+}
+
+/** Mark payment queue row synced only when Odoo confirms invoiced + delivery complete. */
+async function tryFinalizePaymentQueueItem(item, soId, payload, ctx) {
+  const { invoiceBlockFailedNoItemsToInvoice, alreadySyncedSaleOrderIds } = ctx;
+  if (invoiceBlockFailedNoItemsToInvoice) {
+    log('queue', `payment id=${item.id} NOT marked synced (invoice block — delivery/qty first)`);
+    return false;
+  }
+  const verified = await verifySaleOrderFullyCompletedOnOdoo(soId, payload);
+  if (!verified.ok) {
+    log('queue', `payment id=${item.id} SO ${soId} stays pending: ${verified.reason}`);
+    return false;
+  }
+  await pullSaleOrderHeaderAfterPayment(soId);
+  await syncQueueDb.markSynced(Number(item.id));
+  alreadySyncedSaleOrderIds.add(soId);
+  log('queue', `payment synced id=${item.id} SO ${soId} (Odoo verified)`);
+  return true;
+}
+
+/** Run queue processor up to N passes while work remains (handles delivery→payment ordering). */
+async function processSyncQueuePasses(maxPasses = QUEUE_PROCESS_MAX_PASSES) {
+  const passes = Math.max(1, Number(maxPasses) || 1);
+  for (let pass = 1; pass <= passes; pass++) {
+    await processSyncQueue();
+    let remaining = 0;
+    try {
+      remaining = await syncQueueDb.getPendingCount();
+    } catch (_) {
+      remaining = 0;
+    }
+    if (remaining === 0) {
+      if (pass > 1) log('queue', `cleared after pass ${pass}`);
+      return;
+    }
+    if (pass < passes) {
+      log('queue', `pass ${pass}/${passes}: ${remaining} pending — immediate retry`);
+    } else {
+      log('queue', `pass ${pass}/${passes}: ${remaining} still pending (next scheduled sync)`);
+    }
+  }
 }
 
 /** Process pending sync queue: push delivery and payment actions to Odoo. Run at start of runSync. */
@@ -1827,9 +1935,11 @@ async function processSyncQueue() {
             // from older duplicate queue rows overwriting delivery/invoice quantities.
             let flushOk = false;
             try {
+              const releasedPayload = { ...(latestHeld.payload || {}), holdUntilPayment: false };
+              await syncQueueDb.updateQueueItemPayload(latestHeld.id, releasedPayload);
               const released = {
                 ...latestHeld,
-                payload: { ...(latestHeld.payload || {}), holdUntilPayment: false },
+                payload: releasedPayload,
               };
               await processOneDeliveryQueueItem(released);
               flushOk = true;
@@ -1871,7 +1981,28 @@ async function processSyncQueue() {
 
           const payments = p.payments || [];
           const orderName = p.orderName ?? `Order ${saleOrderId}`;
-          const skipPaymentCreation = alreadySyncedSaleOrderIds.has(soId);
+
+          const preComplete = await verifySaleOrderFullyCompletedOnOdoo(soId, p);
+          if (preComplete.ok) {
+            const doneEarly = await tryFinalizePaymentQueueItem(item, soId, p, {
+              invoiceBlockFailedNoItemsToInvoice: false,
+              alreadySyncedSaleOrderIds,
+            });
+            if (doneEarly) continue;
+          }
+
+          let skipPaymentCreation = alreadySyncedSaleOrderIds.has(soId);
+          if (skipPaymentCreation) {
+            const recheck = await verifySaleOrderFullyCompletedOnOdoo(soId, p);
+            if (!recheck.ok) {
+              log(
+                'queue',
+                `payment SO ${soId}: retry invoice path (${recheck.reason}) — avoid partial "to invoice" state`
+              );
+              skipPaymentCreation = false;
+              alreadySyncedSaleOrderIds.delete(soId);
+            }
+          }
 
           if (!skipPaymentCreation) {
             try {
@@ -1956,8 +2087,10 @@ async function processSyncQueue() {
               const onlyCredit = payments.length > 0 && payments.every((pm) => pm.type === 'credit');
               if (onlyCredit && resId != null && !alreadySyncedSaleOrderIds.has(soId)) {
                 log('queue', `payment SO ${saleOrderId}: credit only (invoice already posted) — no payment register`);
-                await syncQueueDb.markSynced(Number(item.id));
-                alreadySyncedSaleOrderIds.add(soId);
+                await tryFinalizePaymentQueueItem(item, soId, p, {
+                  invoiceBlockFailedNoItemsToInvoice,
+                  alreadySyncedSaleOrderIds,
+                });
               }
 
               const hasCashOrCheque = payments.some((pm) => pm.type === 'cash' || pm.type === 'check');
@@ -2181,7 +2314,7 @@ async function processSyncQueue() {
             lines.push('Gas Delivered Count');
             lines.push(sep);
             for (const [label, qty] of qtyByProductLabel.entries()) {
-              lines.push(`${label} = ${formatQty(qty)} qty delevired || `);
+              lines.push(`${label}: ${formatQty(qty)}`);
             }
             return lines.join('\n');
           };
@@ -2191,11 +2324,15 @@ async function processSyncQueue() {
             : '';
 
           if (chatterPostedInThisRun.has(soId)) {
-            await pullSaleOrderHeaderAfterPayment(soId);
-            await syncQueueDb.markSynced(Number(item.id));
-            alreadySyncedSaleOrderIds.add(soId);
-            log('queue', `payment synced id=${item.id} (chatter already posted for SO ${soId})`);
-            continue;
+            const finalized = await tryFinalizePaymentQueueItem(item, soId, p, {
+              invoiceBlockFailedNoItemsToInvoice,
+              alreadySyncedSaleOrderIds,
+            });
+            if (finalized) continue;
+            log(
+              'queue',
+              `payment SO ${soId}: chatter already posted but Odoo not fully invoiced — retry invoice/payment`
+            );
           }
 
           if (!p._paymentProofChatterPosted) {
@@ -2370,14 +2507,10 @@ async function processSyncQueue() {
             );
           }
 
-          if (invoiceBlockFailedNoItemsToInvoice) {
-            log('queue', `payment item ${item.id} NOT marked synced (invoice not created — deliver first, then sync again for cheque/credit)`);
-            continue;
-          }
-          await pullSaleOrderHeaderAfterPayment(soId);
-          await syncQueueDb.markSynced(item.id);
-          alreadySyncedSaleOrderIds.add(soId);
-          log('queue', `payment synced id=${item.id}`);
+          await tryFinalizePaymentQueueItem(item, soId, p, {
+            invoiceBlockFailedNoItemsToInvoice,
+            alreadySyncedSaleOrderIds,
+          });
         } catch (e) {
           logWarn('queue payment', e);
         }
@@ -2612,7 +2745,7 @@ async function runSyncInternal() {
       log('stop', 'no active session');
       return { error: 'No active session' };
     }
-    await processSyncQueue();
+    await processSyncQueuePasses(QUEUE_PROCESS_MAX_PASSES);
     await processStandaloneOfflineAttachments();
 
     const user = await getUserSession();
@@ -3104,8 +3237,9 @@ export async function runSync() {
  */
 export async function flushPendingUploadsNow(options = {}) {
   const includeAttachments = options?.includeAttachments !== false;
+  const queuePasses = Math.max(1, Number(options?.queuePasses) || 5);
   try {
-    await processSyncQueue();
+    await processSyncQueuePasses(queuePasses);
     if (includeAttachments) {
       await processStandaloneOfflineAttachments();
     }

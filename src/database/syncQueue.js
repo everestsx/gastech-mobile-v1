@@ -52,6 +52,19 @@ export async function getPendingCount() {
   return row?.c ?? 0;
 }
 
+/** Oldest pending queue row age in ms (for accelerated background retry window). */
+export async function getOldestPendingQueueAgeMs() {
+  const db = await getDb();
+  const row = await db.getFirstAsync(
+    `SELECT MIN(created_at) as oldest FROM sync_queue WHERE COALESCE(is_uploaded, 0) = 0 AND synced_at IS NULL`
+  );
+  const oldest = row?.oldest;
+  if (!oldest) return 0;
+  const t = Date.parse(String(oldest));
+  if (!Number.isFinite(t)) return 0;
+  return Math.max(0, Date.now() - t);
+}
+
 /** Get sale order ids that already have a synced payment (avoid duplicate payments on retry). */
 export async function getSyncedPaymentSaleOrderIds() {
   const db = await getDb();
