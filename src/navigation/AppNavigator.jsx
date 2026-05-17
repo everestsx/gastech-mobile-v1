@@ -42,7 +42,10 @@ import {
   logout,
   isSessionExpired,
   flushPendingUploadsNow,
+  hasPendingUploadWork,
+  hasDashboardUploadIndicators,
   PENDING_QUEUE_FAST_RETRY_MS,
+  PENDING_QUEUE_ACTIVE_RETRY_MS,
   PENDING_QUEUE_FAST_RETRY_WINDOW_MS,
 } from '../services/sync.service';
 import * as syncQueueDb from '../database/syncQueue.js';
@@ -277,11 +280,14 @@ export default function AppNavigator() {
     const runFastPending = async () => {
       if (hideSyncRef.current) return;
       try {
-        const pending = await syncQueueDb.getPendingCount();
-        if (pending <= 0) return;
+        const queueWork = await hasPendingUploadWork();
+        const indicatorWork = hasDashboardUploadIndicators();
+        if (!queueWork && !indicatorWork) return;
         const ageMs = await syncQueueDb.getOldestPendingQueueAgeMs();
-        const passes = ageMs <= PENDING_QUEUE_FAST_RETRY_WINDOW_MS ? 4 : 3;
+        const passes = ageMs <= PENDING_QUEUE_FAST_RETRY_WINDOW_MS ? 10 : 6;
         await flushPendingUploadsNow({ includeAttachments: true, queuePasses: passes });
+        if (!(await hasPendingUploadWork()) && !hasDashboardUploadIndicators()) return;
+        runSync().catch(() => {});
       } catch (_) {
         /* ignore */
       }
@@ -307,14 +313,40 @@ export default function AppNavigator() {
       syncIntervalRef.current = setInterval(run, intervalMs);
     }
 
-    const fastPendingId = setInterval(() => {
-      if (AppState.currentState === 'active') void runFastPending();
-    }, PENDING_QUEUE_FAST_RETRY_MS);
+    let fastPendingTimer = null;
+    let fastPendingCancelled = false;
+    const scheduleFastPendingLoop = (delayMs = PENDING_QUEUE_FAST_RETRY_MS) => {
+      if (fastPendingCancelled) return;
+      fastPendingTimer = setTimeout(async () => {
+        if (fastPendingCancelled) return;
+        if (AppState.currentState === 'active') {
+          try {
+            await runFastPending();
+          } catch (_) {
+            /* ignore */
+          }
+        }
+        let nextMs = PENDING_QUEUE_FAST_RETRY_MS;
+        if (AppState.currentState === 'active') {
+          try {
+            const queueWork = await hasPendingUploadWork();
+            const indicatorWork = hasDashboardUploadIndicators();
+            if (queueWork || indicatorWork) nextMs = PENDING_QUEUE_ACTIVE_RETRY_MS;
+          } catch (_) {
+            /* keep default delay */
+          }
+        }
+        scheduleFastPendingLoop(nextMs);
+      }, delayMs);
+    };
+    if (AppState.currentState === 'active') void runFastPending();
+    scheduleFastPendingLoop(PENDING_QUEUE_ACTIVE_RETRY_MS);
 
     return () => {
       sub?.remove?.();
       if (syncIntervalRef.current) clearInterval(syncIntervalRef.current);
-      clearInterval(fastPendingId);
+      fastPendingCancelled = true;
+      if (fastPendingTimer) clearTimeout(fastPendingTimer);
     };
   }, [syncInterval]);
 
