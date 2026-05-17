@@ -42,6 +42,8 @@ import {
   logout,
   isSessionExpired,
   flushPendingUploadsNow,
+  hasPendingUploadWork,
+  hasDashboardUploadIndicators,
   PENDING_QUEUE_FAST_RETRY_MS,
   PENDING_QUEUE_FAST_RETRY_WINDOW_MS,
 } from '../services/sync.service';
@@ -277,11 +279,14 @@ export default function AppNavigator() {
     const runFastPending = async () => {
       if (hideSyncRef.current) return;
       try {
-        const pending = await syncQueueDb.getPendingCount();
-        if (pending <= 0) return;
+        const queueWork = await hasPendingUploadWork();
+        const indicatorWork = hasDashboardUploadIndicators();
+        if (!queueWork && !indicatorWork) return;
         const ageMs = await syncQueueDb.getOldestPendingQueueAgeMs();
-        const passes = ageMs <= PENDING_QUEUE_FAST_RETRY_WINDOW_MS ? 4 : 3;
+        const passes = ageMs <= PENDING_QUEUE_FAST_RETRY_WINDOW_MS ? 10 : 6;
         await flushPendingUploadsNow({ includeAttachments: true, queuePasses: passes });
+        if (!(await hasPendingUploadWork()) && !hasDashboardUploadIndicators()) return;
+        runSync().catch(() => {});
       } catch (_) {
         /* ignore */
       }

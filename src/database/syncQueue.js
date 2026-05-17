@@ -52,11 +52,11 @@ export async function getPendingCount() {
   return row?.c ?? 0;
 }
 
-/** Oldest pending queue row age in ms (for accelerated background retry window). */
+/** Age in ms of the oldest pending queue row (0 when queue empty). */
 export async function getOldestPendingQueueAgeMs() {
   const db = await getDb();
   const row = await db.getFirstAsync(
-    `SELECT MIN(created_at) as oldest FROM sync_queue WHERE COALESCE(is_uploaded, 0) = 0 AND synced_at IS NULL`
+    'SELECT MIN(created_at) AS oldest FROM sync_queue WHERE COALESCE(is_uploaded, 0) = 0 AND synced_at IS NULL'
   );
   const oldest = row?.oldest;
   if (!oldest) return 0;

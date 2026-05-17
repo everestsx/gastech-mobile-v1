@@ -43,6 +43,42 @@ export function setSyncCompleteListener(fn) {
 }
 /** In-flight queue processor; concurrent callers await the same promise (do not skip uploads). */
 let _processSyncQueuePromise = null;
+/** Edge-case recovery: keep retrying pending queue rows after flaky network (does not change enqueue/workflow). */
+const QUEUE_SYNC_RETRY_WINDOW_MS = 12 * 60 * 1000;
+const QUEUE_SYNC_RETRY_PASS_DELAY_MS = 2500;
+/** When a pass clears some rows, retry quickly (stable connection). */
+const QUEUE_SYNC_FAST_PASS_DELAY_MS = 400;
+const QUEUE_SYNC_MAX_PASSES = 30;
+/** Fast retry for pending queue when app is foregrounded (AppNavigator). */
+export const PENDING_QUEUE_FAST_RETRY_MS = 20 * 1000;
+export const PENDING_QUEUE_FAST_RETRY_WINDOW_MS = 10 * 60 * 1000;
+
+/** Dashboard counters (red / orange) — set from DashboardScreen only; used to skip idle fast-sync. */
+let _dashboardUploadIndicators = { pendingOrders: 0, localCompleted: 0 };
+export function setDashboardUploadIndicators(pendingOrders, localCompleted) {
+  _dashboardUploadIndicators = {
+    pendingOrders: Math.max(0, Number(pendingOrders) || 0),
+    localCompleted: Math.max(0, Number(localCompleted) || 0),
+  };
+}
+export function hasDashboardUploadIndicators() {
+  return (
+    _dashboardUploadIndicators.pendingOrders > 0 || _dashboardUploadIndicators.localCompleted > 0
+  );
+}
+
+/** True when queue or offline proof photos still need uploading. */
+export async function hasPendingUploadWork() {
+  try {
+    const pending = await syncQueueDb.getPendingCount();
+    if (pending > 0) return true;
+    const offlineAttachmentsDb = await import('../database/offlineAttachments.js');
+    const rows = await offlineAttachmentsDb.getAllPending();
+    return (rows || []).length > 0;
+  } catch (_) {
+    return false;
+  }
+}
 const KEYS = {
   USER: '@gastech_user',
   USER_MEDIA: '@gastech_user_media',
@@ -135,13 +171,6 @@ const SYNC_INTERVAL_MAP = {
   '1hour': 60 * 60 * 1000,
   '2hour': 2 * 60 * 60 * 1000,
 };
-
-/** When sync_queue has pending rows, retry uploads on this interval (while app is active). */
-export const PENDING_QUEUE_FAST_RETRY_MS = 45 * 1000;
-/** Prefer fast retries for at least this long after the oldest pending row was created. */
-export const PENDING_QUEUE_FAST_RETRY_WINDOW_MS = 15 * 60 * 1000;
-/** Immediate extra passes inside one sync run when the queue is not empty. */
-const QUEUE_PROCESS_MAX_PASSES = 4;
 
 const LOG_TAG = '[Sync]';
 
@@ -889,104 +918,183 @@ export async function refreshSaleOrderInvoiceHeaderFromOdoo(saleOrderId) {
 }
 
 /**
- * Odoo must be fully invoiced (not "to invoice") and transfers terminal before we clear the mobile payment queue.
- * Prevents partial sync: delivery/qty on server but invoice step never finished.
+ * Do not mark payment queue rows complete until Odoo confirms delivery + invoice (+ cash/cheque paid when applicable).
+ * Prevents mobile "pending" clearing while back office stays "To Invoice" / partial delivery.
  */
-async function verifySaleOrderFullyCompletedOnOdoo(saleOrderId, paymentPayload = {}) {
-  const soId = Number(saleOrderId);
-  if (!Number.isFinite(soId) || soId <= 0) {
+function pickingsTerminalForCompletion(pickings) {
+  for (const pk of pickings || []) {
+    const st = String(pk?.state ?? '').trim().toLowerCase();
+    if (st && st !== 'done' && st !== 'cancel') return false;
+  }
+  return true;
+}
+
+async function verifyOdooSaleOrderCompletionBeforePaymentMarkSynced(soId, paymentPayload = {}) {
+  const soNum = Number(soId);
+  if (!Number.isFinite(soNum) || soNum <= 0) {
     return { ok: false, reason: 'invalid sale order id' };
   }
+
+  const pending = await syncQueueDb.getPending();
+  for (const q of pending || []) {
+    const qSo = Number((q.payload || {}).saleOrderId ?? (q.payload || {}).sale_order_id);
+    if (qSo !== soNum) continue;
+    if (
+      q.action_type === syncQueueDb.ACTION_DELIVERY ||
+      q.action_type === syncQueueDb.ACTION_INVENTORY_UPDATE
+    ) {
+      return { ok: false, reason: `pending ${q.action_type} queue id=${q.id}` };
+    }
+  }
+
   const { getPickingBySaleOrder } = await import('./delivery.service.js');
+  const pickings = await getPickingBySaleOrder(soNum);
+  if (!pickingsTerminalForCompletion(pickings)) {
+    const openPk = (pickings || []).find((pk) => {
+      const st = String(pk?.state ?? '').trim().toLowerCase();
+      return st && st !== 'done' && st !== 'cancel';
+    });
+    return { ok: false, reason: `picking ${openPk?.id} still "${openPk?.state}"` };
+  }
+
   const {
     getSaleOrderForPayment,
     getSaleOrderInvoiceIds,
     normalizeSaleOrderInvoiceIds,
     getInvoiceState,
+    loadPostedUnpaidInvoicesForSaleOrder,
   } = await import('./invoice.service.js');
 
-  const orderInfo = await getSaleOrderForPayment(soId).catch(() => null);
+  const orderInfo = await getSaleOrderForPayment(soNum).catch(() => null);
   if (!orderInfo) {
-    return { ok: false, reason: 'sale order not found in Odoo' };
+    return { ok: false, reason: 'sale order not found on Odoo' };
   }
+
   const invStatus = String(orderInfo.invoice_status || '').toLowerCase();
-  if (invStatus !== 'invoiced') {
-    return { ok: false, reason: `invoice_status="${invStatus}" (expected invoiced)` };
-  }
-
-  const picks = await getPickingBySaleOrder(soId).catch(() => []);
-  const terminal = new Set(['done', 'cancel']);
-  for (const pk of picks || []) {
-    const st = String(pk?.state ?? '').trim().toLowerCase();
-    if (st && !terminal.has(st)) {
-      return { ok: false, reason: `picking ${pk.id} still "${st}"` };
+  const invIds = normalizeSaleOrderInvoiceIds(
+    orderInfo.invoice_ids ?? (await getSaleOrderInvoiceIds(soNum).catch(() => []))
+  );
+  let hasPostedInvoice = false;
+  for (const invId of invIds) {
+    const inv = await getInvoiceState(invId).catch(() => ({}));
+    if (String(inv?.state || '').toLowerCase() === 'posted') {
+      hasPostedInvoice = true;
+      break;
     }
   }
 
-  const payments = Array.isArray(paymentPayload?.payments) ? paymentPayload.payments : [];
-  const needsPostedInvoice = payments.some((pm) => pm.type === 'cash' || pm.type === 'check');
-  if (needsPostedInvoice) {
-    const rawIds = await getSaleOrderInvoiceIds(soId).catch(() => []);
-    const ids = normalizeSaleOrderInvoiceIds(rawIds);
-    if (!ids.length) {
-      return { ok: false, reason: 'no invoice linked to sale order' };
+  const localInvoicesMod = await import('../database/localInvoices.js');
+  const localInvoiced = await localInvoicesMod.getSaleOrderIdsWithLocalInvoices().catch(() => new Set());
+  const hasLocalInvoice = localInvoiced.has(soNum);
+
+  if (!hasPostedInvoice) {
+    if (!(hasLocalInvoice && pickingsTerminalForCompletion(pickings))) {
+      return { ok: false, reason: `invoice_status=${invStatus || 'unknown'} (no posted invoice)` };
     }
-    let posted = false;
-    for (const invId of ids) {
-      const inv = await getInvoiceState(invId).catch(() => ({}));
-      if (String(inv?.state || '').toLowerCase() === 'posted') {
-        posted = true;
-        break;
+  }
+
+  const payments = paymentPayload?.payments || [];
+  const needsCashOrCheque = payments.some((pm) => pm.type === 'cash' || pm.type === 'check');
+  if (needsCashOrCheque) {
+    const open = await loadPostedUnpaidInvoicesForSaleOrder(soNum);
+    if (open.length > 0) {
+      let stillUnpaid = false;
+      for (const inv of open) {
+        const invId = Number(inv?.id ?? inv);
+        if (!Number.isFinite(invId)) continue;
+        const st = await getInvoiceState(invId).catch(() => ({}));
+        const posted = String(st?.state || '').toLowerCase() === 'posted';
+        const ps = String(st?.payment_state || '').toLowerCase();
+        const residual = Number(st?.amount_residual ?? 0);
+        if (posted && ps !== 'paid' && ps !== 'in_payment' && residual > 0.02) {
+          stillUnpaid = true;
+          break;
+        }
       }
-    }
-    if (!posted) {
-      return { ok: false, reason: 'no posted account.move invoice' };
+      if (stillUnpaid) {
+        return { ok: false, reason: `${open.length} posted invoice(s) still unpaid on Odoo` };
+      }
     }
   }
 
   return { ok: true };
 }
 
-/** Mark payment queue row synced only when Odoo confirms invoiced + delivery complete. */
-async function tryFinalizePaymentQueueItem(item, soId, payload, ctx) {
-  const { invoiceBlockFailedNoItemsToInvoice, alreadySyncedSaleOrderIds } = ctx;
-  if (invoiceBlockFailedNoItemsToInvoice) {
-    log('queue', `payment id=${item.id} NOT marked synced (invoice block — delivery/qty first)`);
+async function updatePaymentQueuePipeline(itemId, payload, pipelinePatch) {
+  const merged = {
+    ...(payload || {}),
+    _syncPipeline: {
+      ...(payload?._syncPipeline || {}),
+      ...pipelinePatch,
+      updatedAt: Date.now(),
+    },
+  };
+  try {
+    await syncQueueDb.updateQueueItemPayload(Number(itemId), merged);
+  } catch (e) {
+    logWarn('queue payment pipeline persist', e);
+  }
+  return merged;
+}
+
+/** Cash/cheque lines must be reconciled on Odoo before we treat the payment step as done. */
+async function verifyCashChequePaymentsRegisteredOnOdoo(soId, payments) {
+  const cashCheque = (payments || []).filter((pm) => pm.type === 'cash' || pm.type === 'check');
+  if (cashCheque.length === 0) return { ok: true };
+
+  const { loadPostedUnpaidInvoicesForSaleOrder, getInvoiceState } = await import('./invoice.service.js');
+  const open = await loadPostedUnpaidInvoicesForSaleOrder(soId);
+  for (const inv of open) {
+    const invId = Number(inv?.id ?? inv);
+    if (!Number.isFinite(invId)) continue;
+    const st = await getInvoiceState(invId).catch(() => ({}));
+    const posted = String(st?.state || '').toLowerCase() === 'posted';
+    const ps = String(st?.payment_state || '').toLowerCase();
+    const residual = Number(st?.amount_residual ?? 0);
+    if (posted && ps !== 'paid' && ps !== 'in_payment' && residual > 0.02) {
+      return { ok: false, reason: `invoice ${invId} still unpaid (residual=${residual})` };
+    }
+  }
+  return { ok: true };
+}
+
+/** Chatter only after delivery + invoice (+ payment when required) are confirmed on Odoo. */
+async function paymentPipelineReadyForChatter(soId, paymentPayload) {
+  const check = await verifyOdooSaleOrderCompletionBeforePaymentMarkSynced(soId, paymentPayload);
+  if (!check.ok) {
+    log('queue', `payment SO ${soId}: defer chatter — ${check.reason}`);
     return false;
   }
-  const verified = await verifySaleOrderFullyCompletedOnOdoo(soId, payload);
-  if (!verified.ok) {
-    log('queue', `payment id=${item.id} SO ${soId} stays pending: ${verified.reason}`);
+  const payments = paymentPayload?.payments || [];
+  const reg = await verifyCashChequePaymentsRegisteredOnOdoo(soId, payments);
+  if (!reg.ok) {
+    log('queue', `payment SO ${soId}: defer chatter — ${reg.reason}`);
     return false;
   }
-  await pullSaleOrderHeaderAfterPayment(soId);
-  await syncQueueDb.markSynced(Number(item.id));
-  alreadySyncedSaleOrderIds.add(soId);
-  log('queue', `payment synced id=${item.id} SO ${soId} (Odoo verified)`);
   return true;
 }
 
-/** Run queue processor up to N passes while work remains (handles delivery→payment ordering). */
-async function processSyncQueuePasses(maxPasses = QUEUE_PROCESS_MAX_PASSES) {
-  const passes = Math.max(1, Number(maxPasses) || 1);
-  for (let pass = 1; pass <= passes; pass++) {
-    await processSyncQueue();
-    let remaining = 0;
-    try {
-      remaining = await syncQueueDb.getPendingCount();
-    } catch (_) {
-      remaining = 0;
-    }
-    if (remaining === 0) {
-      if (pass > 1) log('queue', `cleared after pass ${pass}`);
-      return;
-    }
-    if (pass < passes) {
-      log('queue', `pass ${pass}/${passes}: ${remaining} pending — immediate retry`);
-    } else {
-      log('queue', `pass ${pass}/${passes}: ${remaining} still pending (next scheduled sync)`);
-    }
+/** Mark payment queue row synced only when Odoo pipeline is complete (idempotent retries safe). */
+async function markPaymentQueueItemSyncedWhenBackendComplete(item, soId, paymentPayload) {
+  const payload = paymentPayload || item?.payload || {};
+  await pullSaleOrderHeaderAfterPayment(soId);
+  let check = await verifyOdooSaleOrderCompletionBeforePaymentMarkSynced(soId, payload);
+  if (!check.ok) {
+    log('queue', `payment id=${item?.id} SO ${soId} kept pending — ${check.reason}`);
+    return false;
   }
+  const reg = await verifyCashChequePaymentsRegisteredOnOdoo(soId, payload?.payments || []);
+  if (!reg.ok) {
+    log('queue', `payment id=${item?.id} SO ${soId} kept pending — ${reg.reason}`);
+    return false;
+  }
+  await syncQueueDb.markSynced(Number(item.id));
+  try {
+    const { clearCheckoutResume, pruneStaleCheckoutResumeEntries } = await import('./checkoutResume.service.js');
+    await clearCheckoutResume(soId);
+    await pruneStaleCheckoutResumeEntries();
+  } catch (_) { /* non-fatal */ }
+  return true;
 }
 
 /** Process pending sync queue: push delivery and payment actions to Odoo. Run at start of runSync. */
@@ -996,7 +1104,18 @@ async function processSyncQueue() {
     return _processSyncQueuePromise;
   }
   _processSyncQueuePromise = (async () => {
+    const retryStarted = Date.now();
+    let pass = 0;
+    let lastPending = -1;
+    const alreadySyncedSaleOrderIds = new Set(await syncQueueDb.getSyncedPaymentSaleOrderIds());
+    const chatterPostedInThisRun = new Set();
     try {
+      while (Date.now() - retryStarted < QUEUE_SYNC_RETRY_WINDOW_MS && pass < QUEUE_SYNC_MAX_PASSES) {
+        pass++;
+        const pendingAtStart = await syncQueueDb.getPendingCount();
+        if (pendingAtStart === 0) break;
+
+        try {
       let queueSnap = await syncQueueDb.getPending();
       if (!queueSnap.length) return;
       log('queue', `processing ${queueSnap.length} pending`);
@@ -1888,9 +2007,6 @@ async function processSyncQueue() {
         }
       }
 
-      const alreadySyncedSaleOrderIds = await syncQueueDb.getSyncedPaymentSaleOrderIds();
-      const chatterPostedInThisRun = new Set();
-
       // Backend API sequence for each payment queue item (offline → sync):
       // 1. sale.advance.payment.inv create { advance_payment_method: "delivered" } context active_model=sale.order, active_ids=[sale_order_id]
       // 2. sale.advance.payment.inv create_invoices [[wizardId]] → result.res_id = invoice id (account.move)
@@ -1935,11 +2051,9 @@ async function processSyncQueue() {
             // from older duplicate queue rows overwriting delivery/invoice quantities.
             let flushOk = false;
             try {
-              const releasedPayload = { ...(latestHeld.payload || {}), holdUntilPayment: false };
-              await syncQueueDb.updateQueueItemPayload(latestHeld.id, releasedPayload);
               const released = {
                 ...latestHeld,
-                payload: releasedPayload,
+                payload: { ...(latestHeld.payload || {}), holdUntilPayment: false },
               };
               await processOneDeliveryQueueItem(released);
               flushOk = true;
@@ -1968,7 +2082,8 @@ async function processSyncQueue() {
           const pendingAfterFlush = await syncQueueDb.getPending();
           const remainingDeliveryForSo = (pendingAfterFlush || []).filter(
             (q) =>
-              q.action_type === syncQueueDb.ACTION_DELIVERY &&
+              (q.action_type === syncQueueDb.ACTION_DELIVERY ||
+                q.action_type === syncQueueDb.ACTION_INVENTORY_UPDATE) &&
               Number((q.payload || {}).saleOrderId ?? (q.payload || {}).sale_id) === soId
           );
           if (remainingDeliveryForSo.length > 0) {
@@ -1981,28 +2096,7 @@ async function processSyncQueue() {
 
           const payments = p.payments || [];
           const orderName = p.orderName ?? `Order ${saleOrderId}`;
-
-          const preComplete = await verifySaleOrderFullyCompletedOnOdoo(soId, p);
-          if (preComplete.ok) {
-            const doneEarly = await tryFinalizePaymentQueueItem(item, soId, p, {
-              invoiceBlockFailedNoItemsToInvoice: false,
-              alreadySyncedSaleOrderIds,
-            });
-            if (doneEarly) continue;
-          }
-
-          let skipPaymentCreation = alreadySyncedSaleOrderIds.has(soId);
-          if (skipPaymentCreation) {
-            const recheck = await verifySaleOrderFullyCompletedOnOdoo(soId, p);
-            if (!recheck.ok) {
-              log(
-                'queue',
-                `payment SO ${soId}: retry invoice path (${recheck.reason}) — avoid partial "to invoice" state`
-              );
-              skipPaymentCreation = false;
-              alreadySyncedSaleOrderIds.delete(soId);
-            }
-          }
+          const skipPaymentCreation = alreadySyncedSaleOrderIds.has(soId);
 
           if (!skipPaymentCreation) {
             try {
@@ -2081,16 +2175,15 @@ async function processSyncQueue() {
                 const onlyCredit = payments.length > 0 && payments.every((pm) => pm.type === 'credit');
                 if (onlyCredit && resId != null) {
                   log('queue', `payment SO ${saleOrderId}: credit only — invoice posted res_id=${resId}, no payment register`);
-                  alreadySyncedSaleOrderIds.add(soId);
+                  await updatePaymentQueuePipeline(item.id, p, { invoicePosted: true, paymentsRegistered: true });
                 }
               }
               const onlyCredit = payments.length > 0 && payments.every((pm) => pm.type === 'credit');
-              if (onlyCredit && resId != null && !alreadySyncedSaleOrderIds.has(soId)) {
+              if (onlyCredit && resId != null) {
                 log('queue', `payment SO ${saleOrderId}: credit only (invoice already posted) — no payment register`);
-                await tryFinalizePaymentQueueItem(item, soId, p, {
-                  invoiceBlockFailedNoItemsToInvoice,
-                  alreadySyncedSaleOrderIds,
-                });
+                if (await markPaymentQueueItemSyncedWhenBackendComplete(item, soId, p)) {
+                  alreadySyncedSaleOrderIds.add(soId);
+                }
               }
 
               const hasCashOrCheque = payments.some((pm) => pm.type === 'cash' || pm.type === 'check');
@@ -2128,11 +2221,11 @@ async function processSyncQueue() {
                   } else {
                     const paidCheck = await getInvoiceState(resId).catch(() => ({}));
                     if ((paidCheck?.payment_state || '').toLowerCase() === 'paid') {
-                      alreadySyncedSaleOrderIds.add(soId);
                       log(
                         'queue',
-                        `payment SO ${saleOrderId}: no open balance — invoice ${resId} paid (skip register, continue chatter)`
+                        `payment SO ${saleOrderId}: no open balance — invoice ${resId} paid (skip register)`
                       );
+                      await updatePaymentQueuePipeline(item.id, p, { invoicePosted: true, paymentsRegistered: true });
                     } else {
                       invoiceBlockFailedNoItemsToInvoice = true;
                       logWarn(
@@ -2235,8 +2328,17 @@ async function processSyncQueue() {
                       }
                     }
                   }
-                  alreadySyncedSaleOrderIds.add(soId);
-                  log('queue', `payment item ${item.id} invoice/payments completed (pending chatter + proof upload)`);
+                  const regCheck = await verifyCashChequePaymentsRegisteredOnOdoo(soId, payments);
+                  if (!regCheck.ok) {
+                    invoiceBlockFailedNoItemsToInvoice = true;
+                    log('queue', `payment SO ${soId} kept pending after register attempt — ${regCheck.reason}`);
+                  } else {
+                    await updatePaymentQueuePipeline(item.id, p, {
+                      invoicePosted: true,
+                      paymentsRegistered: true,
+                    });
+                    log('queue', `payment item ${item.id} invoice/payments confirmed on Odoo (chatter next)`);
+                  }
                 }
               }
             } catch (invoiceErr) {
@@ -2245,11 +2347,11 @@ async function processSyncQueue() {
                 invoiceBlockFailedNoItemsToInvoice = true;
                 logWarn('queue payment (invoice/payments)', new Error('Invoice creation failed: delivery not done or no quantities. Complete delivery in Odoo first, then sync again for cheque/credit.'));
               } else if (msg.includes('must be in draft')) {
-                log('queue', `payment SO ${saleOrderId}: invoice already posted (must be in draft) — continue chatter/proof`);
+                log('queue', `payment SO ${saleOrderId}: invoice already posted (must be in draft) — retry verify on next pass`);
               } else {
+                invoiceBlockFailedNoItemsToInvoice = true;
                 logWarn('queue payment (invoice/payments)', invoiceErr);
               }
-              // Continue to post chatter + proof images when possible
             }
           }
 
@@ -2324,18 +2426,23 @@ async function processSyncQueue() {
             : '';
 
           if (chatterPostedInThisRun.has(soId)) {
-            const finalized = await tryFinalizePaymentQueueItem(item, soId, p, {
-              invoiceBlockFailedNoItemsToInvoice,
-              alreadySyncedSaleOrderIds,
-            });
-            if (finalized) continue;
-            log(
-              'queue',
-              `payment SO ${soId}: chatter already posted but Odoo not fully invoiced — retry invoice/payment`
-            );
+            if (invoiceBlockFailedNoItemsToInvoice) {
+              log('queue', `payment SO ${soId}: chatter done but invoice incomplete — keep pending`);
+              continue;
+            }
+            if (await markPaymentQueueItemSyncedWhenBackendComplete(item, soId, p)) {
+              alreadySyncedSaleOrderIds.add(soId);
+              log('queue', `payment synced id=${item.id} (chatter already posted for SO ${soId})`);
+            }
+            continue;
           }
 
-          if (!p._paymentProofChatterPosted) {
+          const pipelineReadyForChatter =
+            !invoiceBlockFailedNoItemsToInvoice && (await paymentPipelineReadyForChatter(soId, p));
+
+          if (!p._paymentProofChatterPosted && !pipelineReadyForChatter) {
+            log('queue', `payment SO ${soId}: skip chatter until delivery/invoice/payment fully confirmed on Odoo`);
+          } else if (!p._paymentProofChatterPosted) {
             const offlineAttachmentsDb = await import('../database/offlineAttachments.js');
             const pendingAttachments = await offlineAttachmentsDb.getPendingBySaleOrderId(soId);
             const FileSystem = await import('expo-file-system');
@@ -2460,25 +2567,27 @@ async function processSyncQueue() {
                   }
                 }
               }
-              if (gasDeliveredCountBody) {
+              if (gasDeliveredCountBody && !p._paymentProofGasChatterPosted) {
                 try {
                   await postPaymentProofToChatterWithAttachmentIds(soId, {
                     body: gasDeliveredCountBody,
                     attachmentIds: [],
                   });
                   log('queue', `message_post Gas Delivered Count SO ${soId}`);
+                  p._paymentProofGasChatterPosted = true;
                 } catch (gasDelErr) {
                   logWarn('queue payment gas-delivered chatter', gasDelErr);
                 }
               }
               const emptyCylinderNote = (p.emptyCylinderChatterBody || p.emptyCylinderChatterNote || '').trim();
-              if (emptyCylinderNote) {
+              if (emptyCylinderNote && !p._paymentProofEmptyCylinderChatterPosted) {
                 try {
                   await postPaymentProofToChatterWithAttachmentIds(soId, {
                     body: emptyCylinderNote,
                     attachmentIds: [],
                   });
                   log('queue', `empty cylinder note message_post SO ${soId}`);
+                  p._paymentProofEmptyCylinderChatterPosted = true;
                 } catch (emptyChatterErr) {
                   logWarn('queue payment empty-cylinder chatter', emptyChatterErr);
                 }
@@ -2486,12 +2595,15 @@ async function processSyncQueue() {
 
               chatterPostedInThisRun.add(soId);
               log('queue', `chatter posted to SO ${soId}${isPartialPayment ? ` (${paymentsForMessage.length} messages)` : ` (${attachmentIds.length} images)`}`);
-              if (invoiceBlockFailedNoItemsToInvoice) {
-                try {
-                  await syncQueueDb.updateQueueItemPayload(item.id, { ...(item.payload || {}), _paymentProofChatterPosted: true });
-                } catch (upErr) {
-                  logWarn('queue payment _paymentProofChatterPosted', upErr);
-                }
+              try {
+                await syncQueueDb.updateQueueItemPayload(item.id, {
+                  ...(item.payload || {}),
+                  _paymentProofChatterPosted: true,
+                  _paymentProofGasChatterPosted: !!p._paymentProofGasChatterPosted,
+                  _paymentProofEmptyCylinderChatterPosted: !!p._paymentProofEmptyCylinderChatterPosted,
+                });
+              } catch (upErr) {
+                logWarn('queue payment _paymentProofChatterPosted', upErr);
               }
             } catch (chatterErr) {
               for (const id of syncedAttachmentIds) {
@@ -2507,13 +2619,39 @@ async function processSyncQueue() {
             );
           }
 
-          await tryFinalizePaymentQueueItem(item, soId, p, {
-            invoiceBlockFailedNoItemsToInvoice,
-            alreadySyncedSaleOrderIds,
-          });
+          if (invoiceBlockFailedNoItemsToInvoice) {
+            log('queue', `payment item ${item.id} NOT marked synced (invoice not created — deliver first, then sync again for cheque/credit)`);
+            continue;
+          }
+          if (await markPaymentQueueItemSyncedWhenBackendComplete(item, soId, p)) {
+            alreadySyncedSaleOrderIds.add(soId);
+            log('queue', `payment synced id=${item.id}`);
+          }
         } catch (e) {
           logWarn('queue payment', e);
         }
+      }
+        } catch (passErr) {
+          logWarn('queue pass', passErr);
+        }
+
+        const pendingAfter = await syncQueueDb.getPendingCount();
+        if (pendingAfter === 0) break;
+        if (lastPending >= 0 && pendingAfter < lastPending) {
+          lastPending = pendingAfter;
+          if (pendingAfter > 0) {
+            await new Promise((r) => setTimeout(r, QUEUE_SYNC_FAST_PASS_DELAY_MS));
+          }
+        } else if (pendingAfter === lastPending) {
+          await new Promise((r) => setTimeout(r, QUEUE_SYNC_RETRY_PASS_DELAY_MS));
+          lastPending = pendingAfter;
+        } else {
+          lastPending = pendingAfter;
+        }
+      }
+      if (pass > 1) {
+        const left = await syncQueueDb.getPendingCount();
+        log('queue', `retry window finished after ${pass} pass(es), pending=${left}`);
       }
     } finally {
       try {
@@ -2745,7 +2883,7 @@ async function runSyncInternal() {
       log('stop', 'no active session');
       return { error: 'No active session' };
     }
-    await processSyncQueuePasses(QUEUE_PROCESS_MAX_PASSES);
+    await processSyncQueue();
     await processStandaloneOfflineAttachments();
 
     const user = await getUserSession();
@@ -3237,11 +3375,24 @@ export async function runSync() {
  */
 export async function flushPendingUploadsNow(options = {}) {
   const includeAttachments = options?.includeAttachments !== false;
-  const queuePasses = Math.max(1, Number(options?.queuePasses) || 5);
+  const maxPasses = Math.min(Math.max(Number(options?.queuePasses) || 8, 1), 15);
   try {
-    await processSyncQueuePasses(queuePasses);
-    if (includeAttachments) {
-      await processStandaloneOfflineAttachments();
+    let lastPending = -1;
+    for (let pass = 0; pass < maxPasses; pass++) {
+      await processSyncQueue();
+      if (includeAttachments) {
+        await processStandaloneOfflineAttachments();
+      }
+      const pending = await syncQueueDb.getPendingCount();
+      if (pending === 0) break;
+      if (lastPending >= 0 && pending < lastPending) {
+        lastPending = pending;
+        continue;
+      }
+      if (pending === lastPending && pass < maxPasses - 1) {
+        await new Promise((r) => setTimeout(r, QUEUE_SYNC_FAST_PASS_DELAY_MS));
+      }
+      lastPending = pending;
     }
     try {
       const session = await getUserSession();

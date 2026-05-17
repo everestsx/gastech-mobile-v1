@@ -7,7 +7,6 @@ import {
   ScrollView,
   RefreshControl,
   ActivityIndicator,
-  Animated,
   Platform,
   LayoutAnimation,
   UIManager,
@@ -18,6 +17,7 @@ import {
   Alert,
 } from 'react-native';
 import { BlurView } from 'expo-blur';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -47,6 +47,7 @@ import {
   isDashboardInitialLoadMemoryDone,
   hydrateDashboardInitialLoadFromStorage,
   markDashboardInitialLoadComplete,
+  setDashboardUploadIndicators,
 } from '../services/sync.service';
 import * as localPaymentsDb from '../database/localPayments.js';
 import * as localInvoicesDb from '../database/localInvoices.js';
@@ -70,11 +71,17 @@ import * as deliveryQtyDb from '../database/deliveryQty.js';
 import * as saleOrderLinesDb from '../database/saleOrderLines.js';
 import DeliveryProgressBarChart from '../components/DeliveryProgressBarChart';
 import RichNotification from '../components/RichNotification';
+import PendingBackOfficeReminderModal from '../components/PendingBackOfficeReminderModal';
 import { useSync } from '../context/SyncContext';
+
+const ORANGE_UPLOAD_SINCE_KEY = '@gastech_orange_upload_pending_since';
+const ORANGE_UPLOAD_REMINDER_MS = 10 * 60 * 1000;
 import { odooImageToUri, getDrivingEmployees, getPortersEmployees } from '../services/employee.service';
 import {
   mergePickingStateBySaleIdFromRows,
   orderIsDeliveryDoneForProgress,
+  orderCountsAsDeliveredForDashboard,
+  effectiveDeliveredQtyForLine,
 } from '../utils/deliveryProgress.js';
 import {
   getCheckoutResumeMap,
@@ -211,6 +218,7 @@ export default function DashboardScreen({ navigation }) {
   const [chartQtyDoneBySaleId, setChartQtyDoneBySaleId] = useState({});
   /** Sale orders with Odoo qty_delivered > 0 on any line (after sync). */
   const [backendQtyDeliveredOrderIds, setBackendQtyDeliveredOrderIds] = useState(() => new Set());
+  const [localInvoicedSaleOrderIds, setLocalInvoicedSaleOrderIds] = useState(() => new Set());
   const [pendingCheckoutOrderIds, setPendingCheckoutOrderIds] = useState(() => new Set());
   const [paymentSplitsByOrderId, setPaymentSplitsByOrderId] = useState({});
   // Commission state
@@ -243,6 +251,8 @@ export default function DashboardScreen({ navigation }) {
   const [routePickerVisible, setRoutePickerVisible] = useState(false);
   const [profileModal, setProfileModal] = useState(null);
   const [postLoginSyncModalVisible, setPostLoginSyncModalVisible] = useState(false);
+  const [pendingBackOfficeModalVisible, setPendingBackOfficeModalVisible] = useState(false);
+  const pendingBackOfficeDismissedRef = useRef(false);
   const [notification, setNotification] = useState({ visible: false, title: '', message: '', type: 'info' });
   const [initialLoadGateActive, setInitialLoadGateActive] = useState(
     () => !isDashboardInitialLoadMemoryDone()
@@ -436,6 +446,7 @@ export default function DashboardScreen({ navigation }) {
       );
 
       const localInvoiceSaleOrderIds = await localInvoicesDb.getSaleOrderIdsWithLocalInvoices().catch(() => new Set());
+      setLocalInvoicedSaleOrderIds(localInvoiceSaleOrderIds);
 
       setPendingCheckoutOrderIds(pendingCheckoutSaleOrderIds);
 
@@ -507,6 +518,7 @@ export default function DashboardScreen({ navigation }) {
         localCompleted,
         syncedCompleted,
       });
+      setDashboardUploadIndicators(pendingOrders, localCompleted);
 
       // Stock overview:
       // pending in lorry = total loaded - delivered/invoiced quantity
@@ -519,48 +531,49 @@ export default function DashboardScreen({ navigation }) {
           const allOrderIds = (Array.isArray(data) ? data : [])
             .map((o) => Number(o?.id))
             .filter((id) => Number.isFinite(id));
-          const [allPickings, allOrderLines, allQtyDoneBySo] = await Promise.all([
+          const [allPickings, allOrderLines, allQtyDoneBySo, allBackendDeliveredSet] = await Promise.all([
             allOrderIds.length ? getPickingsBySaleIdsFromDB(allOrderIds) : Promise.resolve([]),
             allOrderIds.length ? getOrderLinesByOrderIdsFromDB(allOrderIds) : Promise.resolve([]),
             allOrderIds.length ? deliveryQtyDb.getTotalQtyDoneBySaleOrderIds(allOrderIds) : Promise.resolve({}),
+            allOrderIds.length
+              ? saleOrderLinesDb.getSaleOrderIdsWithPositiveQtyDelivered(allOrderIds)
+              : Promise.resolve(new Set()),
           ]);
 
-          const deliveredByPicking = new Set(
-            (allPickings || [])
-              .filter((p) => String(p?.state || '').toLowerCase() === 'done')
-              .map((p) => {
-                const saleId = Array.isArray(p?.sale_id) ? p.sale_id[0] : p?.sale_id;
-                return Number(saleId);
-              })
-              .filter((id) => Number.isFinite(id))
-          );
-
-          const deliveredOrderIds = new Set(
-            (Array.isArray(data) ? data : [])
-              .filter((o) => String(o?.invoice_status || '').toLowerCase() === 'invoiced')
-              .map((o) => Number(o?.id))
-              .filter((id) => Number.isFinite(id))
-          );
-          for (const id of deliveredByPicking) deliveredOrderIds.add(id);
-          for (const [soKey, sum] of Object.entries(allQtyDoneBySo || {})) {
-            const sid = Number(soKey);
-            if (Number.isFinite(sid) && Number(sum) > 0) deliveredOrderIds.add(sid);
-          }
-          for (const id of pendingCheckoutSaleOrderIds) {
-            deliveredOrderIds.delete(id);
+          const allPickingState = mergePickingStateBySaleIdFromRows(allPickings);
+          const orderByIdAll = {};
+          for (const o of Array.isArray(data) ? data : []) {
+            orderByIdAll[Number(o.id)] = o;
           }
 
           const deliveredQtyByProductId = {};
           for (const line of allOrderLines || []) {
             const orderId = Array.isArray(line.order_id) ? line.order_id[0] : line.order_id;
             const soId = orderId != null ? Number(orderId) : null;
-            if (soId == null || !deliveredOrderIds.has(soId)) continue;
+            if (soId == null || !Number.isFinite(soId)) continue;
+            const order = orderByIdAll[soId];
+            if (!order) continue;
+            if (
+              !orderCountsAsDeliveredForDashboard(
+                order,
+                allPickingState,
+                allQtyDoneBySo,
+                allBackendDeliveredSet,
+                pendingCheckoutSaleOrderIds,
+                localInvoiceSaleOrderIds,
+                allOrderLines
+              )
+            ) {
+              continue;
+            }
 
             const pidRaw = Array.isArray(line.product_id) ? line.product_id[0] : line.product_id;
             const pid = pidRaw != null ? Number(pidRaw) : null;
             if (pid == null || !Number.isFinite(pid)) continue;
 
-            const qty = Number(line.product_uom_qty) || 0;
+            const isInvoiced = String(order?.invoice_status || '').toLowerCase() === 'invoiced';
+            const qty = effectiveDeliveredQtyForLine(line, { isInvoiced });
+            if (qty <= 0) continue;
             deliveredQtyByProductId[pid] = (deliveredQtyByProductId[pid] || 0) + qty;
           }
 
@@ -707,6 +720,35 @@ export default function DashboardScreen({ navigation }) {
       loadSyncStatus();
     }
   }, [syncCompleteTimestamp, loadData, loadSyncStatus]);
+
+  useEffect(() => {
+    const orange = orderSyncStats.localCompleted;
+    if (orange <= 0) {
+      pendingBackOfficeDismissedRef.current = false;
+      setPendingBackOfficeModalVisible(false);
+      void AsyncStorage.removeItem(ORANGE_UPLOAD_SINCE_KEY);
+      return undefined;
+    }
+
+    const evaluate = async () => {
+      if (pendingBackOfficeDismissedRef.current) return;
+      let sinceRaw = await AsyncStorage.getItem(ORANGE_UPLOAD_SINCE_KEY);
+      if (!sinceRaw) {
+        sinceRaw = String(Date.now());
+        await AsyncStorage.setItem(ORANGE_UPLOAD_SINCE_KEY, sinceRaw);
+      }
+      const since = Number(sinceRaw);
+      if (Number.isFinite(since) && Date.now() - since >= ORANGE_UPLOAD_REMINDER_MS) {
+        setPendingBackOfficeModalVisible(true);
+      }
+    };
+
+    void evaluate();
+    const id = setInterval(() => {
+      void evaluate();
+    }, 60 * 1000);
+    return () => clearInterval(id);
+  }, [orderSyncStats.localCompleted]);
 
   useEffect(() => {
     if (isSyncing || !syncResult) return;
@@ -919,27 +961,6 @@ export default function DashboardScreen({ navigation }) {
   };
 
   const syncButtonActive = syncing || isSyncing;
-  const syncSpin = useRef(new Animated.Value(0)).current;
-  useEffect(() => {
-    if (!syncButtonActive) {
-      syncSpin.setValue(0);
-      return undefined;
-    }
-    const loop = Animated.loop(
-      Animated.timing(syncSpin, {
-        toValue: 1,
-        duration: 900,
-        useNativeDriver: true,
-      })
-    );
-    loop.start();
-    return () => loop.stop();
-  }, [syncButtonActive, syncSpin]);
-
-  const syncSpinDeg = syncSpin.interpolate({
-    inputRange: [0, 1],
-    outputRange: ['0deg', '360deg'],
-  });
 
   const onSync = async () => {
     if (syncing || isSyncing) return;
@@ -1047,12 +1068,14 @@ export default function DashboardScreen({ navigation }) {
   const deliveredTodayOrders = useMemo(
     () =>
       todayOrdersForDashboard.filter((o) =>
-        orderIsDeliveryDoneForProgress(
+        orderCountsAsDeliveredForDashboard(
           o,
           pickingStateBySaleId,
           qtyDoneBySaleId,
           backendQtyDeliveredOrderIds,
-          pendingCheckoutOrderIds
+          pendingCheckoutOrderIds,
+          localInvoicedSaleOrderIds,
+          todayOrderLines
         )
       ),
     [
@@ -1061,18 +1084,22 @@ export default function DashboardScreen({ navigation }) {
       qtyDoneBySaleId,
       backendQtyDeliveredOrderIds,
       pendingCheckoutOrderIds,
+      localInvoicedSaleOrderIds,
+      todayOrderLines,
     ]
   );
 
   const deliveredTodayOrdersAllRoutes = useMemo(
     () =>
       todayOrders.filter((o) =>
-        orderIsDeliveryDoneForProgress(
+        orderCountsAsDeliveredForDashboard(
           o,
           pickingStateBySaleId,
           qtyDoneBySaleId,
           backendQtyDeliveredOrderIds,
-          pendingCheckoutOrderIds
+          pendingCheckoutOrderIds,
+          localInvoicedSaleOrderIds,
+          todayOrderLines
         )
       ),
     [
@@ -1081,6 +1108,8 @@ export default function DashboardScreen({ navigation }) {
       qtyDoneBySaleId,
       backendQtyDeliveredOrderIds,
       pendingCheckoutOrderIds,
+      localInvoicedSaleOrderIds,
+      todayOrderLines,
     ]
   );
 
@@ -1094,6 +1123,10 @@ export default function DashboardScreen({ navigation }) {
 
   const deliveredQtyByProductId = useMemo(() => {
     const deliveredOrderIds = new Set(deliveredTodayOrdersAllRoutes.map((o) => Number(o.id)));
+    const orderById = {};
+    deliveredTodayOrdersAllRoutes.forEach((o) => {
+      orderById[Number(o.id)] = o;
+    });
     const map = {};
     (todayOrderLines || []).forEach((line) => {
       const orderId = Array.isArray(line.order_id) ? line.order_id[0] : line.order_id;
@@ -1104,7 +1137,10 @@ export default function DashboardScreen({ navigation }) {
       const pid = pidRaw != null ? Number(pidRaw) : null;
       if (pid == null || !Number.isFinite(pid)) return;
 
-      const qty = Number(line.product_uom_qty) || 0;
+      const order = orderById[soId];
+      const isInvoiced = String(order?.invoice_status || '').toLowerCase() === 'invoiced';
+      const qty = effectiveDeliveredQtyForLine(line, { isInvoiced });
+      if (qty <= 0) return;
       map[pid] = (map[pid] || 0) + qty;
     });
     return map;
@@ -1216,10 +1252,21 @@ export default function DashboardScreen({ navigation }) {
   const shopsCompleted = deliveredTodayOrdersAllRoutes.length;
   const totalShopsToday = todayOrders.length;
   const shopsPct = totalShopsToday > 0 ? Math.min(100, Math.round((shopsCompleted / totalShopsToday) * 100)) : 0;
-  const totalGasDelivered = deliveredTodayOrdersAllRoutes.reduce(
-      (s, o) => s + (Number(lineTotalsByOrder[o.id]) || 0),
-      0
-  );
+  const totalGasDelivered = useMemo(() => {
+    const orderById = {};
+    deliveredTodayOrdersAllRoutes.forEach((o) => {
+      orderById[Number(o.id)] = o;
+    });
+    let sum = 0;
+    for (const line of todayOrderLines || []) {
+      const orderId = Array.isArray(line.order_id) ? line.order_id[0] : line.order_id;
+      const soId = orderId != null ? Number(orderId) : null;
+      if (soId == null || !orderById[soId]) continue;
+      const isInvoiced = String(orderById[soId]?.invoice_status || '').toLowerCase() === 'invoiced';
+      sum += effectiveDeliveredQtyForLine(line, { isInvoiced });
+    }
+    return sum;
+  }, [deliveredTodayOrdersAllRoutes, todayOrderLines]);
   const totalGasInOrders = todayOrders.reduce(
       (s, o) => s + (Number(lineTotalsByOrder[o.id]) || 0),
       0
@@ -1276,8 +1323,8 @@ export default function DashboardScreen({ navigation }) {
       const key = partnerId ?? 'unknown';
       if (!byPartner[key]) return;
 
-      const qty = Math.round(Number(line.product_uom_qty) || 0);
-      if (qty <= 0) return;
+      const orderedQty = Math.round(Number(line.product_uom_qty) || 0);
+      if (orderedQty <= 0) return;
 
       const productName = (Array.isArray(line.product_id) ? line.product_id[1] : null) || line.name || '';
       const canonicalKg = canonicalKgFromName(productName);
@@ -1288,19 +1335,23 @@ export default function DashboardScreen({ navigation }) {
           ? `${Number(parsedKg)}kg`
           : 'Other';
 
-      byPartner[key].stacks[gasTypeKey] = (Number(byPartner[key].stacks[gasTypeKey]) || 0) + qty;
+      byPartner[key].stacks[gasTypeKey] = (Number(byPartner[key].stacks[gasTypeKey]) || 0) + orderedQty;
 
-      byPartner[key].total += qty;
+      byPartner[key].total += orderedQty;
 
-      const isDone = orderIsDeliveryDoneForProgress(
+      const isDone = orderCountsAsDeliveredForDashboard(
         order,
         chartPickingStateBySaleId,
         chartQtyDoneBySaleId,
         backendQtyDeliveredOrderIds,
-        pendingCheckoutOrderIds
+        pendingCheckoutOrderIds,
+        localInvoicedSaleOrderIds,
+        chartOrderLines
       );
-      if (isDone) byPartner[key].delivered += qty;
-      else byPartner[key].pending += qty;
+      const isInvoiced = String(order?.invoice_status || '').toLowerCase() === 'invoiced';
+      const deliveredQty = Math.round(effectiveDeliveredQtyForLine(line, { isInvoiced }));
+      if (isDone) byPartner[key].delivered += deliveredQty > 0 ? deliveredQty : orderedQty;
+      else byPartner[key].pending += orderedQty;
     });
 
     const real = Object.values(byPartner)
@@ -1323,6 +1374,7 @@ export default function DashboardScreen({ navigation }) {
     chartQtyDoneBySaleId,
     backendQtyDeliveredOrderIds,
     pendingCheckoutOrderIds,
+    localInvoicedSaleOrderIds,
     appLanguage,
   ]);
 
@@ -1450,11 +1502,11 @@ export default function DashboardScreen({ navigation }) {
           backgroundColor: 'rgba(255,255,255,0.12)',
         },
         syncNowBtnSyncing: {
-          minWidth: 40,
-          width: 40,
-          height: 40,
-          paddingHorizontal: 0,
-          borderRadius: 20,
+          minWidth: 108,
+          paddingHorizontal: 12,
+        },
+        syncNowBtnIconWrap: {
+          marginRight: 6,
         },
         syncNowBtnText: {
           fontSize: 12,
@@ -2170,9 +2222,10 @@ export default function DashboardScreen({ navigation }) {
                   }
                 >
                   {syncButtonActive ? (
-                    <Animated.View style={{ transform: [{ rotate: syncSpinDeg }] }}>
-                      <Ionicons name="sync" size={20} color="#fff" />
-                    </Animated.View>
+                    <>
+                      <ActivityIndicator color="#fff" size="small" style={styles.syncNowBtnIconWrap} />
+                      <Text style={styles.syncNowBtnText}>{t('menu.syncing', 'Syncing...')}</Text>
+                    </>
                   ) : (
                     <Text style={styles.syncNowBtnText}>{t('dashboard.syncNow', 'Sync now')}</Text>
                   )}
@@ -2190,7 +2243,6 @@ export default function DashboardScreen({ navigation }) {
             </View>
           </View>
         </View>
-
         {/* 2. Stock overview (lorry stock) */}
         <View style={{ paddingHorizontal: spacing.md, marginTop: -10, marginBottom: spacing.sm }}>
           <TouchableOpacity
@@ -2917,6 +2969,20 @@ export default function DashboardScreen({ navigation }) {
           </Pressable>
         </Pressable>
       </Modal>
+
+      <PendingBackOfficeReminderModal
+        visible={pendingBackOfficeModalVisible}
+        orderCount={orderSyncStats.localCompleted}
+        syncActive={syncButtonActive}
+        onClose={() => {
+          pendingBackOfficeDismissedRef.current = true;
+          setPendingBackOfficeModalVisible(false);
+        }}
+        onSyncPress={() => {
+          setPendingBackOfficeModalVisible(false);
+          void onSync();
+        }}
+      />
 
       <Modal
         visible={postLoginSyncModalVisible}
