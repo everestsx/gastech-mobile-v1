@@ -12,6 +12,16 @@ export const ACTION_PAYMENT = 'payment';
 /** Vehicle inventory update after delivery. Payload: { vehicleId, locationId, updates[] } */
 export const ACTION_INVENTORY_UPDATE = 'inventory_update';
 
+function wakePendingUploadAfterQueueChange() {
+  import('../services/sync.service.js')
+    .then((m) => {
+      if (typeof m.schedulePendingUploadSync === 'function') {
+        m.schedulePendingUploadSync();
+      }
+    })
+    .catch(() => {});
+}
+
 export async function enqueue(actionType, payload) {
   const db = await getDb();
   const payloadStr =
@@ -23,6 +33,7 @@ export async function enqueue(actionType, payload) {
     [empty(actionType) || 'unknown', payloadStr, iso()]
   );
   const row = await db.getFirstAsync('SELECT last_insert_rowid() AS id');
+  wakePendingUploadAfterQueueChange();
   return num(row?.id);
 }
 
@@ -192,6 +203,7 @@ export async function updateQueueItemPayload(id, payload) {
       ? payload
       : JSON.stringify(payload ?? {}, (_k, v) => (typeof v === 'bigint' ? v.toString() : v));
   await db.runAsync('UPDATE sync_queue SET payload = ? WHERE id = ?', [payloadStr, num(id)]);
+  wakePendingUploadAfterQueueChange();
 }
 
 /** Delete pending queue items for a sale order so a cancelled order does not keep old work queued. */

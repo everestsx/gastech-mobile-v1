@@ -51,7 +51,30 @@ const QUEUE_SYNC_FAST_PASS_DELAY_MS = 400;
 const QUEUE_SYNC_MAX_PASSES = 30;
 /** Fast retry for pending queue when app is foregrounded (AppNavigator). */
 export const PENDING_QUEUE_FAST_RETRY_MS = 20 * 1000;
+/** Shorter poll while uploads are pending (does not change delivery RPC sequence). */
+export const PENDING_QUEUE_ACTIVE_RETRY_MS = 4 * 1000;
 export const PENDING_QUEUE_FAST_RETRY_WINDOW_MS = 10 * 60 * 1000;
+
+let _pendingUploadWakeTimer = null;
+let _pendingUploadWakePromise = null;
+
+/** Debounced queue flush after enqueue/update — faster pending→completed when online. */
+export function schedulePendingUploadSync(options = {}) {
+  if (_pendingUploadWakeTimer) clearTimeout(_pendingUploadWakeTimer);
+  _pendingUploadWakeTimer = setTimeout(() => {
+    _pendingUploadWakeTimer = null;
+    if (_pendingUploadWakePromise) {
+      _pendingUploadWakePromise.finally(() => schedulePendingUploadSync(options));
+      return;
+    }
+    _pendingUploadWakePromise = flushPendingUploadsNow({
+      includeAttachments: options.includeAttachments !== false,
+      queuePasses: options.queuePasses ?? 10,
+    }).finally(() => {
+      _pendingUploadWakePromise = null;
+    });
+  }, 200);
+}
 
 /** Dashboard counters (red / orange) — set from DashboardScreen only; used to skip idle fast-sync. */
 let _dashboardUploadIndicators = { pendingOrders: 0, localCompleted: 0 };
@@ -1347,7 +1370,7 @@ async function processSyncQueue() {
       };
 
       /** Push one delivery queue row to Odoo and mark synced. Used from main delivery pass and pre-payment flush. */
-      const processOneDeliveryQueueItem = async (item) => {
+      const processOneDeliveryQueueItem = async (item, syncOptions = {}) => {
         const p = item.payload || {};
         const saleOrderId = p.saleOrderId ?? p.sale_id;
         const orderLineUpdates = p.orderLineUpdates || [];
@@ -1632,9 +1655,15 @@ async function processSyncQueue() {
                 try {
                   await createMoveLine(pickingId, Number(moveId), Number(productId), qtyN);
                 } catch (createErr) {
+                  /** Edge case only: line may exist — set quantity_done on move (does not throw). */
+                  try {
+                    await updateStockMoveQuantityDone(Number(moveId), qtyN);
+                  } catch (_) {
+                    /* keep original skip behaviour if fallback fails */
+                  }
                   log(
                     'queue',
-                    `delivery createMoveLine skipped for move ${moveId}: ${String(createErr?.message || createErr).slice(0, 100)}`
+                    `delivery createMoveLine fallback move ${moveId}: ${String(createErr?.message || createErr).slice(0, 80)}`
                   );
                 }
               }
@@ -1664,6 +1693,25 @@ async function processSyncQueue() {
             } else {
               throw updateErr;
             }
+          }
+
+          /** Edge case only (queue retry pass > 1): re-apply qty_done before validate — pass 1 unchanged. */
+          if (Number(syncOptions.queuePass) > 1 && deliveryLines.length > 0) {
+            for (const line of deliveryLines) {
+              const moveId = line.moveId ?? line.move_id;
+              const qtyN = line.qty_done != null ? Number(line.qty_done) : NaN;
+              if (moveId == null || !Number.isFinite(qtyN) || qtyN <= 0) continue;
+              try {
+                await updateStockMoveQuantityDone(Number(moveId), qtyN);
+              } catch (_) {
+                /* best-effort on retry */
+              }
+            }
+            await new Promise((r) => setTimeout(r, 400));
+            log(
+              'queue',
+              `delivery retry pass ${syncOptions.queuePass}: re-applied qty_done before validate picking ${pickingId}`
+            );
           }
 
           const tryValidateOne = async () => {
@@ -1810,7 +1858,7 @@ async function processSyncQueue() {
           continue;
         }
         try {
-          await processOneDeliveryQueueItem(item);
+          await processOneDeliveryQueueItem(item, { queuePass: pass });
         } catch (e) {
           logWarn('queue delivery', e);
         }
@@ -2055,7 +2103,7 @@ async function processSyncQueue() {
                 ...latestHeld,
                 payload: { ...(latestHeld.payload || {}), holdUntilPayment: false },
               };
-              await processOneDeliveryQueueItem(released);
+              await processOneDeliveryQueueItem(released, { queuePass: pass });
               flushOk = true;
             } catch (flushErr) {
               logWarn('queue delivery (flush before payment)', flushErr);
@@ -3421,6 +3469,14 @@ export async function flushPendingUploadsNow(options = {}) {
   }
   try {
     const pendingCount = await syncQueueDb.getPendingCount();
+    const indicators = hasDashboardUploadIndicators();
+    if (pendingCount === 0 && !indicators && _syncCompleteListener) {
+      try {
+        _syncCompleteListener(true);
+      } catch (e) {
+        console.warn(`${LOG_TAG} syncCompleteListener after flush`, e?.message ?? e);
+      }
+    }
     return { pendingCount };
   } catch (_) {
     return { pendingCount: null };
