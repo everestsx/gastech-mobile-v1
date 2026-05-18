@@ -1,5 +1,5 @@
 ﻿{
-  "version": "1.0.6",
+  "version": "1.0.7",
   "language": "si",
   "translation": {
     "bluetoothprinter": {
@@ -75,7 +75,14 @@
       "showCreateSalesOrder": "'Create Sales Order' කාඩ් එක පෙන්වන්න",
       "showReturnOrder": "'Return Order' කාඩ් එක පෙන්වන්න",
       "tapForProfile": "ප්‍රොෆයිල් එක සඳහා ටැප් කරන්න",
-      "title": "ඩෑෂ්බෝඩ්"
+      "title": "ඩෑෂ්බෝඩ්",
+      "pendingBackOffice": {
+        "title": "කාර්යාලයට යා යුතු ඇණවුම් {{count}} ක්",
+        "title_one": "කාර්යාලයට යා යුතු ඇණවුම 1 ක්",
+        "body": "මෙම දුරකථනයෙන් අවසන් කළ ඇණවුම් {{count}} ක් තවම ප්‍රධාන කාර්යාල පද්ධතියට සම්පූර්ණයෙන් යාවත්කාලීන වී නැත. කරුණාකර sync කර indicator එක කොළ (green) වනතුරු ඉන්න. එවිට පමණක් operations team එකට ඔබගේ orders දැකිය හැක. sync නොවුණොත්, ඔබගේ internet connection එක පරීක්ෂා කර නැවත උත්සාහ කරන්න.",
+        "close": "වසන්න",
+        "sync": "දැන් Sync කරන්න"
+      }
     },
     "deliveredorders": {
       "all": "සියල්ල",

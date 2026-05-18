@@ -59,6 +59,9 @@ function isToday(d) {
   return formatDate(d) === today;
 }
 
+/** Keeps last Orders tab list visible instantly when switching tabs (UI cache only). */
+let lastSaleOrdersListSnapshot = null;
+
 export default function SaleOrderListScreen({ route, navigation }) {
   const { t } = useTranslation();
   const { colors, syncDateField } = useTheme();
@@ -66,8 +69,7 @@ export default function SaleOrderListScreen({ route, navigation }) {
   const customerId = route?.params?.customerId ?? null;
   const customerNameFromParams = route?.params?.customerName ?? null;
   const scannedDateParam = route?.params?.scannedDate ?? null;
-  const [orders, setOrders] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [orders, setOrders] = useState(() => lastSaleOrdersListSnapshot?.orders ?? []);
   const [selectedDate, setSelectedDate] = useState(() => {
     if (scannedDateParam) {
       const d = new Date(scannedDateParam + 'T12:00:00');
@@ -80,7 +82,9 @@ export default function SaleOrderListScreen({ route, navigation }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchField, setSearchField] = useState('customer');
   const [showFieldDropdown, setShowFieldDropdown] = useState(false);
-  const [checkoutResumeMap, setCheckoutResumeMap] = useState({});
+  const [checkoutResumeMap, setCheckoutResumeMap] = useState(
+    () => lastSaleOrdersListSnapshot?.checkoutResumeMap ?? {}
+  );
   const [showCancelConfirmModal, setShowCancelConfirmModal] = useState(false);
   const [showCancelModal, setShowCancelModal] = useState(false);
   const [cancelTargetOrder, setCancelTargetOrder] = useState(null);
@@ -445,7 +449,6 @@ export default function SaleOrderListScreen({ route, navigation }) {
   );
 
   const loadOrders = useCallback(async () => {
-    setLoading(true);
     try {
       const user = await getUserSession();
       const vehicleId = user?.isAdmin === false ? user.vehicleId : null;
@@ -540,12 +543,14 @@ export default function SaleOrderListScreen({ route, navigation }) {
         return String(a.name || '').localeCompare(String(b.name || ''));
       });
       setOrders(enriched);
+      lastSaleOrdersListSnapshot = {
+        orders: enriched,
+        checkoutResumeMap: resumeMap && typeof resumeMap === 'object' ? resumeMap : {},
+      };
     } catch (err) {
       console.error('Sale Order Error:', err);
       setOrders([]);
       setCheckoutResumeMap({});
-    } finally {
-      setLoading(false);
     }
   }, [customerId, selectedDate, syncDateField]);
 
@@ -689,14 +694,6 @@ export default function SaleOrderListScreen({ route, navigation }) {
     // Pending checkout: open order details (modify / proceed) — not straight to invoice; banner can resume invoice/proof.
     navigation.navigate('SaleOrderDetails', { saleOrderId: order.id });
   };
-
-  if (loading) {
-    return (
-      <View style={[styles.container, styles.center]}>
-        <ActivityIndicator size="large" color={colors.primary} />
-      </View>
-    );
-  }
 
   return (
     <KeyboardAvoidingView

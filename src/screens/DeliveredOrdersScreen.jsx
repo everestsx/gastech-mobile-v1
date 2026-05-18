@@ -7,7 +7,6 @@ import {
   ScrollView,
   TouchableOpacity,
   StyleSheet,
-  ActivityIndicator,
   Platform,
   TextInput,
   Modal,
@@ -64,6 +63,13 @@ function formatDate(d) {
   const month = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
+}
+
+/** Keeps last Delivered tab state visible instantly when switching tabs (UI cache only). */
+let lastDeliveredOrdersSnapshot = null;
+
+function setFromSnapshot(raw) {
+  return raw instanceof Set ? raw : new Set(Array.isArray(raw) ? raw : []);
 }
 
 function isToday(d) {
@@ -166,17 +172,30 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
   const customerId = route?.params?.customerId ?? null;
   const customerNameFromParams = route?.params?.customerName ?? null;
   const scannedDateParam = route?.params?.scannedDate ?? null;
-  const [orders, setOrders] = useState([]);
-  const [pickingStateBySaleId, setPickingStateBySaleId] = useState({});
-  const [qtyDoneBySaleId, setQtyDoneBySaleId] = useState({});
-  const [qtyDoneBySaleAndProduct, setQtyDoneBySaleAndProduct] = useState({});
-  const [backendQtyDeliveredOrderIds, setBackendQtyDeliveredOrderIds] = useState(() => new Set());
-  const [pendingCheckoutOrderIds, setPendingCheckoutOrderIds] = useState(() => new Set());
-  const [localInvoicedSaleOrderIds, setLocalInvoicedSaleOrderIds] = useState(() => new Set());
-  const [syncedPaymentOrderIds, setSyncedPaymentOrderIds] = useState(() => new Set());
+  const [orders, setOrders] = useState(() => lastDeliveredOrdersSnapshot?.orders ?? []);
+  const [pickingStateBySaleId, setPickingStateBySaleId] = useState(
+    () => lastDeliveredOrdersSnapshot?.pickingStateBySaleId ?? {}
+  );
+  const [qtyDoneBySaleId, setQtyDoneBySaleId] = useState(
+    () => lastDeliveredOrdersSnapshot?.qtyDoneBySaleId ?? {}
+  );
+  const [qtyDoneBySaleAndProduct, setQtyDoneBySaleAndProduct] = useState(
+    () => lastDeliveredOrdersSnapshot?.qtyDoneBySaleAndProduct ?? {}
+  );
+  const [backendQtyDeliveredOrderIds, setBackendQtyDeliveredOrderIds] = useState(() =>
+    setFromSnapshot(lastDeliveredOrdersSnapshot?.backendQtyDeliveredOrderIds)
+  );
+  const [pendingCheckoutOrderIds, setPendingCheckoutOrderIds] = useState(() =>
+    setFromSnapshot(lastDeliveredOrdersSnapshot?.pendingCheckoutOrderIds)
+  );
+  const [localInvoicedSaleOrderIds, setLocalInvoicedSaleOrderIds] = useState(() =>
+    setFromSnapshot(lastDeliveredOrdersSnapshot?.localInvoicedSaleOrderIds)
+  );
+  const [syncedPaymentOrderIds, setSyncedPaymentOrderIds] = useState(() =>
+    setFromSnapshot(lastDeliveredOrdersSnapshot?.syncedPaymentOrderIds)
+  );
   const { syncCompleteTimestamp } = useSync();
-  const [journals, setJournals] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [journals, setJournals] = useState(() => lastDeliveredOrdersSnapshot?.journals ?? []);
   const [selectedDate, setSelectedDate] = useState(() => {
     if (scannedDateParam) {
       const d = new Date(`${scannedDateParam}T12:00:00`);
@@ -471,7 +490,6 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
   );
 
   const loadOrders = useCallback(async () => {
-    setLoading(true);
     try {
       const user = await getUserSession();
       const vehicleId = user?.isAdmin === false ? user.vehicleId : null;
@@ -607,21 +625,39 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
         if (merged != null) mergedQtyBySaleAndProduct[oid] = merged;
       }
       setQtyDoneBySaleAndProduct(mergedQtyBySaleAndProduct);
-      setOrders(
-        list.map((o) => {
-          const inv = String(o.invoice_status).toLowerCase() === 'invoiced';
-          const st = String(saleIdToPickingState[o.id] || '').toLowerCase();
-          const q = Number(qtyMap[o.id]) || 0;
-          const deliveryDone = inv || st === 'done' || st === 'cancel' || q > 0;
-          return {
-            ...o,
-            totalQty: totals[o.id] != null ? totals[o.id] : null,
-            isDelivered: deliveryDone,
-            orderLines: linesByOrderId[o.id] || [],
-            paymentSplit: syntheticSplit(o) || null,
-          };
-        })
-      );
+      const nextOrders = list.map((o) => {
+        const inv = String(o.invoice_status).toLowerCase() === 'invoiced';
+        const st = String(saleIdToPickingState[o.id] || '').toLowerCase();
+        const q = Number(qtyMap[o.id]) || 0;
+        const deliveryDone = inv || st === 'done' || st === 'cancel' || q > 0;
+        return {
+          ...o,
+          totalQty: totals[o.id] != null ? totals[o.id] : null,
+          isDelivered: deliveryDone,
+          orderLines: linesByOrderId[o.id] || [],
+          paymentSplit: syntheticSplit(o) || null,
+        };
+      });
+      setOrders(nextOrders);
+      const nextBackendDelivered =
+        backendDeliveredSet instanceof Set ? backendDeliveredSet : new Set();
+      const nextLocalInvoiced = localInvoiced instanceof Set ? localInvoiced : new Set();
+      const nextPendingCheckout = pendingCheckoutSaleOrderIdsFromResumeMap(resumeMap);
+      const nextSyncedPayment =
+        syncedPaymentIds instanceof Set
+          ? new Set(syncedPaymentIds)
+          : new Set(Array.from(syncedPaymentIds || []));
+      lastDeliveredOrdersSnapshot = {
+        orders: nextOrders,
+        pickingStateBySaleId: saleIdToPickingState,
+        qtyDoneBySaleId: qtyMap || {},
+        qtyDoneBySaleAndProduct: mergedQtyBySaleAndProduct,
+        backendQtyDeliveredOrderIds: Array.from(nextBackendDelivered),
+        pendingCheckoutOrderIds: Array.from(nextPendingCheckout),
+        localInvoicedSaleOrderIds: Array.from(nextLocalInvoiced),
+        syncedPaymentOrderIds: Array.from(nextSyncedPayment),
+        journals: Array.isArray(journalsList) ? journalsList : [],
+      };
     } catch (err) {
       console.error('Delivered Orders Error:', err);
       setOrders([]);
@@ -632,8 +668,6 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
       setPendingCheckoutOrderIds(new Set());
       setLocalInvoicedSaleOrderIds(new Set());
       setSyncedPaymentOrderIds(new Set());
-    } finally {
-      setLoading(false);
     }
   }, [selectedDate, syncDateField, customerId]);
 
@@ -707,14 +741,6 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
       ...(invoiceLineQtys.length > 0 ? { invoiceLineQtys } : {}),
     });
   };
-
-  if (loading) {
-    return (
-      <View style={[styles.container, styles.center]}>
-        <ActivityIndicator size="large" color={colors.primary} />
-      </View>
-    );
-  }
 
   return (
     <KeyboardAvoidingView

@@ -2,6 +2,68 @@
  * Shared rules for “delivery done” / progress (dashboard, charts, lists).
  */
 
+/** Cylinder qty delivered on one SO line (Odoo qty_delivered; full ordered qty only when invoiced and no partial qty on file). */
+export function effectiveDeliveredQtyForLine(line, { isInvoiced = false } = {}) {
+  const qd = Number(line?.qty_delivered) || 0;
+  if (qd > 0.000001) return qd;
+  const ordered = Number(line?.product_uom_qty) || 0;
+  if (isInvoiced && ordered > 0) return ordered;
+  return 0;
+}
+
+export function sumEffectiveDeliveredQtyForOrder(order, orderLines) {
+  const oid = Number(order?.id);
+  if (!Number.isFinite(oid)) return 0;
+  const isInvoiced = String(order?.invoice_status || '').toLowerCase() === 'invoiced';
+  let sum = 0;
+  for (const line of orderLines || []) {
+    const lineOid = Array.isArray(line.order_id) ? line.order_id[0] : line.order_id;
+    if (Number(lineOid) !== oid) continue;
+    sum += effectiveDeliveredQtyForLine(line, { isInvoiced });
+  }
+  return sum;
+}
+
+/**
+ * Dashboard / stock: order counts as delivered when backend or local activity exists — not every cached “invoiced” header alone.
+ */
+export function orderCountsAsDeliveredForDashboard(
+  order,
+  pickingStateBySaleIdMap,
+  qtyDoneBySaleIdMap,
+  saleOrderIdsWithBackendQtyDelivered,
+  pendingCheckoutSaleOrderIds,
+  localInvoicedSaleOrderIds,
+  orderLines
+) {
+  const oid = Number(order?.id);
+  if (
+    pendingCheckoutSaleOrderIds instanceof Set &&
+    Number.isFinite(oid) &&
+    pendingCheckoutSaleOrderIds.has(oid)
+  ) {
+    return false;
+  }
+  if (
+    saleOrderIdsWithBackendQtyDelivered instanceof Set &&
+    Number.isFinite(oid) &&
+    saleOrderIdsWithBackendQtyDelivered.has(oid)
+  ) {
+    return true;
+  }
+  if ((Number(qtyDoneBySaleIdMap[order?.id]) || 0) > 0) return true;
+  const st = String(pickingStateBySaleIdMap[order?.id] || '').toLowerCase();
+  if (st === 'done' || st === 'cancel') return true;
+  if (
+    localInvoicedSaleOrderIds instanceof Set &&
+    Number.isFinite(oid) &&
+    localInvoicedSaleOrderIds.has(oid)
+  ) {
+    return true;
+  }
+  return sumEffectiveDeliveredQtyForOrder(order, orderLines) > 0.000001;
+}
+
 export function mergePickingStateBySaleIdFromRows(pickings) {
   const map = {};
   (pickings || []).forEach((p) => {

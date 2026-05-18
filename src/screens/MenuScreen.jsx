@@ -24,6 +24,7 @@ import {
 } from '../services/sync.service';
 import CustomAlert from '../components/CustomAlert';
 import { usePrinterConnection } from '../context/PrinterConnectionContext';
+import { useSync } from '../context/SyncContext';
 import { useFocusEffect } from '@react-navigation/native';
 import { odooImageToUri } from '../services/employee.service';
 import { testProps } from '../utils/testProps';
@@ -32,7 +33,9 @@ export default function MenuScreen({ navigation }) {
   const { t } = useTranslation();
   const { colors } = useTheme();
   const { clearPrinter } = usePrinterConnection();
+  const { isSyncing } = useSync();
   const [syncing, setSyncing] = useState(false);
+  const syncActive = syncing || isSyncing;
   const [checkingAppUpdate, setCheckingAppUpdate] = useState(false);
   const [lastSync, setLastSync] = useState(null);
   const [user, setUser] = useState(null);
@@ -68,6 +71,7 @@ export default function MenuScreen({ navigation }) {
   );
 
   const handleSync = async () => {
+    if (syncActive) return;
     setSyncing(true);
     try {
       const result = await runSync();
@@ -295,16 +299,16 @@ export default function MenuScreen({ navigation }) {
         style={[styles.syncBtn, { backgroundColor: colors.primary }]}
         {...testProps('menu-sync-btn')}
         onPress={handleSync}
-        disabled={syncing}
+        disabled={syncActive}
         activeOpacity={0.8}
       >
-        {syncing ? (
+        {syncActive ? (
           <ActivityIndicator color="#fff" size="small" />
         ) : (
           <Ionicons name="sync-outline" size={24} color="#fff" />
         )}
         <Text style={styles.syncText}>
-            {syncing ? t('menu.syncing', 'Syncing...') : t('menu.sync', 'Sync')}
+            {syncActive ? t('menu.syncing', 'Syncing...') : t('menu.sync', 'Sync')}
         </Text>
       </TouchableOpacity>
 
