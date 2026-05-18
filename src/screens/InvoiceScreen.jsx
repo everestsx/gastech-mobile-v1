@@ -1088,7 +1088,7 @@ export default function InvoiceScreen({ route, navigation }) {
 
   const [invoiceNumber, setInvoiceNumber] = useState(null);
   const [odooInvoiceNumber, setOdooInvoiceNumber] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [printing, setPrinting] = useState(false);
   const [previewing, setPreviewing] = useState(false);
   const [printResult, setPrintResult] = useState(null);
@@ -1712,7 +1712,6 @@ export default function InvoiceScreen({ route, navigation }) {
       setLoading(false);
       return;
     }
-    setLoading(true);
     try {
       let extraInvoiceQtys = route.params?.invoiceLineQtys;
       if (!Array.isArray(extraInvoiceQtys) || extraInvoiceQtys.length === 0) {
@@ -1801,6 +1800,8 @@ export default function InvoiceScreen({ route, navigation }) {
       const localInv = await localInvoicesDb.getLocalInvoiceBySaleOrderId(saleOrderId);
       setLocalCustomerSig(localInv?.customer_signature_data ?? null);
       setLocalDriverSig(localInv?.driver_signature_data ?? null);
+      setLoading(false);
+
       let odooNo = null;
       const odooInvoiceId = Number(localInv?.odoo_invoice_id);
       if (Number.isFinite(odooInvoiceId) && odooInvoiceId > 0) {
@@ -1881,14 +1882,25 @@ export default function InvoiceScreen({ route, navigation }) {
   }, [loadInvoice]);
 
   useEffect(() => {
-    if (loading) return;
     if (!saleOrderId) return;
     if (!fromProceedPayment || !promptSignatures) return;
-    const hasCust = localCustomerSig && String(localCustomerSig).trim() !== '';
-    const hasDrv = localDriverSig && String(localDriverSig).trim() !== '';
+    const hasCust =
+      (customerSignatureDataUrl && String(customerSignatureDataUrl).trim() !== '') ||
+      (localCustomerSig && String(localCustomerSig).trim() !== '');
+    const hasDrv =
+      (driverSignatureDataUrl && String(driverSignatureDataUrl).trim() !== '') ||
+      (localDriverSig && String(localDriverSig).trim() !== '');
     if (hasCust && hasDrv) return;
     setShowSignatureCaptureModal(true);
-  }, [loading, saleOrderId, fromProceedPayment, promptSignatures, localCustomerSig, localDriverSig]);
+  }, [
+    saleOrderId,
+    fromProceedPayment,
+    promptSignatures,
+    localCustomerSig,
+    localDriverSig,
+    customerSignatureDataUrl,
+    driverSignatureDataUrl,
+  ]);
 
   useLayoutEffect(() => {
     if (!showSignatureCaptureModal) {
@@ -2586,7 +2598,7 @@ export default function InvoiceScreen({ route, navigation }) {
     return `Empty collected: ${parts.join(' • ')}`;
   }, [routeEmptyCylinderEntries]);
 
-  if (loading) {
+  if (loading && !order) {
     return (
       <View style={styles.center}>
         <ActivityIndicator size="large" color={colors.primary} />

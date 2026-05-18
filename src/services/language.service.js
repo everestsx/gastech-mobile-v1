@@ -30,14 +30,20 @@ export const syncLanguageDictionaries = async () => {
     const payload = buildPayloadFromFiles();
     const cachedVersion = await AsyncStorage.getItem(TRANSLATIONS_VERSION_KEY);
 
-    if (!cachedVersion || cachedVersion !== payload.version) {
+    const cachedTranslationsRaw = await AsyncStorage.getItem(TRANSLATIONS_STORAGE_KEY);
+    const cachedTranslations = cachedTranslationsRaw ? JSON.parse(cachedTranslationsRaw) : null;
+    const missingPendingBackOffice =
+      !cachedTranslations?.en?.translation?.dashboard?.pendingBackOffice ||
+      !cachedTranslations?.ta?.translation?.dashboard?.pendingBackOffice ||
+      !cachedTranslations?.si?.translation?.dashboard?.pendingBackOffice;
+
+    if (!cachedVersion || cachedVersion !== payload.version || missingPendingBackOffice) {
       await AsyncStorage.setItem(TRANSLATIONS_STORAGE_KEY, JSON.stringify(payload.translations));
       await AsyncStorage.setItem(TRANSLATIONS_VERSION_KEY, payload.version);
       return payload.translations;
     }
 
-    const cachedTranslations = await AsyncStorage.getItem(TRANSLATIONS_STORAGE_KEY);
-    return cachedTranslations ? JSON.parse(cachedTranslations) : payload.translations;
+    return cachedTranslations || payload.translations;
   } catch (error) {
     console.error('Error syncing language dictionaries:', error);
     const cachedTranslations = await AsyncStorage.getItem(TRANSLATIONS_STORAGE_KEY);
