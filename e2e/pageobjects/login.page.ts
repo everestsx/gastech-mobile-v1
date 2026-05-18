@@ -57,19 +57,20 @@ class LoginPage {
     async selectVehicle(vehicleName?: string) {
         await this.vehicleDropdown.click();
         // Wait for dropdown animation
-        await driver.pause(500);
+        await driver.pause(1000);
         
-        let targetVehicle;
         if (vehicleName) {
-            // Find the text element matching the vehicle name
-            targetVehicle = await $(`//*[contains(@text, "${vehicleName}")]/ancestor-or-self::*[@content-desc and contains(@content-desc, "login-vehicle-item-")] | //*[contains(@text, "${vehicleName}")]`);
+            // Use Android UiScrollable to find the vehicle even if it's off-screen
+            const scrollSelector = `android=new UiScrollable(new UiSelector().scrollable(true)).scrollIntoView(new UiSelector().textContains("${vehicleName}"))`;
+            const targetVehicle = await $(scrollSelector);
+            await targetVehicle.waitForDisplayed({ timeout: 10000 });
+            await targetVehicle.click();
         } else {
-            // Click the first vehicle item
-            targetVehicle = await $('//*[contains(@content-desc, "login-vehicle-item-")]');
+            // Click the first vehicle item if no name provided
+            const firstVehicle = await $('//*[contains(@content-desc, "login-vehicle-item-")]');
+            await firstVehicle.waitForDisplayed({ timeout: 10000 });
+            await firstVehicle.click();
         }
-        
-        await targetVehicle.waitForDisplayed();
-        await targetVehicle.click();
     }
 
     async enterDriverCode(code: string) {

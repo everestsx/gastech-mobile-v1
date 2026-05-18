@@ -37,7 +37,13 @@ export const config: WebdriverIO.Config = {
     specs: [path.join(__dirname, 'specs', '**', '*.spec.ts')],
     maxInstances: 1,
     logLevel: 'info',
-    waitforTimeout: 10000,
+    waitforTimeout: 20000,
+    onPrepare: () => {
+        const artifactsDir = path.join(process.cwd(), 'e2e', 'artifacts');
+        if (!fs.existsSync(artifactsDir)) {
+            fs.mkdirSync(artifactsDir, { recursive: true });
+        }
+    },
     connectionRetryTimeout: 120000,
     connectionRetryCount: 3,
 
