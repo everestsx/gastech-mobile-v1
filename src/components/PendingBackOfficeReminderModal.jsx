@@ -20,12 +20,27 @@ export default function PendingBackOfficeReminderModal({
   const { colors } = useTheme();
   const count = Math.max(0, Number(orderCount) || 0);
 
-  const title = t('dashboard.pendingBackOffice.title', { count });
-  const body = t('dashboard.pendingBackOffice.body', { count });
-  const closeLabel = t('dashboard.pendingBackOffice.close', 'Close');
+  const title = t(
+    count === 1 ? 'dashboard.pendingBackOffice.title_one' : 'dashboard.pendingBackOffice.title',
+    {
+      count,
+      defaultValue:
+        count === 1
+          ? '1 order waiting for the office'
+          : '{{count}} order(s) waiting for the office',
+    }
+  );
+  const body = t('dashboard.pendingBackOffice.body', {
+    count,
+    defaultValue:
+      'You still have {{count}} order(s) finished on this phone that are not fully updated in the back office. Please sync until the indicator turns green. Only then the operations team will be able to see your orders. If it does not sync, please check your internet connection and try again.',
+  });
+  const closeLabel = t('dashboard.pendingBackOffice.close', {
+    defaultValue: 'Close',
+  });
   const syncLabel = syncActive
-    ? t('menu.syncing', 'Syncing...')
-    : t('dashboard.pendingBackOffice.sync', 'Sync now');
+    ? t('menu.syncing', { defaultValue: 'Syncing...' })
+    : t('dashboard.pendingBackOffice.sync', { defaultValue: 'Sync now' });
 
   const styles = useMemo(
     () =>

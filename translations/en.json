@@ -1,5 +1,5 @@
 {
-  "version": "1.0.6",
+  "version": "1.0.7",
   "language": "en",
   "translation": {
     "dashboard": {
@@ -27,7 +27,8 @@
       "emptyCollected": "Empty Collected",
       "noStockDataAvailable": "No stock data available.",
       "pendingBackOffice": {
-        "title": "Orders waiting for the office",
+        "title": "{{count}} order(s) waiting for the office",
+        "title_one": "1 order waiting for the office",
         "body": "You still have {{count}} order(s) finished on this phone that are not fully updated in the back office. Please sync until the indicator turns green. Only then the operations team will be able to see your orders. If it does not sync, please check your internet connection and try again.",
         "close": "Close",
         "sync": "Sync now"
