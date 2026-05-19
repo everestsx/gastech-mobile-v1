@@ -20,7 +20,7 @@ import {
   getUserSession,
   logout,
   getSyncIntervalMinutes,
-  deleteLocalData, clearAllTables,setIsLoggingOut
+  deleteLocalData, clearAllTables, setIsLoggingOut, getPendingSyncCounts
 } from '../services/sync.service';
 import CustomAlert from '../components/CustomAlert';
 import { usePrinterConnection } from '../context/PrinterConnectionContext';
@@ -220,7 +220,35 @@ export default function MenuScreen({ navigation }) {
     }
   };
 
-  const handleLogout = () => {
+  const promptSyncBeforeLogout = async () => {
+    const { pendingQueueCount, pendingAttachmentCount } = await getPendingSyncCounts();
+    if (pendingQueueCount > 0 || pendingAttachmentCount > 0) {
+      showAlert(
+        t('menu.notEverythingIsSynced', 'Not everything is synced'),
+        t(
+          'menu.logoutPendingSyncMessage',
+          '{{queue}} item(s) in queue, {{attachments}} photo(s) not sent yet. Sync first to log out.',
+          { queue: pendingQueueCount, attachments: pendingAttachmentCount }
+        ),
+        [
+          { text: t('menu.cancel', 'Cancel'), style: 'cancel', onPress: hideAlert },
+          {
+            text: t('menu.syncNow', 'Sync now'),
+            onPress: async () => {
+              hideAlert();
+              await handleSync();
+            },
+          },
+        ]
+      );
+      return true;
+    }
+    return false;
+  };
+
+  const handleLogout = async () => {
+    const blocked = await promptSyncBeforeLogout();
+    if (blocked) return;
     showAlert(t('menu.logOut', 'Log out'), t('menu.areYouSure', 'Are you sure?'), [
       { text: t('menu.cancel', 'Cancel'), style: 'cancel', onPress: hideAlert },
       {

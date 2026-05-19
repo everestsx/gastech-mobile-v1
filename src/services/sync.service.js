@@ -102,6 +102,22 @@ export async function hasPendingUploadWork() {
     return false;
   }
 }
+
+/** Pending counts for queue and offline attachments. */
+export async function getPendingSyncCounts() {
+  const pendingQueueCount = await syncQueueDb.getPendingCount();
+  let pendingAttachmentCount = 0;
+  try {
+    const db = await getDb();
+    const row = await db.getFirstAsync(
+      `SELECT COUNT(*) as c FROM offline_attachments WHERE sync_status = 'pending'`
+    );
+    pendingAttachmentCount = row?.c ?? 0;
+  } catch (_) {
+    pendingAttachmentCount = 0;
+  }
+  return { pendingQueueCount, pendingAttachmentCount };
+}
 const KEYS = {
   USER: '@gastech_user',
   USER_MEDIA: '@gastech_user_media',
@@ -1330,1624 +1346,1624 @@ async function processSyncQueue() {
         if (pendingAtStart === 0) break;
 
         try {
-      let queueSnap = await syncQueueDb.getPending();
-      if (!queueSnap.length) return;
-      log('queue', `processing ${queueSnap.length} pending`);
+          let queueSnap = await syncQueueDb.getPending();
+          if (!queueSnap.length) return;
+          log('queue', `processing ${queueSnap.length} pending`);
 
-      const saleOrderIdFromQueuePayload = (payload) => {
-        const raw = payload?.saleOrderId ?? payload?.sale_id ?? payload?.orderId ?? payload?.order_id;
-        const n = raw != null ? Number(raw) : NaN;
-        return Number.isFinite(n) && n > 0 ? n : null;
-      };
-
-      /**
-       * Several UI paths enqueue queue rows concurrently (double tap).
-       * Running two delivery syncs for one SO validates stock twice and duplicates qty_done / valuations.
-       * Keep the newest pending row per SO for **non-held** deliveries; supersede older ones without Odoo RPC.
-       */
-      const supersedeStaleQueueRows = async (items, label, { allowHeldPayload = false } = {}) => {
-        const keeperBySo = new Map();
-        const sortedAsc = [...items].sort((a, b) => Number(a?.id ?? 0) - Number(b?.id ?? 0));
-        for (const it of sortedAsc) {
-          const soId = saleOrderIdFromQueuePayload(it.payload || {});
-          if (soId == null) continue;
-          keeperBySo.set(soId, it);
-        }
-        const keepIds = new Set(
-          Array.from(keeperBySo.values())
-            .filter((row) => row != null && row.id != null)
-            .map((row) => Number(row.id))
-        );
-        for (const it of items) {
-          const payload = it.payload || {};
-          if (
-            !allowHeldPayload &&
-            (payload?.holdUntilPayment === true || payload?.holdUntilComplete === true)
-          )
-            continue;
-          const soId = saleOrderIdFromQueuePayload(payload);
-          if (soId == null) continue;
-          if (!keepIds.has(Number(it.id))) {
-            try {
-              await syncQueueDb.markSynced(Number(it.id));
-              log('queue', `${label} superseded duplicate id=${it.id} SO ${soId} (newer snapshot kept)`);
-            } catch (_) {
-              /* ignore */
-            }
-          }
-        }
-      };
-
-      let deliveryPre = queueSnap.filter((p) => p.action_type === syncQueueDb.ACTION_DELIVERY);
-      let inventoryPre = queueSnap.filter((p) => p.action_type === syncQueueDb.ACTION_INVENTORY_UPDATE);
-
-      const deliveryOpen = deliveryPre.filter((d) => !(d.payload || {}).holdUntilPayment);
-      await supersedeStaleQueueRows(deliveryOpen, 'delivery');
-      const inventoryOpen = inventoryPre.filter((d) => !(d.payload || {}).holdUntilComplete);
-      await supersedeStaleQueueRows(inventoryOpen, 'inventory_update');
-      /** Held empty-return rows can duplicate if Confirm is tapped twice; keep latest snapshot before sync clears hold. */
-      const inventoryHeldAll = inventoryPre.filter((d) => (d.payload || {}).holdUntilComplete === true);
-      await supersedeStaleQueueRows(inventoryHeldAll, 'inventory_update (held)', {
-        allowHeldPayload: true,
-      });
-
-      queueSnap = await syncQueueDb.getPending();
-      if (!queueSnap.length) return;
-
-      const delivery = queueSnap.filter((p) => p.action_type === syncQueueDb.ACTION_DELIVERY);
-      const payment = queueSnap.filter((p) => p.action_type === syncQueueDb.ACTION_PAYMENT);
-      const inventoryUpdate = queueSnap.filter((p) => p.action_type === syncQueueDb.ACTION_INVENTORY_UPDATE);
-
-      log('queue', `after dedupe ${queueSnap.length} pending`);
-
-      // Keep only the latest pending payment item per sale order to avoid duplicate chatter posts.
-      const latestPaymentItemBySaleOrder = new Map();
-      for (const item of payment) {
-        const p = item.payload || {};
-        const saleOrderId = p.saleOrderId ?? p.sale_id;
-        const soId = saleOrderId != null ? Number(saleOrderId) : NaN;
-        if (Number.isNaN(soId)) continue;
-        latestPaymentItemBySaleOrder.set(soId, item);
-      }
-      const dedupedPayment = [];
-      for (const item of payment) {
-        const p = item.payload || {};
-        const saleOrderId = p.saleOrderId ?? p.sale_id;
-        const soId = saleOrderId != null ? Number(saleOrderId) : NaN;
-        if (Number.isNaN(soId)) {
-          dedupedPayment.push(item);
-          continue;
-        }
-        const latest = latestPaymentItemBySaleOrder.get(soId);
-        if (latest && Number(latest.id) !== Number(item.id)) {
-          await syncQueueDb.markSynced(Number(item.id));
-          log('queue', `skip duplicate pending payment id=${item.id} (SO ${soId}); latest id=${latest.id}`);
-          continue;
-        }
-        dedupedPayment.push(item);
-      }
-
-      async function tryAttachPrintedInvoicePdfToSaleOrder(soId, invoiceId, orderName = '') {
-        const invId = Number(invoiceId);
-        if (!Number.isFinite(invId) || invId <= 0) return null;
-        try {
-          const { createSaleOrderAttachment } = await import('./proofAttachment.service.js');
-          const { renderPostedInvoicePdfBase64 } = await import('./invoicePdfReport.service.js');
-          const pdfBase64 = await renderPostedInvoicePdfBase64(invId);
-          if (!pdfBase64 || String(pdfBase64).length < 200) {
-            log('queue', `invoice PDF render empty for account.move id=${invId} (SO ${soId}) — no attachment; check report rights`);
-            return null;
-          }
-          const safeOrder = String(orderName || `SO-${soId}`).replace(/[^\w.-]+/g, '_');
-          const fileName = `${safeOrder}_printed_invoice.pdf`;
-          const attId = await createSaleOrderAttachment(soId, pdfBase64, fileName, 'application/pdf');
-          return Number(attId);
-        } catch (e) {
-          logWarn('queue payment attach invoice pdf', e);
-          return null;
-        }
-      }
-      const {
-        updateSaleOrderLineQty,
-        updateSaleOrderLineQtyDelivered,
-        confirmSaleOrder,
-      } = await import('./saleOrderLine.service');
-      const {
-        getPickingBySaleOrder,
-        getPickingState,
-        getStockMovesByPickingId,
-        getStockMoveLinesByMoveIds,
-        updateMoveLineQty,
-        updateStockMoveQty,
-        updateStockMoveQuantityDone,
-        createMoveLine,
-        actionConfirmPicking,
-        actionAssignPicking,
-        actionCancelPicking,
-        validatePickingWithContext,
-      } = await import('./delivery.service');
-      const {
-        getSaleOrderForPayment,
-        getSaleOrderInvoiceIds,
-        normalizeSaleOrderInvoiceIds,
-        getInvoiceState,
-        getInvoiceIdAfterCreate,
-        firstInvoiceId,
-        resolveInitialInvoiceIdForPaymentSync,
-        loadPostedUnpaidInvoicesForSaleOrder,
-        pickInvoiceIdForPaymentAmount,
-        createAdvancePaymentWizard,
-        createInvoicesFromWizard,
-        postInvoice,
-        getPaymentsByInvoiceIds,
-        createPaymentRegisterWizard,
-        executePaymentRegister,
-      } = await import('./invoice.service');
-
-      /** Normalize delivery payload: multi-picking `pickings[]` or legacy single `pickingId`. */
-      const pickingsBlocksFromPayload = (payload) => {
-        const p = payload || {};
-        if (Array.isArray(p.pickings) && p.pickings.length > 0) {
-          return p.pickings.map((b) => ({
-            pickingId: b.pickingId ?? b.picking_id,
-            moveUpdates: b.moveUpdates || [],
-            moveLineUpdates: b.moveLineUpdates || [],
-            deliveryLines: b.deliveryLines || [],
-          }));
-        }
-        const pid = p.pickingId ?? p.picking_id;
-        if (pid != null) {
-          return [
-            {
-              pickingId: pid,
-              moveUpdates: p.moveUpdates || [],
-              moveLineUpdates: p.moveLineUpdates || [],
-              deliveryLines: p.deliveryLines || [],
-            },
-          ];
-        }
-        return [];
-      };
-
-      const roundQty3 = (q) => Math.round(Number(q) * 1000) / 1000;
-
-      /**
-       * After delivery RPCs, insist every Odoo transfer on this SO is done/cancel — otherwise invoice can
-       * post with wrong delivered qty while transfers still queue (intermittent back-office/mobile mismatch).
-       */
-      const verifyAllSaleOrderPickingsAreTerminal = async (soIdRaw) => {
-        const sid = Number(soIdRaw);
-        if (!Number.isFinite(sid) || sid <= 0) return;
-        const picks = await getPickingBySaleOrder(sid);
-        const allowed = new Set(['done', 'cancel']);
-        for (const pk of picks || []) {
-          const st = String(pk?.state ?? '')
-            .trim()
-            .toLowerCase();
-          if (!st || allowed.has(st)) continue;
-          throw new Error(
-            `Delivery incomplete: transfer ${pk?.id ?? '?'} (${String(pk?.name ?? '').slice(0, 40)}) is still "${st}" in Odoo. Sync will retry.`
-          );
-        }
-      };
-
-      /** Push one delivery queue row to Odoo and mark synced. Used from main delivery pass and pre-payment flush. */
-      const processOneDeliveryQueueItem = async (item, syncOptions = {}) => {
-        const p = item.payload || {};
-        const saleOrderId = p.saleOrderId ?? p.sale_id;
-        const orderLineUpdates = p.orderLineUpdates || [];
-        const saleOrderLineDeliveredUpdates = mergeDeliveredQtyUpdates(
-          p.saleOrderLineDeliveredUpdates || [],
-          invoiceLineQtysToDeliveredUpdates(p.invoiceLineQtys),
-          await getMobileDeliveredUpdatesForSaleOrder(saleOrderId)
-        );
-        const requestedQtyByProduct = p.requestedQtyByProduct || {};
-        let blocks = pickingsBlocksFromPayload(p);
-        const requestedDeliveryRemainingByProduct = new Map(
-          Object.entries(requestedQtyByProduct || {})
-            .map(([pidRaw, qtyRaw]) => [Number(pidRaw), Number(qtyRaw) || 0])
-            .filter(([pid, qty]) => Number.isFinite(pid) && qty > 0)
-        );
-        let validatedAnyPicking = false;
-        const targetPickingIds = new Set();
-
-        const applySoLineOrderedQty = async () => {
-          for (const u of orderLineUpdates) {
-            if (u.lineId == null || u.product_uom_qty == null) continue;
-            await updateSaleOrderLineQty(u.lineId, u.product_uom_qty);
-          }
-        };
-
-        const applySoLineDeliveredQty = async () => {
-          await applySaleOrderLineDeliveredUpdates(saleOrderLineDeliveredUpdates);
-        };
-
-        /** Cross-check warehouse + SOL after writes; throws so queue retries instead of drifting from mobile. */
-        const finalizeDeliveryConsistencyCheck = async () => {
-          await verifyAllSaleOrderPickingsAreTerminal(saleOrderId);
-          await verifySaleOrderLineDeliveredOnOdoo(saleOrderLineDeliveredUpdates);
-        };
-
-        try {
-          await applySoLineOrderedQty();
-        } catch (soLineErr) {
-          logWarn('queue delivery (sale order lines product_uom_qty)', soLineErr);
-          throw soLineErr;
-        }
-
-        if (blocks.length === 0 && requestedDeliveryRemainingByProduct.size > 0 && saleOrderId != null) {
-          try {
-            const picks = await getPickingBySaleOrder(saleOrderId);
-            blocks = (picks || [])
-              .filter((pk) => pk?.id != null)
-              .map((pk) => ({
-                pickingId: Number(pk.id),
-                moveUpdates: [],
-                moveLineUpdates: [],
-                deliveryLines: [],
-              }));
-          } catch (_) {
-            /* keep empty blocks; handled below */
-          }
-        }
-
-        const hasPickings = blocks.length > 0;
-        if (!hasPickings) {
-          if (requestedDeliveryRemainingByProduct.size > 0) {
-            log(
-              'queue',
-              `delivery fallback: no pickings for SO ${saleOrderId}; apply SO delivered qty only (requested map size=${requestedDeliveryRemainingByProduct.size})`
-            );
-          }
-          await applySoLineDeliveredQty();
-          {
-            const soCrew = saleOrderId != null ? Number(saleOrderId) : NaN;
-            if (Number.isFinite(soCrew) && soCrew > 0) await writeSaleOrderCrewFromPaymentPayload(soCrew, p);
-          }
-          await finalizeDeliveryConsistencyCheck();
-          await syncQueueDb.markSynced(Number(item.id));
-          log(
-            'queue',
-            `delivery SO ${saleOrderId} — no pickings (SO line updates only), synced id=${item.id}`
-          );
-          return;
-        }
-
-        for (const block of blocks) {
-          let pickingId = block.pickingId;
-          if (pickingId == null && saleOrderId != null) {
-            const pickings = await getPickingBySaleOrder(saleOrderId);
-            const first = Array.isArray(pickings) ? pickings[0] : null;
-            if (first?.state === 'done') {
-              log('queue', `delivery block skipped — SO ${saleOrderId} first picking already done`);
-              pickingId = null;
-            } else {
-              pickingId = first?.id ?? null;
-            }
-          }
-          if (pickingId == null) {
-            logWarn('queue delivery', new Error('No picking id for block (SO ' + saleOrderId + ')'));
-            continue;
-          }
-          targetPickingIds.add(Number(pickingId));
-
-          const moveUpdates = block.moveUpdates || [];
-          const moveLineUpdates = block.moveLineUpdates || [];
-          const deliveryLines = Array.isArray(block.deliveryLines) ? [...block.deliveryLines] : [];
-
-          try {
-            const stateRows = await getPickingState(pickingId);
-            const pick = Array.isArray(stateRows) ? stateRows[0] : stateRows;
-            if (pick?.state === 'done') {
-              log('queue', `delivery picking ${pickingId} already done — reconcile move/SOL qty from mobile`);
-              for (const line of deliveryLines) {
-                const moveId = line.moveId ?? line.move_id;
-                const qtyN = line.qty_done != null ? Number(line.qty_done) : NaN;
-                if (moveId == null || !Number.isFinite(qtyN) || qtyN <= 0) continue;
-                try {
-                  await updateStockMoveQuantityDone(Number(moveId), qtyN);
-                } catch (_) {
-                  /* readonly on some done transfers */
-                }
-              }
-              if (saleOrderLineDeliveredUpdates.length > 0) {
-                await applySoLineDeliveredQty();
-              }
-              validatedAnyPicking = true;
-              continue;
-            }
-          } catch (_) { }
+          const saleOrderIdFromQueuePayload = (payload) => {
+            const raw = payload?.saleOrderId ?? payload?.sale_id ?? payload?.orderId ?? payload?.order_id;
+            const n = raw != null ? Number(raw) : NaN;
+            return Number.isFinite(n) && n > 0 ? n : null;
+          };
 
           /**
-           * Edge case: line demand changed from 0 -> >0 while offline may leave payload without a concrete move mapping.
-           * Rebuild missing delivery lines from requested product totals using current picking moves.
+           * Several UI paths enqueue queue rows concurrently (double tap).
+           * Running two delivery syncs for one SO validates stock twice and duplicates qty_done / valuations.
+           * Keep the newest pending row per SO for **non-held** deliveries; supersede older ones without Odoo RPC.
            */
-          const topUpDeliveryLinesFromRequested = async () => {
-            for (const line of deliveryLines) {
-              const pid = Number(line?.productId ?? line?.product_id);
-              const q = Number(line?.qty_done) || 0;
-              if (!Number.isFinite(pid) || q <= 0 || !requestedDeliveryRemainingByProduct.has(pid)) continue;
-              const prev = Number(requestedDeliveryRemainingByProduct.get(pid)) || 0;
-              requestedDeliveryRemainingByProduct.set(pid, Math.max(0, prev - q));
+          const supersedeStaleQueueRows = async (items, label, { allowHeldPayload = false } = {}) => {
+            const keeperBySo = new Map();
+            const sortedAsc = [...items].sort((a, b) => Number(a?.id ?? 0) - Number(b?.id ?? 0));
+            for (const it of sortedAsc) {
+              const soId = saleOrderIdFromQueuePayload(it.payload || {});
+              if (soId == null) continue;
+              keeperBySo.set(soId, it);
             }
-
-            const moves = await getStockMovesByPickingId(pickingId).catch(() => []);
-            const moveIdsByProduct = new Map();
-            for (const mv of moves || []) {
-              const pid = Number(Array.isArray(mv?.product_id) ? mv.product_id[0] : mv?.product_id);
-              const mid = Number(mv?.id);
-              if (!Number.isFinite(pid) || !Number.isFinite(mid)) continue;
-              const list = moveIdsByProduct.get(pid) || [];
-              list.push(mid);
-              moveIdsByProduct.set(pid, list);
-            }
-
-            /**
-             * Critical fallback for 0 -> positive offline edits:
-             * some Odoo DBs do not have a stock.move row yet when demand was initially zero.
-             * Create a move in the target picking so qty_done can be posted and invoiced correctly.
-             */
-            const createMissingMoveForProduct = async (productId, qty) => {
-              try {
-                const { callOdoo, callOdooArgs } = await import('./index.service.js');
-                const picks = await callOdoo(
-                  'stock.picking',
-                  'search_read',
-                  [[['id', '=', Number(pickingId)]]],
-                  { fields: ['id', 'location_id', 'location_dest_id'], limit: 1 }
-                );
-                const pick = Array.isArray(picks) ? picks[0] : null;
-                const srcLoc = Array.isArray(pick?.location_id) ? pick.location_id[0] : pick?.location_id;
-                const dstLoc = Array.isArray(pick?.location_dest_id) ? pick.location_dest_id[0] : pick?.location_dest_id;
-                if (!srcLoc || !dstLoc) return null;
-                let productUomId = null;
+            const keepIds = new Set(
+              Array.from(keeperBySo.values())
+                .filter((row) => row != null && row.id != null)
+                .map((row) => Number(row.id))
+            );
+            for (const it of items) {
+              const payload = it.payload || {};
+              if (
+                !allowHeldPayload &&
+                (payload?.holdUntilPayment === true || payload?.holdUntilComplete === true)
+              )
+                continue;
+              const soId = saleOrderIdFromQueuePayload(payload);
+              if (soId == null) continue;
+              if (!keepIds.has(Number(it.id))) {
                 try {
-                  const pRows = await callOdoo(
-                    'product.product',
-                    'search_read',
-                    [[['id', '=', Number(productId)]]],
-                    { fields: ['uom_id'], limit: 1 }
-                  );
-                  const p = Array.isArray(pRows) ? pRows[0] : null;
-                  productUomId = Array.isArray(p?.uom_id) ? p.uom_id[0] : p?.uom_id;
+                  await syncQueueDb.markSynced(Number(it.id));
+                  log('queue', `${label} superseded duplicate id=${it.id} SO ${soId} (newer snapshot kept)`);
                 } catch (_) {
-                  /* non-fatal; try create without explicit uom */
+                  /* ignore */
                 }
-                const moveId = await callOdooArgs('stock.move', 'create', [[{
-                  name: `SO ${saleOrderId || ''} offline delivery`,
-                  picking_id: Number(pickingId),
-                  product_id: Number(productId),
-                  product_uom_qty: Number(qty),
-                  ...(productUomId ? { product_uom: Number(productUomId) } : {}),
-                  location_id: Number(srcLoc),
-                  location_dest_id: Number(dstLoc),
-                }]]);
-                const mid = Number(moveId);
-                if (!Number.isFinite(mid) || mid <= 0) return null;
-                const list = moveIdsByProduct.get(Number(productId)) || [];
-                list.push(mid);
-                moveIdsByProduct.set(Number(productId), list);
-                log('queue', `delivery created missing move ${mid} for product ${productId} on picking ${pickingId}`);
-                return mid;
-              } catch (e) {
+              }
+            }
+          };
+
+          let deliveryPre = queueSnap.filter((p) => p.action_type === syncQueueDb.ACTION_DELIVERY);
+          let inventoryPre = queueSnap.filter((p) => p.action_type === syncQueueDb.ACTION_INVENTORY_UPDATE);
+
+          const deliveryOpen = deliveryPre.filter((d) => !(d.payload || {}).holdUntilPayment);
+          await supersedeStaleQueueRows(deliveryOpen, 'delivery');
+          const inventoryOpen = inventoryPre.filter((d) => !(d.payload || {}).holdUntilComplete);
+          await supersedeStaleQueueRows(inventoryOpen, 'inventory_update');
+          /** Held empty-return rows can duplicate if Confirm is tapped twice; keep latest snapshot before sync clears hold. */
+          const inventoryHeldAll = inventoryPre.filter((d) => (d.payload || {}).holdUntilComplete === true);
+          await supersedeStaleQueueRows(inventoryHeldAll, 'inventory_update (held)', {
+            allowHeldPayload: true,
+          });
+
+          queueSnap = await syncQueueDb.getPending();
+          if (!queueSnap.length) return;
+
+          const delivery = queueSnap.filter((p) => p.action_type === syncQueueDb.ACTION_DELIVERY);
+          const payment = queueSnap.filter((p) => p.action_type === syncQueueDb.ACTION_PAYMENT);
+          const inventoryUpdate = queueSnap.filter((p) => p.action_type === syncQueueDb.ACTION_INVENTORY_UPDATE);
+
+          log('queue', `after dedupe ${queueSnap.length} pending`);
+
+          // Keep only the latest pending payment item per sale order to avoid duplicate chatter posts.
+          const latestPaymentItemBySaleOrder = new Map();
+          for (const item of payment) {
+            const p = item.payload || {};
+            const saleOrderId = p.saleOrderId ?? p.sale_id;
+            const soId = saleOrderId != null ? Number(saleOrderId) : NaN;
+            if (Number.isNaN(soId)) continue;
+            latestPaymentItemBySaleOrder.set(soId, item);
+          }
+          const dedupedPayment = [];
+          for (const item of payment) {
+            const p = item.payload || {};
+            const saleOrderId = p.saleOrderId ?? p.sale_id;
+            const soId = saleOrderId != null ? Number(saleOrderId) : NaN;
+            if (Number.isNaN(soId)) {
+              dedupedPayment.push(item);
+              continue;
+            }
+            const latest = latestPaymentItemBySaleOrder.get(soId);
+            if (latest && Number(latest.id) !== Number(item.id)) {
+              await syncQueueDb.markSynced(Number(item.id));
+              log('queue', `skip duplicate pending payment id=${item.id} (SO ${soId}); latest id=${latest.id}`);
+              continue;
+            }
+            dedupedPayment.push(item);
+          }
+
+          async function tryAttachPrintedInvoicePdfToSaleOrder(soId, invoiceId, orderName = '') {
+            const invId = Number(invoiceId);
+            if (!Number.isFinite(invId) || invId <= 0) return null;
+            try {
+              const { createSaleOrderAttachment } = await import('./proofAttachment.service.js');
+              const { renderPostedInvoicePdfBase64 } = await import('./invoicePdfReport.service.js');
+              const pdfBase64 = await renderPostedInvoicePdfBase64(invId);
+              if (!pdfBase64 || String(pdfBase64).length < 200) {
+                log('queue', `invoice PDF render empty for account.move id=${invId} (SO ${soId}) — no attachment; check report rights`);
+                return null;
+              }
+              const safeOrder = String(orderName || `SO-${soId}`).replace(/[^\w.-]+/g, '_');
+              const fileName = `${safeOrder}_printed_invoice.pdf`;
+              const attId = await createSaleOrderAttachment(soId, pdfBase64, fileName, 'application/pdf');
+              return Number(attId);
+            } catch (e) {
+              logWarn('queue payment attach invoice pdf', e);
+              return null;
+            }
+          }
+          const {
+            updateSaleOrderLineQty,
+            updateSaleOrderLineQtyDelivered,
+            confirmSaleOrder,
+          } = await import('./saleOrderLine.service');
+          const {
+            getPickingBySaleOrder,
+            getPickingState,
+            getStockMovesByPickingId,
+            getStockMoveLinesByMoveIds,
+            updateMoveLineQty,
+            updateStockMoveQty,
+            updateStockMoveQuantityDone,
+            createMoveLine,
+            actionConfirmPicking,
+            actionAssignPicking,
+            actionCancelPicking,
+            validatePickingWithContext,
+          } = await import('./delivery.service');
+          const {
+            getSaleOrderForPayment,
+            getSaleOrderInvoiceIds,
+            normalizeSaleOrderInvoiceIds,
+            getInvoiceState,
+            getInvoiceIdAfterCreate,
+            firstInvoiceId,
+            resolveInitialInvoiceIdForPaymentSync,
+            loadPostedUnpaidInvoicesForSaleOrder,
+            pickInvoiceIdForPaymentAmount,
+            createAdvancePaymentWizard,
+            createInvoicesFromWizard,
+            postInvoice,
+            getPaymentsByInvoiceIds,
+            createPaymentRegisterWizard,
+            executePaymentRegister,
+          } = await import('./invoice.service');
+
+          /** Normalize delivery payload: multi-picking `pickings[]` or legacy single `pickingId`. */
+          const pickingsBlocksFromPayload = (payload) => {
+            const p = payload || {};
+            if (Array.isArray(p.pickings) && p.pickings.length > 0) {
+              return p.pickings.map((b) => ({
+                pickingId: b.pickingId ?? b.picking_id,
+                moveUpdates: b.moveUpdates || [],
+                moveLineUpdates: b.moveLineUpdates || [],
+                deliveryLines: b.deliveryLines || [],
+              }));
+            }
+            const pid = p.pickingId ?? p.picking_id;
+            if (pid != null) {
+              return [
+                {
+                  pickingId: pid,
+                  moveUpdates: p.moveUpdates || [],
+                  moveLineUpdates: p.moveLineUpdates || [],
+                  deliveryLines: p.deliveryLines || [],
+                },
+              ];
+            }
+            return [];
+          };
+
+          const roundQty3 = (q) => Math.round(Number(q) * 1000) / 1000;
+
+          /**
+           * After delivery RPCs, insist every Odoo transfer on this SO is done/cancel — otherwise invoice can
+           * post with wrong delivered qty while transfers still queue (intermittent back-office/mobile mismatch).
+           */
+          const verifyAllSaleOrderPickingsAreTerminal = async (soIdRaw) => {
+            const sid = Number(soIdRaw);
+            if (!Number.isFinite(sid) || sid <= 0) return;
+            const picks = await getPickingBySaleOrder(sid);
+            const allowed = new Set(['done', 'cancel']);
+            for (const pk of picks || []) {
+              const st = String(pk?.state ?? '')
+                .trim()
+                .toLowerCase();
+              if (!st || allowed.has(st)) continue;
+              throw new Error(
+                `Delivery incomplete: transfer ${pk?.id ?? '?'} (${String(pk?.name ?? '').slice(0, 40)}) is still "${st}" in Odoo. Sync will retry.`
+              );
+            }
+          };
+
+          /** Push one delivery queue row to Odoo and mark synced. Used from main delivery pass and pre-payment flush. */
+          const processOneDeliveryQueueItem = async (item, syncOptions = {}) => {
+            const p = item.payload || {};
+            const saleOrderId = p.saleOrderId ?? p.sale_id;
+            const orderLineUpdates = p.orderLineUpdates || [];
+            const saleOrderLineDeliveredUpdates = mergeDeliveredQtyUpdates(
+              p.saleOrderLineDeliveredUpdates || [],
+              invoiceLineQtysToDeliveredUpdates(p.invoiceLineQtys),
+              await getMobileDeliveredUpdatesForSaleOrder(saleOrderId)
+            );
+            const requestedQtyByProduct = p.requestedQtyByProduct || {};
+            let blocks = pickingsBlocksFromPayload(p);
+            const requestedDeliveryRemainingByProduct = new Map(
+              Object.entries(requestedQtyByProduct || {})
+                .map(([pidRaw, qtyRaw]) => [Number(pidRaw), Number(qtyRaw) || 0])
+                .filter(([pid, qty]) => Number.isFinite(pid) && qty > 0)
+            );
+            let validatedAnyPicking = false;
+            const targetPickingIds = new Set();
+
+            const applySoLineOrderedQty = async () => {
+              for (const u of orderLineUpdates) {
+                if (u.lineId == null || u.product_uom_qty == null) continue;
+                await updateSaleOrderLineQty(u.lineId, u.product_uom_qty);
+              }
+            };
+
+            const applySoLineDeliveredQty = async () => {
+              await applySaleOrderLineDeliveredUpdates(saleOrderLineDeliveredUpdates);
+            };
+
+            /** Cross-check warehouse + SOL after writes; throws so queue retries instead of drifting from mobile. */
+            const finalizeDeliveryConsistencyCheck = async () => {
+              await verifyAllSaleOrderPickingsAreTerminal(saleOrderId);
+              await verifySaleOrderLineDeliveredOnOdoo(saleOrderLineDeliveredUpdates);
+            };
+
+            try {
+              await applySoLineOrderedQty();
+            } catch (soLineErr) {
+              logWarn('queue delivery (sale order lines product_uom_qty)', soLineErr);
+              throw soLineErr;
+            }
+
+            if (blocks.length === 0 && requestedDeliveryRemainingByProduct.size > 0 && saleOrderId != null) {
+              try {
+                const picks = await getPickingBySaleOrder(saleOrderId);
+                blocks = (picks || [])
+                  .filter((pk) => pk?.id != null)
+                  .map((pk) => ({
+                    pickingId: Number(pk.id),
+                    moveUpdates: [],
+                    moveLineUpdates: [],
+                    deliveryLines: [],
+                  }));
+              } catch (_) {
+                /* keep empty blocks; handled below */
+              }
+            }
+
+            const hasPickings = blocks.length > 0;
+            if (!hasPickings) {
+              if (requestedDeliveryRemainingByProduct.size > 0) {
                 log(
                   'queue',
-                  `delivery create missing move failed for product ${productId} on picking ${pickingId}: ${String(e?.message || e).slice(0, 120)}`
+                  `delivery fallback: no pickings for SO ${saleOrderId}; apply SO delivered qty only (requested map size=${requestedDeliveryRemainingByProduct.size})`
                 );
-                try {
-                  const { callOdoo, callOdooArgs } = await import('./index.service.js');
-                  const picks = await callOdoo(
-                    'stock.picking',
-                    'search_read',
-                    [[['id', '=', Number(pickingId)]]],
-                    { fields: ['id', 'location_id', 'location_dest_id'], limit: 1 }
-                  );
-                  const pick = Array.isArray(picks) ? picks[0] : null;
-                  const srcLoc = Array.isArray(pick?.location_id) ? pick.location_id[0] : pick?.location_id;
-                  const dstLoc = Array.isArray(pick?.location_dest_id) ? pick.location_dest_id[0] : pick?.location_dest_id;
-                  if (srcLoc && dstLoc) {
-                    const moveLineId = await callOdooArgs('stock.move.line', 'create', [[{
+              }
+              await applySoLineDeliveredQty();
+              {
+                const soCrew = saleOrderId != null ? Number(saleOrderId) : NaN;
+                if (Number.isFinite(soCrew) && soCrew > 0) await writeSaleOrderCrewFromPaymentPayload(soCrew, p);
+              }
+              await finalizeDeliveryConsistencyCheck();
+              await syncQueueDb.markSynced(Number(item.id));
+              log(
+                'queue',
+                `delivery SO ${saleOrderId} — no pickings (SO line updates only), synced id=${item.id}`
+              );
+              return;
+            }
+
+            for (const block of blocks) {
+              let pickingId = block.pickingId;
+              if (pickingId == null && saleOrderId != null) {
+                const pickings = await getPickingBySaleOrder(saleOrderId);
+                const first = Array.isArray(pickings) ? pickings[0] : null;
+                if (first?.state === 'done') {
+                  log('queue', `delivery block skipped — SO ${saleOrderId} first picking already done`);
+                  pickingId = null;
+                } else {
+                  pickingId = first?.id ?? null;
+                }
+              }
+              if (pickingId == null) {
+                logWarn('queue delivery', new Error('No picking id for block (SO ' + saleOrderId + ')'));
+                continue;
+              }
+              targetPickingIds.add(Number(pickingId));
+
+              const moveUpdates = block.moveUpdates || [];
+              const moveLineUpdates = block.moveLineUpdates || [];
+              const deliveryLines = Array.isArray(block.deliveryLines) ? [...block.deliveryLines] : [];
+
+              try {
+                const stateRows = await getPickingState(pickingId);
+                const pick = Array.isArray(stateRows) ? stateRows[0] : stateRows;
+                if (pick?.state === 'done') {
+                  log('queue', `delivery picking ${pickingId} already done — reconcile move/SOL qty from mobile`);
+                  for (const line of deliveryLines) {
+                    const moveId = line.moveId ?? line.move_id;
+                    const qtyN = line.qty_done != null ? Number(line.qty_done) : NaN;
+                    if (moveId == null || !Number.isFinite(qtyN) || qtyN <= 0) continue;
+                    try {
+                      await updateStockMoveQuantityDone(Number(moveId), qtyN);
+                    } catch (_) {
+                      /* readonly on some done transfers */
+                    }
+                  }
+                  if (saleOrderLineDeliveredUpdates.length > 0) {
+                    await applySoLineDeliveredQty();
+                  }
+                  validatedAnyPicking = true;
+                  continue;
+                }
+              } catch (_) { }
+
+              /**
+               * Edge case: line demand changed from 0 -> >0 while offline may leave payload without a concrete move mapping.
+               * Rebuild missing delivery lines from requested product totals using current picking moves.
+               */
+              const topUpDeliveryLinesFromRequested = async () => {
+                for (const line of deliveryLines) {
+                  const pid = Number(line?.productId ?? line?.product_id);
+                  const q = Number(line?.qty_done) || 0;
+                  if (!Number.isFinite(pid) || q <= 0 || !requestedDeliveryRemainingByProduct.has(pid)) continue;
+                  const prev = Number(requestedDeliveryRemainingByProduct.get(pid)) || 0;
+                  requestedDeliveryRemainingByProduct.set(pid, Math.max(0, prev - q));
+                }
+
+                const moves = await getStockMovesByPickingId(pickingId).catch(() => []);
+                const moveIdsByProduct = new Map();
+                for (const mv of moves || []) {
+                  const pid = Number(Array.isArray(mv?.product_id) ? mv.product_id[0] : mv?.product_id);
+                  const mid = Number(mv?.id);
+                  if (!Number.isFinite(pid) || !Number.isFinite(mid)) continue;
+                  const list = moveIdsByProduct.get(pid) || [];
+                  list.push(mid);
+                  moveIdsByProduct.set(pid, list);
+                }
+
+                /**
+                 * Critical fallback for 0 -> positive offline edits:
+                 * some Odoo DBs do not have a stock.move row yet when demand was initially zero.
+                 * Create a move in the target picking so qty_done can be posted and invoiced correctly.
+                 */
+                const createMissingMoveForProduct = async (productId, qty) => {
+                  try {
+                    const { callOdoo, callOdooArgs } = await import('./index.service.js');
+                    const picks = await callOdoo(
+                      'stock.picking',
+                      'search_read',
+                      [[['id', '=', Number(pickingId)]]],
+                      { fields: ['id', 'location_id', 'location_dest_id'], limit: 1 }
+                    );
+                    const pick = Array.isArray(picks) ? picks[0] : null;
+                    const srcLoc = Array.isArray(pick?.location_id) ? pick.location_id[0] : pick?.location_id;
+                    const dstLoc = Array.isArray(pick?.location_dest_id) ? pick.location_dest_id[0] : pick?.location_dest_id;
+                    if (!srcLoc || !dstLoc) return null;
+                    let productUomId = null;
+                    try {
+                      const pRows = await callOdoo(
+                        'product.product',
+                        'search_read',
+                        [[['id', '=', Number(productId)]]],
+                        { fields: ['uom_id'], limit: 1 }
+                      );
+                      const p = Array.isArray(pRows) ? pRows[0] : null;
+                      productUomId = Array.isArray(p?.uom_id) ? p.uom_id[0] : p?.uom_id;
+                    } catch (_) {
+                      /* non-fatal; try create without explicit uom */
+                    }
+                    const moveId = await callOdooArgs('stock.move', 'create', [[{
+                      name: `SO ${saleOrderId || ''} offline delivery`,
                       picking_id: Number(pickingId),
                       product_id: Number(productId),
-                      qty_done: Number(qty),
+                      product_uom_qty: Number(qty),
+                      ...(productUomId ? { product_uom: Number(productUomId) } : {}),
                       location_id: Number(srcLoc),
                       location_dest_id: Number(dstLoc),
                     }]]);
-                    const mlid = Number(moveLineId);
-                    if (Number.isFinite(mlid) && mlid > 0) {
-                      log('queue', `delivery direct move line fallback created id=${mlid} product=${productId} picking=${pickingId}`);
-                      return -1;
+                    const mid = Number(moveId);
+                    if (!Number.isFinite(mid) || mid <= 0) return null;
+                    const list = moveIdsByProduct.get(Number(productId)) || [];
+                    list.push(mid);
+                    moveIdsByProduct.set(Number(productId), list);
+                    log('queue', `delivery created missing move ${mid} for product ${productId} on picking ${pickingId}`);
+                    return mid;
+                  } catch (e) {
+                    log(
+                      'queue',
+                      `delivery create missing move failed for product ${productId} on picking ${pickingId}: ${String(e?.message || e).slice(0, 120)}`
+                    );
+                    try {
+                      const { callOdoo, callOdooArgs } = await import('./index.service.js');
+                      const picks = await callOdoo(
+                        'stock.picking',
+                        'search_read',
+                        [[['id', '=', Number(pickingId)]]],
+                        { fields: ['id', 'location_id', 'location_dest_id'], limit: 1 }
+                      );
+                      const pick = Array.isArray(picks) ? picks[0] : null;
+                      const srcLoc = Array.isArray(pick?.location_id) ? pick.location_id[0] : pick?.location_id;
+                      const dstLoc = Array.isArray(pick?.location_dest_id) ? pick.location_dest_id[0] : pick?.location_dest_id;
+                      if (srcLoc && dstLoc) {
+                        const moveLineId = await callOdooArgs('stock.move.line', 'create', [[{
+                          picking_id: Number(pickingId),
+                          product_id: Number(productId),
+                          qty_done: Number(qty),
+                          location_id: Number(srcLoc),
+                          location_dest_id: Number(dstLoc),
+                        }]]);
+                        const mlid = Number(moveLineId);
+                        if (Number.isFinite(mlid) && mlid > 0) {
+                          log('queue', `delivery direct move line fallback created id=${mlid} product=${productId} picking=${pickingId}`);
+                          return -1;
+                        }
+                      }
+                    } catch (e2) {
+                      log(
+                        'queue',
+                        `delivery direct move line fallback failed for product ${productId} on picking ${pickingId}: ${String(e2?.message || e2).slice(0, 120)}`
+                      );
+                    }
+                    return null;
+                  }
+                };
+
+                for (const [productId, remainingQty] of requestedDeliveryRemainingByProduct.entries()) {
+                  let missing = Number(remainingQty) || 0;
+                  if (missing <= 0.0001) continue;
+                  let mids = moveIdsByProduct.get(productId) || [];
+                  if (mids.length === 0) {
+                    const createdMid = await createMissingMoveForProduct(productId, missing);
+                    if (createdMid === -1) {
+                      requestedDeliveryRemainingByProduct.set(productId, 0);
+                      continue;
+                    }
+                    mids = createdMid != null ? [createdMid] : [];
+                  }
+                  if (mids.length === 0) continue;
+
+                  // Attach the missing quantity to the last move for this product in this picking.
+                  const targetMoveId = Number(mids[mids.length - 1]);
+                  const existingLine = deliveryLines.find((l) => Number(l?.moveId ?? l?.move_id) === targetMoveId);
+                  if (existingLine) {
+                    existingLine.qty_done = (Number(existingLine.qty_done) || 0) + missing;
+                  } else {
+                    deliveryLines.push({
+                      moveId: targetMoveId,
+                      productId,
+                      qty_done: missing,
+                    });
+                  }
+                  requestedDeliveryRemainingByProduct.set(productId, 0);
+                }
+              };
+
+              try {
+                await topUpDeliveryLinesFromRequested();
+                for (const u of moveUpdates) {
+                  await updateStockMoveQty(u.moveId, u.product_uom_qty);
+                }
+                const hasMoveLineUpdates = Array.isArray(moveLineUpdates) && moveLineUpdates.length > 0;
+                const updatedMoveIds = new Set();
+                if (hasMoveLineUpdates) {
+                  for (const u of moveLineUpdates) {
+                    await updateMoveLineQty(u.moveLineId, u.qty_done);
+                    if (u?.moveId != null && Number.isFinite(Number(u.moveId))) {
+                      updatedMoveIds.add(Number(u.moveId));
                     }
                   }
-                } catch (e2) {
-                  log(
-                    'queue',
-                    `delivery direct move line fallback failed for product ${productId} on picking ${pickingId}: ${String(e2?.message || e2).slice(0, 120)}`
-                  );
                 }
-                return null;
-              }
-            };
-
-            for (const [productId, remainingQty] of requestedDeliveryRemainingByProduct.entries()) {
-              let missing = Number(remainingQty) || 0;
-              if (missing <= 0.0001) continue;
-              let mids = moveIdsByProduct.get(productId) || [];
-              if (mids.length === 0) {
-                const createdMid = await createMissingMoveForProduct(productId, missing);
-                if (createdMid === -1) {
-                  requestedDeliveryRemainingByProduct.set(productId, 0);
-                  continue;
+                /**
+                 * Mixed edge case (critical):
+                 * some products can already have move lines while others do not.
+                 * Old logic used either update OR create path; missing lines were skipped.
+                 * Always ensure each delivery line exists when qty_done > 0.
+                 */
+                if (deliveryLines.length > 0) {
+                  for (const line of deliveryLines) {
+                    const moveId = line.moveId ?? line.move_id;
+                    const productId = line.productId ?? line.product_id;
+                    const qty = line.qty_done;
+                    const qtyN = qty != null ? Number(qty) : NaN;
+                    if (moveId == null || productId == null || !Number.isFinite(qtyN) || qtyN <= 0) continue;
+                    if (updatedMoveIds.has(Number(moveId))) continue;
+                    try {
+                      await createMoveLine(pickingId, Number(moveId), Number(productId), qtyN);
+                    } catch (createErr) {
+                      /** Edge case only: line may exist — set quantity_done on move (does not throw). */
+                      try {
+                        await updateStockMoveQuantityDone(Number(moveId), qtyN);
+                      } catch (_) {
+                        /* keep original skip behaviour if fallback fails */
+                      }
+                      log(
+                        'queue',
+                        `delivery createMoveLine fallback move ${moveId}: ${String(createErr?.message || createErr).slice(0, 80)}`
+                      );
+                    }
+                  }
                 }
-                mids = createdMid != null ? [createdMid] : [];
-              }
-              if (mids.length === 0) continue;
-
-              // Attach the missing quantity to the last move for this product in this picking.
-              const targetMoveId = Number(mids[mids.length - 1]);
-              const existingLine = deliveryLines.find((l) => Number(l?.moveId ?? l?.move_id) === targetMoveId);
-              if (existingLine) {
-                existingLine.qty_done = (Number(existingLine.qty_done) || 0) + missing;
-              } else {
-                deliveryLines.push({
-                  moveId: targetMoveId,
-                  productId,
-                  qty_done: missing,
-                });
-              }
-              requestedDeliveryRemainingByProduct.set(productId, 0);
-            }
-          };
-
-          try {
-            await topUpDeliveryLinesFromRequested();
-            for (const u of moveUpdates) {
-              await updateStockMoveQty(u.moveId, u.product_uom_qty);
-            }
-            const hasMoveLineUpdates = Array.isArray(moveLineUpdates) && moveLineUpdates.length > 0;
-            const updatedMoveIds = new Set();
-            if (hasMoveLineUpdates) {
-              for (const u of moveLineUpdates) {
-                await updateMoveLineQty(u.moveLineId, u.qty_done);
-                if (u?.moveId != null && Number.isFinite(Number(u.moveId))) {
-                  updatedMoveIds.add(Number(u.moveId));
+                /** Ensure stock.move.quantity_done matches payload (avoids validating a "zero" transfer when move_line ids were wrong locally). */
+                const qtyDoneByMoveId = new Map();
+                for (const line of deliveryLines) {
+                  const mid = line.moveId ?? line.move_id;
+                  if (mid == null) continue;
+                  qtyDoneByMoveId.set(Number(mid), Number(line.qty_done));
+                }
+                for (const [moveId, qty] of qtyDoneByMoveId) {
+                  try {
+                    await updateStockMoveQuantityDone(moveId, qty);
+                  } catch (qErr) {
+                    log(
+                      'queue',
+                      `delivery quantity_done on move ${moveId} skipped: ${String(qErr?.message || qErr).slice(0, 100)}`
+                    );
+                  }
+                }
+              } catch (updateErr) {
+                const msg = (updateErr?.message || String(updateErr)).toLowerCase();
+                const recordDeleted = msg.includes('does not exist or has been deleted') || msg.includes('has been deleted');
+                if (recordDeleted) {
+                  log('queue', `delivery updates skipped (record deleted): ${msg.slice(0, 80)}`);
+                } else {
+                  throw updateErr;
                 }
               }
-            }
-            /**
-             * Mixed edge case (critical):
-             * some products can already have move lines while others do not.
-             * Old logic used either update OR create path; missing lines were skipped.
-             * Always ensure each delivery line exists when qty_done > 0.
-             */
-            if (deliveryLines.length > 0) {
-              for (const line of deliveryLines) {
-                const moveId = line.moveId ?? line.move_id;
-                const productId = line.productId ?? line.product_id;
-                const qty = line.qty_done;
-                const qtyN = qty != null ? Number(qty) : NaN;
-                if (moveId == null || productId == null || !Number.isFinite(qtyN) || qtyN <= 0) continue;
-                if (updatedMoveIds.has(Number(moveId))) continue;
-                try {
-                  await createMoveLine(pickingId, Number(moveId), Number(productId), qtyN);
-                } catch (createErr) {
-                  /** Edge case only: line may exist — set quantity_done on move (does not throw). */
+
+              /** Edge case only (queue retry pass > 1): re-apply qty_done before validate — pass 1 unchanged. */
+              if (Number(syncOptions.queuePass) > 1 && deliveryLines.length > 0) {
+                for (const line of deliveryLines) {
+                  const moveId = line.moveId ?? line.move_id;
+                  const qtyN = line.qty_done != null ? Number(line.qty_done) : NaN;
+                  if (moveId == null || !Number.isFinite(qtyN) || qtyN <= 0) continue;
                   try {
                     await updateStockMoveQuantityDone(Number(moveId), qtyN);
                   } catch (_) {
-                    /* keep original skip behaviour if fallback fails */
+                    /* best-effort on retry */
                   }
+                }
+                await new Promise((r) => setTimeout(r, 400));
+                log(
+                  'queue',
+                  `delivery retry pass ${syncOptions.queuePass}: re-applied qty_done before validate picking ${pickingId}`
+                );
+              }
+
+              const tryValidateOne = async () => {
+                await validatePickingWithContext(pickingId, {
+                  skip_backorder: true,
+                  cancel_backorder: true,
+                });
+              };
+              /** Avoid swallowing hard validate failures behind a broad "already..." match (Odoo qty/invoice mismatches). */
+              const validateMsgOkToSkip = (msg) => {
+                const v = (msg || '').toLowerCase();
+                return (
+                  v.includes('does not exist') ||
+                  v.includes('has been deleted') ||
+                  v.includes('nothing to validate') ||
+                  v.includes('nothing backorder') ||
+                  v.includes('has already been validated') ||
+                  v.includes('already been validated') ||
+                  v.includes('transfer has already been processed') ||
+                  v.includes('picking has already been processed') ||
+                  (v.includes('done') &&
+                    (v.includes('transfer') || v.includes('picking') || v.includes('already')))
+                );
+              };
+              const mightBeStockReservation = (msg) => {
+                const v = (msg || '').toLowerCase();
+                return (
+                  v.includes('availability') ||
+                  v.includes('available') ||
+                  v.includes('not available') ||
+                  v.includes('reserved') ||
+                  v.includes('reservation') ||
+                  v.includes('quantity') ||
+                  v.includes('assigned') ||
+                  v.includes('waiting') ||
+                  v.includes('move line') ||
+                  v.includes('need to supply')
+                );
+              };
+
+              try {
+                try {
+                  try {
+                    await actionConfirmPicking(pickingId);
+                    log('queue', `delivery action_confirm picking ${pickingId}`);
+                  } catch (confirmErr) {
+                    log(
+                      'queue',
+                      `delivery action_confirm picking ${pickingId} (non-fatal): ${String(confirmErr?.message || confirmErr).slice(0, 120)}`
+                    );
+                  }
+                  await actionAssignPicking(pickingId);
+                  log('queue', `delivery action_assign picking ${pickingId}`);
+                } catch (assignErr) {
                   log(
                     'queue',
-                    `delivery createMoveLine fallback move ${moveId}: ${String(createErr?.message || createErr).slice(0, 80)}`
+                    `delivery action_assign picking ${pickingId} (non-fatal): ${String(assignErr?.message || assignErr).slice(0, 120)}`
                   );
                 }
-              }
-            }
-            /** Ensure stock.move.quantity_done matches payload (avoids validating a "zero" transfer when move_line ids were wrong locally). */
-            const qtyDoneByMoveId = new Map();
-            for (const line of deliveryLines) {
-              const mid = line.moveId ?? line.move_id;
-              if (mid == null) continue;
-              qtyDoneByMoveId.set(Number(mid), Number(line.qty_done));
-            }
-            for (const [moveId, qty] of qtyDoneByMoveId) {
-              try {
-                await updateStockMoveQuantityDone(moveId, qty);
-              } catch (qErr) {
-                log(
-                  'queue',
-                  `delivery quantity_done on move ${moveId} skipped: ${String(qErr?.message || qErr).slice(0, 100)}`
-                );
-              }
-            }
-          } catch (updateErr) {
-            const msg = (updateErr?.message || String(updateErr)).toLowerCase();
-            const recordDeleted = msg.includes('does not exist or has been deleted') || msg.includes('has been deleted');
-            if (recordDeleted) {
-              log('queue', `delivery updates skipped (record deleted): ${msg.slice(0, 80)}`);
-            } else {
-              throw updateErr;
-            }
-          }
-
-          /** Edge case only (queue retry pass > 1): re-apply qty_done before validate — pass 1 unchanged. */
-          if (Number(syncOptions.queuePass) > 1 && deliveryLines.length > 0) {
-            for (const line of deliveryLines) {
-              const moveId = line.moveId ?? line.move_id;
-              const qtyN = line.qty_done != null ? Number(line.qty_done) : NaN;
-              if (moveId == null || !Number.isFinite(qtyN) || qtyN <= 0) continue;
-              try {
-                await updateStockMoveQuantityDone(Number(moveId), qtyN);
-              } catch (_) {
-                /* best-effort on retry */
-              }
-            }
-            await new Promise((r) => setTimeout(r, 400));
-            log(
-              'queue',
-              `delivery retry pass ${syncOptions.queuePass}: re-applied qty_done before validate picking ${pickingId}`
-            );
-          }
-
-          const tryValidateOne = async () => {
-            await validatePickingWithContext(pickingId, {
-              skip_backorder: true,
-              cancel_backorder: true,
-            });
-          };
-          /** Avoid swallowing hard validate failures behind a broad "already..." match (Odoo qty/invoice mismatches). */
-          const validateMsgOkToSkip = (msg) => {
-            const v = (msg || '').toLowerCase();
-            return (
-              v.includes('does not exist') ||
-              v.includes('has been deleted') ||
-              v.includes('nothing to validate') ||
-              v.includes('nothing backorder') ||
-              v.includes('has already been validated') ||
-              v.includes('already been validated') ||
-              v.includes('transfer has already been processed') ||
-              v.includes('picking has already been processed') ||
-              (v.includes('done') &&
-                (v.includes('transfer') || v.includes('picking') || v.includes('already')))
-            );
-          };
-          const mightBeStockReservation = (msg) => {
-            const v = (msg || '').toLowerCase();
-            return (
-              v.includes('availability') ||
-              v.includes('available') ||
-              v.includes('not available') ||
-              v.includes('reserved') ||
-              v.includes('reservation') ||
-              v.includes('quantity') ||
-              v.includes('assigned') ||
-              v.includes('waiting') ||
-              v.includes('move line') ||
-              v.includes('need to supply')
-            );
-          };
-
-          try {
-            try {
-              try {
-                await actionConfirmPicking(pickingId);
-                log('queue', `delivery action_confirm picking ${pickingId}`);
-              } catch (confirmErr) {
-                log(
-                  'queue',
-                  `delivery action_confirm picking ${pickingId} (non-fatal): ${String(confirmErr?.message || confirmErr).slice(0, 120)}`
-                );
-              }
-              await actionAssignPicking(pickingId);
-              log('queue', `delivery action_assign picking ${pickingId}`);
-            } catch (assignErr) {
-              log(
-                'queue',
-                `delivery action_assign picking ${pickingId} (non-fatal): ${String(assignErr?.message || assignErr).slice(0, 120)}`
-              );
-            }
-            try {
-              await tryValidateOne();
-              validatedAnyPicking = true;
-              log('queue', `delivery validated picking ${pickingId} (skip_backorder)`);
-            } catch (validateErr) {
-              const vMsgRaw = String(validateErr?.message || validateErr);
-              const vMsg = vMsgRaw.toLowerCase();
-              if (validateMsgOkToSkip(vMsg)) {
-                log('queue', `delivery validate skipped (picking ${pickingId}): ${vMsg.slice(0, 80)}`);
-              } else if (mightBeStockReservation(vMsg)) {
-                log('queue', `delivery validate failed (stock?) picking ${pickingId} — retry after action_assign`);
                 try {
-                  await actionAssignPicking(pickingId);
-                } catch (_) {
-                  /* second assign optional */
-                }
-                await tryValidateOne();
-                validatedAnyPicking = true;
-                log('queue', `delivery validated picking ${pickingId} after assign retry`);
-              } else {
-                throw validateErr;
-              }
-            }
-          } catch (validateErr) {
-            const vMsg = String(validateErr?.message || validateErr).toLowerCase();
-            if (validateMsgOkToSkip(vMsg)) {
-              log('queue', `delivery validate skipped (picking already done or deleted): ${vMsg.slice(0, 60)}`);
-            } else {
-              throw validateErr;
-            }
-          }
-        }
-
-        const unresolvedRequested = Array.from(requestedDeliveryRemainingByProduct.entries())
-          .filter(([_, rem]) => Number(rem) > 0.0001)
-          .map(([pid, rem]) => `${pid}:${Number(rem).toFixed(3)}`);
-        if (unresolvedRequested.length > 0) {
-          log(
-            'queue',
-            `delivery unresolved requested quantities for SO ${saleOrderId} (${unresolvedRequested.join(', ')}) — continuing with validated moves + SO qty_delivered`
-          );
-        }
-
-        if (validatedAnyPicking && saleOrderId != null) {
-          try {
-            const refreshedPickings = await getPickingBySaleOrder(saleOrderId);
-            for (const pick of refreshedPickings || []) {
-              const pid = pick?.id != null ? Number(pick.id) : null;
-              const state = String(pick?.state || '').toLowerCase();
-              if (pid == null) continue;
-              if (state === 'done' || state === 'cancel') continue;
-              if (targetPickingIds.has(pid)) continue;
-              try {
-                await actionCancelPicking(pid);
-                log('queue', `delivery auto-cancelled backorder picking ${pid} for SO ${saleOrderId}`);
-              } catch (cancelErr) {
-                log(
-                  'queue',
-                  `delivery backorder cancel skipped for picking ${pid}: ${String(cancelErr?.message || cancelErr).slice(0, 120)}`
-                );
-              }
-            }
-          } catch (refreshErr) {
-            log(
-              'queue',
-              `delivery backorder cleanup skipped for SO ${saleOrderId}: ${String(refreshErr?.message || refreshErr).slice(0, 120)}`
-            );
-          }
-        }
-
-        await applySoLineDeliveredQty();
-        {
-          const soCrew = saleOrderId != null ? Number(saleOrderId) : NaN;
-          if (Number.isFinite(soCrew) && soCrew > 0) await writeSaleOrderCrewFromPaymentPayload(soCrew, p);
-        }
-        await finalizeDeliveryConsistencyCheck();
-        await syncQueueDb.markSynced(Number(item.id));
-        log('queue', `delivery synced id=${item.id} (${blocks.length} picking block(s))`);
-      };
-
-      for (const item of delivery) {
-        const p0 = item.payload || {};
-        if (p0.holdUntilPayment === true) {
-          log('queue', `delivery id=${item.id} SO ${p0.saleOrderId ?? p0.sale_id} held until payment — skip`);
-          continue;
-        }
-        try {
-          await processOneDeliveryQueueItem(item, { queuePass: pass });
-        } catch (e) {
-          logWarn('queue delivery', e);
-          const errMsg = String(e?.message || e).toLowerCase();
-          if (errMsg.includes('delivered qty mismatch') || errMsg.includes('mismatch on so line')) {
-            try {
-              const soId = Number(p0.saleOrderId ?? p0.sale_id);
-              const updates = await collectAuthoritativeDeliveredUpdates(soId, p0);
-              if (updates.length > 0 && Number.isFinite(soId) && soId > 0) {
-                const repair = await repairOdooDeliveredQuantitiesFromMobile(soId, updates, {
-                  pickingIds: (p0.pickings || [])
-                    .map((b) => Number(b?.pickingId ?? b?.picking_id))
-                    .filter((id) => Number.isFinite(id) && id > 0),
-                  deliveryLines: (p0.pickings || []).flatMap((b) => b?.deliveryLines || []),
-                });
-                if (repair.ok) {
-                  await processOneDeliveryQueueItem(item, { queuePass: pass });
-                  log('queue', `delivery id=${item.id} SO ${soId} recovered after qty repair retry`);
-                }
-              }
-            } catch (repairErr) {
-              logWarn('queue delivery (mismatch repair retry)', repairErr);
-            }
-          }
-        }
-      }
-
-      // Inventory queue item purpose in current flow:
-      // local inventory is reduced immediately on device (is_locally_modified=1), then delivery sync updates Odoo.
-      // After delivery sync succeeds, clear local-modified flags so next inventory pull can overwrite with server truth.
-      for (const item of inventoryUpdate) {
-        try {
-          const p = item.payload || {};
-          if (p.holdUntilComplete === true) {
-            log('queue', `inventory id=${item.id} SO ${p.saleOrderId ?? p.sale_id} held until complete — skip`);
-            continue;
-          }
-          const locationId = p.locationId != null ? Number(p.locationId) : null;
-          const saleOrderId = p.saleOrderId != null ? Number(p.saleOrderId) : null;
-          const updates = Array.isArray(p.updates) ? p.updates : [];
-
-          if (locationId == null || updates.length === 0) {
-            await syncQueueDb.markSynced(Number(item.id));
-            log('queue', `inventory synced id=${item.id} (no-op payload)`);
-            continue;
-          }
-
-          const emptyReturnLines = updates
-            .map((u) => ({
-              productId: u?.productId != null ? Number(u.productId) : null,
-              qty: Number(u?.incrementQuantity),
-            }))
-            .filter((u) => Number.isFinite(u.productId) && Number.isFinite(u.qty) && u.qty > 0);
-
-          let movedByPicking = false;
-          if (saleOrderId != null && emptyReturnLines.length > 0) {
-            try {
-              const { callOdoo, callOdooArgs } = await import('./index.service.js');
-              const salePickings = await callOdoo(
-                'stock.picking',
-                'search_read',
-                [[['sale_id', '=', saleOrderId]]],
-                {
-                  fields: ['id', 'name', 'picking_type_id', 'location_id', 'location_dest_id'],
-                  order: 'id desc',
-                  limit: 1,
-                }
-              );
-              const basePicking = Array.isArray(salePickings) ? salePickings[0] : null;
-              const vehicleLocationId = Array.isArray(basePicking?.location_id)
-                ? basePicking.location_id[0]
-                : basePicking?.location_id;
-              const customerLocationId = Array.isArray(basePicking?.location_dest_id)
-                ? basePicking.location_dest_id[0]
-                : basePicking?.location_dest_id;
-              const fallbackCustomerLocRows = await callOdoo(
-                'stock.location',
-                'search_read',
-                [[['usage', '=', 'customer']]],
-                { fields: ['id'], limit: 1 }
-              );
-              const fallbackCustomerLocationId = Array.isArray(fallbackCustomerLocRows) && fallbackCustomerLocRows[0]?.id != null
-                ? Number(fallbackCustomerLocRows[0].id)
-                : null;
-              const srcLocId =
-                customerLocationId != null ? Number(customerLocationId) : fallbackCustomerLocationId;
-              const destLocId = vehicleLocationId != null ? Number(vehicleLocationId) : null;
-
-              if (srcLocId && destLocId) {
-                const internalType = await callOdoo(
-                  'stock.picking.type',
-                  'search_read',
-                  [[['code', '=', 'internal']]],
-                  { fields: ['id'], limit: 1 }
-                );
-                const incomingType = await callOdoo(
-                  'stock.picking.type',
-                  'search_read',
-                  [[['code', '=', 'incoming']]],
-                  { fields: ['id'], limit: 1 }
-                );
-                const outgoingType = await callOdoo(
-                  'stock.picking.type',
-                  'search_read',
-                  [[['code', '=', 'outgoing']]],
-                  { fields: ['id'], limit: 1 }
-                );
-                const pickingTypeId =
-                  (Array.isArray(internalType) && internalType[0]?.id != null ? Number(internalType[0].id) : null) ??
-                  (Array.isArray(incomingType) && incomingType[0]?.id != null ? Number(incomingType[0].id) : null) ??
-                  (Array.isArray(outgoingType) && outgoingType[0]?.id != null ? Number(outgoingType[0].id) : null);
-
-                if (pickingTypeId != null) {
-                  const pickingId = await callOdooArgs('stock.picking', 'create', [
-                    {
-                      picking_type_id: Number(pickingTypeId),
-                      origin: `SO ${saleOrderId} EMPTY RETURN`,
-                      location_id: Number(srcLocId),
-                      location_dest_id: Number(destLocId),
-                      move_ids_without_package: emptyReturnLines.map((line) => [
-                        0,
-                        0,
-                        {
-                          name: `Empty Return SO ${saleOrderId}`,
-                          product_id: Number(line.productId),
-                          product_uom_qty: Number(line.qty),
-                          location_id: Number(srcLocId),
-                          location_dest_id: Number(destLocId),
-                        },
-                      ]),
-                    },
-                  ]);
-
-                  await callOdooArgs('stock.picking', 'action_confirm', [[Number(pickingId)]]);
-                  try {
-                    await actionAssignPicking(Number(pickingId));
-                  } catch (_) {
-                    /* assignment can fail for return/incoming style operations */
-                  }
-                  const returnMoves = await callOdoo(
-                    'stock.move',
-                    'search_read',
-                    [[['picking_id', '=', Number(pickingId)]]],
-                    { fields: ['id', 'product_id'], limit: 200 }
-                  );
-                  for (const line of emptyReturnLines) {
-                    const mv = (returnMoves || []).find((m) => {
-                      const pid = Array.isArray(m.product_id) ? m.product_id[0] : m.product_id;
-                      return Number(pid) === Number(line.productId);
-                    });
-                    if (mv?.id != null) {
-                      const moveId = Number(mv.id);
-                      await updateStockMoveQuantityDone(moveId, Number(line.qty));
-                      try {
-                        await createMoveLine(Number(pickingId), moveId, Number(line.productId), Number(line.qty));
-                      } catch (_) {
-                        /* line may already exist from assignment/update */
-                      }
+                  await tryValidateOne();
+                  validatedAnyPicking = true;
+                  log('queue', `delivery validated picking ${pickingId} (skip_backorder)`);
+                } catch (validateErr) {
+                  const vMsgRaw = String(validateErr?.message || validateErr);
+                  const vMsg = vMsgRaw.toLowerCase();
+                  if (validateMsgOkToSkip(vMsg)) {
+                    log('queue', `delivery validate skipped (picking ${pickingId}): ${vMsg.slice(0, 80)}`);
+                  } else if (mightBeStockReservation(vMsg)) {
+                    log('queue', `delivery validate failed (stock?) picking ${pickingId} — retry after action_assign`);
+                    try {
+                      await actionAssignPicking(pickingId);
+                    } catch (_) {
+                      /* second assign optional */
                     }
-                  }
-                  await validatePickingWithContext(Number(pickingId), {
-                    skip_backorder: true,
-                    cancel_backorder: true,
-                  });
-                  movedByPicking = true;
-                  log('queue', `inventory empty return synced via picking id=${pickingId} SO=${saleOrderId} lines=${emptyReturnLines.length}`);
-                }
-              }
-            } catch (emptyMoveErr) {
-              logWarn('queue inventory_update empty-return picking', emptyMoveErr);
-            }
-          }
-
-          let allInventoryUpdatesSynced = true;
-          if (!movedByPicking) {
-            const { setQuantQuantityAtLocation, adjustQuantQuantityAtLocation } = await import('./vehicleInventory.service.js');
-            for (const u of updates) {
-              const productId = u?.productId != null ? Number(u.productId) : null;
-              if (productId == null) continue;
-              const inc = Number(u?.incrementQuantity);
-              const targetQty = Number(u?.newQuantity);
-              try {
-                if (Number.isFinite(inc) && inc !== 0) {
-                  await adjustQuantQuantityAtLocation(locationId, productId, inc);
-                } else if (Number.isFinite(targetQty)) {
-                  await setQuantQuantityAtLocation(locationId, productId, targetQty);
-                }
-                await vehicleInventoriesDb.clearLocalModificationFlagByLocation(locationId, productId);
-              } catch (invErr) {
-                allInventoryUpdatesSynced = false;
-                logWarn(
-                  'queue inventory_update upload',
-                  new Error(`loc=${locationId} product=${productId}: ${String(invErr?.message || invErr).slice(0, 160)}`)
-                );
-              }
-            }
-          } else {
-            for (const u of updates) {
-              const productId = u?.productId != null ? Number(u.productId) : null;
-              if (productId == null) continue;
-              await vehicleInventoriesDb.clearLocalModificationFlagByLocation(locationId, productId);
-            }
-          }
-
-          if (allInventoryUpdatesSynced) {
-            await syncQueueDb.markSynced(Number(item.id));
-            log('queue', `inventory synced id=${item.id} location=${locationId} items=${updates.length}`);
-          } else {
-            log(
-              'queue',
-              `inventory id=${item.id} partially failed; keep pending for retry (location=${locationId}, items=${updates.length})`
-            );
-          }
-        } catch (e) {
-          logWarn('queue inventory_update', e);
-        }
-      }
-
-      // Backend API sequence for each payment queue item (offline → sync):
-      // 1. sale.advance.payment.inv create { advance_payment_method: "delivered" } context active_model=sale.order, active_ids=[sale_order_id]
-      // 2. sale.advance.payment.inv create_invoices [[wizardId]] → result.res_id = invoice id (account.move)
-      // 3. account.move action_post [[res_id]]
-      // 4. Credit only: stop here (invoice posted, no payment register).
-      // 5. Cash/Cheque: account.payment.register create [{ amount, journal_id, payment_date }] context active_model=account.move, active_ids=[res_id] → wizard id
-      //    journal_id = vehicle cash_journal_id for cash, vehicle check_journal_id for cheque (from payload or fleet.vehicle by license_plate)
-      // 6. account.payment.register action_create_payments [[wizardId]]
-
-      for (const item of dedupedPayment) {
-        let invoiceBlockFailedNoItemsToInvoice = false;
-        let postedInvoiceId = null;
-        try {
-          const p = item.payload || {};
-          if (p.holdUntilComplete === true) {
-            log('queue', `payment id=${item.id} SO ${p.saleOrderId ?? p.sale_id} held until complete — skip`);
-            continue;
-          }
-          const saleOrderId = p.saleOrderId ?? p.sale_id;
-          const soId = typeof saleOrderId === 'number' ? saleOrderId : parseInt(saleOrderId, 10);
-          if (saleOrderId == null || Number.isNaN(soId)) {
-            logWarn('queue payment', new Error('Invalid sale_order_id'));
-            continue;
-          }
-
-          /** Driver / porter on sale.order as early as possible (not only after delivery is synced). */
-          await writeSaleOrderCrewFromPaymentPayload(soId, p);
-
-          const pendingForFlush = await syncQueueDb.getPending();
-          const heldDeliveriesForSo = (pendingForFlush || []).filter(
-            (q) =>
-              q.action_type === syncQueueDb.ACTION_DELIVERY &&
-              Number((q.payload || {}).saleOrderId ?? (q.payload || {}).sale_id) === soId &&
-              (q.payload || {}).holdUntilPayment === true
-          );
-          if (heldDeliveriesForSo.length > 0) {
-            const sortedHeld = [...heldDeliveriesForSo].sort((a, b) => Number(a.id) - Number(b.id));
-            const latestHeld = sortedHeld[sortedHeld.length - 1];
-            const superseded = sortedHeld.slice(0, -1);
-
-            // Apply only the latest held payload snapshot to avoid stale line quantities
-            // from older duplicate queue rows overwriting delivery/invoice quantities.
-            let flushOk = false;
-            try {
-              const released = {
-                ...latestHeld,
-                payload: { ...(latestHeld.payload || {}), holdUntilPayment: false },
-              };
-              await processOneDeliveryQueueItem(released, { queuePass: pass });
-              flushOk = true;
-            } catch (flushErr) {
-              logWarn('queue delivery (flush before payment)', flushErr);
-              try {
-                const repairUpdates = await collectAuthoritativeDeliveredUpdates(
-                  soId,
-                  latestHeld.payload || {}
-                );
-                if (repairUpdates.length > 0) {
-                  const repair = await repairOdooDeliveredQuantitiesFromMobile(soId, repairUpdates, {
-                    pickingIds: (latestHeld.payload?.pickings || [])
-                      .map((b) => Number(b?.pickingId ?? b?.picking_id))
-                      .filter((id) => Number.isFinite(id) && id > 0),
-                    deliveryLines: (latestHeld.payload?.pickings || []).flatMap((b) => b?.deliveryLines || []),
-                  });
-                  if (repair.ok) {
-                    const releasedRetry = {
-                      ...latestHeld,
-                      payload: { ...(latestHeld.payload || {}), holdUntilPayment: false },
-                    };
-                    await processOneDeliveryQueueItem(releasedRetry, { queuePass: pass });
-                    flushOk = true;
-                    log('queue', `payment SO ${soId}: delivery flush recovered after qty repair`);
+                    await tryValidateOne();
+                    validatedAnyPicking = true;
+                    log('queue', `delivery validated picking ${pickingId} after assign retry`);
+                  } else {
+                    throw validateErr;
                   }
                 }
-              } catch (repairErr) {
-                logWarn('queue delivery (repair before payment retry)', repairErr);
-              }
-            }
-
-            // Older held rows are noise once the latest snapshot applies; only clear them if flush succeeded
-            // so a failed delivery retry is not left with every duplicate marked "synced" and no real upload.
-            if (flushOk && superseded.length > 0) {
-              for (const older of superseded) {
-                try {
-                  await syncQueueDb.markSynced(Number(older.id));
-                  log('queue', `delivery superseded row synced id=${older.id} SO ${soId}`);
-                } catch (skipErr) {
-                  logWarn('queue delivery (mark superseded)', skipErr);
+              } catch (validateErr) {
+                const vMsg = String(validateErr?.message || validateErr).toLowerCase();
+                if (validateMsgOkToSkip(vMsg)) {
+                  log('queue', `delivery validate skipped (picking already done or deleted): ${vMsg.slice(0, 60)}`);
+                } else {
+                  throw validateErr;
                 }
               }
             }
-          }
 
-          /**
-           * Hard guard: never create/post invoice while this SO still has any pending delivery sync row.
-           * This keeps "ordered/delivered/invoiced" aligned and avoids intermittent partial invoicing.
-           */
-          const pendingAfterFlush = await syncQueueDb.getPending();
-          const remainingDeliveryForSo = (pendingAfterFlush || []).filter(
-            (q) =>
-              (q.action_type === syncQueueDb.ACTION_DELIVERY ||
-                q.action_type === syncQueueDb.ACTION_INVENTORY_UPDATE) &&
-              Number((q.payload || {}).saleOrderId ?? (q.payload || {}).sale_id) === soId
-          );
-          if (remainingDeliveryForSo.length > 0) {
-            const latestDelivery = [...remainingDeliveryForSo].sort(
-              (a, b) => Number(b.id) - Number(a.id)
-            )[0];
-            let recoveredDelivery = false;
-            if (latestDelivery?.action_type === syncQueueDb.ACTION_DELIVERY) {
-              try {
-                const repairUpdates = await collectAuthoritativeDeliveredUpdates(
-                  soId,
-                  latestDelivery.payload || {}
-                );
-                if (repairUpdates.length > 0) {
-                  const repair = await repairOdooDeliveredQuantitiesFromMobile(soId, repairUpdates, {
-                    pickingIds: (latestDelivery.payload?.pickings || [])
-                      .map((b) => Number(b?.pickingId ?? b?.picking_id))
-                      .filter((id) => Number.isFinite(id) && id > 0),
-                    deliveryLines: (latestDelivery.payload?.pickings || []).flatMap(
-                      (b) => b?.deliveryLines || []
-                    ),
-                  });
-                  if (repair.ok) {
-                    await processOneDeliveryQueueItem(latestDelivery, { queuePass: pass });
-                    recoveredDelivery = true;
-                    log('queue', `payment SO ${soId}: retried delivery after qty repair`);
-                  }
-                }
-              } catch (retryErr) {
-                logWarn('queue delivery (repair while payment waiting)', retryErr);
-              }
-            }
-            const pendingAfterRepair = await syncQueueDb.getPending();
-            const stillDelivery = (pendingAfterRepair || []).filter(
-              (q) =>
-                (q.action_type === syncQueueDb.ACTION_DELIVERY ||
-                  q.action_type === syncQueueDb.ACTION_INVENTORY_UPDATE) &&
-                Number((q.payload || {}).saleOrderId ?? (q.payload || {}).sale_id) === soId
-            );
-            if (!recoveredDelivery || stillDelivery.length > 0) {
+            const unresolvedRequested = Array.from(requestedDeliveryRemainingByProduct.entries())
+              .filter(([_, rem]) => Number(rem) > 0.0001)
+              .map(([pid, rem]) => `${pid}:${Number(rem).toFixed(3)}`);
+            if (unresolvedRequested.length > 0) {
               log(
                 'queue',
-                `payment id=${item.id} SO ${soId} delayed: waiting for delivery sync (${stillDelivery.length} pending)`
+                `delivery unresolved requested quantities for SO ${saleOrderId} (${unresolvedRequested.join(', ')}) — continuing with validated moves + SO qty_delivered`
               );
+            }
+
+            if (validatedAnyPicking && saleOrderId != null) {
+              try {
+                const refreshedPickings = await getPickingBySaleOrder(saleOrderId);
+                for (const pick of refreshedPickings || []) {
+                  const pid = pick?.id != null ? Number(pick.id) : null;
+                  const state = String(pick?.state || '').toLowerCase();
+                  if (pid == null) continue;
+                  if (state === 'done' || state === 'cancel') continue;
+                  if (targetPickingIds.has(pid)) continue;
+                  try {
+                    await actionCancelPicking(pid);
+                    log('queue', `delivery auto-cancelled backorder picking ${pid} for SO ${saleOrderId}`);
+                  } catch (cancelErr) {
+                    log(
+                      'queue',
+                      `delivery backorder cancel skipped for picking ${pid}: ${String(cancelErr?.message || cancelErr).slice(0, 120)}`
+                    );
+                  }
+                }
+              } catch (refreshErr) {
+                log(
+                  'queue',
+                  `delivery backorder cleanup skipped for SO ${saleOrderId}: ${String(refreshErr?.message || refreshErr).slice(0, 120)}`
+                );
+              }
+            }
+
+            await applySoLineDeliveredQty();
+            {
+              const soCrew = saleOrderId != null ? Number(saleOrderId) : NaN;
+              if (Number.isFinite(soCrew) && soCrew > 0) await writeSaleOrderCrewFromPaymentPayload(soCrew, p);
+            }
+            await finalizeDeliveryConsistencyCheck();
+            await syncQueueDb.markSynced(Number(item.id));
+            log('queue', `delivery synced id=${item.id} (${blocks.length} picking block(s))`);
+          };
+
+          for (const item of delivery) {
+            const p0 = item.payload || {};
+            if (p0.holdUntilPayment === true) {
+              log('queue', `delivery id=${item.id} SO ${p0.saleOrderId ?? p0.sale_id} held until payment — skip`);
               continue;
             }
-          }
-
-          const payments = p.payments || [];
-          const orderName = p.orderName ?? `Order ${saleOrderId}`;
-          const skipPaymentCreation = alreadySyncedSaleOrderIds.has(soId);
-
-          const prePayQtyRepair = await ensureBackendDeliveredMatchesMobileBeforePaymentComplete(soId, p);
-          if (!prePayQtyRepair.ok) {
-            log(
-              'queue',
-              `payment id=${item.id} SO ${soId} delayed: delivered qty still mismatched (${String(prePayQtyRepair.reason || '').slice(0, 100)})`
-            );
-            continue;
-          }
-
-          if (!skipPaymentCreation) {
             try {
-              const orderInfo = await getSaleOrderForPayment(saleOrderId);
-              if (!orderInfo) {
-                logWarn('queue payment', new Error('Sale order not found — will retry on next sync'));
+              await processOneDeliveryQueueItem(item, { queuePass: pass });
+            } catch (e) {
+              logWarn('queue delivery', e);
+              const errMsg = String(e?.message || e).toLowerCase();
+              if (errMsg.includes('delivered qty mismatch') || errMsg.includes('mismatch on so line')) {
+                try {
+                  const soId = Number(p0.saleOrderId ?? p0.sale_id);
+                  const updates = await collectAuthoritativeDeliveredUpdates(soId, p0);
+                  if (updates.length > 0 && Number.isFinite(soId) && soId > 0) {
+                    const repair = await repairOdooDeliveredQuantitiesFromMobile(soId, updates, {
+                      pickingIds: (p0.pickings || [])
+                        .map((b) => Number(b?.pickingId ?? b?.picking_id))
+                        .filter((id) => Number.isFinite(id) && id > 0),
+                      deliveryLines: (p0.pickings || []).flatMap((b) => b?.deliveryLines || []),
+                    });
+                    if (repair.ok) {
+                      await processOneDeliveryQueueItem(item, { queuePass: pass });
+                      log('queue', `delivery id=${item.id} SO ${soId} recovered after qty repair retry`);
+                    }
+                  }
+                } catch (repairErr) {
+                  logWarn('queue delivery (mismatch repair retry)', repairErr);
+                }
+              }
+            }
+          }
+
+          // Inventory queue item purpose in current flow:
+          // local inventory is reduced immediately on device (is_locally_modified=1), then delivery sync updates Odoo.
+          // After delivery sync succeeds, clear local-modified flags so next inventory pull can overwrite with server truth.
+          for (const item of inventoryUpdate) {
+            try {
+              const p = item.payload || {};
+              if (p.holdUntilComplete === true) {
+                log('queue', `inventory id=${item.id} SO ${p.saleOrderId ?? p.sale_id} held until complete — skip`);
                 continue;
               }
-              const paymentSumRound2 = payments
-                .filter((pm) => pm.type === 'cash' || pm.type === 'check')
-                .reduce((s, pm) => s + Math.round(Number(pm.amount || 0) * 100) / 100, 0);
-              const payloadTotalRound2 =
-                p.total != null && Number.isFinite(Number(p.total))
-                  ? Math.round(Number(p.total) * 100) / 100
-                  : null;
-              const expectedPaymentTotal =
-                paymentSumRound2 > 0 ? paymentSumRound2 : payloadTotalRound2;
+              const locationId = p.locationId != null ? Number(p.locationId) : null;
+              const saleOrderId = p.saleOrderId != null ? Number(p.saleOrderId) : null;
+              const updates = Array.isArray(p.updates) ? p.updates : [];
 
-              const initialTarget = await resolveInitialInvoiceIdForPaymentSync(soId, {
-                expectedPaymentTotal,
-                orderInfo,
-              });
-              let resId = initialTarget.resId;
-              let invoiceAlreadyPosted = initialTarget.invoiceAlreadyPosted;
-              if (resId != null) {
-                const invState = await getInvoiceState(resId).catch(() => ({}));
-                if (invState?.state === 'posted') {
-                  invoiceAlreadyPosted = true;
-                  postedInvoiceId = Number(resId);
-                } else if (invState?.state === 'draft') {
-                  log('queue', `payment SO ${saleOrderId}: post existing draft invoice res_id=${resId}`);
-                  await postInvoice(resId);
-                  invoiceAlreadyPosted = true;
-                  postedInvoiceId = Number(resId);
+              if (locationId == null || updates.length === 0) {
+                await syncQueueDb.markSynced(Number(item.id));
+                log('queue', `inventory synced id=${item.id} (no-op payload)`);
+                continue;
+              }
+
+              const emptyReturnLines = updates
+                .map((u) => ({
+                  productId: u?.productId != null ? Number(u.productId) : null,
+                  qty: Number(u?.incrementQuantity),
+                }))
+                .filter((u) => Number.isFinite(u.productId) && Number.isFinite(u.qty) && u.qty > 0);
+
+              let movedByPicking = false;
+              if (saleOrderId != null && emptyReturnLines.length > 0) {
+                try {
+                  const { callOdoo, callOdooArgs } = await import('./index.service.js');
+                  const salePickings = await callOdoo(
+                    'stock.picking',
+                    'search_read',
+                    [[['sale_id', '=', saleOrderId]]],
+                    {
+                      fields: ['id', 'name', 'picking_type_id', 'location_id', 'location_dest_id'],
+                      order: 'id desc',
+                      limit: 1,
+                    }
+                  );
+                  const basePicking = Array.isArray(salePickings) ? salePickings[0] : null;
+                  const vehicleLocationId = Array.isArray(basePicking?.location_id)
+                    ? basePicking.location_id[0]
+                    : basePicking?.location_id;
+                  const customerLocationId = Array.isArray(basePicking?.location_dest_id)
+                    ? basePicking.location_dest_id[0]
+                    : basePicking?.location_dest_id;
+                  const fallbackCustomerLocRows = await callOdoo(
+                    'stock.location',
+                    'search_read',
+                    [[['usage', '=', 'customer']]],
+                    { fields: ['id'], limit: 1 }
+                  );
+                  const fallbackCustomerLocationId = Array.isArray(fallbackCustomerLocRows) && fallbackCustomerLocRows[0]?.id != null
+                    ? Number(fallbackCustomerLocRows[0].id)
+                    : null;
+                  const srcLocId =
+                    customerLocationId != null ? Number(customerLocationId) : fallbackCustomerLocationId;
+                  const destLocId = vehicleLocationId != null ? Number(vehicleLocationId) : null;
+
+                  if (srcLocId && destLocId) {
+                    const internalType = await callOdoo(
+                      'stock.picking.type',
+                      'search_read',
+                      [[['code', '=', 'internal']]],
+                      { fields: ['id'], limit: 1 }
+                    );
+                    const incomingType = await callOdoo(
+                      'stock.picking.type',
+                      'search_read',
+                      [[['code', '=', 'incoming']]],
+                      { fields: ['id'], limit: 1 }
+                    );
+                    const outgoingType = await callOdoo(
+                      'stock.picking.type',
+                      'search_read',
+                      [[['code', '=', 'outgoing']]],
+                      { fields: ['id'], limit: 1 }
+                    );
+                    const pickingTypeId =
+                      (Array.isArray(internalType) && internalType[0]?.id != null ? Number(internalType[0].id) : null) ??
+                      (Array.isArray(incomingType) && incomingType[0]?.id != null ? Number(incomingType[0].id) : null) ??
+                      (Array.isArray(outgoingType) && outgoingType[0]?.id != null ? Number(outgoingType[0].id) : null);
+
+                    if (pickingTypeId != null) {
+                      const pickingId = await callOdooArgs('stock.picking', 'create', [
+                        {
+                          picking_type_id: Number(pickingTypeId),
+                          origin: `SO ${saleOrderId} EMPTY RETURN`,
+                          location_id: Number(srcLocId),
+                          location_dest_id: Number(destLocId),
+                          move_ids_without_package: emptyReturnLines.map((line) => [
+                            0,
+                            0,
+                            {
+                              name: `Empty Return SO ${saleOrderId}`,
+                              product_id: Number(line.productId),
+                              product_uom_qty: Number(line.qty),
+                              location_id: Number(srcLocId),
+                              location_dest_id: Number(destLocId),
+                            },
+                          ]),
+                        },
+                      ]);
+
+                      await callOdooArgs('stock.picking', 'action_confirm', [[Number(pickingId)]]);
+                      try {
+                        await actionAssignPicking(Number(pickingId));
+                      } catch (_) {
+                        /* assignment can fail for return/incoming style operations */
+                      }
+                      const returnMoves = await callOdoo(
+                        'stock.move',
+                        'search_read',
+                        [[['picking_id', '=', Number(pickingId)]]],
+                        { fields: ['id', 'product_id'], limit: 200 }
+                      );
+                      for (const line of emptyReturnLines) {
+                        const mv = (returnMoves || []).find((m) => {
+                          const pid = Array.isArray(m.product_id) ? m.product_id[0] : m.product_id;
+                          return Number(pid) === Number(line.productId);
+                        });
+                        if (mv?.id != null) {
+                          const moveId = Number(mv.id);
+                          await updateStockMoveQuantityDone(moveId, Number(line.qty));
+                          try {
+                            await createMoveLine(Number(pickingId), moveId, Number(line.productId), Number(line.qty));
+                          } catch (_) {
+                            /* line may already exist from assignment/update */
+                          }
+                        }
+                      }
+                      await validatePickingWithContext(Number(pickingId), {
+                        skip_backorder: true,
+                        cancel_backorder: true,
+                      });
+                      movedByPicking = true;
+                      log('queue', `inventory empty return synced via picking id=${pickingId} SO=${saleOrderId} lines=${emptyReturnLines.length}`);
+                    }
+                  }
+                } catch (emptyMoveErr) {
+                  logWarn('queue inventory_update empty-return picking', emptyMoveErr);
                 }
               }
 
-              if (!invoiceAlreadyPosted) {
-                if (resId != null) {
-                  const invStateAgain = await getInvoiceState(resId).catch(() => ({}));
-                  if ((invStateAgain?.state || '').toLowerCase() === 'posted') {
-                    log('queue', `payment SO ${saleOrderId}: invoice ${resId} already posted — skip post`);
-                    invoiceAlreadyPosted = true;
-                    postedInvoiceId = Number(resId);
-                  } else if ((invStateAgain?.state || '').toLowerCase() === 'draft') {
-                    log('queue', `payment SO ${saleOrderId}: post existing draft invoice res_id=${resId}`);
-                    await postInvoice(resId);
-                    invoiceAlreadyPosted = true;
-                    postedInvoiceId = Number(resId);
+              let allInventoryUpdatesSynced = true;
+              if (!movedByPicking) {
+                const { setQuantQuantityAtLocation, adjustQuantQuantityAtLocation } = await import('./vehicleInventory.service.js');
+                for (const u of updates) {
+                  const productId = u?.productId != null ? Number(u.productId) : null;
+                  if (productId == null) continue;
+                  const inc = Number(u?.incrementQuantity);
+                  const targetQty = Number(u?.newQuantity);
+                  try {
+                    if (Number.isFinite(inc) && inc !== 0) {
+                      await adjustQuantQuantityAtLocation(locationId, productId, inc);
+                    } else if (Number.isFinite(targetQty)) {
+                      await setQuantQuantityAtLocation(locationId, productId, targetQty);
+                    }
+                    await vehicleInventoriesDb.clearLocalModificationFlagByLocation(locationId, productId);
+                  } catch (invErr) {
+                    allInventoryUpdatesSynced = false;
+                    logWarn(
+                      'queue inventory_update upload',
+                      new Error(`loc=${locationId} product=${productId}: ${String(invErr?.message || invErr).slice(0, 160)}`)
+                    );
                   }
-                  if (!invoiceAlreadyPosted) {
-                    log('queue', `payment SO ${saleOrderId}: post existing invoice res_id=${resId}`);
-                    await postInvoice(resId);
-                    invoiceAlreadyPosted = true;
-                    postedInvoiceId = Number(resId);
+                }
+              } else {
+                for (const u of updates) {
+                  const productId = u?.productId != null ? Number(u.productId) : null;
+                  if (productId == null) continue;
+                  await vehicleInventoriesDb.clearLocalModificationFlagByLocation(locationId, productId);
+                }
+              }
+
+              if (allInventoryUpdatesSynced) {
+                await syncQueueDb.markSynced(Number(item.id));
+                log('queue', `inventory synced id=${item.id} location=${locationId} items=${updates.length}`);
+              } else {
+                log(
+                  'queue',
+                  `inventory id=${item.id} partially failed; keep pending for retry (location=${locationId}, items=${updates.length})`
+                );
+              }
+            } catch (e) {
+              logWarn('queue inventory_update', e);
+            }
+          }
+
+          // Backend API sequence for each payment queue item (offline → sync):
+          // 1. sale.advance.payment.inv create { advance_payment_method: "delivered" } context active_model=sale.order, active_ids=[sale_order_id]
+          // 2. sale.advance.payment.inv create_invoices [[wizardId]] → result.res_id = invoice id (account.move)
+          // 3. account.move action_post [[res_id]]
+          // 4. Credit only: stop here (invoice posted, no payment register).
+          // 5. Cash/Cheque: account.payment.register create [{ amount, journal_id, payment_date }] context active_model=account.move, active_ids=[res_id] → wizard id
+          //    journal_id = vehicle cash_journal_id for cash, vehicle check_journal_id for cheque (from payload or fleet.vehicle by license_plate)
+          // 6. account.payment.register action_create_payments [[wizardId]]
+
+          for (const item of dedupedPayment) {
+            let invoiceBlockFailedNoItemsToInvoice = false;
+            let postedInvoiceId = null;
+            try {
+              const p = item.payload || {};
+              if (p.holdUntilComplete === true) {
+                log('queue', `payment id=${item.id} SO ${p.saleOrderId ?? p.sale_id} held until complete — skip`);
+                continue;
+              }
+              const saleOrderId = p.saleOrderId ?? p.sale_id;
+              const soId = typeof saleOrderId === 'number' ? saleOrderId : parseInt(saleOrderId, 10);
+              if (saleOrderId == null || Number.isNaN(soId)) {
+                logWarn('queue payment', new Error('Invalid sale_order_id'));
+                continue;
+              }
+
+              /** Driver / porter on sale.order as early as possible (not only after delivery is synced). */
+              await writeSaleOrderCrewFromPaymentPayload(soId, p);
+
+              const pendingForFlush = await syncQueueDb.getPending();
+              const heldDeliveriesForSo = (pendingForFlush || []).filter(
+                (q) =>
+                  q.action_type === syncQueueDb.ACTION_DELIVERY &&
+                  Number((q.payload || {}).saleOrderId ?? (q.payload || {}).sale_id) === soId &&
+                  (q.payload || {}).holdUntilPayment === true
+              );
+              if (heldDeliveriesForSo.length > 0) {
+                const sortedHeld = [...heldDeliveriesForSo].sort((a, b) => Number(a.id) - Number(b.id));
+                const latestHeld = sortedHeld[sortedHeld.length - 1];
+                const superseded = sortedHeld.slice(0, -1);
+
+                // Apply only the latest held payload snapshot to avoid stale line quantities
+                // from older duplicate queue rows overwriting delivery/invoice quantities.
+                let flushOk = false;
+                try {
+                  const released = {
+                    ...latestHeld,
+                    payload: { ...(latestHeld.payload || {}), holdUntilPayment: false },
+                  };
+                  await processOneDeliveryQueueItem(released, { queuePass: pass });
+                  flushOk = true;
+                } catch (flushErr) {
+                  logWarn('queue delivery (flush before payment)', flushErr);
+                  try {
+                    const repairUpdates = await collectAuthoritativeDeliveredUpdates(
+                      soId,
+                      latestHeld.payload || {}
+                    );
+                    if (repairUpdates.length > 0) {
+                      const repair = await repairOdooDeliveredQuantitiesFromMobile(soId, repairUpdates, {
+                        pickingIds: (latestHeld.payload?.pickings || [])
+                          .map((b) => Number(b?.pickingId ?? b?.picking_id))
+                          .filter((id) => Number.isFinite(id) && id > 0),
+                        deliveryLines: (latestHeld.payload?.pickings || []).flatMap((b) => b?.deliveryLines || []),
+                      });
+                      if (repair.ok) {
+                        const releasedRetry = {
+                          ...latestHeld,
+                          payload: { ...(latestHeld.payload || {}), holdUntilPayment: false },
+                        };
+                        await processOneDeliveryQueueItem(releasedRetry, { queuePass: pass });
+                        flushOk = true;
+                        log('queue', `payment SO ${soId}: delivery flush recovered after qty repair`);
+                      }
+                    }
+                  } catch (repairErr) {
+                    logWarn('queue delivery (repair before payment retry)', repairErr);
                   }
-                } else {
-                  log('queue', `payment SO ${saleOrderId}: Step 1 — create advance payment wizard (context active_ids [${saleOrderId}])`);
-                  const wizardId = await createAdvancePaymentWizard(saleOrderId);
-                  if (wizardId == null) {
-                    logWarn('queue payment', new Error('Step 1 failed: advance payment wizard create returned null'));
-                  } else {
-                    log('queue', `payment SO ${saleOrderId}: Step 2 — create_invoices [[${wizardId}]]`);
-                    const createResult = await createInvoicesFromWizard(wizardId);
-                    resId = getInvoiceIdAfterCreate(createResult) ?? firstInvoiceId(await getSaleOrderInvoiceIds(saleOrderId));
-                    if (resId == null) {
-                      logWarn('queue payment', new Error('Step 2 failed: no res_id in create_invoices result'));
-                    } else {
-                      log('queue', `payment SO ${saleOrderId}: Step 3 — action_post [[${resId}]]`);
+                }
+
+                // Older held rows are noise once the latest snapshot applies; only clear them if flush succeeded
+                // so a failed delivery retry is not left with every duplicate marked "synced" and no real upload.
+                if (flushOk && superseded.length > 0) {
+                  for (const older of superseded) {
+                    try {
+                      await syncQueueDb.markSynced(Number(older.id));
+                      log('queue', `delivery superseded row synced id=${older.id} SO ${soId}`);
+                    } catch (skipErr) {
+                      logWarn('queue delivery (mark superseded)', skipErr);
+                    }
+                  }
+                }
+              }
+
+              /**
+               * Hard guard: never create/post invoice while this SO still has any pending delivery sync row.
+               * This keeps "ordered/delivered/invoiced" aligned and avoids intermittent partial invoicing.
+               */
+              const pendingAfterFlush = await syncQueueDb.getPending();
+              const remainingDeliveryForSo = (pendingAfterFlush || []).filter(
+                (q) =>
+                  (q.action_type === syncQueueDb.ACTION_DELIVERY ||
+                    q.action_type === syncQueueDb.ACTION_INVENTORY_UPDATE) &&
+                  Number((q.payload || {}).saleOrderId ?? (q.payload || {}).sale_id) === soId
+              );
+              if (remainingDeliveryForSo.length > 0) {
+                const latestDelivery = [...remainingDeliveryForSo].sort(
+                  (a, b) => Number(b.id) - Number(a.id)
+                )[0];
+                let recoveredDelivery = false;
+                if (latestDelivery?.action_type === syncQueueDb.ACTION_DELIVERY) {
+                  try {
+                    const repairUpdates = await collectAuthoritativeDeliveredUpdates(
+                      soId,
+                      latestDelivery.payload || {}
+                    );
+                    if (repairUpdates.length > 0) {
+                      const repair = await repairOdooDeliveredQuantitiesFromMobile(soId, repairUpdates, {
+                        pickingIds: (latestDelivery.payload?.pickings || [])
+                          .map((b) => Number(b?.pickingId ?? b?.picking_id))
+                          .filter((id) => Number.isFinite(id) && id > 0),
+                        deliveryLines: (latestDelivery.payload?.pickings || []).flatMap(
+                          (b) => b?.deliveryLines || []
+                        ),
+                      });
+                      if (repair.ok) {
+                        await processOneDeliveryQueueItem(latestDelivery, { queuePass: pass });
+                        recoveredDelivery = true;
+                        log('queue', `payment SO ${soId}: retried delivery after qty repair`);
+                      }
+                    }
+                  } catch (retryErr) {
+                    logWarn('queue delivery (repair while payment waiting)', retryErr);
+                  }
+                }
+                const pendingAfterRepair = await syncQueueDb.getPending();
+                const stillDelivery = (pendingAfterRepair || []).filter(
+                  (q) =>
+                    (q.action_type === syncQueueDb.ACTION_DELIVERY ||
+                      q.action_type === syncQueueDb.ACTION_INVENTORY_UPDATE) &&
+                    Number((q.payload || {}).saleOrderId ?? (q.payload || {}).sale_id) === soId
+                );
+                if (!recoveredDelivery || stillDelivery.length > 0) {
+                  log(
+                    'queue',
+                    `payment id=${item.id} SO ${soId} delayed: waiting for delivery sync (${stillDelivery.length} pending)`
+                  );
+                  continue;
+                }
+              }
+
+              const payments = p.payments || [];
+              const orderName = p.orderName ?? `Order ${saleOrderId}`;
+              const skipPaymentCreation = alreadySyncedSaleOrderIds.has(soId);
+
+              const prePayQtyRepair = await ensureBackendDeliveredMatchesMobileBeforePaymentComplete(soId, p);
+              if (!prePayQtyRepair.ok) {
+                log(
+                  'queue',
+                  `payment id=${item.id} SO ${soId} delayed: delivered qty still mismatched (${String(prePayQtyRepair.reason || '').slice(0, 100)})`
+                );
+                continue;
+              }
+
+              if (!skipPaymentCreation) {
+                try {
+                  const orderInfo = await getSaleOrderForPayment(saleOrderId);
+                  if (!orderInfo) {
+                    logWarn('queue payment', new Error('Sale order not found — will retry on next sync'));
+                    continue;
+                  }
+                  const paymentSumRound2 = payments
+                    .filter((pm) => pm.type === 'cash' || pm.type === 'check')
+                    .reduce((s, pm) => s + Math.round(Number(pm.amount || 0) * 100) / 100, 0);
+                  const payloadTotalRound2 =
+                    p.total != null && Number.isFinite(Number(p.total))
+                      ? Math.round(Number(p.total) * 100) / 100
+                      : null;
+                  const expectedPaymentTotal =
+                    paymentSumRound2 > 0 ? paymentSumRound2 : payloadTotalRound2;
+
+                  const initialTarget = await resolveInitialInvoiceIdForPaymentSync(soId, {
+                    expectedPaymentTotal,
+                    orderInfo,
+                  });
+                  let resId = initialTarget.resId;
+                  let invoiceAlreadyPosted = initialTarget.invoiceAlreadyPosted;
+                  if (resId != null) {
+                    const invState = await getInvoiceState(resId).catch(() => ({}));
+                    if (invState?.state === 'posted') {
+                      invoiceAlreadyPosted = true;
+                      postedInvoiceId = Number(resId);
+                    } else if (invState?.state === 'draft') {
+                      log('queue', `payment SO ${saleOrderId}: post existing draft invoice res_id=${resId}`);
                       await postInvoice(resId);
-                      log('queue', `payment SO ${saleOrderId}: invoice created and posted res_id=${resId}`);
+                      invoiceAlreadyPosted = true;
                       postedInvoiceId = Number(resId);
                     }
                   }
-                }
-                const onlyCredit = payments.length > 0 && payments.every((pm) => pm.type === 'credit');
-                if (onlyCredit && resId != null) {
-                  log('queue', `payment SO ${saleOrderId}: credit only — invoice posted res_id=${resId}, no payment register`);
-                  await updatePaymentQueuePipeline(item.id, p, { invoicePosted: true, paymentsRegistered: true });
+
+                  if (!invoiceAlreadyPosted) {
+                    if (resId != null) {
+                      const invStateAgain = await getInvoiceState(resId).catch(() => ({}));
+                      if ((invStateAgain?.state || '').toLowerCase() === 'posted') {
+                        log('queue', `payment SO ${saleOrderId}: invoice ${resId} already posted — skip post`);
+                        invoiceAlreadyPosted = true;
+                        postedInvoiceId = Number(resId);
+                      } else if ((invStateAgain?.state || '').toLowerCase() === 'draft') {
+                        log('queue', `payment SO ${saleOrderId}: post existing draft invoice res_id=${resId}`);
+                        await postInvoice(resId);
+                        invoiceAlreadyPosted = true;
+                        postedInvoiceId = Number(resId);
+                      }
+                      if (!invoiceAlreadyPosted) {
+                        log('queue', `payment SO ${saleOrderId}: post existing invoice res_id=${resId}`);
+                        await postInvoice(resId);
+                        invoiceAlreadyPosted = true;
+                        postedInvoiceId = Number(resId);
+                      }
+                    } else {
+                      log('queue', `payment SO ${saleOrderId}: Step 1 — create advance payment wizard (context active_ids [${saleOrderId}])`);
+                      const wizardId = await createAdvancePaymentWizard(saleOrderId);
+                      if (wizardId == null) {
+                        logWarn('queue payment', new Error('Step 1 failed: advance payment wizard create returned null'));
+                      } else {
+                        log('queue', `payment SO ${saleOrderId}: Step 2 — create_invoices [[${wizardId}]]`);
+                        const createResult = await createInvoicesFromWizard(wizardId);
+                        resId = getInvoiceIdAfterCreate(createResult) ?? firstInvoiceId(await getSaleOrderInvoiceIds(saleOrderId));
+                        if (resId == null) {
+                          logWarn('queue payment', new Error('Step 2 failed: no res_id in create_invoices result'));
+                        } else {
+                          log('queue', `payment SO ${saleOrderId}: Step 3 — action_post [[${resId}]]`);
+                          await postInvoice(resId);
+                          log('queue', `payment SO ${saleOrderId}: invoice created and posted res_id=${resId}`);
+                          postedInvoiceId = Number(resId);
+                        }
+                      }
+                    }
+                    const onlyCredit = payments.length > 0 && payments.every((pm) => pm.type === 'credit');
+                    if (onlyCredit && resId != null) {
+                      log('queue', `payment SO ${saleOrderId}: credit only — invoice posted res_id=${resId}, no payment register`);
+                      await updatePaymentQueuePipeline(item.id, p, { invoicePosted: true, paymentsRegistered: true });
+                    }
+                  }
+                  const onlyCredit = payments.length > 0 && payments.every((pm) => pm.type === 'credit');
+                  if (onlyCredit && resId != null) {
+                    log('queue', `payment SO ${saleOrderId}: credit only (invoice already posted) — no payment register`);
+                    if (await markPaymentQueueItemSyncedWhenBackendComplete(item, soId, p)) {
+                      alreadySyncedSaleOrderIds.add(soId);
+                    }
+                  }
+
+                  const hasCashOrCheque = payments.some((pm) => pm.type === 'cash' || pm.type === 'check');
+                  if (hasCashOrCheque) {
+                    const round2 = (n) => Math.round(Number(n) * 100) / 100;
+                    let openInvoices = await loadPostedUnpaidInvoicesForSaleOrder(soId);
+                    if (!openInvoices.length && resId != null) {
+                      const bootstrap = await getInvoiceState(resId).catch(() => ({}));
+                      if ((bootstrap?.state || '').toLowerCase() === 'posted') {
+                        const ps = (bootstrap?.payment_state || '').toLowerCase();
+                        if (ps === 'not_paid' || ps === 'partial' || ps === 'in_payment') {
+                          const ar = round2(Number(bootstrap.amount_residual) || 0);
+                          if (ar > 0.02) {
+                            openInvoices = [
+                              {
+                                id: resId,
+                                amount_residual: ar,
+                                payment_state: bootstrap.payment_state,
+                              },
+                            ];
+                          }
+                        }
+                      }
+                    }
+
+                    if (!openInvoices.length) {
+                      if (resId == null) {
+                        invoiceBlockFailedNoItemsToInvoice = true;
+                        logWarn(
+                          'queue payment',
+                          new Error(
+                            'No invoice for cash/cheque — skipping payment register until invoice exists (complete delivery sync first).'
+                          )
+                        );
+                      } else {
+                        const paidCheck = await getInvoiceState(resId).catch(() => ({}));
+                        if ((paidCheck?.payment_state || '').toLowerCase() === 'paid') {
+                          log(
+                            'queue',
+                            `payment SO ${saleOrderId}: no open balance — invoice ${resId} paid (skip register)`
+                          );
+                          await updatePaymentQueuePipeline(item.id, p, { invoicePosted: true, paymentsRegistered: true });
+                        } else {
+                          invoiceBlockFailedNoItemsToInvoice = true;
+                          logWarn(
+                            'queue payment',
+                            new Error(
+                              `No posted unpaid invoice for SO ${saleOrderId} — cannot register cash/cheque (invoice ${resId} state unexpected).`
+                            )
+                          );
+                        }
+                      }
+                    } else {
+                      let resolvedCashId = null;
+                      let resolvedChequeId = null;
+                      try {
+                        const user = await getUserSession();
+                        const licensePlate = user?.licensePlate || user?.license_plate || '';
+                        const vehicleId = user?.vehicleId != null ? user.vehicleId : null;
+                        const { getVehicleJournalsByLicensePlate } = await import('./vehicle.service.js');
+                        const vehicleJournals = await getVehicleJournalsByLicensePlate(licensePlate, vehicleId);
+                        resolvedCashId = vehicleJournals.cashJournalId ?? null;
+                        resolvedChequeId = vehicleJournals.chequeJournalId ?? null;
+                        if (resolvedCashId == null && resolvedChequeId == null) {
+                          const { getCashTypeJournalIds } = await import('./journal.service.js');
+                          const ids = await getCashTypeJournalIds();
+                          resolvedCashId = ids.cashJournalId ?? null;
+                          resolvedChequeId = ids.chequeJournalId ?? null;
+                          log('queue', `payment SO ${saleOrderId}: journals fallback (no vehicle) cash=${resolvedCashId ?? '—'} cheque=${resolvedChequeId ?? '—'}`);
+                        } else {
+                          log('queue', `payment SO ${saleOrderId}: journals from logged-in vehicle (${licensePlate || vehicleId || '—'}) cash=${resolvedCashId ?? '—'} cheque=${resolvedChequeId ?? '—'}`);
+                        }
+                      } catch (resolveErr) {
+                        logWarn('queue payment resolve journals', resolveErr);
+                      }
+
+                      const dateStr = p.paymentDate || new Date().toISOString().slice(0, 10);
+                      for (const pm of payments) {
+                        if (pm.type === 'credit') continue;
+                        const amount = Number(pm.amount);
+                        const journalId = (pm.journalId != null && Number.isFinite(Number(pm.journalId)))
+                          ? Number(pm.journalId)
+                          : (pm.type === 'cash' ? resolvedCashId : pm.type === 'check' ? resolvedChequeId : null);
+                        const desiredAmount = round2(amount);
+                        if (!desiredAmount || journalId == null) {
+                          logWarn('queue payment', new Error(`${pm.type === 'cash' ? 'Cash' : 'Cheque'} journal id not found. Skipping amount ${amount}`));
+                          continue;
+                        }
+
+                        openInvoices = await loadPostedUnpaidInvoicesForSaleOrder(soId);
+                        const targetResId = pickInvoiceIdForPaymentAmount(openInvoices, desiredAmount);
+                        if (targetResId == null) {
+                          logWarn(
+                            'queue payment',
+                            new Error(
+                              `No invoice with open balance for ${pm.type} amount=${desiredAmount} (SO ${saleOrderId}).`
+                            )
+                          );
+                          continue;
+                        }
+
+                        const existingPayments = await getPaymentsByInvoiceIds([targetResId]).catch(() => []);
+                        const existingPaymentKeys = (existingPayments || []).map((ep) => ({
+                          journalId: Array.isArray(ep.journal_id) ? ep.journal_id[0] : ep.journal_id,
+                          amount: round2(ep.amount),
+                        }));
+
+                        const alreadyHasPayment = existingPaymentKeys.some(
+                          (ep) => ep.journalId != null && ep.journalId === journalId && Math.abs(ep.amount - desiredAmount) <= 0.01
+                        );
+
+                        if (alreadyHasPayment) {
+                          log('queue', `payment SO ${saleOrderId}: ${pm.type === 'check' ? 'cheque' : 'cash'} already reconciled — skip register amount=${desiredAmount} journal_id=${journalId} invoice=${targetResId}`);
+                          continue;
+                        }
+                        try {
+                          log('queue', `payment SO ${saleOrderId}: Step 5 — payment register create amount=${desiredAmount} journal_id=${journalId} active_ids=[${targetResId}]`);
+                          const registerWizardId = await createPaymentRegisterWizard(targetResId, {
+                            amount: desiredAmount,
+                            journalId,
+                            paymentDate: dateStr,
+                          });
+                          if (registerWizardId != null) {
+                            log('queue', `payment SO ${saleOrderId}: Step 6 — action_create_payments [[${registerWizardId}]]`);
+                            await executePaymentRegister(registerWizardId);
+                            const methodLabel = pm.type === 'check' ? 'cheque' : 'cash';
+                            log('queue', `payment SO ${saleOrderId}: ${methodLabel} payment executed wizard=${registerWizardId} invoice res_id=${targetResId}`);
+                          }
+                        } catch (registerErr) {
+                          const msg = (registerErr?.message || String(registerErr)).toLowerCase();
+                          const skipAsAlreadyPaid =
+                            msg.includes('already') ||
+                            msg.includes('reconciled') ||
+                            msg.includes('nothing left to pay') ||
+                            msg.includes('no payment registration') ||
+                            msg.includes('nothing to pay') ||
+                            msg.includes('finances under control');
+                          if (skipAsAlreadyPaid) {
+                            log('queue', `payment register skipped (invoice already paid or nothing to pay) invoice ${targetResId}`);
+                          } else {
+                            throw registerErr;
+                          }
+                        }
+                      }
+                      const regCheck = await verifyCashChequePaymentsRegisteredOnOdoo(soId, payments);
+                      if (!regCheck.ok) {
+                        invoiceBlockFailedNoItemsToInvoice = true;
+                        log('queue', `payment SO ${soId} kept pending after register attempt — ${regCheck.reason}`);
+                      } else {
+                        await updatePaymentQueuePipeline(item.id, p, {
+                          invoicePosted: true,
+                          paymentsRegistered: true,
+                        });
+                        log('queue', `payment item ${item.id} invoice/payments confirmed on Odoo (chatter next)`);
+                      }
+                    }
+                  }
+                } catch (invoiceErr) {
+                  const msg = (invoiceErr?.message || String(invoiceErr)).toLowerCase();
+                  if (msg.includes('no items are available to invoice') || msg.includes('nothing to invoice')) {
+                    invoiceBlockFailedNoItemsToInvoice = true;
+                    logWarn('queue payment (invoice/payments)', new Error('Invoice creation failed: delivery not done or no quantities. Complete delivery in Odoo first, then sync again for cheque/credit.'));
+                  } else if (msg.includes('must be in draft')) {
+                    log('queue', `payment SO ${saleOrderId}: invoice already posted (must be in draft) — retry verify on next pass`);
+                  } else {
+                    invoiceBlockFailedNoItemsToInvoice = true;
+                    logWarn('queue payment (invoice/payments)', invoiceErr);
+                  }
                 }
               }
-              const onlyCredit = payments.length > 0 && payments.every((pm) => pm.type === 'credit');
-              if (onlyCredit && resId != null) {
-                log('queue', `payment SO ${saleOrderId}: credit only (invoice already posted) — no payment register`);
+
+              const {
+                buildPaymentProofMessageBody,
+                buildSinglePaymentMessageBody,
+                createProofAttachment,
+                postPaymentProofToChatterWithAttachmentIds,
+                imageFileToBase64String,
+              } = await import('./proofAttachment.service.js');
+              const hasCheck = payments.some((pm) => pm.type === 'check');
+              const hasCash = payments.some((pm) => pm.type === 'cash');
+              const hasCredit = payments.some((pm) => pm.type === 'credit');
+              const paymentMethod = hasCheck ? 'cheque' : hasCash ? 'cash' : hasCredit ? 'credit' : undefined;
+              const chequeBankName = p.chequeBankName || (hasCheck && (p.selectedBankName || '—'));
+              const chequeNumber = p.checkNumber || (payments.find((pm) => pm.type === 'check')?.checkNumber);
+              const paymentsForMessage = payments.map((pm) => ({
+                type: pm.type,
+                amount: Number(pm.amount) || 0,
+                checkNumber: pm.type === 'check' ? (pm.checkNumber || chequeNumber) : undefined,
+                bankName: pm.type === 'check' ? chequeBankName : undefined,
+              }));
+              const isPartialPayment = paymentsForMessage.length > 1;
+              /** Separate sale.order chatter (not appended to payment proof). */
+              const buildGasDeliveredCountMessageBody = async () => {
+                const raw = Array.isArray(p?.invoiceLineQtys) ? p.invoiceLineQtys : [];
+                const entries = raw
+                  .map((x) => ({
+                    lineId: Number(x?.lineId),
+                    qty: Number(x?.qty),
+                  }))
+                  .filter((x) => Number.isFinite(x.lineId) && x.lineId > 0 && Number.isFinite(x.qty) && x.qty > 0);
+                if (!entries.length) return null;
+
+                const orderLines = await saleOrderLinesDb.getSaleOrderLinesByOrderIds([soId]).catch(() => []);
+                const lineById = new Map(
+                  (orderLines || [])
+                    .filter((l) => l?.id != null)
+                    .map((l) => [Number(l.id), l])
+                );
+
+                const qtyByProductLabel = new Map();
+                const formatQty = (q) => {
+                  const n = Number(q) || 0;
+                  const s = n.toFixed(3).replace(/\.?0+$/, '');
+                  return s === '' ? '0' : s;
+                };
+
+                for (const it of entries) {
+                  const line = lineById.get(it.lineId);
+                  const productName =
+                    (line?.product_name && String(line.product_name).trim()) ||
+                    (line?.name && String(line.name).trim()) ||
+                    `Line ${it.lineId}`;
+                  const prev = Number(qtyByProductLabel.get(productName)) || 0;
+                  qtyByProductLabel.set(productName, prev + Number(it.qty));
+                }
+                if (qtyByProductLabel.size === 0) return null;
+
+                const sep = '────────────────────────────────────────';
+                const lines = [];
+                lines.push('Gas Delivered Count');
+                lines.push(sep);
+                for (const [label, qty] of qtyByProductLabel.entries()) {
+                  lines.push(`${label}: ${formatQty(qty)}`);
+                }
+                return lines.join('\n');
+              };
+              const gasDeliveredCountBody = await buildGasDeliveredCountMessageBody().catch(() => null);
+              const invoicePendingNote = invoiceBlockFailedNoItemsToInvoice
+                ? '\n\n— Invoice / delivery not fully synced in Odoo yet; confirm quantities in the office if needed. Payment proof is attached above. —'
+                : '';
+
+              if (chatterPostedInThisRun.has(soId)) {
+                if (invoiceBlockFailedNoItemsToInvoice) {
+                  log('queue', `payment SO ${soId}: chatter done but invoice incomplete — keep pending`);
+                  continue;
+                }
                 if (await markPaymentQueueItemSyncedWhenBackendComplete(item, soId, p)) {
                   alreadySyncedSaleOrderIds.add(soId);
+                  log('queue', `payment synced id=${item.id} (chatter already posted for SO ${soId})`);
                 }
+                continue;
               }
 
-              const hasCashOrCheque = payments.some((pm) => pm.type === 'cash' || pm.type === 'check');
-              if (hasCashOrCheque) {
-                const round2 = (n) => Math.round(Number(n) * 100) / 100;
-                let openInvoices = await loadPostedUnpaidInvoicesForSaleOrder(soId);
-                if (!openInvoices.length && resId != null) {
-                  const bootstrap = await getInvoiceState(resId).catch(() => ({}));
-                  if ((bootstrap?.state || '').toLowerCase() === 'posted') {
-                    const ps = (bootstrap?.payment_state || '').toLowerCase();
-                    if (ps === 'not_paid' || ps === 'partial' || ps === 'in_payment') {
-                      const ar = round2(Number(bootstrap.amount_residual) || 0);
-                      if (ar > 0.02) {
-                        openInvoices = [
-                          {
-                            id: resId,
-                            amount_residual: ar,
-                            payment_state: bootstrap.payment_state,
-                          },
-                        ];
-                      }
-                    }
-                  }
-                }
+              const pipelineReadyForChatter =
+                !invoiceBlockFailedNoItemsToInvoice && (await paymentPipelineReadyForChatter(soId, p));
 
-                if (!openInvoices.length) {
-                  if (resId == null) {
-                    invoiceBlockFailedNoItemsToInvoice = true;
-                    logWarn(
-                      'queue payment',
-                      new Error(
-                        'No invoice for cash/cheque — skipping payment register until invoice exists (complete delivery sync first).'
-                      )
-                    );
-                  } else {
-                    const paidCheck = await getInvoiceState(resId).catch(() => ({}));
-                    if ((paidCheck?.payment_state || '').toLowerCase() === 'paid') {
-                      log(
-                        'queue',
-                        `payment SO ${saleOrderId}: no open balance — invoice ${resId} paid (skip register)`
-                      );
-                      await updatePaymentQueuePipeline(item.id, p, { invoicePosted: true, paymentsRegistered: true });
-                    } else {
-                      invoiceBlockFailedNoItemsToInvoice = true;
-                      logWarn(
-                        'queue payment',
-                        new Error(
-                          `No posted unpaid invoice for SO ${saleOrderId} — cannot register cash/cheque (invoice ${resId} state unexpected).`
-                        )
-                      );
-                    }
-                  }
-                } else {
-                  let resolvedCashId = null;
-                  let resolvedChequeId = null;
+              if (!p._paymentProofChatterPosted && !pipelineReadyForChatter) {
+                log('queue', `payment SO ${soId}: skip chatter until delivery/invoice/payment fully confirmed on Odoo`);
+              } else if (!p._paymentProofChatterPosted) {
+                const offlineAttachmentsDb = await import('../database/offlineAttachments.js');
+                const pendingAttachments = await offlineAttachmentsDb.getPendingBySaleOrderId(soId);
+                const FileSystem = await import('expo-file-system');
+
+                if (!(Number.isFinite(Number(postedInvoiceId)) && Number(postedInvoiceId) > 0)) {
                   try {
-                    const user = await getUserSession();
-                    const licensePlate = user?.licensePlate || user?.license_plate || '';
-                    const vehicleId = user?.vehicleId != null ? user.vehicleId : null;
-                    const { getVehicleJournalsByLicensePlate } = await import('./vehicle.service.js');
-                    const vehicleJournals = await getVehicleJournalsByLicensePlate(licensePlate, vehicleId);
-                    resolvedCashId = vehicleJournals.cashJournalId ?? null;
-                    resolvedChequeId = vehicleJournals.chequeJournalId ?? null;
-                    if (resolvedCashId == null && resolvedChequeId == null) {
-                      const { getCashTypeJournalIds } = await import('./journal.service.js');
-                      const ids = await getCashTypeJournalIds();
-                      resolvedCashId = ids.cashJournalId ?? null;
-                      resolvedChequeId = ids.chequeJournalId ?? null;
-                      log('queue', `payment SO ${saleOrderId}: journals fallback (no vehicle) cash=${resolvedCashId ?? '—'} cheque=${resolvedChequeId ?? '—'}`);
-                    } else {
-                      log('queue', `payment SO ${saleOrderId}: journals from logged-in vehicle (${licensePlate || vehicleId || '—'}) cash=${resolvedCashId ?? '—'} cheque=${resolvedChequeId ?? '—'}`);
+                    const maybeIds = normalizeSaleOrderInvoiceIds(await getSaleOrderInvoiceIds(soId));
+                    if (maybeIds.length > 0) {
+                      postedInvoiceId = Number(maybeIds[0]);
                     }
-                  } catch (resolveErr) {
-                    logWarn('queue payment resolve journals', resolveErr);
+                  } catch (_) {
+                    postedInvoiceId = null;
                   }
+                }
 
-                  const dateStr = p.paymentDate || new Date().toISOString().slice(0, 10);
-                  for (const pm of payments) {
-                    if (pm.type === 'credit') continue;
-                    const amount = Number(pm.amount);
-                    const journalId = (pm.journalId != null && Number.isFinite(Number(pm.journalId)))
-                      ? Number(pm.journalId)
-                      : (pm.type === 'cash' ? resolvedCashId : pm.type === 'check' ? resolvedChequeId : null);
-                    const desiredAmount = round2(amount);
-                    if (!desiredAmount || journalId == null) {
-                      logWarn('queue payment', new Error(`${pm.type === 'cash' ? 'Cash' : 'Cheque'} journal id not found. Skipping amount ${amount}`));
+                const attachmentIds = [];
+                const syncedAttachmentIds = [];
+                const pendingCount = (pendingAttachments || []).length;
+
+                // Doc: read pending URIs from offline_attachments → base64 → ir.attachment.create → collect ids → message_post(attachment_ids).
+                log('queue', `payment proof (SO ${soId}): ${pendingCount} pending in offline_attachments — URI→base64→create→message_post`);
+
+                for (const att of pendingAttachments || []) {
+                  if (!att.local_file_path || !att.file_name) continue;
+                  try {
+                    const file = new FileSystem.File(att.local_file_path);
+                    if (!file.exists) {
+                      await offlineAttachmentsDb.markFailed(Number(att.id), `File missing: ${att.local_file_path}`);
+                      logWarn('queue payment proof', new Error('File missing'));
                       continue;
                     }
-
-                    openInvoices = await loadPostedUnpaidInvoicesForSaleOrder(soId);
-                    const targetResId = pickInvoiceIdForPaymentAmount(openInvoices, desiredAmount);
-                    if (targetResId == null) {
-                      logWarn(
-                        'queue payment',
-                        new Error(
-                          `No invoice with open balance for ${pm.type} amount=${desiredAmount} (SO ${saleOrderId}).`
-                        )
-                      );
+                    const normalized = await imageFileToBase64String(FileSystem, att.local_file_path);
+                    if (!normalized) {
+                      await offlineAttachmentsDb.markFailed(Number(att.id), 'Invalid or too short base64');
+                      logWarn('queue payment proof', new Error('Invalid base64'));
                       continue;
                     }
-
-                    const existingPayments = await getPaymentsByInvoiceIds([targetResId]).catch(() => []);
-                    const existingPaymentKeys = (existingPayments || []).map((ep) => ({
-                      journalId: Array.isArray(ep.journal_id) ? ep.journal_id[0] : ep.journal_id,
-                      amount: round2(ep.amount),
-                    }));
-
-                    const alreadyHasPayment = existingPaymentKeys.some(
-                      (ep) => ep.journalId != null && ep.journalId === journalId && Math.abs(ep.amount - desiredAmount) <= 0.01
-                    );
-
-                    if (alreadyHasPayment) {
-                      log('queue', `payment SO ${saleOrderId}: ${pm.type === 'check' ? 'cheque' : 'cash'} already reconciled — skip register amount=${desiredAmount} journal_id=${journalId} invoice=${targetResId}`);
-                      continue;
-                    }
-                    try {
-                      log('queue', `payment SO ${saleOrderId}: Step 5 — payment register create amount=${desiredAmount} journal_id=${journalId} active_ids=[${targetResId}]`);
-                      const registerWizardId = await createPaymentRegisterWizard(targetResId, {
-                        amount: desiredAmount,
-                        journalId,
-                        paymentDate: dateStr,
-                      });
-                      if (registerWizardId != null) {
-                        log('queue', `payment SO ${saleOrderId}: Step 6 — action_create_payments [[${registerWizardId}]]`);
-                        await executePaymentRegister(registerWizardId);
-                        const methodLabel = pm.type === 'check' ? 'cheque' : 'cash';
-                        log('queue', `payment SO ${saleOrderId}: ${methodLabel} payment executed wizard=${registerWizardId} invoice res_id=${targetResId}`);
-                      }
-                    } catch (registerErr) {
-                      const msg = (registerErr?.message || String(registerErr)).toLowerCase();
-                      const skipAsAlreadyPaid =
-                        msg.includes('already') ||
-                        msg.includes('reconciled') ||
-                        msg.includes('nothing left to pay') ||
-                        msg.includes('no payment registration') ||
-                        msg.includes('nothing to pay') ||
-                        msg.includes('finances under control');
-                      if (skipAsAlreadyPaid) {
-                        log('queue', `payment register skipped (invoice already paid or nothing to pay) invoice ${targetResId}`);
-                      } else {
-                        throw registerErr;
-                      }
-                    }
+                    const aid = await createProofAttachment(soId, normalized, att.file_name);
+                    attachmentIds.push(aid);
+                    syncedAttachmentIds.push(att.id);
+                    log('queue', `ir.attachment.create SO ${soId} → attachment_id=${aid}`);
+                  } catch (attErr) {
+                    await offlineAttachmentsDb.incrementRetry(att.id, attErr?.message || 'Upload error');
+                    logWarn('queue payment proof attachment', attErr);
                   }
-                  const regCheck = await verifyCashChequePaymentsRegisteredOnOdoo(soId, payments);
-                  if (!regCheck.ok) {
-                    invoiceBlockFailedNoItemsToInvoice = true;
-                    log('queue', `payment SO ${soId} kept pending after register attempt — ${regCheck.reason}`);
+                }
+
+                if (pendingCount > 0 && attachmentIds.length === 0) {
+                  logWarn(
+                    'queue payment proof',
+                    new Error(
+                      'Pending proof photos could not be uploaded (missing file or API error). Posting chatter without attachments so invoice/payment still completes; attachments stay pending for retry.'
+                    )
+                  );
+                  // Do not continue: previously this left the queue item unsynced forever even when Odoo already had the payment.
+                }
+
+                // Auto-attach printed invoice PDF from Odoo report when order is completed and payment sync runs.
+                if (Number.isFinite(Number(postedInvoiceId)) && Number(postedInvoiceId) > 0) {
+                  const invoicePdfAttachmentId = await tryAttachPrintedInvoicePdfToSaleOrder(
+                    soId,
+                    Number(postedInvoiceId),
+                    orderName
+                  );
+                  if (invoicePdfAttachmentId != null) {
+                    attachmentIds.push(Number(invoicePdfAttachmentId));
+                    log('queue', `invoice PDF attached for SO ${soId} from invoice ${postedInvoiceId}`);
+                  }
+                }
+
+                const hasProof = attachmentIds.length > 0;
+
+                // API 2: Post message(s) to sale order chatter. Partial payment = one message per payment type.
+                try {
+                  if (isPartialPayment && paymentsForMessage.length > 0) {
+                    log('queue', `message_post API (sale.order) SO ${soId} — ${paymentsForMessage.length} separate messages (Cash/Cheque/Credit)`);
+                    for (let i = 0; i < paymentsForMessage.length; i++) {
+                      const pm = paymentsForMessage[i];
+                      const attachToThisMessage = i === 0 ? attachmentIds : [];
+                      const body =
+                        buildSinglePaymentMessageBody(pm, { hasProof: attachToThisMessage.length > 0 }) +
+                        (i === 0 ? invoicePendingNote : '');
+                      await postPaymentProofToChatterWithAttachmentIds(soId, { body, attachmentIds: attachToThisMessage });
+                      if (attachToThisMessage.length > 0) {
+                        const pendingById = new Map((pendingAttachments || []).map((a) => [Number(a.id), a]));
+                        for (const id of syncedAttachmentIds) {
+                          const idNum = Number(id);
+                          await offlineAttachmentsDb.markSynced(idNum);
+                          const att = pendingById.get(idNum);
+                          if (att?.local_file_path) {
+                            try {
+                              const fileToDelete = new FileSystem.File(att.local_file_path);
+                              if (fileToDelete.exists) fileToDelete.delete();
+                            } catch (_) { }
+                          }
+                        }
+                      }
+                    }
                   } else {
-                    await updatePaymentQueuePipeline(item.id, p, {
-                      invoicePosted: true,
-                      paymentsRegistered: true,
-                    });
-                    log('queue', `payment item ${item.id} invoice/payments confirmed on Odoo (chatter next)`);
-                  }
-                }
-              }
-            } catch (invoiceErr) {
-              const msg = (invoiceErr?.message || String(invoiceErr)).toLowerCase();
-              if (msg.includes('no items are available to invoice') || msg.includes('nothing to invoice')) {
-                invoiceBlockFailedNoItemsToInvoice = true;
-                logWarn('queue payment (invoice/payments)', new Error('Invoice creation failed: delivery not done or no quantities. Complete delivery in Odoo first, then sync again for cheque/credit.'));
-              } else if (msg.includes('must be in draft')) {
-                log('queue', `payment SO ${saleOrderId}: invoice already posted (must be in draft) — retry verify on next pass`);
-              } else {
-                invoiceBlockFailedNoItemsToInvoice = true;
-                logWarn('queue payment (invoice/payments)', invoiceErr);
-              }
-            }
-          }
-
-          const {
-            buildPaymentProofMessageBody,
-            buildSinglePaymentMessageBody,
-            createProofAttachment,
-            postPaymentProofToChatterWithAttachmentIds,
-            imageFileToBase64String,
-          } = await import('./proofAttachment.service.js');
-          const hasCheck = payments.some((pm) => pm.type === 'check');
-          const hasCash = payments.some((pm) => pm.type === 'cash');
-          const hasCredit = payments.some((pm) => pm.type === 'credit');
-          const paymentMethod = hasCheck ? 'cheque' : hasCash ? 'cash' : hasCredit ? 'credit' : undefined;
-          const chequeBankName = p.chequeBankName || (hasCheck && (p.selectedBankName || '—'));
-          const chequeNumber = p.checkNumber || (payments.find((pm) => pm.type === 'check')?.checkNumber);
-          const paymentsForMessage = payments.map((pm) => ({
-            type: pm.type,
-            amount: Number(pm.amount) || 0,
-            checkNumber: pm.type === 'check' ? (pm.checkNumber || chequeNumber) : undefined,
-            bankName: pm.type === 'check' ? chequeBankName : undefined,
-          }));
-          const isPartialPayment = paymentsForMessage.length > 1;
-          /** Separate sale.order chatter (not appended to payment proof). */
-          const buildGasDeliveredCountMessageBody = async () => {
-            const raw = Array.isArray(p?.invoiceLineQtys) ? p.invoiceLineQtys : [];
-            const entries = raw
-              .map((x) => ({
-                lineId: Number(x?.lineId),
-                qty: Number(x?.qty),
-              }))
-              .filter((x) => Number.isFinite(x.lineId) && x.lineId > 0 && Number.isFinite(x.qty) && x.qty > 0);
-            if (!entries.length) return null;
-
-            const orderLines = await saleOrderLinesDb.getSaleOrderLinesByOrderIds([soId]).catch(() => []);
-            const lineById = new Map(
-              (orderLines || [])
-                .filter((l) => l?.id != null)
-                .map((l) => [Number(l.id), l])
-            );
-
-            const qtyByProductLabel = new Map();
-            const formatQty = (q) => {
-              const n = Number(q) || 0;
-              const s = n.toFixed(3).replace(/\.?0+$/, '');
-              return s === '' ? '0' : s;
-            };
-
-            for (const it of entries) {
-              const line = lineById.get(it.lineId);
-              const productName =
-                (line?.product_name && String(line.product_name).trim()) ||
-                (line?.name && String(line.name).trim()) ||
-                `Line ${it.lineId}`;
-              const prev = Number(qtyByProductLabel.get(productName)) || 0;
-              qtyByProductLabel.set(productName, prev + Number(it.qty));
-            }
-            if (qtyByProductLabel.size === 0) return null;
-
-            const sep = '────────────────────────────────────────';
-            const lines = [];
-            lines.push('Gas Delivered Count');
-            lines.push(sep);
-            for (const [label, qty] of qtyByProductLabel.entries()) {
-              lines.push(`${label}: ${formatQty(qty)}`);
-            }
-            return lines.join('\n');
-          };
-          const gasDeliveredCountBody = await buildGasDeliveredCountMessageBody().catch(() => null);
-          const invoicePendingNote = invoiceBlockFailedNoItemsToInvoice
-            ? '\n\n— Invoice / delivery not fully synced in Odoo yet; confirm quantities in the office if needed. Payment proof is attached above. —'
-            : '';
-
-          if (chatterPostedInThisRun.has(soId)) {
-            if (invoiceBlockFailedNoItemsToInvoice) {
-              log('queue', `payment SO ${soId}: chatter done but invoice incomplete — keep pending`);
-              continue;
-            }
-            if (await markPaymentQueueItemSyncedWhenBackendComplete(item, soId, p)) {
-              alreadySyncedSaleOrderIds.add(soId);
-              log('queue', `payment synced id=${item.id} (chatter already posted for SO ${soId})`);
-            }
-            continue;
-          }
-
-          const pipelineReadyForChatter =
-            !invoiceBlockFailedNoItemsToInvoice && (await paymentPipelineReadyForChatter(soId, p));
-
-          if (!p._paymentProofChatterPosted && !pipelineReadyForChatter) {
-            log('queue', `payment SO ${soId}: skip chatter until delivery/invoice/payment fully confirmed on Odoo`);
-          } else if (!p._paymentProofChatterPosted) {
-            const offlineAttachmentsDb = await import('../database/offlineAttachments.js');
-            const pendingAttachments = await offlineAttachmentsDb.getPendingBySaleOrderId(soId);
-            const FileSystem = await import('expo-file-system');
-
-            if (!(Number.isFinite(Number(postedInvoiceId)) && Number(postedInvoiceId) > 0)) {
-              try {
-                const maybeIds = normalizeSaleOrderInvoiceIds(await getSaleOrderInvoiceIds(soId));
-                if (maybeIds.length > 0) {
-                  postedInvoiceId = Number(maybeIds[0]);
-                }
-              } catch (_) {
-                postedInvoiceId = null;
-              }
-            }
-
-            const attachmentIds = [];
-            const syncedAttachmentIds = [];
-            const pendingCount = (pendingAttachments || []).length;
-
-            // Doc: read pending URIs from offline_attachments → base64 → ir.attachment.create → collect ids → message_post(attachment_ids).
-            log('queue', `payment proof (SO ${soId}): ${pendingCount} pending in offline_attachments — URI→base64→create→message_post`);
-
-            for (const att of pendingAttachments || []) {
-              if (!att.local_file_path || !att.file_name) continue;
-              try {
-                const file = new FileSystem.File(att.local_file_path);
-                if (!file.exists) {
-                  await offlineAttachmentsDb.markFailed(Number(att.id), `File missing: ${att.local_file_path}`);
-                  logWarn('queue payment proof', new Error('File missing'));
-                  continue;
-                }
-                const normalized = await imageFileToBase64String(FileSystem, att.local_file_path);
-                if (!normalized) {
-                  await offlineAttachmentsDb.markFailed(Number(att.id), 'Invalid or too short base64');
-                  logWarn('queue payment proof', new Error('Invalid base64'));
-                  continue;
-                }
-                const aid = await createProofAttachment(soId, normalized, att.file_name);
-                attachmentIds.push(aid);
-                syncedAttachmentIds.push(att.id);
-                log('queue', `ir.attachment.create SO ${soId} → attachment_id=${aid}`);
-              } catch (attErr) {
-                await offlineAttachmentsDb.incrementRetry(att.id, attErr?.message || 'Upload error');
-                logWarn('queue payment proof attachment', attErr);
-              }
-            }
-
-            if (pendingCount > 0 && attachmentIds.length === 0) {
-              logWarn(
-                'queue payment proof',
-                new Error(
-                  'Pending proof photos could not be uploaded (missing file or API error). Posting chatter without attachments so invoice/payment still completes; attachments stay pending for retry.'
-                )
-              );
-              // Do not continue: previously this left the queue item unsynced forever even when Odoo already had the payment.
-            }
-
-            // Auto-attach printed invoice PDF from Odoo report when order is completed and payment sync runs.
-            if (Number.isFinite(Number(postedInvoiceId)) && Number(postedInvoiceId) > 0) {
-              const invoicePdfAttachmentId = await tryAttachPrintedInvoicePdfToSaleOrder(
-                soId,
-                Number(postedInvoiceId),
-                orderName
-              );
-              if (invoicePdfAttachmentId != null) {
-                attachmentIds.push(Number(invoicePdfAttachmentId));
-                log('queue', `invoice PDF attached for SO ${soId} from invoice ${postedInvoiceId}`);
-              }
-            }
-
-            const hasProof = attachmentIds.length > 0;
-
-            // API 2: Post message(s) to sale order chatter. Partial payment = one message per payment type.
-            try {
-              if (isPartialPayment && paymentsForMessage.length > 0) {
-                log('queue', `message_post API (sale.order) SO ${soId} — ${paymentsForMessage.length} separate messages (Cash/Cheque/Credit)`);
-                for (let i = 0; i < paymentsForMessage.length; i++) {
-                  const pm = paymentsForMessage[i];
-                  const attachToThisMessage = i === 0 ? attachmentIds : [];
-                  const body =
-                    buildSinglePaymentMessageBody(pm, { hasProof: attachToThisMessage.length > 0 }) +
-                    (i === 0 ? invoicePendingNote : '');
-                  await postPaymentProofToChatterWithAttachmentIds(soId, { body, attachmentIds: attachToThisMessage });
-                  if (attachToThisMessage.length > 0) {
-                    const pendingById = new Map((pendingAttachments || []).map((a) => [Number(a.id), a]));
-                    for (const id of syncedAttachmentIds) {
-                      const idNum = Number(id);
-                      await offlineAttachmentsDb.markSynced(idNum);
-                      const att = pendingById.get(idNum);
-                      if (att?.local_file_path) {
-                        try {
-                          const fileToDelete = new FileSystem.File(att.local_file_path);
-                          if (fileToDelete.exists) fileToDelete.delete();
-                        } catch (_) { }
+                    log('queue', `message_post API (sale.order) SO ${soId} attachment_ids=[${attachmentIds.join(', ')}]`);
+                    const body =
+                      buildPaymentProofMessageBody({
+                        paymentMethod,
+                        chequeBankName: paymentMethod === 'cheque' ? chequeBankName : undefined,
+                        checkNumber: paymentMethod === 'cheque' ? (chequeNumber || undefined) : undefined,
+                        payments: paymentsForMessage,
+                        hasProof,
+                      }) + invoicePendingNote;
+                    await postPaymentProofToChatterWithAttachmentIds(soId, { body, attachmentIds });
+                    if (attachmentIds.length > 0) {
+                      const pendingById = new Map((pendingAttachments || []).map((a) => [Number(a.id), a]));
+                      for (const id of syncedAttachmentIds) {
+                        const idNum = Number(id);
+                        await offlineAttachmentsDb.markSynced(idNum);
+                        const att = pendingById.get(idNum);
+                        if (att?.local_file_path) {
+                          try {
+                            const fileToDelete = new FileSystem.File(att.local_file_path);
+                            if (fileToDelete.exists) fileToDelete.delete();
+                          } catch (_) { }
+                        }
                       }
                     }
                   }
-                }
-              } else {
-                log('queue', `message_post API (sale.order) SO ${soId} attachment_ids=[${attachmentIds.join(', ')}]`);
-                const body =
-                  buildPaymentProofMessageBody({
-                    paymentMethod,
-                    chequeBankName: paymentMethod === 'cheque' ? chequeBankName : undefined,
-                    checkNumber: paymentMethod === 'cheque' ? (chequeNumber || undefined) : undefined,
-                    payments: paymentsForMessage,
-                    hasProof,
-                  }) + invoicePendingNote;
-                await postPaymentProofToChatterWithAttachmentIds(soId, { body, attachmentIds });
-                if (attachmentIds.length > 0) {
-                  const pendingById = new Map((pendingAttachments || []).map((a) => [Number(a.id), a]));
-                  for (const id of syncedAttachmentIds) {
-                    const idNum = Number(id);
-                    await offlineAttachmentsDb.markSynced(idNum);
-                    const att = pendingById.get(idNum);
-                    if (att?.local_file_path) {
-                      try {
-                        const fileToDelete = new FileSystem.File(att.local_file_path);
-                        if (fileToDelete.exists) fileToDelete.delete();
-                      } catch (_) { }
+                  if (gasDeliveredCountBody && !p._paymentProofGasChatterPosted) {
+                    try {
+                      await postPaymentProofToChatterWithAttachmentIds(soId, {
+                        body: gasDeliveredCountBody,
+                        attachmentIds: [],
+                      });
+                      log('queue', `message_post Gas Delivered Count SO ${soId}`);
+                      p._paymentProofGasChatterPosted = true;
+                    } catch (gasDelErr) {
+                      logWarn('queue payment gas-delivered chatter', gasDelErr);
                     }
                   }
+                  const emptyCylinderNote = (p.emptyCylinderChatterBody || p.emptyCylinderChatterNote || '').trim();
+                  if (emptyCylinderNote && !p._paymentProofEmptyCylinderChatterPosted) {
+                    try {
+                      await postPaymentProofToChatterWithAttachmentIds(soId, {
+                        body: emptyCylinderNote,
+                        attachmentIds: [],
+                      });
+                      log('queue', `empty cylinder note message_post SO ${soId}`);
+                      p._paymentProofEmptyCylinderChatterPosted = true;
+                    } catch (emptyChatterErr) {
+                      logWarn('queue payment empty-cylinder chatter', emptyChatterErr);
+                    }
+                  }
+
+                  chatterPostedInThisRun.add(soId);
+                  log('queue', `chatter posted to SO ${soId}${isPartialPayment ? ` (${paymentsForMessage.length} messages)` : ` (${attachmentIds.length} images)`}`);
+                  try {
+                    await syncQueueDb.updateQueueItemPayload(item.id, {
+                      ...(item.payload || {}),
+                      _paymentProofChatterPosted: true,
+                      _paymentProofGasChatterPosted: !!p._paymentProofGasChatterPosted,
+                      _paymentProofEmptyCylinderChatterPosted: !!p._paymentProofEmptyCylinderChatterPosted,
+                    });
+                  } catch (upErr) {
+                    logWarn('queue payment _paymentProofChatterPosted', upErr);
+                  }
+                } catch (chatterErr) {
+                  for (const id of syncedAttachmentIds) {
+                    await offlineAttachmentsDb.incrementRetry(Number(id), chatterErr?.message || 'API error');
+                  }
+                  logWarn('queue payment chatter', chatterErr);
+                  continue;
                 }
-              }
-              if (gasDeliveredCountBody && !p._paymentProofGasChatterPosted) {
-                try {
-                  await postPaymentProofToChatterWithAttachmentIds(soId, {
-                    body: gasDeliveredCountBody,
-                    attachmentIds: [],
-                  });
-                  log('queue', `message_post Gas Delivered Count SO ${soId}`);
-                  p._paymentProofGasChatterPosted = true;
-                } catch (gasDelErr) {
-                  logWarn('queue payment gas-delivered chatter', gasDelErr);
-                }
-              }
-              const emptyCylinderNote = (p.emptyCylinderChatterBody || p.emptyCylinderChatterNote || '').trim();
-              if (emptyCylinderNote && !p._paymentProofEmptyCylinderChatterPosted) {
-                try {
-                  await postPaymentProofToChatterWithAttachmentIds(soId, {
-                    body: emptyCylinderNote,
-                    attachmentIds: [],
-                  });
-                  log('queue', `empty cylinder note message_post SO ${soId}`);
-                  p._paymentProofEmptyCylinderChatterPosted = true;
-                } catch (emptyChatterErr) {
-                  logWarn('queue payment empty-cylinder chatter', emptyChatterErr);
-                }
+              } else {
+                log(
+                  'queue',
+                  `payment SO ${soId}: skipping duplicate payment-proof chatter (already posted; retrying invoice/payment only)`
+                );
               }
 
-              chatterPostedInThisRun.add(soId);
-              log('queue', `chatter posted to SO ${soId}${isPartialPayment ? ` (${paymentsForMessage.length} messages)` : ` (${attachmentIds.length} images)`}`);
-              try {
-                await syncQueueDb.updateQueueItemPayload(item.id, {
-                  ...(item.payload || {}),
-                  _paymentProofChatterPosted: true,
-                  _paymentProofGasChatterPosted: !!p._paymentProofGasChatterPosted,
-                  _paymentProofEmptyCylinderChatterPosted: !!p._paymentProofEmptyCylinderChatterPosted,
-                });
-              } catch (upErr) {
-                logWarn('queue payment _paymentProofChatterPosted', upErr);
+              if (invoiceBlockFailedNoItemsToInvoice) {
+                log('queue', `payment item ${item.id} NOT marked synced (invoice not created — deliver first, then sync again for cheque/credit)`);
+                continue;
               }
-            } catch (chatterErr) {
-              for (const id of syncedAttachmentIds) {
-                await offlineAttachmentsDb.incrementRetry(Number(id), chatterErr?.message || 'API error');
+              if (await markPaymentQueueItemSyncedWhenBackendComplete(item, soId, p)) {
+                alreadySyncedSaleOrderIds.add(soId);
+                log('queue', `payment synced id=${item.id}`);
               }
-              logWarn('queue payment chatter', chatterErr);
-              continue;
+            } catch (e) {
+              logWarn('queue payment', e);
             }
-          } else {
-            log(
-              'queue',
-              `payment SO ${soId}: skipping duplicate payment-proof chatter (already posted; retrying invoice/payment only)`
-            );
           }
-
-          if (invoiceBlockFailedNoItemsToInvoice) {
-            log('queue', `payment item ${item.id} NOT marked synced (invoice not created — deliver first, then sync again for cheque/credit)`);
-            continue;
-          }
-          if (await markPaymentQueueItemSyncedWhenBackendComplete(item, soId, p)) {
-            alreadySyncedSaleOrderIds.add(soId);
-            log('queue', `payment synced id=${item.id}`);
-          }
-        } catch (e) {
-          logWarn('queue payment', e);
-        }
-      }
         } catch (passErr) {
           logWarn('queue pass', passErr);
         }
@@ -3083,11 +3099,7 @@ export async function deleteLocalData(options = {}) {
   const discardUnsynced = options.discardUnsynced === true;
   const { getDb } = await import('../database/db.js');
   const db = await getDb();
-  const pendingQueueCount = await syncQueueDb.getPendingCount();
-  const pendingAttachmentRow = await db.getFirstAsync(
-    `SELECT COUNT(*) as c FROM offline_attachments WHERE sync_status = 'pending'`
-  );
-  const pendingAttachmentCount = pendingAttachmentRow?.c ?? 0;
+  const { pendingQueueCount, pendingAttachmentCount } = await getPendingSyncCounts();
 
   if (!discardUnsynced && (pendingQueueCount > 0 || pendingAttachmentCount > 0)) {
     const err = new Error(

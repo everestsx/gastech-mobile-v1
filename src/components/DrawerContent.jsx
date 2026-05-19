@@ -4,7 +4,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTranslation } from 'react-i18next';
 import { colors, spacing, borderRadius } from '../constants/theme';
-import { runSync, getLastSyncTime, getUserSession, logout, getSyncIntervalMinutes } from '../services/sync.service';
+import { runSync, getLastSyncTime, getUserSession, logout, getSyncIntervalMinutes, getPendingSyncCounts } from '../services/sync.service';
 import RichNotification from './RichNotification';
 
 export default function DrawerContent({ navigation }) {
@@ -60,7 +60,28 @@ export default function DrawerContent({ navigation }) {
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    const { pendingQueueCount, pendingAttachmentCount } = await getPendingSyncCounts();
+    if (pendingQueueCount > 0 || pendingAttachmentCount > 0) {
+      Alert.alert(
+        t('menu.notEverythingIsSynced', 'Not everything is synced'),
+        t(
+          'menu.logoutPendingSyncMessage',
+          '{{queue}} item(s) in queue, {{attachments}} photo(s) not sent yet. Sync first to log out.',
+          { queue: pendingQueueCount, attachments: pendingAttachmentCount }
+        ),
+        [
+          { text: t('drawer.cancel', 'Cancel'), style: 'cancel' },
+          {
+            text: t('menu.syncNow', 'Sync now'),
+            onPress: async () => {
+              await handleSync();
+            },
+          },
+        ]
+      );
+      return;
+    }
     Alert.alert(t('menu.logOut', 'Log out'), t('drawer.areYouSure', 'Are you sure?'), [
       { text: t('drawer.cancel', 'Cancel'), style: 'cancel' },
       {
