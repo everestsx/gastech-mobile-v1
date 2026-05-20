@@ -355,7 +355,11 @@ export default function ProceedPaymentScreen({ route, navigation }) {
 
       if (needsDeliverySync) {
         // Keep delivery held until the user confirms "Complete order" on PaymentProof.
-        const heldPayload = { ...deliveryPayload, holdUntilPayment: true };
+        const heldPayload = {
+          ...deliveryPayload,
+          holdUntilPayment: true,
+          ...(Array.isArray(invoiceLineQtys) && invoiceLineQtys.length > 0 ? { invoiceLineQtys } : {}),
+        };
         const existingDelivery = await syncQueueDb.getPendingDeliveryItemBySaleOrderId(soId);
         if (existingDelivery) {
           await syncQueueDb.updateQueueItemPayload(existingDelivery.id, heldPayload);

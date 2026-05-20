@@ -25,9 +25,10 @@ import * as localPaymentsDb from '../database/localPayments.js';
 import * as stockPickingsDb from '../database/stockPickings.js';
 import * as syncQueueDb from '../database/syncQueue.js';
 import * as vehicleInventoriesDb from '../database/vehicleInventories.js';
+import * as productsDb from '../database/products.js';
 import { getSaleOrderDetailsFromDB } from '../services/sync.service';
 import { empty } from '../database/dbHelpers.js';
-import { flushPendingUploadsNow, runSync } from '../services/sync.service';
+import { schedulePendingUploadSync } from '../services/sync.service';
 import { getOrAssignInvoiceNumber } from '../utils/invoiceNumber';
 import { clearCheckoutResume } from '../services/checkoutResume.service';
 
@@ -96,6 +97,22 @@ export default function PaymentProofScreen({ route, navigation }) {
       }
       if (row.action_type === syncQueueDb.ACTION_DELIVERY) {
         delete payload.holdUntilPayment;
+        const invQtys = paymentPayload?.invoiceLineQtys;
+        if (Array.isArray(invQtys) && invQtys.length > 0) {
+          payload.invoiceLineQtys = invQtys;
+          payload.saleOrderLineDeliveredUpdates = invQtys
+            .map((row) => ({
+              lineId: Number(row?.lineId),
+              qty_delivered: Math.round(Number(row?.qty) * 1000) / 1000,
+            }))
+            .filter(
+              (u) =>
+                Number.isFinite(u.lineId) &&
+                u.lineId > 0 &&
+                Number.isFinite(u.qty_delivered) &&
+                u.qty_delivered >= 0
+            );
+        }
         await syncQueueDb.updateQueueItemPayload(row.id, payload);
         const pickings = Array.isArray(payload.pickings) ? payload.pickings : [];
         if (pickings.length > 0) {
@@ -111,12 +128,45 @@ export default function PaymentProofScreen({ route, navigation }) {
       }
       if (row.action_type === syncQueueDb.ACTION_INVENTORY_UPDATE) {
         const locationId = Number(payload.locationId);
+        const vehicleId = Number(payload.vehicleId);
         const updates = Array.isArray(payload.updates) ? payload.updates : [];
         if (Number.isFinite(locationId) && locationId > 0 && updates.length > 0) {
           for (const update of updates) {
             const productId = Number(update?.productId);
+            if (!Number.isFinite(productId) || productId <= 0) continue;
+            const increment = Number(update?.incrementQuantity);
+            if (Number.isFinite(increment) && increment > 0) {
+              const inventoryRows = await vehicleInventoriesDb
+                .getVehicleInventoryByLocationId(locationId)
+                .catch(() => []);
+              const existingRow = (inventoryRows || []).find(
+                (r) => Number(r?.product_id) === productId
+              );
+              const current = Number(existingRow?.quantity) || 0;
+              const nextQty = Math.max(0, current + increment);
+              const productName =
+                (await productsDb.getProductById(productId))?.name ||
+                existingRow?.product_name ||
+                '';
+              if (Number.isFinite(vehicleId) && vehicleId > 0) {
+                await vehicleInventoriesDb.upsertVehicleInventoryQuantityByLocation(
+                  locationId,
+                  vehicleId,
+                  productId,
+                  productName,
+                  nextQty
+                );
+              } else {
+                await vehicleInventoriesDb.updateVehicleInventoryQuantityByLocation(
+                  locationId,
+                  productId,
+                  nextQty
+                );
+              }
+              continue;
+            }
             const newQuantity = Number(update?.newQuantity);
-            if (!Number.isFinite(productId) || productId <= 0 || !Number.isFinite(newQuantity)) continue;
+            if (!Number.isFinite(newQuantity)) continue;
             await vehicleInventoriesDb.updateVehicleInventoryQuantityByLocation(
               locationId,
               productId,
@@ -202,14 +252,12 @@ export default function PaymentProofScreen({ route, navigation }) {
       await clearCheckoutResume(soId);
       // Defensive second clear after queue release to avoid stale "pending checkout" flags.
       await clearCheckoutResume(soId);
-      // Try immediate queue upload while connection is healthy, but never block UX for long.
-      void flushPendingUploadsNow({ includeAttachments: true, queuePasses: 10 })
-        .then(() => runSync().catch((e) => console.warn('[PaymentProof] sync', e?.message ?? e)))
-        .catch((e) => console.warn('[PaymentProof] upload', e?.message ?? e));
       navigation.reset({
         index: 0,
         routes: [{ name: 'MainTabs', params: { screen: 'Dashboard' } }],
       });
+      // Dashboard first; drain queue in background (stable connection → fast pending→green).
+      schedulePendingUploadSync({ immediate: true, queuePasses: 15, includeAttachments: true });
     } catch (e) {
       Alert.alert('Error', e?.message || 'Something went wrong. Try again.');
     } finally {

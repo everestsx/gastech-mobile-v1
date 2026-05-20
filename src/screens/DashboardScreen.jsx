@@ -38,6 +38,8 @@ import {
   getCachedRoutes,
   getLastSyncTime,
   getSyncLogRecent,
+  hasPendingUploadWork,
+  schedulePendingUploadSync,
   getUserSession,
   getOrderLineTotalsFromDB,
   getPickingsBySaleIdsFromDB,
@@ -706,6 +708,11 @@ export default function DashboardScreen({ navigation }) {
       loadData();
       loadSyncStatus();
       tryPostLoginBanner();
+      void hasPendingUploadWork().then((pending) => {
+        if (pending) {
+          schedulePendingUploadSync({ immediate: true, queuePasses: 12, includeAttachments: true });
+        }
+      });
     });
     loadData();
     loadSyncStatus();
@@ -2269,9 +2276,10 @@ export default function DashboardScreen({ navigation }) {
                 const gasImageSource = backendImageUri ? { uri: backendImageUri } : getGasImageByProductName(productLabel);
                 const deliveredQty =
                   s.product_id != null ? Number(deliveredQtyByProductId[s.product_id]) || 0 : 0;
-                const cardKg = parseKgFromProductName(productLabel);
+                const cardKg = s._defaultGasKg != null ? Number(s._defaultGasKg) : parseKgFromProductName(productLabel);
+                const showEmptyCollected = s._defaultGasKg != null && isGasCylinderName(productLabel);
                 const emptyCollectedQty =
-                  cardKg != null ? Number(emptyStockByKg[cardKg]) || 0 : 0;
+                  showEmptyCollected && cardKg != null ? Number(emptyStockByKg[cardKg]) || 0 : 0;
 
                 return (
                   <TouchableOpacity
@@ -2329,13 +2337,17 @@ export default function DashboardScreen({ navigation }) {
                     <Text style={{ fontSize: 18, fontWeight: '900', color: deliveredQty > 0 ? '#16a34a' : colors.textSecondary, marginTop: 4 }}>
                       {deliveredQty.toLocaleString('en-IN')}
                     </Text>
-                    <View style={{ height: 6 }} />
-                    <Text style={{ fontSize: 12, color: colors.textSecondary, fontWeight: '800' }}>
-                      {t('dashboard.emptyCollected', 'Empty Collected')}
-                    </Text>
-                    <Text style={{ fontSize: 18, fontWeight: '900', color: emptyCollectedQty > 0 ? '#0f766e' : colors.textSecondary, marginTop: 4 }}>
-                      {emptyCollectedQty.toLocaleString('en-IN')}
-                    </Text>
+                    {showEmptyCollected ? (
+                      <>
+                        <View style={{ height: 6 }} />
+                        <Text style={{ fontSize: 12, color: colors.textSecondary, fontWeight: '800' }}>
+                          {t('dashboard.emptyCollected', 'Empty Collected')}
+                        </Text>
+                        <Text style={{ fontSize: 18, fontWeight: '900', color: emptyCollectedQty > 0 ? '#0f766e' : colors.textSecondary, marginTop: 4 }}>
+                          {emptyCollectedQty.toLocaleString('en-IN')}
+                        </Text>
+                      </>
+                    ) : null}
                   </TouchableOpacity>
                 );
               })

@@ -24,7 +24,6 @@ import {
   getUserSession,
 } from '../services/sync.service';
 import * as syncQueueDb from '../database/syncQueue.js';
-import * as vehicleInventoriesDb from '../database/vehicleInventories.js';
 import * as productsDb from '../database/products.js';
 import { setCheckoutResumeFromPayment } from '../services/checkoutResume.service';
 import { buildEmptyCylinderChatterBody } from '../services/proofAttachment.service';
@@ -51,6 +50,18 @@ function qtyClose(a, b) {
 }
 
 const DISPLAY_KG_SIZES = [2.4, 5, 12.5, 37.5];
+
+/** Merge inventory queue rows by product — keeps gas reductions when adding empty-return increments. */
+function mergeInventoryQueueUpdatesByProduct(existingUpdates, incomingUpdates) {
+  const byProduct = new Map();
+  for (const u of [...(existingUpdates || []), ...(incomingUpdates || [])]) {
+    const pid = Number(u?.productId);
+    if (!Number.isFinite(pid) || pid <= 0) continue;
+    const prev = byProduct.get(pid);
+    byProduct.set(pid, prev ? { ...prev, ...u } : { ...u });
+  }
+  return Array.from(byProduct.values());
+}
 const REASON_PRESET_KEYS = [
   'loanReturnPending',
   'newIssueReplacement',
@@ -307,14 +318,6 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
             }
             const current = Number(byProductId[row.emptyProductId]) || 0;
             const nextQty = Math.max(0, current + Number(row.emptyCollectedQty));
-            const emptyName = (await productsDb.getProductById(Number(row.emptyProductId)))?.name || '';
-            await vehicleInventoriesDb.upsertVehicleInventoryQuantityByLocation(
-              Number(locationId),
-              Number(vehicleId),
-              Number(row.emptyProductId),
-              emptyName,
-              nextQty
-            );
             inventoryQueueUpdates.push({
               productId: Number(row.emptyProductId),
               quantityUsed: -Math.abs(Number(row.emptyCollectedQty) || 0),
@@ -348,11 +351,8 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
                 vehicleId: Number(vehicleId),
                 locationId: Number(locationId),
                 holdUntilComplete: true,
-                /**
-                 * Latest payload is authoritative.
-                 * Summing increments can double empty-return quantities when user flow re-saves same SO.
-                 */
-                updates: inventoryQueueUpdates,
+                /** Empty-return rows merge with held gas reductions; latest row wins per product id. */
+                updates: mergeInventoryQueueUpdatesByProduct(existingPayload.updates, inventoryQueueUpdates),
               });
             } else {
               await syncQueueDb.enqueue(syncQueueDb.ACTION_INVENTORY_UPDATE, inventoryPayload);

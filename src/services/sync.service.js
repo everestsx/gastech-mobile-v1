@@ -45,14 +45,16 @@ export function setSyncCompleteListener(fn) {
 let _processSyncQueuePromise = null;
 /** Edge-case recovery: keep retrying pending queue rows after flaky network (does not change enqueue/workflow). */
 const QUEUE_SYNC_RETRY_WINDOW_MS = 12 * 60 * 1000;
-const QUEUE_SYNC_RETRY_PASS_DELAY_MS = 2500;
+const QUEUE_SYNC_RETRY_PASS_DELAY_MS = 900;
 /** When a pass clears some rows, retry quickly (stable connection). */
 const QUEUE_SYNC_FAST_PASS_DELAY_MS = 400;
+/** Tighter retry spacing when queue is draining on a stable connection. */
+const QUEUE_SYNC_AGGRESSIVE_PASS_DELAY_MS = 200;
 const QUEUE_SYNC_MAX_PASSES = 30;
 /** Fast retry for pending queue when app is foregrounded (AppNavigator). */
-export const PENDING_QUEUE_FAST_RETRY_MS = 20 * 1000;
+export const PENDING_QUEUE_FAST_RETRY_MS = 10 * 1000;
 /** Shorter poll while uploads are pending (does not change delivery RPC sequence). */
-export const PENDING_QUEUE_ACTIVE_RETRY_MS = 4 * 1000;
+export const PENDING_QUEUE_ACTIVE_RETRY_MS = 1500;
 export const PENDING_QUEUE_FAST_RETRY_WINDOW_MS = 10 * 60 * 1000;
 
 let _pendingUploadWakeTimer = null;
@@ -61,6 +63,7 @@ let _pendingUploadWakePromise = null;
 /** Debounced queue flush after enqueue/update — faster pending→completed when online. */
 export function schedulePendingUploadSync(options = {}) {
   if (_pendingUploadWakeTimer) clearTimeout(_pendingUploadWakeTimer);
+  const delayMs = options.immediate === true ? 0 : 80;
   _pendingUploadWakeTimer = setTimeout(() => {
     _pendingUploadWakeTimer = null;
     if (_pendingUploadWakePromise) {
@@ -69,11 +72,22 @@ export function schedulePendingUploadSync(options = {}) {
     }
     _pendingUploadWakePromise = flushPendingUploadsNow({
       includeAttachments: options.includeAttachments !== false,
-      queuePasses: options.queuePasses ?? 10,
-    }).finally(() => {
+      queuePasses: options.queuePasses ?? 12,
+      aggressive: options.immediate === true || options.aggressive === true,
+    })
+      .then(async (result) => {
+        if ((result?.pendingCount ?? 1) === 0) {
+          try {
+            if (_syncCompleteListener) _syncCompleteListener(true);
+          } catch (_) {
+            /* non-fatal */
+          }
+        }
+      })
+      .finally(() => {
       _pendingUploadWakePromise = null;
     });
-  }, 200);
+  }, delayMs);
 }
 
 /** Dashboard counters (red / orange) — set from DashboardScreen only; used to skip idle fast-sync. */
@@ -946,7 +960,7 @@ function roundDeliveredQty3(q) {
   return Math.round(Number(q) * 1000) / 1000;
 }
 
-/** Merge delivered-qty rows; later entries win (mobile SQLite overrides stale queue snapshots). */
+/** Merge delivered-qty rows; later entries win (queue payload overrides mobile SQLite during sync). */
 function mergeDeliveredQtyUpdates(...lists) {
   const map = new Map();
   for (const list of lists) {
@@ -986,10 +1000,82 @@ async function getMobileDeliveredUpdatesForSaleOrder(saleOrderId) {
 }
 
 async function collectAuthoritativeDeliveredUpdates(saleOrderId, queuePayload = null) {
-  const fromMobile = await getMobileDeliveredUpdatesForSaleOrder(saleOrderId);
-  const fromQueue = queuePayload?.saleOrderLineDeliveredUpdates || [];
-  const fromInvoice = invoiceLineQtysToDeliveredUpdates(queuePayload?.invoiceLineQtys);
-  return mergeDeliveredQtyUpdates(fromQueue, fromInvoice, fromMobile);
+  const snap = await resolveDeliveredSnapshotForSync(saleOrderId, queuePayload);
+  return snap.updates || [];
+}
+
+/** Delivered qty rows for Odoo writes: frozen checkout snapshot (invoiceLineQtys wins over stale SOL rows). */
+function deliveredUpdatesFromQueuePayload(queuePayload) {
+  const p = queuePayload || {};
+  return mergeDeliveredQtyUpdates(
+    invoiceLineQtysToDeliveredUpdates(p.invoiceLineQtys),
+    p.saleOrderLineDeliveredUpdates || []
+  );
+}
+
+/**
+ * Mobile-confirmed qty for Odoo: delivery queue row + payment invoiceLineQtys (same values driver entered).
+ */
+async function resolveDeliveredSnapshotForSync(saleOrderId, deliveryPayload) {
+  const soId = Number(saleOrderId);
+  let merged = { ...(deliveryPayload || {}) };
+  if (Number.isFinite(soId) && soId > 0) {
+    try {
+      const pay = await syncQueueDb.getPendingPaymentItemBySaleOrderId(soId);
+      const inv = pay?.payload?.invoiceLineQtys;
+      if (Array.isArray(inv) && inv.length > 0) {
+        merged = { ...merged, invoiceLineQtys: inv };
+      }
+    } catch (_) {
+      /* non-fatal */
+    }
+  }
+  const updates = deliveredUpdatesFromQueuePayload(merged);
+  if (updates.length > 0) return { payload: merged, updates };
+  const mobile = await getMobileDeliveredUpdatesForSaleOrder(soId);
+  return { payload: merged, updates: mobile };
+}
+
+async function verifyAllSaleOrderPickingsAreTerminal(soIdRaw) {
+  const sid = Number(soIdRaw);
+  if (!Number.isFinite(sid) || sid <= 0) return;
+  const { getPickingBySaleOrder } = await import('./delivery.service.js');
+  const picks = await getPickingBySaleOrder(sid);
+  const allowed = new Set(['done', 'cancel']);
+  for (const pk of picks || []) {
+    const st = String(pk?.state ?? '')
+      .trim()
+      .toLowerCase();
+    if (!st || allowed.has(st)) continue;
+    throw new Error(
+      `Delivery incomplete: transfer ${pk?.id ?? '?'} (${String(pk?.name ?? '').slice(0, 40)}) is still "${st}" in Odoo. Sync will retry.`
+    );
+  }
+}
+
+/**
+ * After a failed delivery RPC pass, align Odoo to the queued snapshot without re-running validate/move writes.
+ */
+async function tryMarkDeliverySyncedAfterQtyHeal(item, saleOrderId, queuePayload) {
+  const soId = Number(saleOrderId);
+  if (!Number.isFinite(soId) || soId <= 0 || item?.id == null) return false;
+  const updates = deliveredUpdatesFromQueuePayload(queuePayload);
+  const ctx = repairContextFromQueuePayload(queuePayload);
+  const repair = await attemptDeliveredQtyHealForSaleOrder(soId, queuePayload, {
+    maxRounds: 2,
+    pickingIds: ctx.pickingIds,
+    deliveryLines: ctx.deliveryLines,
+  });
+  if (!repair.ok) return false;
+  try {
+    await verifyAllSaleOrderPickingsAreTerminal(soId);
+    if (updates.length > 0) await verifySaleOrderLineDeliveredOnOdoo(updates);
+    await syncQueueDb.markSynced(Number(item.id));
+    log('queue', `delivery id=${item.id} SO ${soId} marked synced after heal (no duplicate upload)`);
+    return true;
+  } catch (_) {
+    return false;
+  }
 }
 
 /** Picking/move context from a queue payload (held delivery or payment snapshot). */
@@ -1095,8 +1181,25 @@ async function attemptDeliveredQtyHealForSaleOrder(saleOrderId, queuePayload = n
   });
   return repairOdooDeliveredQuantitiesFromMobile(soId, updates, {
     ...mergedCtx,
-    maxRounds: extraContext.maxRounds ?? 4,
+    maxRounds: extraContext.maxRounds ?? 2,
   });
+}
+
+/** Product totals from mobile snapshot (every SO line the driver confirmed at payment). */
+async function buildRequestedQtyByProductFromDeliveredUpdates(saleOrderId, deliveredUpdates) {
+  const soId = Number(saleOrderId);
+  if (!Number.isFinite(soId) || soId <= 0) return new Map();
+  const orderLines = await saleOrderLinesDb.getSaleOrderLinesByOrderIds([soId]).catch(() => []);
+  const byProduct = new Map();
+  for (const u of deliveredUpdates || []) {
+    const line = (orderLines || []).find((l) => Number(l?.id) === Number(u?.lineId));
+    if (!line) continue;
+    const pid = Number(line.product_id);
+    const q = roundDeliveredQty3(u.qty_delivered);
+    if (!Number.isFinite(pid) || pid <= 0 || !Number.isFinite(q) || q <= 0) continue;
+    byProduct.set(pid, (byProduct.get(pid) || 0) + q);
+  }
+  return byProduct;
 }
 
 /** Block markSynced when payload still has product qty that never mapped to stock moves. */
@@ -1106,7 +1209,7 @@ function assertNoUnresolvedRequestedQuantities(requestedRemainingByProduct, sale
     .map(([pid, rem]) => `${pid}:${Number(rem).toFixed(3)}`);
   if (unresolved.length === 0) return;
   throw new Error(
-    `Delivery incomplete: unresolved requested quantities for SO ${saleOrderId} (${unresolved.join(', ')}). Sync will retry.`
+    `Delivery incomplete: stock moves missing for SO ${saleOrderId} (${unresolved.join(', ')}). Sync will retry.`
   );
 }
 
@@ -1251,8 +1354,8 @@ async function repairOdooDeliveredQuantitiesFromMobile(saleOrderId, deliveredUpd
     }
   };
 
-  const maxRounds = options.maxRounds ?? 4;
-  const roundDelays = [550, 900, 1200, 1500];
+  const maxRounds = options.maxRounds ?? 2;
+  const roundDelays = [150, 350];
   let lastReason = 'unknown';
   for (let round = 0; round < maxRounds; round++) {
     try {
@@ -1328,26 +1431,11 @@ async function ensureBackendDeliveredMatchesMobileBeforePaymentComplete(soId, pa
 
   try {
     await verifySaleOrderLineDeliveredOnOdoo(updates);
+    return { ok: true };
   } catch (verifyErr) {
     log('queue', `payment SO ${soNum}: delivered qty drift — repair (${String(verifyErr?.message || verifyErr).slice(0, 80)})`);
     return runHealAndVerify();
   }
-
-  /** Picking validate can rewrite Odoo qty_delivered before invoice wizard runs — re-align when SO is still billable. */
-  try {
-    const { getSaleOrderForPayment } = await import('./invoice.service.js');
-    const orderInfo = await getSaleOrderForPayment(soNum).catch(() => null);
-    const invStatus = String(orderInfo?.invoice_status || '').toLowerCase();
-    if (invStatus === 'to invoice' || invStatus === 'no' || invStatus === 'upselling') {
-      const heal = await runHealAndVerify();
-      if (!heal.ok) return heal;
-    }
-  } catch (preInvoiceErr) {
-    log('queue', `payment SO ${soNum}: pre-invoice qty align (${String(preInvoiceErr?.message || preInvoiceErr).slice(0, 80)})`);
-    return runHealAndVerify();
-  }
-
-  return { ok: true };
 }
 
 /**
@@ -1421,7 +1509,11 @@ async function verifyOdooSaleOrderCompletionBeforePaymentMarkSynced(soId, paymen
   }
 
   if (invStatus === 'to invoice' || invStatus === 'no' || invStatus === 'upselling') {
-    return { ok: false, reason: `sale order still "${invStatus}" on Odoo after invoice step` };
+    if (hasPostedInvoice) {
+      log('queue', `payment SO ${soNum}: invoice_status still "${invStatus}" but posted invoice exists — accept`);
+    } else {
+      return { ok: false, reason: `sale order still "${invStatus}" on Odoo after invoice step` };
+    }
   }
 
   const payments = paymentPayload?.payments || [];
@@ -1510,21 +1602,19 @@ async function markPaymentQueueItemSyncedWhenBackendComplete(item, soId, payment
   const payload = paymentPayload || item?.payload || {};
   await pullSaleOrderHeaderAfterPayment(soId);
 
-  const deliveredRepair = await ensureBackendDeliveredMatchesMobileBeforePaymentComplete(soId, payload);
-  if (!deliveredRepair.ok) {
-    log('queue', `payment id=${item?.id} SO ${soId} kept pending — delivered qty repair failed: ${deliveredRepair.reason}`);
-    return false;
-  }
-
   let check = await verifyOdooSaleOrderCompletionBeforePaymentMarkSynced(soId, payload);
   if (!check.ok) {
     log('queue', `payment id=${item?.id} SO ${soId} kept pending — ${check.reason}`);
     return false;
   }
-  const reg = await verifyCashChequePaymentsRegisteredOnOdoo(soId, payload?.payments || []);
-  if (!reg.ok) {
-    log('queue', `payment id=${item?.id} SO ${soId} kept pending — ${reg.reason}`);
-    return false;
+  const payments = payload?.payments || [];
+  const needsCashOrCheque = payments.some((pm) => pm.type === 'cash' || pm.type === 'check');
+  if (needsCashOrCheque) {
+    const reg = await verifyCashChequePaymentsRegisteredOnOdoo(soId, payments);
+    if (!reg.ok) {
+      log('queue', `payment id=${item?.id} SO ${soId} kept pending — ${reg.reason}`);
+      return false;
+    }
   }
   await syncQueueDb.markSynced(Number(item.id));
   try {
@@ -1735,36 +1825,14 @@ async function processSyncQueue() {
 
       const roundQty3 = (q) => Math.round(Number(q) * 1000) / 1000;
 
-      /**
-       * After delivery RPCs, insist every Odoo transfer on this SO is done/cancel — otherwise invoice can
-       * post with wrong delivered qty while transfers still queue (intermittent back-office/mobile mismatch).
-       */
-      const verifyAllSaleOrderPickingsAreTerminal = async (soIdRaw) => {
-        const sid = Number(soIdRaw);
-        if (!Number.isFinite(sid) || sid <= 0) return;
-        const picks = await getPickingBySaleOrder(sid);
-        const allowed = new Set(['done', 'cancel']);
-        for (const pk of picks || []) {
-          const st = String(pk?.state ?? '')
-            .trim()
-            .toLowerCase();
-          if (!st || allowed.has(st)) continue;
-          throw new Error(
-            `Delivery incomplete: transfer ${pk?.id ?? '?'} (${String(pk?.name ?? '').slice(0, 40)}) is still "${st}" in Odoo. Sync will retry.`
-          );
-        }
-      };
-
       /** Push one delivery queue row to Odoo and mark synced. Used from main delivery pass and pre-payment flush. */
       const processOneDeliveryQueueItem = async (item, syncOptions = {}) => {
-        const p = item.payload || {};
+        const saleOrderIdRaw = (item.payload || {}).saleOrderId ?? (item.payload || {}).sale_id;
+        const snapshot = await resolveDeliveredSnapshotForSync(saleOrderIdRaw, item.payload || {});
+        const p = snapshot.payload || {};
         const saleOrderId = p.saleOrderId ?? p.sale_id;
         const orderLineUpdates = p.orderLineUpdates || [];
-        const saleOrderLineDeliveredUpdates = mergeDeliveredQtyUpdates(
-          p.saleOrderLineDeliveredUpdates || [],
-          invoiceLineQtysToDeliveredUpdates(p.invoiceLineQtys),
-          await getMobileDeliveredUpdatesForSaleOrder(saleOrderId)
-        );
+        const saleOrderLineDeliveredUpdates = snapshot.updates || [];
         const requestedQtyByProduct = p.requestedQtyByProduct || {};
         let blocks = pickingsBlocksFromPayload(p);
         const requestedDeliveryRemainingByProduct = new Map(
@@ -1786,39 +1854,27 @@ async function processSyncQueue() {
           await applySaleOrderLineDeliveredUpdates(saleOrderLineDeliveredUpdates);
         };
 
-        /** Re-apply mobile qty_delivered after picking validate (Odoo may recalc SOL from moves). */
-        const reconcileDeliveredQtyAfterPickingBlock = async () => {
+        /** After all pickings validated: one SOL write from the mobile snapshot (not during validate). */
+        const applyMobileDeliveredQtyToOdooOnce = async () => {
           if (!saleOrderLineDeliveredUpdates.length) return;
           await applySoLineDeliveredQty();
-          try {
-            await verifySaleOrderLineDeliveredOnOdoo(saleOrderLineDeliveredUpdates);
-          } catch (verifyErr) {
-            const heal = await attemptDeliveredQtyHealForSaleOrder(
-              saleOrderId,
-              p,
-              repairContextFromDeliveryBlocks(blocks)
-            );
-            if (!heal.ok) throw verifyErr;
-            await verifySaleOrderLineDeliveredOnOdoo(saleOrderLineDeliveredUpdates);
-          }
         };
 
-        /** Cross-check warehouse + SOL after writes; heal rare drift before failing the queue row. */
+        /** Must match mobile snapshot on Odoo before markSynced (financial — no partial success). */
         const finalizeDeliveryConsistencyCheck = async () => {
           assertNoUnresolvedRequestedQuantities(requestedDeliveryRemainingByProduct, saleOrderId);
           await verifyAllSaleOrderPickingsAreTerminal(saleOrderId);
-          await verifyStockMoveQtyDoneMatchesPayload(blocks);
+          await applyMobileDeliveredQtyToOdooOnce();
+          if (saleOrderLineDeliveredUpdates.length === 0) return;
           const repairCtx = repairContextFromDeliveryBlocks(blocks);
-          const proactiveHeal = await attemptDeliveredQtyHealForSaleOrder(saleOrderId, p, repairCtx);
-          if (!proactiveHeal.ok) {
-            throw new Error(
-              `Delivery qty not fully aligned on Odoo for SO ${saleOrderId}: ${String(proactiveHeal.reason || 'heal failed').slice(0, 120)}. Sync will retry.`
-            );
-          }
           try {
             await verifySaleOrderLineDeliveredOnOdoo(saleOrderLineDeliveredUpdates);
           } catch (verifyErr) {
-            const heal = await attemptDeliveredQtyHealForSaleOrder(saleOrderId, p, repairCtx);
+            const heal = await attemptDeliveredQtyHealForSaleOrder(saleOrderId, p, {
+              maxRounds: 2,
+              pickingIds: repairCtx.pickingIds,
+              deliveryLines: repairCtx.deliveryLines,
+            });
             if (!heal.ok) throw verifyErr;
             await verifySaleOrderLineDeliveredOnOdoo(saleOrderLineDeliveredUpdates);
           }
@@ -1826,8 +1882,18 @@ async function processSyncQueue() {
 
         try {
           await applySoLineOrderedQty();
+          const snapshotByProduct = await buildRequestedQtyByProductFromDeliveredUpdates(
+            saleOrderId,
+            saleOrderLineDeliveredUpdates
+          );
+          for (const [pid, qty] of snapshotByProduct.entries()) {
+            const prev = Number(requestedDeliveryRemainingByProduct.get(pid)) || 0;
+            if (qty > prev + 0.0001) {
+              requestedDeliveryRemainingByProduct.set(pid, qty);
+            }
+          }
         } catch (soLineErr) {
-          logWarn('queue delivery (sale order lines product_uom_qty)', soLineErr);
+          logWarn('queue delivery (order line / delivery snapshot)', soLineErr);
           throw soLineErr;
         }
 
@@ -1868,7 +1934,6 @@ async function processSyncQueue() {
               `delivery fallback: no pickings for SO ${saleOrderId}; apply SO delivered qty only (requested map size=${requestedDeliveryRemainingByProduct.size})`
             );
           }
-          await applySoLineDeliveredQty();
           {
             const soCrew = saleOrderId != null ? Number(saleOrderId) : NaN;
             if (Number.isFinite(soCrew) && soCrew > 0) await writeSaleOrderCrewFromPaymentPayload(soCrew, p);
@@ -1918,7 +1983,7 @@ async function processSyncQueue() {
             const stateRows = await getPickingState(pickingId);
             const pick = Array.isArray(stateRows) ? stateRows[0] : stateRows;
             if (pick?.state === 'done') {
-              log('queue', `delivery picking ${pickingId} already done — reconcile move/SOL qty from mobile`);
+              log('queue', `delivery picking ${pickingId} already done — align move qty_done from mobile snapshot`);
               for (const line of deliveryLines) {
                 const moveId = line.moveId ?? line.move_id;
                 const qtyN = line.qty_done != null ? Number(line.qty_done) : NaN;
@@ -1927,19 +1992,6 @@ async function processSyncQueue() {
                   await updateStockMoveQuantityDone(Number(moveId), qtyN);
                 } catch (_) {
                   /* readonly on some done transfers */
-                }
-              }
-              if (saleOrderLineDeliveredUpdates.length > 0) {
-                await applySoLineDeliveredQty();
-                try {
-                  await verifySaleOrderLineDeliveredOnOdoo(saleOrderLineDeliveredUpdates);
-                } catch {
-                  await attemptDeliveredQtyHealForSaleOrder(
-                    saleOrderId,
-                    p,
-                    repairContextFromDeliveryBlocks([{ pickingId, deliveryLines }])
-                  );
-                  await verifySaleOrderLineDeliveredOnOdoo(saleOrderLineDeliveredUpdates);
                 }
               }
               validatedAnyPicking = true;
@@ -2240,7 +2292,6 @@ async function processSyncQueue() {
               await tryValidateOne();
               validatedAnyPicking = true;
               log('queue', `delivery validated picking ${pickingId} (skip_backorder)`);
-              await reconcileDeliveredQtyAfterPickingBlock();
             } catch (validateErr) {
               const vMsgRaw = String(validateErr?.message || validateErr);
               const vMsg = vMsgRaw.toLowerCase();
@@ -2257,7 +2308,6 @@ async function processSyncQueue() {
                 await tryValidateOne();
                 validatedAnyPicking = true;
                 log('queue', `delivery validated picking ${pickingId} after assign retry`);
-                await reconcileDeliveredQtyAfterPickingBlock();
               } else {
                 throw validateErr;
               }
@@ -2267,31 +2317,12 @@ async function processSyncQueue() {
             if (validateMsgOkToSkip(vMsg)) {
               log('queue', `delivery validate skipped (picking already done or deleted): ${vMsg.slice(0, 60)}`);
               validatedAnyPicking = true;
-              if (saleOrderLineDeliveredUpdates.length > 0) {
-                try {
-                  await reconcileDeliveredQtyAfterPickingBlock();
-                } catch (reconcileErr) {
-                  logWarn('queue delivery (reconcile after validate skip)', reconcileErr);
-                }
-              }
             } else {
               throw validateErr;
             }
           }
 
           block.deliveryLines = deliveryLines;
-        }
-
-        if (hasPickings && !validatedAnyPicking && saleOrderLineDeliveredUpdates.length > 0) {
-          const soNum = saleOrderId != null ? Number(saleOrderId) : NaN;
-          if (Number.isFinite(soNum) && soNum > 0) {
-            const picks = await getPickingBySaleOrder(soNum).catch(() => []);
-            if (!pickingsTerminalForCompletion(picks)) {
-              throw new Error(
-                `Delivery incomplete: no picking validated for SO ${soNum}. Sync will retry.`
-              );
-            }
-          }
         }
 
         if (validatedAnyPicking && saleOrderId != null) {
@@ -2321,7 +2352,6 @@ async function processSyncQueue() {
           }
         }
 
-        await applySoLineDeliveredQty();
         {
           const soCrew = saleOrderId != null ? Number(saleOrderId) : NaN;
           if (Number.isFinite(soCrew) && soCrew > 0) await writeSaleOrderCrewFromPaymentPayload(soCrew, p);
@@ -2351,11 +2381,7 @@ async function processSyncQueue() {
             try {
               const soId = Number(p0.saleOrderId ?? p0.sale_id);
               if (Number.isFinite(soId) && soId > 0) {
-                const repair = await attemptDeliveredQtyHealForSaleOrder(soId, p0);
-                if (repair.ok) {
-                  await processOneDeliveryQueueItem(item, { queuePass: pass });
-                  log('queue', `delivery id=${item.id} SO ${soId} recovered after qty repair retry`);
-                }
+                await tryMarkDeliverySyncedAfterQtyHeal(item, soId, p0);
               }
             } catch (repairErr) {
               logWarn('queue delivery (mismatch repair retry)', repairErr);
@@ -2608,15 +2634,22 @@ async function processSyncQueue() {
             } catch (flushErr) {
               logWarn('queue delivery (flush before payment)', flushErr);
               try {
-                const repair = await attemptDeliveredQtyHealForSaleOrder(soId, latestHeld.payload || {});
-                if (repair.ok) {
+                let healed = await tryMarkDeliverySyncedAfterQtyHeal(
+                  latestHeld,
+                  soId,
+                  latestHeld.payload || {}
+                );
+                if (healed) {
+                  flushOk = true;
+                  log('queue', `payment SO ${soId}: delivery flush recovered after qty heal`);
+                } else {
                   const releasedRetry = {
                     ...latestHeld,
                     payload: { ...(latestHeld.payload || {}), holdUntilPayment: false },
                   };
                   await processOneDeliveryQueueItem(releasedRetry, { queuePass: pass });
                   flushOk = true;
-                  log('queue', `payment SO ${soId}: delivery flush recovered after qty repair`);
+                  log('queue', `payment SO ${soId}: delivery flush retried once`);
                 }
               } catch (repairErr) {
                 logWarn('queue delivery (repair before payment retry)', repairErr);
@@ -2655,11 +2688,14 @@ async function processSyncQueue() {
             let recoveredDelivery = false;
             if (latestDelivery?.action_type === syncQueueDb.ACTION_DELIVERY) {
               try {
-                const repair = await attemptDeliveredQtyHealForSaleOrder(soId, latestDelivery.payload || {});
-                if (repair.ok) {
-                  await processOneDeliveryQueueItem(latestDelivery, { queuePass: pass });
+                const healed = await tryMarkDeliverySyncedAfterQtyHeal(
+                  latestDelivery,
+                  soId,
+                  latestDelivery.payload || {}
+                );
+                if (healed) {
                   recoveredDelivery = true;
-                  log('queue', `payment SO ${soId}: retried delivery after qty repair`);
+                  log('queue', `payment SO ${soId}: delivery marked synced after qty heal`);
                 }
               } catch (retryErr) {
                 logWarn('queue delivery (repair while payment waiting)', retryErr);
@@ -2684,15 +2720,6 @@ async function processSyncQueue() {
           const payments = p.payments || [];
           const orderName = p.orderName ?? `Order ${saleOrderId}`;
           const skipPaymentCreation = alreadySyncedSaleOrderIds.has(soId);
-
-          const prePayQtyRepair = await ensureBackendDeliveredMatchesMobileBeforePaymentComplete(soId, p);
-          if (!prePayQtyRepair.ok) {
-            log(
-              'queue',
-              `payment id=${item.id} SO ${soId} delayed: delivered qty still mismatched (${String(prePayQtyRepair.reason || '').slice(0, 100)})`
-            );
-            continue;
-          }
 
           if (!skipPaymentCreation) {
             try {
@@ -2750,12 +2777,12 @@ async function processSyncQueue() {
                     postedInvoiceId = Number(resId);
                   }
                 } else {
-                  const preWizardAlign = await ensureBackendDeliveredMatchesMobileBeforePaymentComplete(soId, p);
-                  if (!preWizardAlign.ok) {
+                  const preInvoiceAlign = await ensureBackendDeliveredMatchesMobileBeforePaymentComplete(soId, p);
+                  if (!preInvoiceAlign.ok) {
                     invoiceBlockFailedNoItemsToInvoice = true;
                     log(
                       'queue',
-                      `payment SO ${soId} delayed: delivered qty not aligned before invoice (${String(preWizardAlign.reason || '').slice(0, 100)})`
+                      `payment SO ${soId} delayed: mobile delivered qty not on Odoo before invoice (${String(preInvoiceAlign.reason || '').slice(0, 100)})`
                     );
                     continue;
                   }
@@ -4018,7 +4045,9 @@ export async function runSync() {
  */
 export async function flushPendingUploadsNow(options = {}) {
   const includeAttachments = options?.includeAttachments !== false;
-  const maxPasses = Math.min(Math.max(Number(options?.queuePasses) || 8, 1), 15);
+  const aggressive = options?.aggressive === true;
+  const maxPasses = Math.min(Math.max(Number(options?.queuePasses) || 8, 1), 20);
+  const stallMs = aggressive ? QUEUE_SYNC_AGGRESSIVE_PASS_DELAY_MS : QUEUE_SYNC_FAST_PASS_DELAY_MS;
   try {
     let lastPending = -1;
     for (let pass = 0; pass < maxPasses; pass++) {
@@ -4030,10 +4059,13 @@ export async function flushPendingUploadsNow(options = {}) {
       if (pending === 0) break;
       if (lastPending >= 0 && pending < lastPending) {
         lastPending = pending;
+        if (pass < maxPasses - 1) {
+          await new Promise((r) => setTimeout(r, stallMs));
+        }
         continue;
       }
       if (pending === lastPending && pass < maxPasses - 1) {
-        await new Promise((r) => setTimeout(r, QUEUE_SYNC_FAST_PASS_DELAY_MS));
+        await new Promise((r) => setTimeout(r, stallMs));
       }
       lastPending = pending;
     }

@@ -284,8 +284,12 @@ export default function AppNavigator() {
         const indicatorWork = hasDashboardUploadIndicators();
         if (!queueWork && !indicatorWork) return;
         const ageMs = await syncQueueDb.getOldestPendingQueueAgeMs();
-        const passes = ageMs <= PENDING_QUEUE_FAST_RETRY_WINDOW_MS ? 10 : 6;
-        await flushPendingUploadsNow({ includeAttachments: true, queuePasses: passes });
+        const passes = ageMs <= PENDING_QUEUE_FAST_RETRY_WINDOW_MS ? 18 : 10;
+        await flushPendingUploadsNow({
+          includeAttachments: true,
+          queuePasses: passes,
+          aggressive: queueWork || indicatorWork,
+        });
         if (!(await hasPendingUploadWork()) && !hasDashboardUploadIndicators()) return;
         runSync().catch(() => {});
       } catch (_) {
@@ -340,7 +344,7 @@ export default function AppNavigator() {
       }, delayMs);
     };
     if (AppState.currentState === 'active') void runFastPending();
-    scheduleFastPendingLoop(PENDING_QUEUE_ACTIVE_RETRY_MS);
+    scheduleFastPendingLoop(250);
 
     return () => {
       sub?.remove?.();
