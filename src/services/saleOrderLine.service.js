@@ -66,6 +66,27 @@ export const updateSaleOrderLineQty = (lineId, qty) =>
 export const updateSaleOrderLineQtyDelivered = (lineId, qtyDelivered) =>
   callOdoo("sale.order.line", "write", [[lineId], { qty_delivered: Number(qtyDelivered) }]);
 
+/**
+ * Apply multiple sale.order.line updates in one Odoo write (single DB transaction on server).
+ * ordered: [{ lineId, product_uom_qty }]
+ * delivered: [{ lineId, qty_delivered }]
+ */
+export const applySaleOrderLineUpdatesBatch = async (saleOrderId, { ordered = [], delivered = [] } = {}) => {
+  const soId = Number(saleOrderId);
+  if (!Number.isFinite(soId) || soId <= 0) return;
+  const orderLineCommands = [];
+  for (const u of ordered || []) {
+    if (u?.lineId == null || u?.product_uom_qty == null) continue;
+    orderLineCommands.push([1, Number(u.lineId), { product_uom_qty: Number(u.product_uom_qty) }]);
+  }
+  for (const u of delivered || []) {
+    if (u?.lineId == null || u?.qty_delivered == null) continue;
+    orderLineCommands.push([1, Number(u.lineId), { qty_delivered: Number(u.qty_delivered) }]);
+  }
+  if (!orderLineCommands.length) return;
+  await callOdoo("sale.order", "write", [[soId], { order_line: orderLineCommands }]);
+};
+
 /* ---------------- GET PAYMENT JOURNALS (bank and cash only, from Odoo) ---------------- */
 export const getJournals = () =>
   callOdoo(

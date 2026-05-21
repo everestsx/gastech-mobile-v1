@@ -1289,8 +1289,32 @@ async function verifySaleOrderLineDeliveredOnOdoo(deliveredUpdates, options = {}
   }
 }
 
-async function applySaleOrderLineDeliveredUpdates(deliveredUpdates) {
+async function applySaleOrderLineDeliveredUpdates(deliveredUpdates, saleOrderId = null) {
   if (!Array.isArray(deliveredUpdates) || deliveredUpdates.length === 0) return;
+  const soId = Number(saleOrderId);
+  if (Number.isFinite(soId) && soId > 0) {
+    const { applySaleOrderLineUpdatesBatch, updateSaleOrderLineQtyDelivered } = await import(
+      './saleOrderLine.service.js'
+    );
+    try {
+      await applySaleOrderLineUpdatesBatch(soId, { delivered: deliveredUpdates });
+      return;
+    } catch (batchErr) {
+      log(
+        'queue',
+        `delivery SO line batch write failed for SO ${soId}, falling back per line: ${String(batchErr?.message || batchErr).slice(0, 100)}`
+      );
+      for (const u of deliveredUpdates) {
+        if (u.lineId == null || u.qty_delivered == null) continue;
+        try {
+          await updateSaleOrderLineQtyDelivered(u.lineId, Number(u.qty_delivered));
+        } catch (lineErr) {
+          logWarn('queue delivery (SO line delivered fallback)', lineErr);
+        }
+      }
+      return;
+    }
+  }
   const { updateSaleOrderLineQtyDelivered } = await import('./saleOrderLine.service.js');
   for (const u of deliveredUpdates) {
     if (u.lineId == null || u.qty_delivered == null) continue;
@@ -1306,12 +1330,9 @@ async function repairOdooDeliveredQuantitiesFromMobile(saleOrderId, deliveredUpd
   const updates = Array.isArray(deliveredUpdates) ? deliveredUpdates : [];
   if (!updates.length) return { ok: true, reason: 'no delivered rows' };
 
-  const {
-    getStockMovesByPickingId,
-    getStockMoveLinesByMoveIds,
-    updateStockMoveQuantityDone,
-    updateMoveLineQty,
-  } = await import('./delivery.service.js');
+  const { getStockMovesByPickingId, applyPickingDeliverySnapshotWithFallback } = await import(
+    './delivery.service.js'
+  );
 
   const resolved = await resolveRepairContextForSaleOrder(saleOrderId, updates, {
     pickingIds: options.pickingIds,
@@ -1332,24 +1353,23 @@ async function repairOdooDeliveredQuantitiesFromMobile(saleOrderId, deliveredUpd
     if (!pickingIds.length || qtyDoneByMoveId.size === 0) return;
     for (const pickingId of pickingIds) {
       const moves = await getStockMovesByPickingId(pickingId).catch(() => []);
+      const blockDeliveryLines = [];
       for (const mv of moves || []) {
         const mid = Number(mv?.id);
         const target = qtyDoneByMoveId.get(mid);
         if (!Number.isFinite(mid) || target == null) continue;
-        try {
-          await updateStockMoveQuantityDone(mid, target);
-        } catch (_) {
-          try {
-            const mls = await getStockMoveLinesByMoveIds([mid]).catch(() => []);
-            for (const ml of mls || []) {
-              const mlid = Number(ml?.id);
-              if (!Number.isFinite(mlid)) continue;
-              await updateMoveLineQty(mlid, target);
-            }
-          } catch (_) {
-            /* done transfers may be readonly on some DBs — SOL write below is authoritative */
-          }
-        }
+        const productId = Number(Array.isArray(mv?.product_id) ? mv.product_id[0] : mv?.product_id);
+        blockDeliveryLines.push({
+          moveId: mid,
+          productId: Number.isFinite(productId) ? productId : undefined,
+          qty_done: target,
+        });
+      }
+      if (!blockDeliveryLines.length) continue;
+      try {
+        await applyPickingDeliverySnapshotWithFallback(pickingId, { deliveryLines: blockDeliveryLines });
+      } catch (_) {
+        /* done transfers may be readonly on some DBs — SOL write below is authoritative */
       }
     }
   };
@@ -1360,7 +1380,7 @@ async function repairOdooDeliveredQuantitiesFromMobile(saleOrderId, deliveredUpd
   for (let round = 0; round < maxRounds; round++) {
     try {
       await applyMoveQtyTargets();
-      await applySaleOrderLineDeliveredUpdates(updates);
+      await applySaleOrderLineDeliveredUpdates(updates, saleOrderId);
       await verifySaleOrderLineDeliveredOnOdoo(updates);
       log('queue', `delivery qty repair OK for SO ${saleOrderId} (round ${round + 1})`);
       return { ok: true };
@@ -1770,9 +1790,7 @@ async function processSyncQueue() {
         getPickingBySaleOrder,
         getPickingState,
         getStockMovesByPickingId,
-        getStockMoveLinesByMoveIds,
-        updateMoveLineQty,
-        updateStockMoveQty,
+        applyPickingDeliverySnapshotWithFallback,
         updateStockMoveQuantityDone,
         createMoveLine,
         actionConfirmPicking,
@@ -1844,6 +1862,20 @@ async function processSyncQueue() {
         const targetPickingIds = new Set();
 
         const applySoLineOrderedQty = async () => {
+          if (!orderLineUpdates.length) return;
+          const soNum = saleOrderId != null ? Number(saleOrderId) : NaN;
+          if (Number.isFinite(soNum) && soNum > 0) {
+            const { applySaleOrderLineUpdatesBatch } = await import('./saleOrderLine.service.js');
+            try {
+              await applySaleOrderLineUpdatesBatch(soNum, { ordered: orderLineUpdates });
+              return;
+            } catch (batchErr) {
+              log(
+                'queue',
+                `delivery SO ordered batch failed for SO ${soNum}, per-line fallback: ${String(batchErr?.message || batchErr).slice(0, 100)}`
+              );
+            }
+          }
           for (const u of orderLineUpdates) {
             if (u.lineId == null || u.product_uom_qty == null) continue;
             await updateSaleOrderLineQty(u.lineId, u.product_uom_qty);
@@ -1851,7 +1883,7 @@ async function processSyncQueue() {
         };
 
         const applySoLineDeliveredQty = async () => {
-          await applySaleOrderLineDeliveredUpdates(saleOrderLineDeliveredUpdates);
+          await applySaleOrderLineDeliveredUpdates(saleOrderLineDeliveredUpdates, saleOrderId);
         };
 
         /** After all pickings validated: one SOL write from the mobile snapshot (not during validate). */
@@ -1864,6 +1896,9 @@ async function processSyncQueue() {
         const finalizeDeliveryConsistencyCheck = async () => {
           assertNoUnresolvedRequestedQuantities(requestedDeliveryRemainingByProduct, saleOrderId);
           await verifyAllSaleOrderPickingsAreTerminal(saleOrderId);
+          if (blocks.length > 0) {
+            await verifyStockMoveQtyDoneMatchesPayload(blocks);
+          }
           await applyMobileDeliveredQtyToOdooOnce();
           if (saleOrderLineDeliveredUpdates.length === 0) return;
           const repairCtx = repairContextFromDeliveryBlocks(blocks);
@@ -1984,15 +2019,10 @@ async function processSyncQueue() {
             const pick = Array.isArray(stateRows) ? stateRows[0] : stateRows;
             if (pick?.state === 'done') {
               log('queue', `delivery picking ${pickingId} already done — align move qty_done from mobile snapshot`);
-              for (const line of deliveryLines) {
-                const moveId = line.moveId ?? line.move_id;
-                const qtyN = line.qty_done != null ? Number(line.qty_done) : NaN;
-                if (moveId == null || !Number.isFinite(qtyN) || qtyN <= 0) continue;
-                try {
-                  await updateStockMoveQuantityDone(Number(moveId), qtyN);
-                } catch (_) {
-                  /* readonly on some done transfers */
-                }
+              try {
+                await applyPickingDeliverySnapshotWithFallback(pickingId, { deliveryLines });
+              } catch (_) {
+                /* readonly on some done transfers */
               }
               validatedAnyPicking = true;
               continue;
@@ -2142,66 +2172,18 @@ async function processSyncQueue() {
 
           try {
             await topUpDeliveryLinesFromRequested();
-            for (const u of moveUpdates) {
-              await updateStockMoveQty(u.moveId, u.product_uom_qty);
-            }
-            const hasMoveLineUpdates = Array.isArray(moveLineUpdates) && moveLineUpdates.length > 0;
-            const updatedMoveIds = new Set();
-            if (hasMoveLineUpdates) {
-              for (const u of moveLineUpdates) {
-                await updateMoveLineQty(u.moveLineId, u.qty_done);
-                if (u?.moveId != null && Number.isFinite(Number(u.moveId))) {
-                  updatedMoveIds.add(Number(u.moveId));
-                }
-              }
-            }
             /**
-             * Mixed edge case (critical):
-             * some products can already have move lines while others do not.
-             * Old logic used either update OR create path; missing lines were skipped.
-             * Always ensure each delivery line exists when qty_done > 0.
+             * One stock.picking write applies move demand, move lines, and quantity_done together
+             * (single Odoo transaction). Falls back to legacy per-line RPCs if the server rejects it.
              */
-            if (deliveryLines.length > 0) {
-              for (const line of deliveryLines) {
-                const moveId = line.moveId ?? line.move_id;
-                const productId = line.productId ?? line.product_id;
-                const qty = line.qty_done;
-                const qtyN = qty != null ? Number(qty) : NaN;
-                if (moveId == null || productId == null || !Number.isFinite(qtyN) || qtyN <= 0) continue;
-                if (updatedMoveIds.has(Number(moveId))) continue;
-                try {
-                  await createMoveLine(pickingId, Number(moveId), Number(productId), qtyN);
-                } catch (createErr) {
-                  /** Edge case only: line may exist — set quantity_done on move (does not throw). */
-                  try {
-                    await updateStockMoveQuantityDone(Number(moveId), qtyN);
-                  } catch (_) {
-                    /* keep original skip behaviour if fallback fails */
-                  }
-                  log(
-                    'queue',
-                    `delivery createMoveLine fallback move ${moveId}: ${String(createErr?.message || createErr).slice(0, 80)}`
-                  );
-                }
-              }
-            }
-            /** Ensure stock.move.quantity_done matches payload (avoids validating a "zero" transfer when move_line ids were wrong locally). */
-            const qtyDoneByMoveId = new Map();
-            for (const line of deliveryLines) {
-              const mid = line.moveId ?? line.move_id;
-              if (mid == null) continue;
-              qtyDoneByMoveId.set(Number(mid), Number(line.qty_done));
-            }
-            for (const [moveId, qty] of qtyDoneByMoveId) {
-              try {
-                await updateStockMoveQuantityDone(moveId, qty);
-              } catch (qErr) {
-                log(
-                  'queue',
-                  `delivery quantity_done on move ${moveId} skipped: ${String(qErr?.message || qErr).slice(0, 100)}`
-                );
-              }
-            }
+            await applyPickingDeliverySnapshotWithFallback(pickingId, {
+              moveUpdates,
+              moveLineUpdates,
+              deliveryLines,
+            });
+            await verifyStockMoveQtyDoneMatchesPayload([
+              { pickingId, deliveryLines, moveUpdates, moveLineUpdates },
+            ]);
           } catch (updateErr) {
             const msg = (updateErr?.message || String(updateErr)).toLowerCase();
             const recordDeleted = msg.includes('does not exist or has been deleted') || msg.includes('has been deleted');
@@ -2214,15 +2196,10 @@ async function processSyncQueue() {
 
           /** Edge case only (queue retry pass > 1): re-apply qty_done before validate — pass 1 unchanged. */
           if (Number(syncOptions.queuePass) > 1 && deliveryLines.length > 0) {
-            for (const line of deliveryLines) {
-              const moveId = line.moveId ?? line.move_id;
-              const qtyN = line.qty_done != null ? Number(line.qty_done) : NaN;
-              if (moveId == null || !Number.isFinite(qtyN) || qtyN <= 0) continue;
-              try {
-                await updateStockMoveQuantityDone(Number(moveId), qtyN);
-              } catch (_) {
-                /* best-effort on retry */
-              }
+            try {
+              await applyPickingDeliverySnapshotWithFallback(pickingId, { deliveryLines });
+            } catch (_) {
+              /* best-effort on retry */
             }
             await new Promise((r) => setTimeout(r, 400));
             log(
