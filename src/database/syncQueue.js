@@ -5,7 +5,7 @@
 import { getDb } from './db.js';
 import { empty, num, iso } from './dbHelpers.js';
 
-/** Delivery: validate picking + stock moves/lines. Payload: { saleOrderId, pickingId, pickings[], orderLineUpdates (product_uom_qty — Modify only), saleOrderLineDeliveredUpdates ({ lineId, qty_delivered }), moveUpdates, moveLineUpdates, holdUntilPayment?: true } — when true, sync.service skips until a payment queue item runs (then flushes to Odoo before invoice). */
+/** Delivery: validate picking + stock moves/lines. Payload: { saleOrderId, demandEdit?: boolean, pickingId, pickings[], orderLineUpdates (product_uom_qty — Modify only), saleOrderLineDeliveredUpdates ({ lineId, qty_delivered }), moveUpdates (move demand — Modify only), moveLineUpdates, holdUntilPayment?: true } — when true, sync.service skips until payment completes (then flushes once before invoice). */
 export const ACTION_DELIVERY = 'delivery';
 /** Payment: create invoice and payments. Payload: { saleOrderId, partnerId, orderName, total, payments[], deliveryPhotoUris? } */
 export const ACTION_PAYMENT = 'payment';

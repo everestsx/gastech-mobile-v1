@@ -1330,7 +1330,7 @@ async function repairOdooDeliveredQuantitiesFromMobile(saleOrderId, deliveredUpd
   const updates = Array.isArray(deliveredUpdates) ? deliveredUpdates : [];
   if (!updates.length) return { ok: true, reason: 'no delivered rows' };
 
-  const { getStockMovesByPickingId, applyPickingDeliverySnapshotWithFallback } = await import(
+  const { getStockMovesByPickingId, applyPickingDeliverySnapshotIdempotent } = await import(
     './delivery.service.js'
   );
 
@@ -1367,7 +1367,7 @@ async function repairOdooDeliveredQuantitiesFromMobile(saleOrderId, deliveredUpd
       }
       if (!blockDeliveryLines.length) continue;
       try {
-        await applyPickingDeliverySnapshotWithFallback(pickingId, { deliveryLines: blockDeliveryLines });
+        await applyPickingDeliverySnapshotIdempotent(pickingId, { deliveryLines: blockDeliveryLines });
       } catch (_) {
         /* done transfers may be readonly on some DBs — SOL write below is authoritative */
       }
@@ -1715,8 +1715,8 @@ async function processSyncQueue() {
       let deliveryPre = queueSnap.filter((p) => p.action_type === syncQueueDb.ACTION_DELIVERY);
       let inventoryPre = queueSnap.filter((p) => p.action_type === syncQueueDb.ACTION_INVENTORY_UPDATE);
 
-      const deliveryOpen = deliveryPre.filter((d) => !(d.payload || {}).holdUntilPayment);
-      await supersedeStaleQueueRows(deliveryOpen, 'delivery');
+      /** Dedupe every pending delivery row per SO (held + open) so offline replay never validates twice. */
+      await supersedeStaleQueueRows(deliveryPre, 'delivery', { allowHeldPayload: true });
       const inventoryOpen = inventoryPre.filter((d) => !(d.payload || {}).holdUntilComplete);
       await supersedeStaleQueueRows(inventoryOpen, 'inventory_update');
       /** Held empty-return rows can duplicate if Confirm is tapped twice; keep latest snapshot before sync clears hold. */
@@ -1790,7 +1790,7 @@ async function processSyncQueue() {
         getPickingBySaleOrder,
         getPickingState,
         getStockMovesByPickingId,
-        applyPickingDeliverySnapshotWithFallback,
+        applyPickingDeliverySnapshotIdempotent,
         updateStockMoveQuantityDone,
         createMoveLine,
         actionConfirmPicking,
@@ -1849,7 +1849,8 @@ async function processSyncQueue() {
         const snapshot = await resolveDeliveredSnapshotForSync(saleOrderIdRaw, item.payload || {});
         const p = snapshot.payload || {};
         const saleOrderId = p.saleOrderId ?? p.sale_id;
-        const orderLineUpdates = p.orderLineUpdates || [];
+        const demandEdit = p.demandEdit === true;
+        const orderLineUpdates = demandEdit ? p.orderLineUpdates || [] : [];
         const saleOrderLineDeliveredUpdates = snapshot.updates || [];
         const requestedQtyByProduct = p.requestedQtyByProduct || {};
         let blocks = pickingsBlocksFromPayload(p);
@@ -1916,7 +1917,9 @@ async function processSyncQueue() {
         };
 
         try {
-          await applySoLineOrderedQty();
+          if (demandEdit) {
+            await applySoLineOrderedQty();
+          }
           const snapshotByProduct = await buildRequestedQtyByProductFromDeliveredUpdates(
             saleOrderId,
             saleOrderLineDeliveredUpdates
@@ -2010,7 +2013,7 @@ async function processSyncQueue() {
           }
           targetPickingIds.add(Number(pickingId));
 
-          const moveUpdates = block.moveUpdates || [];
+          const moveUpdates = demandEdit ? block.moveUpdates || [] : [];
           const moveLineUpdates = block.moveLineUpdates || [];
           const deliveryLines = Array.isArray(block.deliveryLines) ? [...block.deliveryLines] : [];
 
@@ -2020,7 +2023,7 @@ async function processSyncQueue() {
             if (pick?.state === 'done') {
               log('queue', `delivery picking ${pickingId} already done — align move qty_done from mobile snapshot`);
               try {
-                await applyPickingDeliverySnapshotWithFallback(pickingId, { deliveryLines });
+                await applyPickingDeliverySnapshotIdempotent(pickingId, { deliveryLines });
               } catch (_) {
                 /* readonly on some done transfers */
               }
@@ -2176,14 +2179,16 @@ async function processSyncQueue() {
              * One stock.picking write applies move demand, move lines, and quantity_done together
              * (single Odoo transaction). Falls back to legacy per-line RPCs if the server rejects it.
              */
-            await applyPickingDeliverySnapshotWithFallback(pickingId, {
+            const applyResult = await applyPickingDeliverySnapshotIdempotent(pickingId, {
               moveUpdates,
               moveLineUpdates,
               deliveryLines,
             });
-            await verifyStockMoveQtyDoneMatchesPayload([
-              { pickingId, deliveryLines, moveUpdates, moveLineUpdates },
-            ]);
+            if (applyResult?.mode !== 'already_applied') {
+              await verifyStockMoveQtyDoneMatchesPayload([
+                { pickingId, deliveryLines, moveUpdates, moveLineUpdates },
+              ]);
+            }
           } catch (updateErr) {
             const msg = (updateErr?.message || String(updateErr)).toLowerCase();
             const recordDeleted = msg.includes('does not exist or has been deleted') || msg.includes('has been deleted');
@@ -2194,17 +2199,15 @@ async function processSyncQueue() {
             }
           }
 
-          /** Edge case only (queue retry pass > 1): re-apply qty_done before validate — pass 1 unchanged. */
+          /** Queue retry pass > 1: verify only — never re-write qty (prevents offline duplicate stacking). */
           if (Number(syncOptions.queuePass) > 1 && deliveryLines.length > 0) {
-            try {
-              await applyPickingDeliverySnapshotWithFallback(pickingId, { deliveryLines });
-            } catch (_) {
-              /* best-effort on retry */
-            }
+            await verifyStockMoveQtyDoneMatchesPayload([
+              { pickingId, deliveryLines, moveUpdates, moveLineUpdates },
+            ]);
             await new Promise((r) => setTimeout(r, 400));
             log(
               'queue',
-              `delivery retry pass ${syncOptions.queuePass}: re-applied qty_done before validate picking ${pickingId}`
+              `delivery retry pass ${syncOptions.queuePass}: verified qty_done before validate picking ${pickingId}`
             );
           }
 
@@ -2358,7 +2361,10 @@ async function processSyncQueue() {
             try {
               const soId = Number(p0.saleOrderId ?? p0.sale_id);
               if (Number.isFinite(soId) && soId > 0) {
-                await tryMarkDeliverySyncedAfterQtyHeal(item, soId, p0);
+                const healed = await tryMarkDeliverySyncedAfterQtyHeal(item, soId, p0);
+                if (healed) {
+                  log('queue', `delivery id=${item.id} SO ${soId} marked synced after idempotent heal`);
+                }
               }
             } catch (repairErr) {
               logWarn('queue delivery (mismatch repair retry)', repairErr);
@@ -2611,25 +2617,17 @@ async function processSyncQueue() {
             } catch (flushErr) {
               logWarn('queue delivery (flush before payment)', flushErr);
               try {
-                let healed = await tryMarkDeliverySyncedAfterQtyHeal(
+                const healed = await tryMarkDeliverySyncedAfterQtyHeal(
                   latestHeld,
                   soId,
                   latestHeld.payload || {}
                 );
                 if (healed) {
                   flushOk = true;
-                  log('queue', `payment SO ${soId}: delivery flush recovered after qty heal`);
-                } else {
-                  const releasedRetry = {
-                    ...latestHeld,
-                    payload: { ...(latestHeld.payload || {}), holdUntilPayment: false },
-                  };
-                  await processOneDeliveryQueueItem(releasedRetry, { queuePass: pass });
-                  flushOk = true;
-                  log('queue', `payment SO ${soId}: delivery flush retried once`);
+                  log('queue', `payment SO ${soId}: delivery flush recovered after qty heal (no duplicate RPC)`);
                 }
               } catch (repairErr) {
-                logWarn('queue delivery (repair before payment retry)', repairErr);
+                logWarn('queue delivery (repair before payment)', repairErr);
               }
             }
 

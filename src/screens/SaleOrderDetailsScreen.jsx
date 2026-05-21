@@ -999,18 +999,13 @@ const validateQuantities = useCallback(() => {
        */
       const targets = openPickings.length > 0 ? openPickings : pickings;
 
+      /** Ordered qty (SO demand) — only when driver explicitly uses Modify → Update, never on proceed-to-payment. */
       const orderLineUpdates = [];
       for (let i = 0; i < lines.length; i++) {
         const l = lines[i];
         const newVal = effectiveQtys[i] != null ? Number(effectiveQtys[i]) : Number(l.newQty);
         const oldDem = Number(l.product_uom_qty) || 0;
-        if (newVal !== oldDem) {
-          /**
-           * Keep SO demand aligned to final delivered qty in both flows:
-           * - demandEdit=true (manual Modify->Update)
-           * - demandEdit=false (proceed-to-payment)
-           * This avoids intermittent "not fully invoiced" when Odoo compares ordered vs invoiced quantities.
-           */
+        if (demandEdit && newVal !== oldDem) {
           orderLineUpdates.push({ lineId: l.id, product_uom_qty: newVal });
           await saleOrderLinesDb.updateSaleOrderLineQtyLocal(l.id, newVal);
         }
@@ -1142,12 +1137,7 @@ const validateQuantities = useCallback(() => {
 
           const currentMoveDemand = Number(moveRow?.product_uom_qty) || 0;
 
-          if (demandEdit) {
-            if (newVal !== currentMoveDemand) {
-              await stockMovesDb.updateStockMoveQtyLocal(moveId, newVal);
-              moveUpdates.push({ moveId, product_uom_qty: newVal });
-            }
-          } else if (newVal !== currentMoveDemand) {
+          if (demandEdit && newVal !== currentMoveDemand) {
             await stockMovesDb.updateStockMoveQtyLocal(moveId, newVal);
             moveUpdates.push({ moveId, product_uom_qty: newVal });
           }
@@ -1204,6 +1194,7 @@ const validateQuantities = useCallback(() => {
 
       const payload = {
         saleOrderId: order.id,
+        demandEdit,
         orderLineUpdates,
         saleOrderLineDeliveredUpdates,
         requestedQtyByProduct: { ...requestedQtyByProductId },
