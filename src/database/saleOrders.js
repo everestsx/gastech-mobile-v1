@@ -37,15 +37,29 @@ export async function upsertSaleOrders(rows, options = {}) {
   try {
     await db.withTransactionAsync(async (tx) => {
       let localMap = {};
+      const cancelledLocalRows = await tx.getAllAsync(
+        `SELECT id, cancel_reason FROM sale_orders WHERE LOWER(COALESCE(state, '')) = 'cancel'`
+      );
+      for (const row of cancelledLocalRows || []) {
+        const idKey = num(row.id);
+        localMap[idKey] = {
+          ...(localMap[idKey] || {}),
+          state: 'cancel',
+          cancel_reason: empty(row.cancel_reason),
+        };
+      }
       if (preserveIds.length > 0) {
         const placeholders = preserveIds.map(() => '?').join(',');
-        const selectSql = `SELECT id, invoice_status, payment_type FROM sale_orders WHERE id IN (${placeholders})`;
+        const selectSql = `SELECT id, invoice_status, payment_type, state, cancel_reason FROM sale_orders WHERE id IN (${placeholders})`;
         const localRows = await tx.getAllAsync(selectSql, preserveIds);
         for (const row of localRows || []) {
           const idKey = num(row.id);
           localMap[idKey] = {
+            ...(localMap[idKey] || {}),
             invoice_status: empty(row.invoice_status),
             payment_type: empty(row.payment_type),
+            state: localMap[idKey]?.state || empty(row.state),
+            cancel_reason: localMap[idKey]?.cancel_reason || empty(row.cancel_reason),
           };
         }
         logQuery(op, `SELECT preserve local rows=${(localRows || []).length}`);
@@ -57,9 +71,21 @@ export async function upsertSaleOrders(rows, options = {}) {
         const route = odooRel(r.route_id);
         const vehicle = odooRel(r.vehicle_id);
         const rid = num(r.id);
-        const useLocal = preserveIds.length > 0 && localMap[rid];
-        const invoiceStatus = useLocal ? (localMap[rid].invoice_status || empty(r.invoice_status)) : empty(r.invoice_status);
-        const paymentType = useLocal ? (localMap[rid].payment_type || empty(r.payment_type ?? '')) : empty(r.payment_type ?? '');
+        const useLocal = localMap[rid] != null;
+        const preservePayment =
+          preserveIds.length > 0 && preserveIds.includes(rid) && localMap[rid];
+        const invoiceStatus = preservePayment
+          ? (localMap[rid].invoice_status || empty(r.invoice_status))
+          : empty(r.invoice_status);
+        const paymentType = preservePayment
+          ? (localMap[rid].payment_type || empty(r.payment_type ?? ''))
+          : empty(r.payment_type ?? '');
+        const localState = useLocal ? String(localMap[rid].state || '').toLowerCase() : '';
+        const state = localState === 'cancel' ? 'cancel' : empty(r.state);
+        const cancelReason =
+          localState === 'cancel' && localMap[rid].cancel_reason
+            ? localMap[rid].cancel_reason
+            : empty(r.cancel_reason);
         const amountCash = numOrNull(r.amount_cash);
         const amountCheque = numOrNull(r.amount_cheque);
         const amountCredit = numOrNull(r.amount_credit);
@@ -69,7 +95,7 @@ export async function upsertSaleOrders(rows, options = {}) {
           empty(r.name),
           numOrNull(partner.id) ?? null,
           empty(partner.name),
-          empty(r.state),
+          state,
           empty(r.date_order),
           empty(r.commitment_date),
           num(r.amount_total),
@@ -88,6 +114,7 @@ export async function upsertSaleOrders(rows, options = {}) {
           amountCheque,
           amountCredit,
           empty(r.invoice_number),
+          cancelReason,
         ];
         try {
           await tx.runAsync(
@@ -95,8 +122,8 @@ export async function upsertSaleOrders(rows, options = {}) {
               id, name, partner_id, partner_name, state, date_order, commitment_date,
               amount_total, amount_untaxed, amount_tax, invoice_status, order_line,
               route_id, route_name, vehicle_id, vehicle_name, updated_at, payload, payment_type,
-              amount_cash, amount_cheque, amount_credit, invoice_number
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              amount_cash, amount_cheque, amount_credit, invoice_number, cancel_reason
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
               name=excluded.name, partner_id=excluded.partner_id, partner_name=excluded.partner_name,
               state=excluded.state, date_order=excluded.date_order, commitment_date=excluded.commitment_date,
@@ -107,7 +134,8 @@ export async function upsertSaleOrders(rows, options = {}) {
               updated_at=excluded.updated_at, payload=excluded.payload,
               payment_type=excluded.payment_type,
               amount_cash=excluded.amount_cash, amount_cheque=excluded.amount_cheque, amount_credit=excluded.amount_credit,
-              invoice_number=COALESCE(NULLIF(excluded.invoice_number, ''), sale_orders.invoice_number)`,
+              invoice_number=COALESCE(NULLIF(excluded.invoice_number, ''), sale_orders.invoice_number),
+              cancel_reason=COALESCE(NULLIF(excluded.cancel_reason, ''), sale_orders.cancel_reason)`,
             params
           );
         } catch (rowErr) {
@@ -126,6 +154,40 @@ export async function upsertSaleOrders(rows, options = {}) {
 /**
  * @param {number | null} [vehicleId] - When set, return only sale orders for this vehicle.
  */
+/** Cancelled orders for history screen (includes offline-cancelled rows). */
+export async function getCancelledSaleOrders(vehicleId = null, sortField = 'date_order') {
+  const op = 'getCancelledSaleOrders';
+  const orderColumn = sortField === 'commitment_date' ? 'commitment_date' : 'date_order';
+  logQuery(op, `vehicleId=${vehicleId ?? 'null'} sortField=${orderColumn}`);
+  const db = await getDb();
+  const sql =
+    vehicleId != null
+      ? `SELECT so.*, p.name_tamil AS partner_name_tamil, p.name_sinhala AS partner_name_sinhala
+         FROM sale_orders so
+         LEFT JOIN partners p ON so.partner_id = p.id
+         WHERE so.vehicle_id = ? AND LOWER(COALESCE(so.state, '')) = 'cancel'
+         ORDER BY so.${orderColumn} DESC, so.id DESC LIMIT 1000`
+      : `SELECT so.*, p.name_tamil AS partner_name_tamil, p.name_sinhala AS partner_name_sinhala
+         FROM sale_orders so
+         LEFT JOIN partners p ON so.partner_id = p.id
+         WHERE LOWER(COALESCE(so.state, '')) = 'cancel'
+         ORDER BY so.${orderColumn} DESC, so.id DESC LIMIT 1000`;
+  const args = vehicleId != null ? [vehicleId] : [];
+  try {
+    const rows = await db.getAllAsync(sql, args);
+    return (rows || []).map((row) => ({
+      ...row,
+      order_line: safeParseJson(row.order_line, []),
+      route_id: row.route_id != null ? [row.route_id, row.route_name ?? ''] : null,
+      vehicle_id: row.vehicle_id != null ? [row.vehicle_id, row.vehicle_name ?? ''] : null,
+      partner_id: row.partner_id != null ? [row.partner_id, row.partner_name ?? ''] : null,
+    }));
+  } catch (err) {
+    logError(op, `vehicleId=${vehicleId}`, err);
+    throw err;
+  }
+}
+
 export async function getAllSaleOrders(vehicleId = null, sortField = 'date_order') {
   const op = 'getAllSaleOrders';
   const orderColumn = sortField === 'commitment_date' ? 'commitment_date' : 'date_order';
@@ -222,23 +284,43 @@ export async function getSaleOrderById(id) {
  * (e.g. creation date vs delivery date) so stale local rows do not remain visible.
  * @param {Array<number>} keepIds
  * @param {{ preserveLocalForSaleOrderIds?: Set<number> | number[] }} [options]
+ * @deprecated Prefer pruneSaleOrdersForVehicle — global prune can delete other vehicles' offline history.
  */
 export async function pruneSaleOrdersToIds(keepIds = [], options = {}) {
+  return pruneSaleOrdersForVehicle(null, keepIds, options);
+}
+
+/**
+ * Prune stale orders for one vehicle only. Other vehicles' local delivered/invoiced rows are untouched.
+ * @param {number|null} vehicleId — when null/invalid, prune is skipped (admin-safe).
+ */
+export async function pruneSaleOrdersForVehicle(vehicleId, keepIds = [], options = {}) {
   const db = await getDb();
+  const vid = num(vehicleId);
   const preserveSet = options.preserveLocalForSaleOrderIds;
-  const preserveIds = preserveSet instanceof Set ? Array.from(preserveSet) : (Array.isArray(preserveSet) ? preserveSet : []);
-  const merged = [...new Set([...(keepIds || []), ...preserveIds].map((id) => num(id)).filter((id) => Number.isFinite(id) && id > 0))];
+  const preserveIds = preserveSet instanceof Set ? Array.from(preserveSet) : Array.isArray(preserveSet) ? preserveSet : [];
+  const merged = [
+    ...new Set([...(keepIds || []), ...preserveIds].map((id) => num(id)).filter((id) => Number.isFinite(id) && id > 0)),
+  ];
+
+  if (!Number.isFinite(vid) || vid <= 0) {
+    logQuery('pruneSaleOrdersForVehicle', 'skipped — no vehicle scope (multi-vehicle history preserved)');
+    return { pruned: 0, skipped: true };
+  }
 
   if (merged.length === 0) {
-    await db.runAsync('DELETE FROM sale_orders');
-    return;
+    logQuery('pruneSaleOrdersForVehicle', `skipped vehicle=${vid} — empty keep list`);
+    return { pruned: 0, skipped: true };
   }
 
   const placeholders = merged.map(() => '?').join(',');
-  await db.runAsync(
-    `DELETE FROM sale_orders WHERE id NOT IN (${placeholders})`,
-    merged
+  const result = await db.runAsync(
+    `DELETE FROM sale_orders WHERE vehicle_id = ? AND id NOT IN (${placeholders})`,
+    [vid, ...merged]
   );
+  const pruned = result?.changes ?? 0;
+  logQuery('pruneSaleOrdersForVehicle', `vehicle=${vid} keep=${merged.length} removed=${pruned}`);
+  return { pruned, skipped: false };
 }
 
 function safeParseJson(str, fallback) {
@@ -351,6 +433,24 @@ export async function updateSaleOrderStateLocal(orderId, state) {
     logQuery(op, `done orderId=${orderId}`);
   } catch (err) {
     logError(op, `orderId=${orderId} params=${JSON.stringify(params)}`, err);
+    throw err;
+  }
+}
+
+/** Offline cancel: state + reason stored until Odoo sync confirms. */
+export async function updateSaleOrderCancelLocal(orderId, reason = '') {
+  const op = 'updateSaleOrderCancelLocal';
+  const db = await getDb();
+  const params = ['cancel', empty(reason), iso(), num(orderId)];
+  logQuery(op, `orderId=${orderId} reason=${empty(reason).slice(0, 40)}`);
+  try {
+    await db.runAsync(
+      `UPDATE sale_orders SET state = ?, cancel_reason = ?, updated_at = ? WHERE id = ?`,
+      params
+    );
+    logQuery(op, `done orderId=${orderId}`);
+  } catch (err) {
+    logError(op, `orderId=${orderId}`, err);
     throw err;
   }
 }

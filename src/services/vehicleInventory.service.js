@@ -39,6 +39,45 @@ export async function adjustQuantQuantityAtLocation(locationId, productId, delta
   return { ...(await setQuantQuantityAtLocation(locationId, productId, target)), targetQty: target };
 }
 
+const QTY_TOL = 0.02;
+
+/**
+ * Set Odoo on-hand to target only when it differs — avoids duplicate deduction when
+ * delivery validation already reduced stock.quant at the lorry location.
+ */
+export async function applyTargetQuantityIdempotent(locationId, productId, targetQty, options = {}) {
+  const tol = options.tolerance ?? QTY_TOL;
+  const target = Math.max(0, Number(targetQty) || 0);
+  if (locationId == null || productId == null) return { ok: false, mode: 'invalid' };
+  const odooNow = await readQuantQuantityAtLocation(locationId, productId);
+  if (Math.abs(odooNow - target) <= tol) {
+    return { ok: true, mode: 'already_matches', odooQty: odooNow, targetQty: target };
+  }
+  await setQuantQuantityAtLocation(locationId, productId, target);
+  return { ok: true, mode: 'set', odooQty: odooNow, targetQty: target };
+}
+
+/**
+ * One inventory queue row → Odoo: absolute target preferred; increments only when no target.
+ */
+export async function applyInventoryQueueUpdateOnOdoo(locationId, productId, update = {}, options = {}) {
+  const targetQty = Number(update?.newQuantity);
+  const inc = Number(update?.incrementQuantity);
+  if (Number.isFinite(targetQty)) {
+    return applyTargetQuantityIdempotent(locationId, productId, targetQty, options);
+  }
+  if (Number.isFinite(inc) && inc !== 0) {
+    const cur = await readQuantQuantityAtLocation(locationId, productId);
+    const expected = Math.max(0, cur + inc);
+    if (Math.abs(cur - expected) <= (options.tolerance ?? QTY_TOL)) {
+      return { ok: true, mode: 'increment_already_matches', odooQty: cur, targetQty: expected };
+    }
+    const res = await adjustQuantQuantityAtLocation(locationId, productId, inc);
+    return { ok: !!res?.ok, mode: 'increment', odooQty: cur, targetQty: res?.targetQty ?? expected };
+  }
+  return { ok: true, mode: 'noop' };
+}
+
 export async function setQuantQuantityAtLocation(locationId, productId, targetQty) {
   if (locationId == null || productId == null) return { ok: false };
   const target = Math.max(0, Number(targetQty) || 0);

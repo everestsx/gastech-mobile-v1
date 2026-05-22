@@ -420,6 +420,9 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         ...(driverEmployeeId != null && Number.isFinite(driverEmployeeId) && driverEmployeeId > 0
           ? { driverEmployeeId }
           : {}),
+        ...(session?.driverName && String(session.driverName).trim()
+          ? { driverName: String(session.driverName).trim() }
+          : {}),
       };
       const existingPending = await syncQueueDb.getPendingPaymentItemBySaleOrderId(soId);
       if (existingPending) {

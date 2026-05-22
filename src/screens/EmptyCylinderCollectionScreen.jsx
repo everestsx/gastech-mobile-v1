@@ -22,9 +22,11 @@ import {
   getCachedVehicleInventoryByLocation,
   getCachedVehicleInventory,
   getUserSession,
+  notifyLocalInventoryChanged,
 } from '../services/sync.service';
 import * as syncQueueDb from '../database/syncQueue.js';
 import * as productsDb from '../database/products.js';
+import { applyInventoryUpdatesToLocalDb } from '../utils/localInventoryApply.js';
 import { setCheckoutResumeFromPayment } from '../services/checkoutResume.service';
 import { buildEmptyCylinderChatterBody } from '../services/proofAttachment.service';
 import {
@@ -334,11 +336,20 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
             );
           }
           if (inventoryQueueUpdates.length > 0) {
+            /** Immediate lorry empty stock for dashboard (same as before stock-idempotency changes). */
+            const updatesWithLocal = await applyInventoryUpdatesToLocalDb(
+              Number(locationId),
+              Number(vehicleId),
+              inventoryQueueUpdates,
+              { incrementsOnly: true }
+            );
+            notifyLocalInventoryChanged();
+
             const inventoryPayload = {
               saleOrderId: Number(saleOrderId),
               vehicleId: Number(vehicleId),
               locationId: Number(locationId),
-              updates: inventoryQueueUpdates,
+              updates: updatesWithLocal,
               holdUntilComplete: true,
             };
             const existingInventoryUpdate =
@@ -352,7 +363,7 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
                 locationId: Number(locationId),
                 holdUntilComplete: true,
                 /** Empty-return rows merge with held gas reductions; latest row wins per product id. */
-                updates: mergeInventoryQueueUpdatesByProduct(existingPayload.updates, inventoryQueueUpdates),
+                updates: mergeInventoryQueueUpdatesByProduct(existingPayload.updates, updatesWithLocal),
               });
             } else {
               await syncQueueDb.enqueue(syncQueueDb.ACTION_INVENTORY_UPDATE, inventoryPayload);

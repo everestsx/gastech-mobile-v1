@@ -28,10 +28,12 @@ import * as stockMovesDb from '../database/stockMoves.js';
 import * as stockPickingsDb from '../database/stockPickings.js';
 import * as syncQueueDb from '../database/syncQueue.js';
 import * as productsDb from '../database/products.js';
+import * as vehicleInventoriesDb from '../database/vehicleInventories.js';
 import {
-  cancelSaleOrderWithReason,
-  getCancellationReasonOptions,
+  getStoredCancellationReasonsForUI,
+  refreshCancellationReasonsCache,
 } from '../services/saleOrder.service';
+import { cancelSaleOrderOfflineFirst } from '../utils/orderCancel.js';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
 import { getProductDisplayName, getGasSizeFromProductName } from '../utils/productDisplay';
@@ -615,15 +617,27 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
 
     console.log('[Inventory Update] Starting update for vehicle:', vehicleId, 'location:', locationId);
 
+    /** Prefer live SQLite lorry qty so a stale screen snapshot cannot double-deduct. */
+    const dbRows = await vehicleInventoriesDb.getVehicleInventoryByLocationId(locationId).catch(() => []);
+    const dbQtyByProduct = new Map(
+      (dbRows || []).map((r) => [
+        Number(r.product_id),
+        clampNonNegativeStock(Number(r.quantity) || 0),
+      ])
+    );
+
     /**
      * Baseline must match what the UI uses for limits ("on hand" = stock.quant quantity).
      * Using only available_quantity was wrong: it is often 0 when stock is reserved, which made
      * (0 - delivered) and wiped lorry stock in the local DB / Odoo sync.
      */
-    const baselineOnLorry = (productId) =>
-      clampNonNegativeStock(
+    const baselineOnLorry = (productId) => {
+      const pid = Number(productId);
+      if (dbQtyByProduct.has(pid)) return dbQtyByProduct.get(pid);
+      return clampNonNegativeStock(
         productIdToOnHand[productId] ?? productIdToAvailable[productId] ?? 0
       );
+    };
 
     try {
       /** Per product: remaining after all lines (handles multiple lines for same product). */
@@ -652,6 +666,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
         vehicleId,
         locationId,
         holdUntilComplete: true,
+        inventoryDeductionKey: `so-${Number(order.id)}-${Date.now()}`,
         updates: Array.from(remainingByProduct.entries()).map(([productId, newQuantity]) => ({
           productId,
           quantityUsed: baselineOnLorry(productId) - newQuantity,
@@ -786,11 +801,17 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
     const loadReasons = async () => {
       setCancelReasonsLoading(true);
       try {
-        const reasons = await getCancellationReasonOptions();
+        const stored = await getStoredCancellationReasonsForUI();
         if (!active) return;
-        const normalized = Array.isArray(reasons) ? reasons : [];
-        setCancelReasons(normalized);
-        setCancelReason((prev) => prev || normalized[0]?.value || '');
+        setCancelReasons(stored);
+        setCancelReason((prev) => prev || stored[0]?.value || '');
+        if (stored.length === 0) {
+          void refreshCancellationReasonsCache().then((fresh) => {
+            if (!active || !Array.isArray(fresh) || fresh.length === 0) return;
+            setCancelReasons(fresh);
+            setCancelReason((prev) => prev || fresh[0]?.value || '');
+          });
+        }
       } catch (_) {
         if (!active) return;
         setCancelReasons([]);
@@ -811,17 +832,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
     }
   }, [navigation, order?.name, order?.id]);
 
-  /** Odoo-returned cancellation reasons stay as-is; only offline fallback options are translated. */
-  const effectiveCancelReasons = cancelReasons.length > 0
-    ? cancelReasons
-    : [
-        { value: 'shop_closed', label: t('saleorder.fallbackReasonShopClosed', 'Shop closed') },
-        { value: 'customer_not_available', label: t('saleorder.fallbackReasonCustomerNotAvailable', 'Customer not available') },
-        { value: 'customer_cancelled', label: t('saleorder.fallbackReasonCustomerCancelled', 'Customer cancelled') },
-        { value: 'wrong_order', label: t('saleorder.fallbackReasonWrongOrder', 'Wrong order') },
-        { value: 'duplicate_order', label: t('saleorder.fallbackReasonDuplicateOrder', 'Duplicate order') },
-        { value: 'other', label: t('saleorder.fallbackReasonOther', 'Other') },
-      ];
+  const effectiveCancelReasons = cancelReasons;
 
   /**
    * Max total units deliverable for this product (sum of line qtys) — capped by **on-hand** lorry stock (`quantity`).
@@ -1322,22 +1333,22 @@ const getStockWarning = useCallback((lineId) => {
     setCancelError(null);
     setCanceling(true);
     try {
-      await cancelSaleOrderWithReason(order.id, cancelReason);
-      await saleOrdersDb.updateSaleOrderStateLocal(order.id, 'cancel');
-
-      const pickings = await stockPickingsDb.getStockPickingsBySaleId(order.id);
-      await Promise.all((pickings || []).map((p) => stockPickingsDb.updatePickingStateLocal(p.id, 'cancel')));
-
-      await syncQueueDb.deletePendingItemsBySaleOrderId(order.id);
-
+      await cancelSaleOrderOfflineFirst(order.id, cancelReason);
       setShowCancelModal(false);
+      Alert.alert(
+        t('saleorder.cancelSavedTitle', 'Order cancelled'),
+        t(
+          'saleorder.cancelSavedMessage',
+          'Cancelled on this device. It will sync to the back office automatically when you are online.'
+        )
+      );
       navigation.goBack();
     } catch (err) {
       setCancelError(err?.message ?? t('saleorderdetails.cancelFailedTryAgain', 'Cancel failed. Try again.'));
     } finally {
       setCanceling(false);
     }
-  }, [cancelReason, canceling, navigation, order?.id, order?.state]);
+  }, [cancelReason, canceling, navigation, order?.id, order?.state, t]);
 
 const handleProceedToPayment = useCallback(async () => {
   const noChanges = !hasQtyChanges();
@@ -1878,6 +1889,13 @@ const handleProceedToPayment = useCallback(async () => {
                   <ActivityIndicator size="small" color={colors.primary} />
                   <Text style={{ marginTop: 8, color: colors.textSecondary }}>{t('saleorderdetails.loadingReasons', 'Loading reasons…')}</Text>
                 </View>
+              ) : effectiveCancelReasons.length === 0 ? (
+                <Text style={{ color: colors.textSecondary, fontSize: 14, lineHeight: 20, paddingVertical: spacing.sm }}>
+                  {t(
+                    'saleorder.noCancelReasonsCached',
+                    'Cancel reasons are not loaded yet. Connect to the internet and run Sync once, then try again.'
+                  )}
+                </Text>
               ) : (
                 <ScrollView
                   style={{ maxHeight: 300 }}
@@ -1926,7 +1944,7 @@ const handleProceedToPayment = useCallback(async () => {
               <TouchableOpacity
                 style={[styles.cancelModalBtn, styles.cancelModalBtnPrimary]}
                 onPress={handleCancelOrder}
-                disabled={canceling}
+                disabled={canceling || effectiveCancelReasons.length === 0 || !cancelReason}
                 activeOpacity={0.8}
               >
                 {canceling ? (

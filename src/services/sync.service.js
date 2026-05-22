@@ -41,8 +41,19 @@ let _syncCompleteListener = null;
 export function setSyncCompleteListener(fn) {
   _syncCompleteListener = fn;
 }
+
+/** Refresh dashboard / stock UI after local-only inventory changes (empty collection, etc.). */
+export function notifyLocalInventoryChanged() {
+  try {
+    if (_syncCompleteListener) _syncCompleteListener(true);
+  } catch (_) {
+    /* non-fatal */
+  }
+}
 /** In-flight queue processor; concurrent callers await the same promise (do not skip uploads). */
 let _processSyncQueuePromise = null;
+/** Prevents the same delivery queue row from running two Odoo apply passes concurrently (reconnect / double wake). */
+const _deliveryQueueItemInFlight = new Set();
 /** Edge-case recovery: keep retrying pending queue rows after flaky network (does not change enqueue/workflow). */
 const QUEUE_SYNC_RETRY_WINDOW_MS = 12 * 60 * 1000;
 const QUEUE_SYNC_RETRY_PASS_DELAY_MS = 900;
@@ -218,6 +229,38 @@ function log(step, detail = '') {
 
 function logWarn(step, err) {
   console.warn(`${LOG_TAG} ${step}`, err?.message ?? err);
+}
+
+/** Persist mobile / payload / Odoo qty comparison for corruption diagnosis. */
+async function logDeliveryQtyAudit({
+  queueItemId,
+  saleOrderId,
+  deliveryTxnId,
+  phase,
+  status,
+  mobileQty,
+  payloadQty,
+  odooQty,
+  errorMessage,
+}) {
+  try {
+    const { recordDeliveryQtyAudit } = await import('../database/deliveryQtyAudit.js');
+    await recordDeliveryQtyAudit({
+      queueItemId,
+      saleOrderId,
+      deliveryTxnId,
+      phase,
+      status,
+      mobileQty,
+      payloadQty,
+      odooQty,
+      errorMessage,
+    });
+    const detail = errorMessage ? ` — ${String(errorMessage).slice(0, 160)}` : '';
+    log('delivery-audit', `${phase}/${status} SO ${saleOrderId ?? '?'} txn ${String(deliveryTxnId || '').slice(0, 40)}${detail}`);
+  } catch (auditErr) {
+    console.warn(`${LOG_TAG} delivery-audit write failed`, auditErr?.message ?? auditErr);
+  }
 }
 
 let _asyncStorage;
@@ -401,6 +444,19 @@ export async function getCachedOrders(vehicleId = null) {
     return (rows || []).filter((o) => String(o?.state || '').toLowerCase() !== 'cancel');
   } catch (e) {
     console.warn('getCachedOrders', e);
+    return [];
+  }
+}
+
+/** Cancelled orders from local DB (offline cancels included until Odoo sync). */
+export async function getCachedCancelledOrders(vehicleId = null) {
+  try {
+    const storage = await getAsyncStorage();
+    const syncDateField = await storage.getItem(KEYS.SYNC_DATE_FIELD);
+    const sortField = syncDateField === 'delivery_date' ? 'commitment_date' : 'date_order';
+    return await saleOrdersDb.getCancelledSaleOrders(vehicleId, sortField);
+  } catch (e) {
+    console.warn('getCachedCancelledOrders', e);
     return [];
   }
 }
@@ -1069,9 +1125,28 @@ async function tryMarkDeliverySyncedAfterQtyHeal(item, saleOrderId, queuePayload
   if (!repair.ok) return false;
   try {
     await verifyAllSaleOrderPickingsAreTerminal(soId);
+    const blocks = [];
+    const p = queuePayload || {};
+    if (Array.isArray(p.pickings) && p.pickings.length > 0) {
+      for (const b of p.pickings) blocks.push(b);
+    } else if (p.pickingId != null) {
+      blocks.push({
+        pickingId: p.pickingId,
+        deliveryLines: p.deliveryLines || [],
+        moveLineUpdates: p.moveLineUpdates || [],
+      });
+    }
+    if (blocks.length > 0) {
+      await verifyStockMoveQtyDoneMatchesPayload(blocks);
+    }
     if (updates.length > 0) await verifySaleOrderLineDeliveredOnOdoo(updates);
     await syncQueueDb.markSynced(Number(item.id));
     log('queue', `delivery id=${item.id} SO ${soId} marked synced after heal (no duplicate upload)`);
+    try {
+      if (_syncCompleteListener) _syncCompleteListener(true);
+    } catch (_) {
+      /* non-fatal */
+    }
     return true;
   } catch (_) {
     return false;
@@ -1395,31 +1470,18 @@ async function repairOdooDeliveredQuantitiesFromMobile(saleOrderId, deliveredUpd
 }
 
 /** Advance-payment invoice create + post — used only after qty heal when first attempt hit "nothing to invoice". */
-async function tryCreateAndPostDeliveredInvoice(soId) {
+async function tryCreateAndPostDeliveredInvoice(soId, paymentPayload = null) {
   const soNum = Number(soId);
   if (!Number.isFinite(soNum) || soNum <= 0) return { ok: false, reason: 'invalid sale order id' };
-  const {
-    createAdvancePaymentWizard,
-    createInvoicesFromWizard,
-    postInvoice,
-    getInvoiceIdAfterCreate,
-    getSaleOrderInvoiceIds,
-    firstInvoiceId,
-    getInvoiceState,
-  } = await import('./invoice.service.js');
   try {
-    const wizardId = await createAdvancePaymentWizard(soNum);
-    if (wizardId == null) return { ok: false, reason: 'wizard create failed' };
-    const createResult = await createInvoicesFromWizard(wizardId);
-    const resId =
-      getInvoiceIdAfterCreate(createResult) ?? firstInvoiceId(await getSaleOrderInvoiceIds(soNum));
-    if (resId == null) return { ok: false, reason: 'no invoice id from wizard' };
-    await postInvoice(resId);
-    const st = await getInvoiceState(resId).catch(() => ({}));
-    if (String(st?.state || '').toLowerCase() !== 'posted') {
-      return { ok: false, reason: `invoice ${resId} not posted` };
+    const result = await executePaymentInvoiceStep(soNum, paymentPayload, {
+      resId: null,
+      invoiceAlreadyPosted: false,
+    });
+    if (!result.ok) {
+      return { ok: false, reason: result.reason || 'invoice step failed' };
     }
-    return { ok: true, resId: Number(resId) };
+    return { ok: true, resId: result.resId != null ? Number(result.resId) : null };
   } catch (e) {
     return { ok: false, reason: e?.message || String(e) };
   }
@@ -1456,6 +1518,204 @@ async function ensureBackendDeliveredMatchesMobileBeforePaymentComplete(soId, pa
     log('queue', `payment SO ${soNum}: delivered qty drift — repair (${String(verifyErr?.message || verifyErr).slice(0, 80)})`);
     return runHealAndVerify();
   }
+}
+
+/** Brief pause after delivery RPC so Odoo qty_delivered / stock moves settle before invoicing. */
+const INVOICE_ODOO_SETTLE_MS = 700;
+
+async function prepareSaleOrderForInvoicing(soId, paymentPayload = null) {
+  const soNum = Number(soId);
+  if (!Number.isFinite(soNum) || soNum <= 0) {
+    return { ok: false, reason: 'invalid sale order id', updates: [] };
+  }
+  const align = await ensureBackendDeliveredMatchesMobileBeforePaymentComplete(soNum, paymentPayload);
+  if (!align.ok) {
+    return { ok: false, reason: align.reason || 'delivered qty not aligned on Odoo', updates: [] };
+  }
+  await new Promise((r) => setTimeout(r, INVOICE_ODOO_SETTLE_MS));
+  try {
+    await verifyAllSaleOrderPickingsAreTerminal(soNum);
+  } catch (e) {
+    return { ok: false, reason: e?.message || String(e), updates: [] };
+  }
+  const updates = await collectAuthoritativeDeliveredUpdates(soNum, paymentPayload);
+  if (updates.length) {
+    try {
+      await verifySaleOrderLineDeliveredOnOdoo(updates);
+    } catch (e) {
+      return { ok: false, reason: e?.message || String(e), updates };
+    }
+  }
+  return { ok: true, updates };
+}
+
+async function logInvoiceQtyMismatchAudit(soId, paymentPayload, phase, mismatches, extra = {}) {
+  const updates = await collectAuthoritativeDeliveredUpdates(soId, paymentPayload).catch(() => []);
+  const mobileView = {};
+  for (const u of updates) {
+    mobileView[String(u.lineId)] = roundDeliveredQty3(u.qty_delivered);
+  }
+  const odooView = {};
+  for (const m of mismatches || []) {
+    odooView[`${m.lineId}_${m.field}`] = { expected: m.expected, actual: m.actual };
+  }
+  await logDeliveryQtyAudit({
+    saleOrderId: Number(soId),
+    deliveryTxnId: paymentPayload?.deliveryTxnId,
+    phase,
+    status: 'rejected',
+    mobileQty: { bySoLine: mobileView },
+    payloadQty: paymentPayload?.invoiceLineQtys || null,
+    odooQty: { mismatches: odooView, ...extra },
+    errorMessage: (mismatches || [])
+      .slice(0, 3)
+      .map((m) => `${m.field} line ${m.lineId}`)
+      .join(', '),
+  });
+}
+
+/**
+ * Create/post invoice only after delivered qty is verified; discard stale drafts with wrong qty_invoiced.
+ */
+async function executePaymentInvoiceStep(soId, paymentPayload, initialTarget = {}) {
+  const soNum = Number(soId);
+  const {
+    verifySaleOrderDeliveredAndInvoicedQty,
+    unlinkDraftCustomerInvoice,
+    createAdvancePaymentWizard,
+    createInvoicesFromWizard,
+    getInvoiceIdAfterCreate,
+    getSaleOrderInvoiceIds,
+    firstInvoiceId,
+    postInvoice,
+    getInvoiceState,
+  } = await import('./invoice.service.js');
+
+  const prep = await prepareSaleOrderForInvoicing(soNum, paymentPayload);
+  if (!prep.ok) {
+    return { ok: false, blocked: true, reason: prep.reason || 'prepare for invoice failed' };
+  }
+  const updates = prep.updates || [];
+
+  let resId = initialTarget.resId != null ? Number(initialTarget.resId) : null;
+  let posted = initialTarget.invoiceAlreadyPosted === true;
+
+  if (posted && resId != null && updates.length > 0) {
+    const postedCheck = await verifySaleOrderDeliveredAndInvoicedQty(updates, {
+      checkDelivered: true,
+      checkInvoiced: true,
+    });
+    if (!postedCheck.ok) {
+      await logInvoiceQtyMismatchAudit(soNum, paymentPayload, 'post_invoice_mismatch', postedCheck.mismatches, {
+        invoiceId: resId,
+      });
+      return {
+        ok: false,
+        blocked: true,
+        reason: postedCheck.reason || 'posted invoice qty mismatch',
+        resId,
+        posted: true,
+      };
+    }
+    return { ok: true, resId, posted: true };
+  }
+
+  if (resId != null && !posted) {
+    const st = await getInvoiceState(resId).catch(() => ({}));
+    if (String(st?.state || '').toLowerCase() === 'posted') {
+      posted = true;
+      return executePaymentInvoiceStep(soId, paymentPayload, { resId, invoiceAlreadyPosted: true });
+    }
+    if (updates.length > 0) {
+      const draftCheck = await verifySaleOrderDeliveredAndInvoicedQty(updates, {
+        checkDelivered: false,
+        checkInvoiced: true,
+      });
+      if (!draftCheck.ok) {
+        log('queue', `payment SO ${soNum}: discard stale draft invoice ${resId} (${String(draftCheck.reason || '').slice(0, 80)})`);
+        await unlinkDraftCustomerInvoice(resId).catch(() => {});
+        await logInvoiceQtyMismatchAudit(soNum, paymentPayload, 'pre_invoice_discard_draft', draftCheck.mismatches, {
+          invoiceId: resId,
+        });
+        resId = null;
+      }
+    }
+  }
+
+  if (resId != null && !posted) {
+    await postInvoice(resId);
+    if (updates.length > 0) {
+      const afterPost = await verifySaleOrderDeliveredAndInvoicedQty(updates, {
+        checkDelivered: true,
+        checkInvoiced: true,
+      });
+      if (!afterPost.ok) {
+        await logInvoiceQtyMismatchAudit(soNum, paymentPayload, 'post_invoice_mismatch', afterPost.mismatches, {
+          invoiceId: resId,
+        });
+        return {
+          ok: false,
+          blocked: true,
+          reason: afterPost.reason || 'invoice posted with qty mismatch',
+          resId,
+          posted: true,
+        };
+      }
+    }
+    return { ok: true, resId, posted: true };
+  }
+
+  const wizardId = await createAdvancePaymentWizard(soNum);
+  if (wizardId == null) {
+    return { ok: false, blocked: true, reason: 'wizard create failed' };
+  }
+  const createResult = await createInvoicesFromWizard(wizardId);
+  resId =
+    getInvoiceIdAfterCreate(createResult) ?? firstInvoiceId(await getSaleOrderInvoiceIds(soNum));
+  if (resId == null) {
+    return { ok: false, blocked: true, reason: 'no invoice id from wizard' };
+  }
+
+  if (updates.length > 0) {
+    const draftCheck = await verifySaleOrderDeliveredAndInvoicedQty(updates, {
+      checkDelivered: false,
+      checkInvoiced: true,
+    });
+    if (!draftCheck.ok) {
+      await unlinkDraftCustomerInvoice(resId).catch(() => {});
+      await logInvoiceQtyMismatchAudit(soNum, paymentPayload, 'pre_invoice_post', draftCheck.mismatches, {
+        invoiceId: resId,
+      });
+      return {
+        ok: false,
+        blocked: true,
+        reason: draftCheck.reason || 'invoice draft qty mismatch',
+        resId: null,
+        posted: false,
+      };
+    }
+  }
+
+  await postInvoice(resId);
+  if (updates.length > 0) {
+    const finalCheck = await verifySaleOrderDeliveredAndInvoicedQty(updates, {
+      checkDelivered: true,
+      checkInvoiced: true,
+    });
+    if (!finalCheck.ok) {
+      await logInvoiceQtyMismatchAudit(soNum, paymentPayload, 'post_invoice_mismatch', finalCheck.mismatches, {
+        invoiceId: resId,
+      });
+      return {
+        ok: false,
+        blocked: true,
+        reason: finalCheck.reason || 'invoice posted with qty mismatch',
+        resId,
+        posted: true,
+      };
+    }
+  }
+  return { ok: true, resId, posted: true };
 }
 
 /**
@@ -1645,6 +1905,81 @@ async function markPaymentQueueItemSyncedWhenBackendComplete(item, soId, payment
   return true;
 }
 
+/** Upload pending order_cancel rows to Odoo (offline cancel → back office). */
+async function processOrderCancelQueueItems(items = null) {
+  const rows =
+    items ??
+    (await syncQueueDb.getPending()).filter((p) => p.action_type === syncQueueDb.ACTION_CANCEL_ORDER);
+  if (!rows.length) return { synced: 0, failed: 0 };
+
+  const { cancelSaleOrderWithReason, isSaleOrderCancelledOnOdoo } = await import('./saleOrder.service.js');
+  let synced = 0;
+  let failed = 0;
+
+  for (const item of rows) {
+    try {
+      const p = item.payload || {};
+      const soId = Number(p.saleOrderId ?? p.sale_order_id);
+      const reason = String(p.reason || '').trim();
+      if (!Number.isFinite(soId) || soId <= 0) {
+        await syncQueueDb.markSynced(Number(item.id));
+        continue;
+      }
+      if (!reason) {
+        failed += 1;
+        logWarn('queue order_cancel', new Error(`SO ${soId} missing cancel reason in queue`));
+        continue;
+      }
+
+      if (await isSaleOrderCancelledOnOdoo(soId)) {
+        await saleOrdersDb.updateSaleOrderStateLocal(soId, 'cancel');
+        await syncQueueDb.markSynced(Number(item.id));
+        log('queue', `order cancel already on Odoo SO ${soId} — marked synced id=${item.id}`);
+        synced += 1;
+        continue;
+      }
+
+      await cancelSaleOrderWithReason(soId, reason);
+      const ok = await isSaleOrderCancelledOnOdoo(soId);
+      if (!ok) {
+        throw new Error(`Odoo SO ${soId} still not cancel after action_cancel_with_reason`);
+      }
+      await saleOrdersDb.updateSaleOrderStateLocal(soId, 'cancel');
+      await syncQueueDb.markSynced(Number(item.id));
+      log('queue', `order cancel synced id=${item.id} SO ${soId} reason=${reason}`);
+      synced += 1;
+    } catch (e) {
+      failed += 1;
+      logWarn('queue order_cancel', e);
+    }
+  }
+  return { synced, failed };
+}
+
+/**
+ * Best-effort immediate cancel RPC when back online (does not block UI).
+ * Queue row stays until Odoo confirms cancel state.
+ */
+export async function trySyncPendingOrderCancelNow(saleOrderId, reason, queueItemId = null) {
+  const soId = Number(saleOrderId);
+  if (!Number.isFinite(soId) || soId <= 0) return false;
+  const reasonStr = String(reason || '').trim();
+  if (!reasonStr) return false;
+
+  let item = null;
+  if (queueItemId != null) {
+    const pending = await syncQueueDb.getPending();
+    item = (pending || []).find((r) => Number(r.id) === Number(queueItemId)) || null;
+  }
+  if (!item) {
+    item = await syncQueueDb.getPendingCancelItemBySaleOrderId(soId);
+  }
+  if (!item?.id) return false;
+
+  const result = await processOrderCancelQueueItems([item]);
+  return (result?.synced ?? 0) > 0;
+}
+
 /** Process pending sync queue: push delivery and payment actions to Odoo. Run at start of runSync. */
 async function processSyncQueue() {
   if (_processSyncQueuePromise) {
@@ -1664,6 +1999,14 @@ async function processSyncQueue() {
         if (pendingAtStart === 0) break;
 
         try {
+      const pendingSnapEarly = await syncQueueDb.getPending();
+      const cancelEarly = pendingSnapEarly.filter(
+        (p) => p.action_type === syncQueueDb.ACTION_CANCEL_ORDER
+      );
+      if (cancelEarly.length > 0) {
+        await processOrderCancelQueueItems(cancelEarly);
+      }
+
       let queueSnap = await syncQueueDb.getPending();
       if (!queueSnap.length) return;
       log('queue', `processing ${queueSnap.length} pending`);
@@ -1728,11 +2071,16 @@ async function processSyncQueue() {
       queueSnap = await syncQueueDb.getPending();
       if (!queueSnap.length) return;
 
+      const orderCancel = queueSnap.filter((p) => p.action_type === syncQueueDb.ACTION_CANCEL_ORDER);
       const delivery = queueSnap.filter((p) => p.action_type === syncQueueDb.ACTION_DELIVERY);
       const payment = queueSnap.filter((p) => p.action_type === syncQueueDb.ACTION_PAYMENT);
       const inventoryUpdate = queueSnap.filter((p) => p.action_type === syncQueueDb.ACTION_INVENTORY_UPDATE);
 
       log('queue', `after dedupe ${queueSnap.length} pending`);
+
+      if (orderCancel.length > 0) {
+        await processOrderCancelQueueItems(orderCancel);
+      }
 
       // Keep only the latest pending payment item per sale order to avoid duplicate chatter posts.
       const latestPaymentItemBySaleOrder = new Map();
@@ -1816,44 +2164,73 @@ async function processSyncQueue() {
         executePaymentRegister,
       } = await import('./invoice.service');
 
-      /** Normalize delivery payload: multi-picking `pickings[]` or legacy single `pickingId`. */
-      const pickingsBlocksFromPayload = (payload) => {
-        const p = payload || {};
-        if (Array.isArray(p.pickings) && p.pickings.length > 0) {
-          return p.pickings.map((b) => ({
-            pickingId: b.pickingId ?? b.picking_id,
-            moveUpdates: b.moveUpdates || [],
-            moveLineUpdates: b.moveLineUpdates || [],
-            deliveryLines: b.deliveryLines || [],
-          }));
-        }
-        const pid = p.pickingId ?? p.picking_id;
-        if (pid != null) {
-          return [
-            {
-              pickingId: pid,
-              moveUpdates: p.moveUpdates || [],
-              moveLineUpdates: p.moveLineUpdates || [],
-              deliveryLines: p.deliveryLines || [],
-            },
-          ];
-        }
-        return [];
-      };
-
       const roundQty3 = (q) => Math.round(Number(q) * 1000) / 1000;
 
       /** Push one delivery queue row to Odoo and mark synced. Used from main delivery pass and pre-payment flush. */
       const processOneDeliveryQueueItem = async (item, syncOptions = {}) => {
+        const queueItemId = Number(item?.id);
+        if (Number.isFinite(queueItemId) && queueItemId > 0) {
+          if (_deliveryQueueItemInFlight.has(queueItemId)) {
+            log('queue', `delivery id=${queueItemId} already in-flight — skip duplicate processor`);
+            return;
+          }
+          _deliveryQueueItemInFlight.add(queueItemId);
+        }
+
+        const finishDeliveryQueueItem = async () => {
+          if (Number.isFinite(queueItemId) && queueItemId > 0) {
+            _deliveryQueueItemInFlight.delete(queueItemId);
+          }
+        };
+
+        try {
+        const {
+          validateDeliveryPayloadSanity,
+          coerceDeliveredQty,
+          pickingsBlocksFromDeliveryPayload,
+          auditQtyViewFromPayload,
+          buildMobileQtySnapshot,
+        } = await import('../utils/deliverySync.js');
         const saleOrderIdRaw = (item.payload || {}).saleOrderId ?? (item.payload || {}).sale_id;
         const snapshot = await resolveDeliveredSnapshotForSync(saleOrderIdRaw, item.payload || {});
-        const p = snapshot.payload || {};
+        let p = snapshot.payload || {};
+        if (!p.mobileQtySnapshot) {
+          const { ensureDeliveryTxnOnPayload: ensureTxn } = await import('../utils/deliverySync.js');
+          p = await ensureTxn({ ...p });
+          try {
+            await syncQueueDb.updateQueueItemPayload(Number(item.id), p, {
+              actionType: syncQueueDb.ACTION_DELIVERY,
+            });
+          } catch (_) {
+            /* non-fatal — sync still uses in-memory frozen snapshot */
+          }
+        }
         const saleOrderId = p.saleOrderId ?? p.sale_id;
+        const saleOrderLineDeliveredUpdatesPre = snapshot.updates || [];
+        const sanity = validateDeliveryPayloadSanity(p, saleOrderLineDeliveredUpdatesPre);
+        if (!sanity.ok) {
+          throw new Error(sanity.reason || 'Delivery payload failed sanity check');
+        }
+        const soNumAudit = saleOrderId != null ? Number(saleOrderId) : NaN;
+        const mobileFrozen = p.mobileQtySnapshot || buildMobileQtySnapshot(p);
+        await logDeliveryQtyAudit({
+          queueItemId,
+          saleOrderId: Number.isFinite(soNumAudit) ? soNumAudit : null,
+          deliveryTxnId: p.deliveryTxnId,
+          phase: 'pre_sync',
+          status: 'pending',
+          mobileQty: mobileFrozen,
+          payloadQty: auditQtyViewFromPayload(p),
+        });
+        if (p.deliveryTxnId) {
+          log('queue', `delivery txn=${String(p.deliveryTxnId).slice(0, 48)} SO ${saleOrderId ?? saleOrderIdRaw}`);
+        }
         const demandEdit = p.demandEdit === true;
         const orderLineUpdates = demandEdit ? p.orderLineUpdates || [] : [];
         const saleOrderLineDeliveredUpdates = snapshot.updates || [];
-        const requestedQtyByProduct = p.requestedQtyByProduct || {};
-        let blocks = pickingsBlocksFromPayload(p);
+        const requestedQtyByProduct =
+          p.mobileQtySnapshot?.requestedQtyByProduct || p.requestedQtyByProduct || {};
+        let blocks = pickingsBlocksFromDeliveryPayload(p);
         const requestedDeliveryRemainingByProduct = new Map(
           Object.entries(requestedQtyByProduct || {})
             .map(([pidRaw, qtyRaw]) => [Number(pidRaw), Number(qtyRaw) || 0])
@@ -1901,19 +2278,21 @@ async function processSyncQueue() {
             await verifyStockMoveQtyDoneMatchesPayload(blocks);
           }
           await applyMobileDeliveredQtyToOdooOnce();
-          if (saleOrderLineDeliveredUpdates.length === 0) return;
-          const repairCtx = repairContextFromDeliveryBlocks(blocks);
-          try {
-            await verifySaleOrderLineDeliveredOnOdoo(saleOrderLineDeliveredUpdates);
-          } catch (verifyErr) {
-            const heal = await attemptDeliveredQtyHealForSaleOrder(saleOrderId, p, {
-              maxRounds: 2,
-              pickingIds: repairCtx.pickingIds,
-              deliveryLines: repairCtx.deliveryLines,
-            });
-            if (!heal.ok) throw verifyErr;
+          if (saleOrderLineDeliveredUpdates.length > 0) {
             await verifySaleOrderLineDeliveredOnOdoo(saleOrderLineDeliveredUpdates);
           }
+          const { fetchOdooDeliveredQtySnapshot } = await import('./delivery.service.js');
+          const odooQty = await fetchOdooDeliveredQtySnapshot(blocks, saleOrderLineDeliveredUpdates);
+          await logDeliveryQtyAudit({
+            queueItemId,
+            saleOrderId: Number.isFinite(soNumAudit) ? soNumAudit : null,
+            deliveryTxnId: p.deliveryTxnId,
+            phase: 'post_finalize',
+            status: 'success',
+            mobileQty: mobileFrozen,
+            payloadQty: auditQtyViewFromPayload(p),
+            odooQty,
+          });
         };
 
         try {
@@ -1982,6 +2361,11 @@ async function processSyncQueue() {
             'queue',
             `delivery SO ${saleOrderId} — no pickings (SO line updates only), synced id=${item.id}`
           );
+          try {
+            if (_syncCompleteListener) _syncCompleteListener(true);
+          } catch (_) {
+            /* non-fatal */
+          }
           return;
         }
 
@@ -2023,7 +2407,11 @@ async function processSyncQueue() {
             if (pick?.state === 'done') {
               log('queue', `delivery picking ${pickingId} already done — align move qty_done from mobile snapshot`);
               try {
-                await applyPickingDeliverySnapshotIdempotent(pickingId, { deliveryLines });
+                await applyPickingDeliverySnapshotIdempotent(
+                  pickingId,
+                  { deliveryLines },
+                  { deliveryTxnId: p.deliveryTxnId, deviceId: p.deviceId }
+                );
               } catch (_) {
                 /* readonly on some done transfers */
               }
@@ -2037,10 +2425,16 @@ async function processSyncQueue() {
            * Rebuild missing delivery lines from requested product totals using current picking moves.
            */
           const topUpDeliveryLinesFromRequested = async () => {
+            if (Number(syncOptions.queuePass) > 1) {
+              log('queue', `delivery top-up skipped on retry pass ${syncOptions.queuePass} (frozen mobile snapshot)`);
+              return;
+            }
             for (const line of deliveryLines) {
               const pid = Number(line?.productId ?? line?.product_id);
-              const q = Number(line?.qty_done) || 0;
-              if (!Number.isFinite(pid) || q <= 0 || !requestedDeliveryRemainingByProduct.has(pid)) continue;
+              const q = coerceDeliveredQty(line?.qty_done);
+              if (!Number.isFinite(pid) || !Number.isFinite(q) || q <= 0 || !requestedDeliveryRemainingByProduct.has(pid)) {
+                continue;
+              }
               const prev = Number(requestedDeliveryRemainingByProduct.get(pid)) || 0;
               requestedDeliveryRemainingByProduct.set(pid, Math.max(0, prev - q));
             }
@@ -2161,12 +2555,18 @@ async function processSyncQueue() {
               const targetMoveId = Number(mids[mids.length - 1]);
               const existingLine = deliveryLines.find((l) => Number(l?.moveId ?? l?.move_id) === targetMoveId);
               if (existingLine) {
-                existingLine.qty_done = (Number(existingLine.qty_done) || 0) + missing;
+                const prevDone = coerceDeliveredQty(existingLine.qty_done);
+                const targetTotal = coerceDeliveredQty((Number(prevDone) || 0) + missing);
+                if (Number.isFinite(prevDone) && Math.abs(prevDone - targetTotal) <= 0.0001) {
+                  requestedDeliveryRemainingByProduct.set(productId, 0);
+                  continue;
+                }
+                existingLine.qty_done = targetTotal;
               } else {
                 deliveryLines.push({
                   moveId: targetMoveId,
                   productId,
-                  qty_done: missing,
+                  qty_done: coerceDeliveredQty(missing),
                 });
               }
               requestedDeliveryRemainingByProduct.set(productId, 0);
@@ -2178,16 +2578,34 @@ async function processSyncQueue() {
             /**
              * One stock.picking write applies move demand, move lines, and quantity_done together
              * (single Odoo transaction). Falls back to legacy per-line RPCs if the server rejects it.
+             * Retry passes > 1: verify only — never stack qty_done again on flaky reconnect.
              */
-            const applyResult = await applyPickingDeliverySnapshotIdempotent(pickingId, {
-              moveUpdates,
-              moveLineUpdates,
-              deliveryLines,
-            });
-            if (applyResult?.mode !== 'already_applied') {
-              await verifyStockMoveQtyDoneMatchesPayload([
-                { pickingId, deliveryLines, moveUpdates, moveLineUpdates },
-              ]);
+            const blockSnapshot = { moveUpdates, moveLineUpdates, deliveryLines };
+            if (Number(syncOptions.queuePass) > 1) {
+              await verifyStockMoveQtyDoneMatchesPayload([{ pickingId, ...blockSnapshot }]);
+            } else {
+              const applyResult = await applyPickingDeliverySnapshotIdempotent(pickingId, blockSnapshot, {
+                deliveryTxnId: p.deliveryTxnId,
+                deviceId: p.deviceId,
+              });
+              if (applyResult?.mode !== 'already_applied') {
+                await verifyStockMoveQtyDoneMatchesPayload([{ pickingId, ...blockSnapshot }]);
+              }
+              const { fetchOdooDeliveredQtySnapshot } = await import('./delivery.service.js');
+              const odooAfterApply = await fetchOdooDeliveredQtySnapshot(
+                [{ pickingId, ...blockSnapshot }],
+                []
+              );
+              await logDeliveryQtyAudit({
+                queueItemId,
+                saleOrderId: Number.isFinite(soNumAudit) ? soNumAudit : null,
+                deliveryTxnId: p.deliveryTxnId,
+                phase: 'post_apply',
+                status: 'pending',
+                mobileQty: mobileFrozen,
+                payloadQty: auditQtyViewFromPayload(p),
+                odooQty: odooAfterApply,
+              });
             }
           } catch (updateErr) {
             const msg = (updateErr?.message || String(updateErr)).toLowerCase();
@@ -2199,11 +2617,7 @@ async function processSyncQueue() {
             }
           }
 
-          /** Queue retry pass > 1: verify only — never re-write qty (prevents offline duplicate stacking). */
           if (Number(syncOptions.queuePass) > 1 && deliveryLines.length > 0) {
-            await verifyStockMoveQtyDoneMatchesPayload([
-              { pickingId, deliveryLines, moveUpdates, moveLineUpdates },
-            ]);
             await new Promise((r) => setTimeout(r, 400));
             log(
               'queue',
@@ -2305,6 +2719,15 @@ async function processSyncQueue() {
           block.deliveryLines = deliveryLines;
         }
 
+        if (validatedAnyPicking && saleOrderLineDeliveredUpdates.length > 0) {
+          try {
+            await applyMobileDeliveredQtyToOdooOnce();
+            log('queue', `delivery SO ${saleOrderId}: sale order line qty_delivered synced after picking validate`);
+          } catch (solAfterValidateErr) {
+            logWarn('queue delivery (SOL after validate)', solAfterValidateErr);
+          }
+        }
+
         if (validatedAnyPicking && saleOrderId != null) {
           try {
             const refreshedPickings = await getPickingBySaleOrder(saleOrderId);
@@ -2336,9 +2759,36 @@ async function processSyncQueue() {
           const soCrew = saleOrderId != null ? Number(saleOrderId) : NaN;
           if (Number.isFinite(soCrew) && soCrew > 0) await writeSaleOrderCrewFromPaymentPayload(soCrew, p);
         }
-        await finalizeDeliveryConsistencyCheck();
+        try {
+          await finalizeDeliveryConsistencyCheck();
+        } catch (finalizeErr) {
+          const { fetchOdooDeliveredQtySnapshot } = await import('./delivery.service.js');
+          const odooQty = await fetchOdooDeliveredQtySnapshot(blocks, saleOrderLineDeliveredUpdates).catch(
+            () => null
+          );
+          await logDeliveryQtyAudit({
+            queueItemId,
+            saleOrderId: Number.isFinite(soNumAudit) ? soNumAudit : null,
+            deliveryTxnId: p.deliveryTxnId,
+            phase: 'post_finalize',
+            status: 'rejected',
+            mobileQty: mobileFrozen,
+            payloadQty: auditQtyViewFromPayload(p),
+            odooQty,
+            errorMessage: finalizeErr?.message || String(finalizeErr),
+          });
+          throw finalizeErr;
+        }
         await syncQueueDb.markSynced(Number(item.id));
         log('queue', `delivery synced id=${item.id} (${blocks.length} picking block(s))`);
+        try {
+          if (_syncCompleteListener) _syncCompleteListener(true);
+        } catch (_) {
+          /* non-fatal */
+        }
+        } finally {
+          await finishDeliveryQueueItem();
+        }
       };
 
       for (const item of delivery) {
@@ -2352,22 +2802,39 @@ async function processSyncQueue() {
         } catch (e) {
           logWarn('queue delivery', e);
           const errMsg = String(e?.message || e).toLowerCase();
-          if (
+          const isQtyMismatch =
             errMsg.includes('delivered qty mismatch') ||
             errMsg.includes('mismatch on so line') ||
             errMsg.includes('qty_done mismatch') ||
-            errMsg.includes('delivery incomplete')
-          ) {
+            errMsg.includes('safety limit') ||
+            errMsg.includes('sanity check');
+          if (isQtyMismatch) {
             try {
               const soId = Number(p0.saleOrderId ?? p0.sale_id);
-              if (Number.isFinite(soId) && soId > 0) {
-                const healed = await tryMarkDeliverySyncedAfterQtyHeal(item, soId, p0);
-                if (healed) {
-                  log('queue', `delivery id=${item.id} SO ${soId} marked synced after idempotent heal`);
-                }
-              }
-            } catch (repairErr) {
-              logWarn('queue delivery (mismatch repair retry)', repairErr);
+              const {
+                auditQtyViewFromPayload,
+                buildMobileQtySnapshot,
+                pickingsBlocksFromDeliveryPayload,
+              } = await import('../utils/deliverySync.js');
+              const { fetchOdooDeliveredQtySnapshot } = await import('./delivery.service.js');
+              const blocksAudit = pickingsBlocksFromDeliveryPayload(p0);
+              const snap = await resolveDeliveredSnapshotForSync(soId, p0);
+              const odooQty = await fetchOdooDeliveredQtySnapshot(blocksAudit, snap.updates || []).catch(
+                () => null
+              );
+              await logDeliveryQtyAudit({
+                queueItemId: Number(item.id),
+                saleOrderId: Number.isFinite(soId) ? soId : null,
+                deliveryTxnId: p0.deliveryTxnId,
+                phase: 'rejected',
+                status: 'rejected',
+                mobileQty: p0.mobileQtySnapshot || buildMobileQtySnapshot(p0),
+                payloadQty: auditQtyViewFromPayload(p0),
+                odooQty,
+                errorMessage: e?.message || String(e),
+              });
+            } catch (auditErr) {
+              logWarn('queue delivery (qty mismatch audit)', auditErr);
             }
           }
         }
@@ -2521,17 +2988,17 @@ async function processSyncQueue() {
 
           let allInventoryUpdatesSynced = true;
           if (!movedByPicking) {
-            const { setQuantQuantityAtLocation, adjustQuantQuantityAtLocation } = await import('./vehicleInventory.service.js');
+            const { applyInventoryQueueUpdateOnOdoo } = await import('./vehicleInventory.service.js');
             for (const u of updates) {
               const productId = u?.productId != null ? Number(u.productId) : null;
               if (productId == null) continue;
-              const inc = Number(u?.incrementQuantity);
-              const targetQty = Number(u?.newQuantity);
               try {
-                if (Number.isFinite(inc) && inc !== 0) {
-                  await adjustQuantQuantityAtLocation(locationId, productId, inc);
-                } else if (Number.isFinite(targetQty)) {
-                  await setQuantQuantityAtLocation(locationId, productId, targetQty);
+                const result = await applyInventoryQueueUpdateOnOdoo(locationId, productId, u);
+                if (result?.mode === 'already_matches' || result?.mode === 'increment_already_matches') {
+                  log(
+                    'queue',
+                    `inventory SO ${saleOrderId ?? '—'} product ${productId}: Odoo qty already matches (skip duplicate deduction)`
+                  );
                 }
                 await vehicleInventoriesDb.clearLocalModificationFlagByLocation(locationId, productId);
               } catch (invErr) {
@@ -2616,19 +3083,19 @@ async function processSyncQueue() {
               flushOk = true;
             } catch (flushErr) {
               logWarn('queue delivery (flush before payment)', flushErr);
-              try {
-                const healed = await tryMarkDeliverySyncedAfterQtyHeal(
-                  latestHeld,
-                  soId,
-                  latestHeld.payload || {}
-                );
-                if (healed) {
-                  flushOk = true;
-                  log('queue', `payment SO ${soId}: delivery flush recovered after qty heal (no duplicate RPC)`);
-                }
-              } catch (repairErr) {
-                logWarn('queue delivery (repair before payment)', repairErr);
-              }
+              const { auditQtyViewFromPayload, buildMobileQtySnapshot } = await import('../utils/deliverySync.js');
+              await logDeliveryQtyAudit({
+                queueItemId: Number(latestHeld?.id),
+                saleOrderId: soId,
+                deliveryTxnId: (latestHeld.payload || {}).deliveryTxnId,
+                phase: 'rejected',
+                status: 'rejected',
+                mobileQty:
+                  (latestHeld.payload || {}).mobileQtySnapshot ||
+                  buildMobileQtySnapshot(latestHeld.payload || {}),
+                payloadQty: auditQtyViewFromPayload(latestHeld.payload || {}),
+                errorMessage: flushErr?.message || String(flushErr),
+              });
             }
 
             // Older held rows are noise once the latest snapshot applies; only clear them if flush succeeded
@@ -2662,19 +3129,10 @@ async function processSyncQueue() {
             )[0];
             let recoveredDelivery = false;
             if (latestDelivery?.action_type === syncQueueDb.ACTION_DELIVERY) {
-              try {
-                const healed = await tryMarkDeliverySyncedAfterQtyHeal(
-                  latestDelivery,
-                  soId,
-                  latestDelivery.payload || {}
-                );
-                if (healed) {
-                  recoveredDelivery = true;
-                  log('queue', `payment SO ${soId}: delivery marked synced after qty heal`);
-                }
-              } catch (retryErr) {
-                logWarn('queue delivery (repair while payment waiting)', retryErr);
-              }
+              log(
+                'queue',
+                `payment SO ${soId}: delivery still pending — invoice blocked until qty sync succeeds`
+              );
             }
             const pendingAfterRepair = await syncQueueDb.getPending();
             const stillDelivery = (pendingAfterRepair || []).filter(
@@ -2717,70 +3175,33 @@ async function processSyncQueue() {
                 expectedPaymentTotal,
                 orderInfo,
               });
-              let resId = initialTarget.resId;
-              let invoiceAlreadyPosted = initialTarget.invoiceAlreadyPosted;
-              if (resId != null) {
-                const invState = await getInvoiceState(resId).catch(() => ({}));
-                if (invState?.state === 'posted') {
-                  invoiceAlreadyPosted = true;
-                  postedInvoiceId = Number(resId);
-                } else if (invState?.state === 'draft') {
-                  log('queue', `payment SO ${saleOrderId}: post existing draft invoice res_id=${resId}`);
-                  await postInvoice(resId);
-                  invoiceAlreadyPosted = true;
-                  postedInvoiceId = Number(resId);
-                }
+              log(
+                'queue',
+                `payment SO ${saleOrderId}: invoice step (delivered qty verify → settle → create/post)`
+              );
+              const invoiceStep = await executePaymentInvoiceStep(soId, p, initialTarget);
+              let resId = invoiceStep.resId != null ? Number(invoiceStep.resId) : null;
+              const invoiceAlreadyPosted = invoiceStep.posted === true;
+              if (!invoiceStep.ok) {
+                invoiceBlockFailedNoItemsToInvoice = invoiceStep.blocked !== false;
+                log(
+                  'queue',
+                  `payment SO ${soId} delayed: invoice blocked (${String(invoiceStep.reason || 'qty guard').slice(0, 120)})`
+                );
+                continue;
               }
-
-              if (!invoiceAlreadyPosted) {
-                if (resId != null) {
-                  const invStateAgain = await getInvoiceState(resId).catch(() => ({}));
-                  if ((invStateAgain?.state || '').toLowerCase() === 'posted') {
-                    log('queue', `payment SO ${saleOrderId}: invoice ${resId} already posted — skip post`);
-                    invoiceAlreadyPosted = true;
-                    postedInvoiceId = Number(resId);
-                  } else if ((invStateAgain?.state || '').toLowerCase() === 'draft') {
-                    log('queue', `payment SO ${saleOrderId}: post existing draft invoice res_id=${resId}`);
-                    await postInvoice(resId);
-                    invoiceAlreadyPosted = true;
-                    postedInvoiceId = Number(resId);
-                  }
-                  if (!invoiceAlreadyPosted) {
-                    log('queue', `payment SO ${saleOrderId}: post existing invoice res_id=${resId}`);
-                    await postInvoice(resId);
-                    invoiceAlreadyPosted = true;
-                    postedInvoiceId = Number(resId);
-                  }
-                } else {
-                  const preInvoiceAlign = await ensureBackendDeliveredMatchesMobileBeforePaymentComplete(soId, p);
-                  if (!preInvoiceAlign.ok) {
-                    invoiceBlockFailedNoItemsToInvoice = true;
-                    log(
-                      'queue',
-                      `payment SO ${soId} delayed: mobile delivered qty not on Odoo before invoice (${String(preInvoiceAlign.reason || '').slice(0, 100)})`
-                    );
-                    continue;
-                  }
-                  log('queue', `payment SO ${saleOrderId}: Step 1 — create advance payment wizard (context active_ids [${saleOrderId}])`);
-                  const wizardId = await createAdvancePaymentWizard(saleOrderId);
-                  if (wizardId == null) {
-                    logWarn('queue payment', new Error('Step 1 failed: advance payment wizard create returned null'));
-                  } else {
-                    log('queue', `payment SO ${saleOrderId}: Step 2 — create_invoices [[${wizardId}]]`);
-                    const createResult = await createInvoicesFromWizard(wizardId);
-                    resId = getInvoiceIdAfterCreate(createResult) ?? firstInvoiceId(await getSaleOrderInvoiceIds(saleOrderId));
-                    if (resId == null) {
-                      logWarn('queue payment', new Error('Step 2 failed: no res_id in create_invoices result'));
-                    } else {
-                      log('queue', `payment SO ${saleOrderId}: Step 3 — action_post [[${resId}]]`);
-                      await postInvoice(resId);
-                      log('queue', `payment SO ${saleOrderId}: invoice created and posted res_id=${resId}`);
-                      postedInvoiceId = Number(resId);
-                    }
-                  }
-                }
-                const onlyCredit = payments.length > 0 && payments.every((pm) => pm.type === 'credit');
-                if (onlyCredit && resId != null) {
+              if (resId != null) {
+                postedInvoiceId = resId;
+                log('queue', `payment SO ${saleOrderId}: invoice ready res_id=${resId} posted=${invoiceAlreadyPosted}`);
+              }
+              if (!invoiceAlreadyPosted && resId == null) {
+                invoiceBlockFailedNoItemsToInvoice = true;
+                logWarn('queue payment', new Error('Invoice step succeeded but no res_id'));
+                continue;
+              }
+              if (invoiceAlreadyPosted) {
+                const onlyCreditAfterInv = payments.length > 0 && payments.every((pm) => pm.type === 'credit');
+                if (onlyCreditAfterInv && resId != null) {
                   log('queue', `payment SO ${saleOrderId}: credit only — invoice posted res_id=${resId}, no payment register`);
                   await updatePaymentQueuePipeline(item.id, p, { invoicePosted: true, paymentsRegistered: true });
                 }
@@ -2953,7 +3374,7 @@ async function processSyncQueue() {
               if (msg.includes('no items are available to invoice') || msg.includes('nothing to invoice')) {
                 const heal = await attemptDeliveredQtyHealForSaleOrder(soId, p);
                 if (heal.ok) {
-                  const invRetry = await tryCreateAndPostDeliveredInvoice(soId);
+                  const invRetry = await tryCreateAndPostDeliveredInvoice(soId, p);
                   if (invRetry.ok) {
                     postedInvoiceId = invRetry.resId;
                     log('queue', `payment SO ${soId}: invoice recovered after qty heal (res_id=${invRetry.resId})`);
@@ -3251,7 +3672,7 @@ async function processSyncQueue() {
           if (invoiceBlockFailedNoItemsToInvoice) {
             const heal = await attemptDeliveredQtyHealForSaleOrder(soId, p);
             if (heal.ok) {
-              const invRetry = await tryCreateAndPostDeliveredInvoice(soId);
+              const invRetry = await tryCreateAndPostDeliveredInvoice(soId, p);
               if (invRetry.ok) {
                 invoiceBlockFailedNoItemsToInvoice = false;
                 postedInvoiceId = invRetry.resId;
@@ -3528,6 +3949,14 @@ async function runSyncInternal() {
       log('stop', 'no active session');
       return { error: 'No active session' };
     }
+
+    try {
+      const { refreshCancellationReasonsCache } = await import('./saleOrder.service.js');
+      await refreshCancellationReasonsCache();
+    } catch (_) {
+      /* non-fatal */
+    }
+
     await processSyncQueue();
     await processStandaloneOfflineAttachments();
 
@@ -3598,20 +4027,14 @@ async function runSyncInternal() {
     const localInvoicesMod = await import('../database/localInvoices.js');
     const unsyncedInvoiceSoIds = await localInvoicesMod.getUnsyncedLocalInvoiceSaleOrderIds();
     const fetchedOrderIds = (orders || []).map((o) => o?.id).filter((id) => id != null).map((id) => Number(id));
-    const fetchedOrderIdSet = new Set(fetchedOrderIds);
-    const preserveLocalSaleOrderIds = new Set(pendingSaleOrderIds);
-    for (const soId of syncedPaymentSaleOrderIds) {
-      const idNum = Number(soId);
-      if (Number.isFinite(idNum) && fetchedOrderIdSet.has(idNum)) {
-        preserveLocalSaleOrderIds.add(idNum);
-      }
-    }
-    for (const soId of unsyncedInvoiceSoIds) {
-      const idNum = Number(soId);
-      if (Number.isFinite(idNum) && idNum > 0 && fetchedOrderIdSet.has(idNum)) {
-        preserveLocalSaleOrderIds.add(idNum);
-      }
-    }
+    const { buildPreserveSaleOrderIdsForVehicleSync, pruneExpiredLocalDeliveryHistory } = await import(
+      './vehicleHistoryRetention.service.js'
+    );
+    const preserveLocalSaleOrderIds = await buildPreserveSaleOrderIdsForVehicleSync(vehicleId, [
+      ...pendingSaleOrderIds,
+      ...syncedPaymentSaleOrderIds,
+      ...unsyncedInvoiceSoIds,
+    ]);
 
     /** Do not skip Odoo payment split refresh for SOs that only have a synced mobile payment — otherwise Cash/Cheque/Credit tabs stay wrong. */
     const paymentRefreshSkipIds = new Set();
@@ -3627,7 +4050,9 @@ async function runSyncInternal() {
     // Remove stale local orders only when order fetch is healthy and non-empty.
     // This prevents accidental local wipe if backend temporarily returns empty/error.
     if (!orderFetchFailed && fetchedOrderIds.length > 0) {
-      await saleOrdersDb.pruneSaleOrdersToIds(fetchedOrderIds, { preserveLocalForSaleOrderIds: preserveLocalSaleOrderIds });
+      await saleOrdersDb.pruneSaleOrdersForVehicle(vehicleId, fetchedOrderIds, {
+        preserveLocalForSaleOrderIds: preserveLocalSaleOrderIds,
+      });
     } else {
       log('sync', `skip local prune (orderFetchFailed=${orderFetchFailed}, fetchedOrders=${fetchedOrderIds.length})`);
     }
@@ -3948,6 +4373,17 @@ async function runSyncInternal() {
     } catch (e) {
       logWarn('sync second queue pass', e);
     }
+    try {
+      const { pruneExpiredLocalDeliveryHistory: pruneRetention } = await import(
+        './vehicleHistoryRetention.service.js'
+      );
+      const retention = await pruneRetention({ vehicleId });
+      if (retention?.deleted > 0) {
+        log('sync', `pruned ${retention.deleted} expired local delivery row(s) (>7d, vehicle=${vehicleId ?? 'all'})`);
+      }
+    } catch (retentionErr) {
+      logWarn('sync retention prune', retentionErr);
+    }
     //TODO: count column should renamed to results
     await syncLogDb.appendLog({
       sync_at: syncAt,
@@ -4102,7 +4538,8 @@ export async function syncVehiclesOnly() {
 }
 
 /**
- * Clear all data from all tables (for logout).
+ * Destructive wipe of operational tables — for explicit "delete local data" in settings only.
+ * Logout must NOT call this; multi-vehicle delivered/invoiced history stays in SQLite (7-day retention).
  */
 export async function clearAllTables() {
 

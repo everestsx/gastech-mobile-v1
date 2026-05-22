@@ -4,6 +4,7 @@
  */
 import { getDb } from './db.js';
 import { empty, num, iso } from './dbHelpers.js';
+import { ensureDeliveryTxnOnPayload } from '../utils/deliverySync.js';
 
 /** Delivery: validate picking + stock moves/lines. Payload: { saleOrderId, demandEdit?: boolean, pickingId, pickings[], orderLineUpdates (product_uom_qty — Modify only), saleOrderLineDeliveredUpdates ({ lineId, qty_delivered }), moveUpdates (move demand — Modify only), moveLineUpdates, holdUntilPayment?: true } — when true, sync.service skips until payment completes (then flushes once before invoice). */
 export const ACTION_DELIVERY = 'delivery';
@@ -11,6 +12,8 @@ export const ACTION_DELIVERY = 'delivery';
 export const ACTION_PAYMENT = 'payment';
 /** Vehicle inventory update after delivery. Payload: { vehicleId, locationId, updates[] } */
 export const ACTION_INVENTORY_UPDATE = 'inventory_update';
+/** Cancel sale order on Odoo when back online. Payload: { saleOrderId, reason, cancelledAt? } */
+export const ACTION_CANCEL_ORDER = 'order_cancel';
 
 function wakePendingUploadAfterQueueChange() {
   import('../services/sync.service.js')
@@ -24,10 +27,14 @@ function wakePendingUploadAfterQueueChange() {
 
 export async function enqueue(actionType, payload) {
   const db = await getDb();
+  let payloadObj = payload;
+  if (actionType === ACTION_DELIVERY && payload != null && typeof payload === 'object') {
+    payloadObj = await ensureDeliveryTxnOnPayload(payload);
+  }
   const payloadStr =
-    typeof payload === 'string'
-      ? payload
-      : JSON.stringify(payload ?? {}, (_k, v) => (typeof v === 'bigint' ? v.toString() : v));
+    typeof payloadObj === 'string'
+      ? payloadObj
+      : JSON.stringify(payloadObj ?? {}, (_k, v) => (typeof v === 'bigint' ? v.toString() : v));
   await db.runAsync(
     'INSERT INTO sync_queue (action_type, payload, created_at, is_uploaded) VALUES (?, ?, ?, 0)',
     [empty(actionType) || 'unknown', payloadStr, iso()]
@@ -148,6 +155,28 @@ export async function getPendingPaymentItemBySaleOrderId(saleOrderId) {
   return best;
 }
 
+/** Pending cancel row for a sale order (latest id if duplicates). */
+export async function getPendingCancelItemBySaleOrderId(saleOrderId) {
+  if (saleOrderId == null) return null;
+  const db = await getDb();
+  const rows = await db.getAllAsync(
+    `SELECT id, payload FROM sync_queue WHERE action_type = ? AND COALESCE(is_uploaded, 0) = 0 AND synced_at IS NULL`,
+    [ACTION_CANCEL_ORDER]
+  );
+  const soId = Number(saleOrderId);
+  let best = null;
+  for (const row of rows || []) {
+    const p = safeParseJson(row.payload, {});
+    const id = p.saleOrderId ?? p.sale_order_id;
+    if (id != null && Number(id) === soId) {
+      if (!best || Number(row.id) > Number(best.id)) {
+        best = { id: row.id, payload: p };
+      }
+    }
+  }
+  return best;
+}
+
 /** Get pending (unsynced) delivery queue item for a sale order, if any. Used to avoid duplicate delivery/qty. */
 export async function getPendingDeliveryItemBySaleOrderId(saleOrderId) {
   if (saleOrderId == null) return null;
@@ -196,12 +225,30 @@ export async function getPendingInventoryUpdateItemBySaleOrderId(saleOrderId) {
 }
 
 /** Update payload of an existing queue item (e.g. to merge payment updates for same sale order). */
-export async function updateQueueItemPayload(id, payload) {
+function isDeliveryPayloadShape(payload) {
+  if (payload == null || typeof payload !== 'object') return false;
+  return (
+    Array.isArray(payload.pickings) ||
+    payload.pickingId != null ||
+    Array.isArray(payload.saleOrderLineDeliveredUpdates) ||
+    payload.demandEdit === true ||
+    Array.isArray(payload.orderLineUpdates)
+  );
+}
+
+export async function updateQueueItemPayload(id, payload, options = {}) {
   const db = await getDb();
+  let payloadObj = payload;
+  if (
+    options.actionType === ACTION_DELIVERY ||
+    (typeof payload === 'object' && isDeliveryPayloadShape(payload))
+  ) {
+    payloadObj = await ensureDeliveryTxnOnPayload(payload);
+  }
   const payloadStr =
-    typeof payload === 'string'
-      ? payload
-      : JSON.stringify(payload ?? {}, (_k, v) => (typeof v === 'bigint' ? v.toString() : v));
+    typeof payloadObj === 'string'
+      ? payloadObj
+      : JSON.stringify(payloadObj ?? {}, (_k, v) => (typeof v === 'bigint' ? v.toString() : v));
   await db.runAsync('UPDATE sync_queue SET payload = ? WHERE id = ?', [payloadStr, num(id)]);
   wakePendingUploadAfterQueueChange();
 }

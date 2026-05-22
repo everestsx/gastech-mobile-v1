@@ -1,4 +1,4 @@
-import { callOdoo, callOdooArgs } from "./index.service";
+import { callOdoo, callOdooArgs, callOdooArgsKwargs } from "./index.service";
 
 /**
  * Fields requested from sale.order search_read.
@@ -87,36 +87,135 @@ export const getAllSaleOrders = async (dateFrom, syncDateField = 'creation_date'
   }
 };
 
-/** Load backend cancellation reasons from the wizard selection field, with sensible fallback values. */
-export const getCancellationReasonOptions = async () => {
+function normalizeReasonSelection(selection) {
+  if (!Array.isArray(selection) || selection.length === 0) return [];
+  return selection
+    .map((item) => {
+      if (!Array.isArray(item) || item.length < 1) return null;
+      const [value, label] = item;
+      return { value: String(value), label: String(label || value) };
+    })
+    .filter(Boolean);
+}
+
+/** Fetch reasons from Odoo wizard field (online only). */
+export async function fetchCancellationReasonOptionsFromOdoo() {
+  const fields = await callOdoo(
+    'sale.order.cancel.reason.wizard',
+    'fields_get',
+    [],
+    {
+      allfields: ['reason'],
+      attributes: ['string', 'type', 'required', 'selection'],
+    }
+  );
+  return normalizeReasonSelection(fields?.reason?.selection);
+}
+
+/**
+ * Pull Odoo wizard reasons into SQLite (call on login / sync while online).
+ */
+export async function refreshCancellationReasonsCache() {
   try {
-    const fields = await callOdoo(
-      'sale.order.cancel.reason.wizard',
-      'fields_get',
-      [],
-      {
-        allfields: ['reason'],
-        attributes: ['string', 'type', 'required', 'selection'],
-      }
-    );
-    const selection = fields?.reason?.selection;
-    if (Array.isArray(selection) && selection.length > 0) {
-      return selection
-        .map((item) => {
-          if (!Array.isArray(item) || item.length < 1) return null;
-          const [value, label] = item;
-          return { value: String(value), label: String(label || value) };
-        })
-        .filter(Boolean);
+    const reasons = await fetchCancellationReasonOptionsFromOdoo();
+    if (reasons.length > 0) {
+      const { replaceCancellationReasons } = await import('../database/cancellationReasons.js');
+      await replaceCancellationReasons(reasons);
+      return reasons;
     }
   } catch (error) {
-    console.warn('[saleOrder.service] getCancellationReasonOptions failed', error?.message ?? error);
+    console.warn('[saleOrder.service] refreshCancellationReasonsCache', error?.message ?? error);
   }
-  return CANCEL_REASON_FALLBACKS;
+  return null;
+}
+
+/**
+ * Cancel modal + offline cancel: SQLite only — never calls Odoo (same labels as back office).
+ */
+export async function getStoredCancellationReasonsForUI() {
+  const { getCancellationReasonsFromDb } = await import('../database/cancellationReasons.js');
+  const stored = await getCancellationReasonsFromDb();
+  if (stored.length > 0) return stored;
+  return [];
+}
+
+/** @deprecated Use getStoredCancellationReasonsForUI for modals. Online refresh via refreshCancellationReasonsCache. */
+export const getCancellationReasonOptions = async () => {
+  const stored = await getStoredCancellationReasonsForUI();
+  if (stored.length > 0) return stored;
+  try {
+    const fresh = await refreshCancellationReasonsCache();
+    if (Array.isArray(fresh) && fresh.length > 0) return fresh;
+  } catch (_) {
+    /* non-fatal */
+  }
+  const again = await getStoredCancellationReasonsForUI();
+  return again.length > 0 ? again : CANCEL_REASON_FALLBACKS;
 };
-/** Cancel a sale order with the selected reason code. */
-export const cancelSaleOrderWithReason = (orderId, reason) =>
-  callOdooArgs('sale.order', 'action_cancel_with_reason', [[Number(orderId)], String(reason || '')]);
+/**
+ * Cancel sale order(s) on Odoo with reason (GasTech action_cancel_with_reason).
+ * Tries kwargs + positional shapes used across Odoo / custom module versions.
+ */
+export async function cancelSaleOrderWithReason(orderId, reason, context = {}) {
+  const ids = (Array.isArray(orderId) ? orderId : [orderId])
+    .map((id) => Number(id))
+    .filter((id) => Number.isFinite(id) && id > 0);
+  if (!ids.length) throw new Error('Invalid sale order id');
+  const reasonStr = String(reason || '').trim();
+  if (!reasonStr) throw new Error('Cancel reason is required');
+  const ctx = {
+    lang: 'en_US',
+    active_model: 'sale.order',
+    active_ids: ids,
+    ...context,
+  };
+
+  const attempts = [
+    () =>
+      callOdooArgsKwargs('sale.order', 'action_cancel_with_reason', [], {
+        ids,
+        reason: reasonStr,
+        context: ctx,
+      }),
+    () =>
+      callOdooArgsKwargs('sale.order', 'action_cancel_with_reason', [ids], {
+        reason: reasonStr,
+        context: ctx,
+      }),
+    () => callOdooArgs('sale.order', 'action_cancel_with_reason', [ids, reasonStr]),
+    () => callOdooArgs('sale.order', 'action_cancel_with_reason', [[ids], reasonStr]),
+  ];
+
+  let lastErr = null;
+  for (const attempt of attempts) {
+    try {
+      return await attempt();
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+
+  try {
+    await callOdoo('sale.order', 'action_cancel', [ids]);
+    return true;
+  } catch (fallbackErr) {
+    throw lastErr || fallbackErr;
+  }
+}
+
+/** True when Odoo sale.order is already cancelled. */
+export async function isSaleOrderCancelledOnOdoo(saleOrderId) {
+  const soId = Number(saleOrderId);
+  if (!Number.isFinite(soId) || soId <= 0) return false;
+  try {
+    const rows =
+      (await callOdoo('sale.order', 'read', [[soId]], { fields: ['id', 'state'] })) || [];
+    const st = String((Array.isArray(rows) ? rows[0] : rows)?.state || '').toLowerCase();
+    return st === 'cancel';
+  } catch (_) {
+    return false;
+  }
+}
 /**
  * Get sale orders for a specific vehicle only (for vehicle-scoped sync).
  * @param {number} vehicleId - The vehicle ID to filter by

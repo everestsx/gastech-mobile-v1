@@ -24,9 +24,8 @@ import * as localInvoicesDb from '../database/localInvoices.js';
 import * as localPaymentsDb from '../database/localPayments.js';
 import * as stockPickingsDb from '../database/stockPickings.js';
 import * as syncQueueDb from '../database/syncQueue.js';
-import * as vehicleInventoriesDb from '../database/vehicleInventories.js';
-import * as productsDb from '../database/products.js';
-import { getSaleOrderDetailsFromDB } from '../services/sync.service';
+import { getSaleOrderDetailsFromDB, notifyLocalInventoryChanged } from '../services/sync.service';
+import { applyInventoryUpdatesToLocalDb } from '../utils/localInventoryApply.js';
 import { empty } from '../database/dbHelpers.js';
 import { schedulePendingUploadSync } from '../services/sync.service';
 import { getOrAssignInvoiceNumber } from '../utils/invoiceNumber';
@@ -131,48 +130,29 @@ export default function PaymentProofScreen({ route, navigation }) {
         const vehicleId = Number(payload.vehicleId);
         const updates = Array.isArray(payload.updates) ? payload.updates : [];
         if (Number.isFinite(locationId) && locationId > 0 && updates.length > 0) {
-          for (const update of updates) {
-            const productId = Number(update?.productId);
-            if (!Number.isFinite(productId) || productId <= 0) continue;
-            const increment = Number(update?.incrementQuantity);
-            if (Number.isFinite(increment) && increment > 0) {
-              const inventoryRows = await vehicleInventoriesDb
-                .getVehicleInventoryByLocationId(locationId)
-                .catch(() => []);
-              const existingRow = (inventoryRows || []).find(
-                (r) => Number(r?.product_id) === productId
-              );
-              const current = Number(existingRow?.quantity) || 0;
-              const nextQty = Math.max(0, current + increment);
-              const productName =
-                (await productsDb.getProductById(productId))?.name ||
-                existingRow?.product_name ||
-                '';
-              if (Number.isFinite(vehicleId) && vehicleId > 0) {
-                await vehicleInventoriesDb.upsertVehicleInventoryQuantityByLocation(
-                  locationId,
-                  vehicleId,
-                  productId,
-                  productName,
-                  nextQty
-                );
-              } else {
-                await vehicleInventoriesDb.updateVehicleInventoryQuantityByLocation(
-                  locationId,
-                  productId,
-                  nextQty
-                );
-              }
-              continue;
+          if (payload._localGasInventoryApplied !== true) {
+            const gasUpdates = updates.filter(
+              (u) => Number.isFinite(Number(u?.newQuantity)) && u?.appliedLocally !== true
+            );
+            if (gasUpdates.length > 0) {
+              await applyInventoryUpdatesToLocalDb(locationId, vehicleId, gasUpdates, {
+                incrementsOnly: false,
+              });
             }
-            const newQuantity = Number(update?.newQuantity);
-            if (!Number.isFinite(newQuantity)) continue;
-            await vehicleInventoriesDb.updateVehicleInventoryQuantityByLocation(
+            payload._localGasInventoryApplied = true;
+          }
+          const emptyStillPending = updates.filter(
+            (u) => Number(u?.incrementQuantity) > 0 && u?.appliedLocally !== true
+          );
+          if (emptyStillPending.length > 0) {
+            payload.updates = await applyInventoryUpdatesToLocalDb(
               locationId,
-              productId,
-              Math.max(0, newQuantity)
+              vehicleId,
+              updates,
+              { incrementsOnly: true }
             );
           }
+          notifyLocalInventoryChanged();
         }
         delete payload.holdUntilComplete;
         await syncQueueDb.updateQueueItemPayload(row.id, payload);
@@ -203,6 +183,11 @@ export default function PaymentProofScreen({ route, navigation }) {
     const untaxed = Number(orderInfo.amount_untaxed ?? total) || 0;
     const tax = Number(orderInfo.amount_tax ?? 0) || 0;
 
+    const checkoutDriverName =
+      paymentPayload?.driverName != null && String(paymentPayload.driverName).trim()
+        ? String(paymentPayload.driverName).trim()
+        : '';
+
     const invoiceId = await localInvoicesDb.upsertLocalInvoice({
       sale_order_id: soId,
       invoice_number: invoiceNumber,
@@ -212,6 +197,7 @@ export default function PaymentProofScreen({ route, navigation }) {
       state: 'posted',
       customer_signature_data: existingLocalInv?.customer_signature_data ?? '',
       driver_signature_data: existingLocalInv?.driver_signature_data ?? '',
+      driver_name: checkoutDriverName,
     });
 
     const payments = Array.isArray(paymentPayload.payments) ? paymentPayload.payments : [];

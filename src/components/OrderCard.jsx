@@ -94,6 +94,12 @@ export default function OrderCard({
           shadowRadius: 4,
           overflow: 'hidden',
         },
+        cardCancelled: {
+          backgroundColor: colors.background,
+          borderWidth: 1,
+          borderColor: colors.border,
+          opacity: 0.92,
+        },
         deliveryBanner: {
           flexDirection: 'row',
           alignItems: 'center',
@@ -265,7 +271,7 @@ export default function OrderCard({
 
   return (
     <TouchableOpacity
-      style={styles.card}
+      style={[styles.card, String(order?.state) === 'cancel' && styles.cardCancelled]}
       onPress={() => onPress?.(order)}
       activeOpacity={0.8}
     >

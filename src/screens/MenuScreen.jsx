@@ -20,7 +20,8 @@ import {
   getUserSession,
   logout,
   getSyncIntervalMinutes,
-  deleteLocalData, clearAllTables,setIsLoggingOut
+  deleteLocalData,
+  setIsLoggingOut,
 } from '../services/sync.service';
 import CustomAlert from '../components/CustomAlert';
 import { usePrinterConnection } from '../context/PrinterConnectionContext';
@@ -231,7 +232,7 @@ export default function MenuScreen({ navigation }) {
             await clearPrinter().catch(() => {});
             await logout();
             hideAlert();
-            await clearAllTables();
+            /* Keep per-vehicle offline delivered/invoiced history in SQLite (7-day retention). */
 
             const root = navigation.getParent();
             if (root) {
@@ -349,6 +350,18 @@ export default function MenuScreen({ navigation }) {
         <Text style={[styles.menuItemText, { color: colors.text }]}>My Commissions</Text>
         <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
       </TouchableOpacity> */}
+
+      <TouchableOpacity
+        style={[styles.menuItem, { backgroundColor: colors.surface, borderColor: colors.border }]}
+        onPress={() => navigation.navigate('CancelOrders')}
+        activeOpacity={0.8}
+      >
+        <Ionicons name="close-circle-outline" size={24} color={colors.primary} />
+        <Text style={[styles.menuItemText, { color: colors.text }]}>
+          {t('menu.cancelOrder', 'Cancel order')}
+        </Text>
+        <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
+      </TouchableOpacity>
 
       <TouchableOpacity
         style={[styles.menuItem, { backgroundColor: colors.surface, borderColor: colors.border }]}

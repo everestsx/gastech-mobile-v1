@@ -30,9 +30,10 @@ import {
   getUserSession,
 } from '../services/sync.service';
 import {
-  cancelSaleOrderWithReason,
-  getCancellationReasonOptions,
+  getStoredCancellationReasonsForUI,
+  refreshCancellationReasonsCache,
 } from '../services/saleOrder.service';
+import { cancelSaleOrderOfflineFirst } from '../utils/orderCancel.js';
 import OrderCard from '../components/OrderCard';
 import SyncHeaderBadge from '../components/SyncHeaderBadge';
 import * as saleOrdersDb from '../database/saleOrders.js';
@@ -575,12 +576,19 @@ export default function SaleOrderListScreen({ route, navigation }) {
     let active = true;
     const loadReasons = async () => {
       setCancelReasonsLoading(true);
+      setCancelError(null);
       try {
-        const reasons = await getCancellationReasonOptions();
+        const stored = await getStoredCancellationReasonsForUI();
         if (!active) return;
-        const normalized = Array.isArray(reasons) ? reasons : [];
-        setCancelReasons(normalized);
-        setCancelReason((prev) => prev || normalized[0]?.value || '');
+        setCancelReasons(stored);
+        setCancelReason((prev) => prev || stored[0]?.value || '');
+        if (stored.length === 0) {
+          void refreshCancellationReasonsCache().then((fresh) => {
+            if (!active || !Array.isArray(fresh) || fresh.length === 0) return;
+            setCancelReasons(fresh);
+            setCancelReason((prev) => prev || fresh[0]?.value || '');
+          });
+        }
       } catch (_) {
         if (!active) return;
         setCancelReasons([]);
@@ -594,17 +602,8 @@ export default function SaleOrderListScreen({ route, navigation }) {
     };
   }, [showCancelModal]);
 
-  /** Back-office reasons: show label as returned by API (no translation). Offline fallback list uses app strings. */
-  const effectiveCancelReasons = cancelReasons.length > 0
-    ? cancelReasons
-    : [
-        { value: 'shop_closed', label: t('saleorder.fallbackReasonShopClosed', 'Shop closed') },
-        { value: 'customer_not_available', label: t('saleorder.fallbackReasonCustomerNotAvailable', 'Customer not available') },
-        { value: 'customer_cancelled', label: t('saleorder.fallbackReasonCustomerCancelled', 'Customer cancelled') },
-        { value: 'wrong_order', label: t('saleorder.fallbackReasonWrongOrder', 'Wrong order') },
-        { value: 'duplicate_order', label: t('saleorder.fallbackReasonDuplicateOrder', 'Duplicate order') },
-        { value: 'other', label: t('saleorder.fallbackReasonOther', 'Other') },
-      ];
+  /** Exact Odoo reasons from SQLite only (loaded on last sync/login). */
+  const effectiveCancelReasons = cancelReasons;
 
   const closeCancelFlow = useCallback(() => {
     setShowCancelConfirmModal(false);
@@ -644,22 +643,24 @@ export default function SaleOrderListScreen({ route, navigation }) {
     setCancelError(null);
     setCanceling(true);
     try {
-      await cancelSaleOrderWithReason(cancelTargetOrder.id, cancelReason);
-      await saleOrdersDb.updateSaleOrderStateLocal(cancelTargetOrder.id, 'cancel');
-
-      const pickings = await stockPickingsDb.getStockPickingsBySaleId(cancelTargetOrder.id);
-      await Promise.all((pickings || []).map((p) => stockPickingsDb.updatePickingStateLocal(p.id, 'cancel')));
-
-      await syncQueueDb.deletePendingItemsBySaleOrderId(cancelTargetOrder.id);
-
+      await cancelSaleOrderOfflineFirst(cancelTargetOrder.id, cancelReason);
       closeCancelFlow();
       await loadOrders();
+      Alert.alert(
+        t('saleorder.cancelSavedTitle', 'Order cancelled'),
+        t(
+          'saleorder.cancelSavedMessage',
+          'Cancelled on this device. It will sync to the back office automatically when you are online.'
+        )
+      );
     } catch (err) {
-      setCancelError(err?.message ?? t('saleorder.cancelFailedTryAgain', 'Cancel failed. Try again.'));
+      const msg = err?.message ?? t('saleorder.cancelFailedTryAgain', 'Cancel failed. Try again.');
+      setCancelError(msg);
+      await loadOrders();
     } finally {
       setCanceling(false);
     }
-  }, [cancelReason, canceling, cancelTargetOrder, closeCancelFlow, loadOrders]);
+  }, [cancelReason, canceling, cancelTargetOrder, closeCancelFlow, loadOrders, t]);
 
   const canGoToNextDay = !isToday(selectedDate);
 
@@ -934,6 +935,13 @@ export default function SaleOrderListScreen({ route, navigation }) {
                     {t('saleorder.loadingReasons', 'Loading reasons…')}
                   </Text>
                 </View>
+              ) : effectiveCancelReasons.length === 0 ? (
+                <Text style={{ color: colors.textSecondary, fontSize: 14, lineHeight: 20, paddingVertical: spacing.sm }}>
+                  {t(
+                    'saleorder.noCancelReasonsCached',
+                    'Cancel reasons are not loaded yet. Connect to the internet and run Sync once, then try again.'
+                  )}
+                </Text>
               ) : (
                 <ScrollView
                   style={{ maxHeight: 300 }}
@@ -982,7 +990,7 @@ export default function SaleOrderListScreen({ route, navigation }) {
               <TouchableOpacity
                 style={[styles.cancelModalBtn, styles.cancelModalBtnPrimary]}
                 onPress={handleCancelOrder}
-                disabled={canceling}
+                disabled={canceling || effectiveCancelReasons.length === 0 || !cancelReason}
                 activeOpacity={0.8}
               >
                 {canceling ? (

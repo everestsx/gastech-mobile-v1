@@ -33,6 +33,7 @@ export async function upsertLocalInvoice(row) {
   const state = empty(row.state) || 'posted';
   const custSig = signatureBlobForSqlite(row.customer_signature_data);
   const drvSig = signatureBlobForSqlite(row.driver_signature_data);
+  const driverName = empty(row.driver_name);
 
   const existing = await db.getFirstAsync(
     'SELECT id FROM local_invoices WHERE sale_order_id = ?',
@@ -41,7 +42,7 @@ export async function upsertLocalInvoice(row) {
   if (existing?.id != null) {
     await db.runAsync(
       `UPDATE local_invoices SET invoice_number = ?, amount_total = ?, amount_untaxed = ?, amount_tax = ?, state = ?, updated_at = ?,
-       customer_signature_data = ?, driver_signature_data = ?
+       customer_signature_data = ?, driver_signature_data = ?, driver_name = COALESCE(NULLIF(?, ''), driver_name)
        WHERE sale_order_id = ?`,
       [
         invoiceNumber,
@@ -52,6 +53,7 @@ export async function upsertLocalInvoice(row) {
         now,
         custSig,
         drvSig,
+        driverName,
         saleOrderId,
       ]
     );
@@ -59,8 +61,8 @@ export async function upsertLocalInvoice(row) {
   }
   // Avoid using runAsync return value (can trigger "Cannot convert to Kotlin type" on Android APK)
   await db.runAsync(
-    `INSERT INTO local_invoices (sale_order_id, invoice_number, amount_total, amount_untaxed, amount_tax, state, created_at, updated_at, customer_signature_data, driver_signature_data)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO local_invoices (sale_order_id, invoice_number, amount_total, amount_untaxed, amount_tax, state, created_at, updated_at, customer_signature_data, driver_signature_data, driver_name)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       saleOrderId,
       invoiceNumber,
@@ -72,6 +74,7 @@ export async function upsertLocalInvoice(row) {
       now,
       custSig,
       drvSig,
+      driverName,
     ]
   );
   const inserted = await db.getFirstAsync(
@@ -134,6 +137,27 @@ export async function getAllLocalInvoices(unsyncedOnly = false) {
   return (rows || []).map(mapRow);
 }
 
+/**
+ * Local invoices for one vehicle only (join sale_orders.vehicle_id).
+ * @param {number | null} vehicleId - Required for vehicle login; null returns [] (no cross-vehicle list).
+ */
+export async function getLocalInvoicesForVehicle(vehicleId, unsyncedOnly = false) {
+  const vid = num(vehicleId);
+  if (!Number.isFinite(vid) || vid <= 0) return [];
+
+  const db = await getDb();
+  const syncedClause = unsyncedOnly ? ' AND li.synced_at IS NULL' : '';
+  const rows = await db.getAllAsync(
+    `SELECT li.*
+     FROM local_invoices li
+     INNER JOIN sale_orders so ON so.id = li.sale_order_id
+     WHERE so.vehicle_id = ?${syncedClause}
+     ORDER BY li.created_at DESC`,
+    [vid]
+  );
+  return (rows || []).map(mapRow);
+}
+
 export async function updateLocalInvoiceSynced(invoiceId, odooInvoiceId = null) {
   const db = await getDb();
   const now = iso();
@@ -165,5 +189,6 @@ function mapRow(row) {
     odoo_invoice_id: row.odoo_invoice_id != null ? row.odoo_invoice_id : null,
     customer_signature_data: row.customer_signature_data ?? null,
     driver_signature_data: row.driver_signature_data ?? null,
+    driver_name: row.driver_name ?? null,
   };
 }

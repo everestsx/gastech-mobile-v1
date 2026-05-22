@@ -581,6 +581,108 @@ async function runMigrations(db) {
     }
     await db.runAsync('PRAGMA user_version = 24');
   }
+
+  // Migration 25: Delivery qty audit (mobile vs payload vs Odoo) for corruption detection
+  if (current < 25) {
+    try {
+      await db.execAsync(`
+        CREATE TABLE IF NOT EXISTS delivery_qty_audit (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          queue_item_id INTEGER,
+          sale_order_id INTEGER,
+          delivery_txn_id TEXT,
+          phase TEXT NOT NULL,
+          status TEXT NOT NULL,
+          mobile_qty_json TEXT,
+          payload_qty_json TEXT,
+          odoo_qty_json TEXT,
+          error_message TEXT,
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_delivery_qty_audit_so ON delivery_qty_audit(sale_order_id);
+        CREATE INDEX IF NOT EXISTS idx_delivery_qty_audit_txn ON delivery_qty_audit(delivery_txn_id);
+      `);
+    } catch (e) {
+      console.warn('[Migration] delivery_qty_audit:', e);
+    }
+    await db.runAsync('PRAGMA user_version = 25');
+  }
+
+  // Migration 26: app_cache (offline cancel reasons) + sale_orders.cancel_reason
+  if (current < 26) {
+    try {
+      await db.execAsync(`
+        CREATE TABLE IF NOT EXISTS app_cache (
+          cache_key TEXT PRIMARY KEY,
+          value_json TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+      `);
+      const info = await db.getAllAsync('PRAGMA table_info(sale_orders)');
+      const names = new Set((info || []).map((c) => c.name));
+      if (!names.has('cancel_reason')) {
+        await db.runAsync('ALTER TABLE sale_orders ADD COLUMN cancel_reason TEXT');
+      }
+    } catch (e) {
+      console.warn('[Migration] app_cache / cancel_reason:', e);
+    }
+    await db.runAsync('PRAGMA user_version = 26');
+  }
+
+  // Migration 27: dedicated cancellation_reasons table (exact Odoo list for offline cancel)
+  if (current < 27) {
+    try {
+      await db.execAsync(`
+        CREATE TABLE IF NOT EXISTS cancellation_reasons (
+          value TEXT PRIMARY KEY,
+          label TEXT NOT NULL,
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          updated_at TEXT NOT NULL
+        );
+      `);
+      const legacy = await db.getFirstAsync(
+        "SELECT value_json FROM app_cache WHERE cache_key = 'cancellation_reasons' LIMIT 1"
+      );
+      if (legacy?.value_json) {
+        try {
+          const parsed = JSON.parse(legacy.value_json);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            const now = new Date().toISOString();
+            for (let i = 0; i < parsed.length; i++) {
+              const r = parsed[i];
+              const value = String(r?.value ?? '').trim();
+              const label = String(r?.label ?? value).trim();
+              if (!value) continue;
+              await db.runAsync(
+                `INSERT OR IGNORE INTO cancellation_reasons (value, label, sort_order, updated_at)
+                 VALUES (?, ?, ?, ?)`,
+                [value, label, i, now]
+              );
+            }
+          }
+        } catch (_) {
+          /* ignore bad legacy json */
+        }
+      }
+    } catch (e) {
+      console.warn('[Migration] cancellation_reasons:', e);
+    }
+    await db.runAsync('PRAGMA user_version = 27');
+  }
+
+  // Migration 28: driver who completed the order (local invoice list — not current login)
+  if (current < 28) {
+    try {
+      const info = await db.getAllAsync('PRAGMA table_info(local_invoices)');
+      const names = new Set((info || []).map((c) => c.name));
+      if (!names.has('driver_name')) {
+        await db.runAsync('ALTER TABLE local_invoices ADD COLUMN driver_name TEXT');
+      }
+    } catch (e) {
+      console.warn('[Migration] local_invoices driver_name:', e);
+    }
+    await db.runAsync('PRAGMA user_version = 28');
+  }
 }
 
 /**

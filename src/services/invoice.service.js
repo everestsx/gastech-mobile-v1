@@ -215,6 +215,107 @@ export const resolveInitialInvoiceIdForPaymentSync = async (
   return { resId: null, invoiceAlreadyPosted: false };
 };
 
+const QTY_INVOICE_TOL = 0.02;
+
+const roundQty3 = (q) => Math.round(Number(q) * 1000) / 1000;
+
+/**
+ * Expected qty per sale.order.line from mobile checkout snapshot.
+ * @param {Array<{ lineId?: number, qty_delivered?: number, qty?: number }>} deliveredUpdates
+ */
+export function buildExpectedQtyMapFromDeliveredUpdates(deliveredUpdates) {
+  const map = new Map();
+  for (const u of deliveredUpdates || []) {
+    const lid = Number(u?.lineId);
+    const q = roundQty3(u?.qty_delivered ?? u?.qty);
+    if (!Number.isFinite(lid) || lid <= 0 || !Number.isFinite(q)) continue;
+    map.set(lid, q);
+  }
+  return map;
+}
+
+/**
+ * Compare Odoo sale.order.line qty_delivered / qty_invoiced to the mobile snapshot.
+ * Used before posting invoices so stale draft or race-condition qty cannot ship to accounting.
+ */
+export async function verifySaleOrderDeliveredAndInvoicedQty(deliveredUpdates, options = {}) {
+  const {
+    checkDelivered = true,
+    checkInvoiced = false,
+    tolerance = QTY_INVOICE_TOL,
+  } = options;
+  const expected = buildExpectedQtyMapFromDeliveredUpdates(deliveredUpdates);
+  if (expected.size === 0) return { ok: true, mismatches: [] };
+
+  const lineIds = [...expected.keys()];
+  const rows =
+    (await callOdoo("sale.order.line", "read", [lineIds], {
+      fields: ["id", "product_id", "qty_delivered", "qty_invoiced"],
+    })) || [];
+  const byId = new Map((Array.isArray(rows) ? rows : []).map((r) => [Number(r.id), r]));
+  const mismatches = [];
+
+  for (const [lid, expQty] of expected) {
+    const row = byId.get(lid);
+    if (!row) {
+      mismatches.push({ lineId: lid, field: "missing_line", expected: expQty, actual: null });
+      continue;
+    }
+    if (checkDelivered) {
+      const actual = roundQty3(row.qty_delivered);
+      if (!Number.isFinite(actual) || Math.abs(actual - expQty) > tolerance) {
+        mismatches.push({
+          lineId: lid,
+          field: "qty_delivered",
+          expected: expQty,
+          actual,
+          productId: Array.isArray(row.product_id) ? row.product_id[0] : row.product_id,
+        });
+      }
+    }
+    if (checkInvoiced) {
+      const actualInv = roundQty3(row.qty_invoiced);
+      if (!Number.isFinite(actualInv) || Math.abs(actualInv - expQty) > tolerance) {
+        mismatches.push({
+          lineId: lid,
+          field: "qty_invoiced",
+          expected: expQty,
+          actual: actualInv,
+          productId: Array.isArray(row.product_id) ? row.product_id[0] : row.product_id,
+        });
+      }
+    }
+  }
+
+  const ok = mismatches.length === 0;
+  return {
+    ok,
+    mismatches,
+    reason: ok
+      ? null
+      : mismatches
+          .slice(0, 4)
+          .map((m) => `line ${m.lineId} ${m.field}: want ${m.expected} got ${m.actual}`)
+          .join("; "),
+  };
+}
+
+/** Remove a draft customer invoice so sync can recreate from corrected delivered qty. */
+export async function unlinkDraftCustomerInvoice(invoiceId) {
+  const invNum = Number(invoiceId);
+  if (!Number.isFinite(invNum) || invNum <= 0) return { ok: false, reason: "invalid invoice id" };
+  const st = await getInvoiceState(invNum).catch(() => ({}));
+  const state = String(st?.state || "").toLowerCase();
+  if (state === "posted") {
+    return { ok: false, reason: "cannot unlink posted invoice" };
+  }
+  if (state !== "draft" && state !== "cancel") {
+    return { ok: false, reason: `invoice state ${state || "unknown"}` };
+  }
+  await callOdoo("account.move", "unlink", [[invNum]]);
+  return { ok: true };
+}
+
 /** Create account.payment (inbound customer payment). Returns the created payment id. Payment is created in Draft. */
 export const createPayment = ({
   partnerId,

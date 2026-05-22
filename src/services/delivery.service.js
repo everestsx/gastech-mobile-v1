@@ -1,4 +1,84 @@
 import { callOdoo, callOdooArgs, callOdooArgsKwargs } from "./index.service";
+import { coerceDeliveredQty } from "../utils/deliverySync.js";
+
+function dedupeMoveLineUpdatesByLineId(updates = []) {
+  const byLine = new Map();
+  for (const u of updates || []) {
+    const lid = Number(u?.moveLineId);
+    if (!Number.isFinite(lid) || lid <= 0) continue;
+    byLine.set(lid, u);
+  }
+  return [...byLine.values()];
+}
+
+/**
+ * Map deliveryLines to existing stock.move.line writes (exact qty) instead of creating duplicate lines on retry.
+ */
+export async function enrichDeliverySnapshotWithExistingMoveLines(pickingId, snapshot = {}) {
+  const pid = Number(pickingId);
+  if (!Number.isFinite(pid) || pid <= 0) return snapshot;
+
+  const deliveryLines = Array.isArray(snapshot.deliveryLines) ? snapshot.deliveryLines : [];
+  const moveLineUpdates = [...(snapshot.moveLineUpdates || [])];
+  const moveIds = [
+    ...new Set(
+      deliveryLines
+        .map((line) => Number(line?.moveId ?? line?.move_id))
+        .filter((mid) => Number.isFinite(mid) && mid > 0)
+    ),
+  ];
+  if (!moveIds.length) {
+    return {
+      ...snapshot,
+      moveLineUpdates: dedupeMoveLineUpdatesByLineId(moveLineUpdates),
+    };
+  }
+
+  const existingRows = await getStockMoveLinesByMoveIds(moveIds).catch(() => []);
+  const byMove = new Map();
+  for (const ml of existingRows || []) {
+    const mid = Number(Array.isArray(ml?.move_id) ? ml.move_id[0] : ml?.move_id);
+    if (!Number.isFinite(mid) || mid <= 0) continue;
+    const list = byMove.get(mid) || [];
+    list.push(ml);
+    byMove.set(mid, list);
+  }
+
+  const remainingDeliveryLines = [];
+  for (const line of deliveryLines) {
+    const mid = Number(line?.moveId ?? line?.move_id);
+    const target = coerceDeliveredQty(line?.qty_done);
+    if (!Number.isFinite(mid) || mid <= 0 || !Number.isFinite(target)) {
+      remainingDeliveryLines.push(line);
+      continue;
+    }
+    const rows = (byMove.get(mid) || []).sort((a, b) => Number(a?.id) - Number(b?.id));
+    if (!rows.length) {
+      remainingDeliveryLines.push(line);
+      continue;
+    }
+    moveLineUpdates.push({
+      moveLineId: rows[0].id,
+      moveId: mid,
+      productId: line.productId ?? line.product_id,
+      qty_done: target,
+    });
+    for (let i = 1; i < rows.length; i++) {
+      moveLineUpdates.push({
+        moveLineId: rows[i].id,
+        moveId: mid,
+        productId: line.productId ?? line.product_id,
+        qty_done: 0,
+      });
+    }
+  }
+
+  return {
+    ...snapshot,
+    deliveryLines: remainingDeliveryLines,
+    moveLineUpdates: dedupeMoveLineUpdatesByLineId(moveLineUpdates),
+  };
+}
 
 /** Get picking(s) for a sale order with move_ids and backorder_ids for delivery flow */
 /** Outgoing transfers for a sale order, oldest first (parent delivery before backorders). */
@@ -263,12 +343,19 @@ export function buildPickingDeliveryWritePayload({
 }
 
 /** One RPC: apply full picking delivery snapshot atomically on Odoo. */
-export async function applyPickingDeliverySnapshotAtomic(pickingId, snapshot = {}) {
+export async function applyPickingDeliverySnapshotAtomic(pickingId, snapshot = {}, meta = {}) {
   const pid = Number(pickingId);
   if (!Number.isFinite(pid) || pid <= 0) return { ok: true, mode: "noop" };
   const vals = buildPickingDeliveryWritePayload(snapshot);
   if (!Object.keys(vals).length) return { ok: true, mode: "noop" };
-  await callOdoo("stock.picking", "write", [[pid], vals]);
+  const ctx = {};
+  if (meta.deliveryTxnId) ctx.mobile_delivery_txn_id = String(meta.deliveryTxnId);
+  if (meta.deviceId) ctx.mobile_device_id = String(meta.deviceId);
+  if (Object.keys(ctx).length) {
+    await callOdooArgsKwargs("stock.picking", "write", [[pid], vals], { context: ctx });
+  } else {
+    await callOdoo("stock.picking", "write", [[pid], vals]);
+  }
   return { ok: true, mode: "atomic" };
 }
 
@@ -294,14 +381,16 @@ export async function applyPickingDeliverySnapshotSequential(pickingId, snapshot
   for (const line of deliveryLines || []) {
     const moveId = line.moveId ?? line.move_id;
     const productId = line.productId ?? line.product_id;
-    const qtyN = line.qty_done != null ? Number(line.qty_done) : NaN;
+    const qtyN = coerceDeliveredQty(line.qty_done);
     if (moveId == null || productId == null || !Number.isFinite(qtyN) || qtyN <= 0) continue;
     if (updatedMoveIds.has(Number(moveId))) continue;
     try {
       await createMoveLine(pid, Number(moveId), Number(productId), qtyN);
+      updatedMoveIds.add(Number(moveId));
     } catch (createErr) {
       try {
         await updateStockMoveQuantityDone(Number(moveId), qtyN);
+        updatedMoveIds.add(Number(moveId));
       } catch (_) {
         /* keep prior skip behaviour */
       }
@@ -311,20 +400,6 @@ export async function applyPickingDeliverySnapshotSequential(pickingId, snapshot
           createErr?.message || createErr
         );
       }
-    }
-  }
-  const qtyDoneByMoveId = new Map();
-  for (const line of deliveryLines || []) {
-    const mid = line.moveId ?? line.move_id;
-    if (mid == null) continue;
-    qtyDoneByMoveId.set(Number(mid), Number(line.qty_done));
-  }
-  for (const [moveId, qty] of qtyDoneByMoveId) {
-    if (updatedMoveIds.has(moveId)) continue;
-    try {
-      await updateStockMoveQuantityDone(moveId, qty);
-    } catch (_) {
-      /* readonly on some done transfers */
     }
   }
   return { ok: true, mode: "sequential" };
@@ -376,22 +451,26 @@ export async function pickingDeliverySnapshotAlreadyApplied(pickingId, snapshot 
 }
 
 /** Idempotent: skip Odoo write when snapshot already matches; otherwise atomic write + sequential fallback. */
-export async function applyPickingDeliverySnapshotIdempotent(pickingId, snapshot = {}) {
+export async function applyPickingDeliverySnapshotIdempotent(pickingId, snapshot = {}, meta = {}) {
   const pid = Number(pickingId);
   if (!Number.isFinite(pid) || pid <= 0) return { ok: true, mode: "noop" };
-  if (await pickingDeliverySnapshotAlreadyApplied(pid, snapshot)) {
+  const enriched = await enrichDeliverySnapshotWithExistingMoveLines(pid, snapshot);
+  if (await pickingDeliverySnapshotAlreadyApplied(pid, enriched)) {
     return { ok: true, mode: "already_applied" };
   }
-  return applyPickingDeliverySnapshotWithFallback(pid, snapshot);
+  return applyPickingDeliverySnapshotWithFallback(pid, enriched, meta);
 }
 
 /** Atomic picking write with safe fallback to the legacy per-line sequence. */
-export async function applyPickingDeliverySnapshotWithFallback(pickingId, snapshot = {}) {
-  if (await pickingDeliverySnapshotAlreadyApplied(pickingId, snapshot)) {
+export async function applyPickingDeliverySnapshotWithFallback(pickingId, snapshot = {}, meta = {}) {
+  const pid = Number(pickingId);
+  if (!Number.isFinite(pid) || pid <= 0) return { ok: true, mode: "noop" };
+  const enriched = await enrichDeliverySnapshotWithExistingMoveLines(pid, snapshot);
+  if (await pickingDeliverySnapshotAlreadyApplied(pid, enriched)) {
     return { ok: true, mode: "already_applied" };
   }
   try {
-    return await applyPickingDeliverySnapshotAtomic(pickingId, snapshot);
+    return await applyPickingDeliverySnapshotAtomic(pickingId, enriched, meta);
   } catch (atomicErr) {
     if (__DEV__) {
       console.warn(
@@ -399,6 +478,76 @@ export async function applyPickingDeliverySnapshotWithFallback(pickingId, snapsh
         atomicErr?.message || atomicErr
       );
     }
-    return applyPickingDeliverySnapshotSequential(pickingId, snapshot);
+    return applyPickingDeliverySnapshotSequential(pickingId, enriched);
   }
+}
+
+/** Read current Odoo qty_done / qty_delivered for audit comparison (does not throw). */
+export async function fetchOdooDeliveredQtySnapshot(pickingBlocks = [], deliveredUpdates = []) {
+  const byMove = {};
+  const bySoLine = {};
+  const moveTarget = new Map();
+  for (const b of pickingBlocks || []) {
+    for (const line of b.deliveryLines || []) {
+      const mid = Number(line?.moveId ?? line?.move_id);
+      const qty = coerceDeliveredQty(line?.qty_done);
+      if (Number.isFinite(mid) && mid > 0 && Number.isFinite(qty)) moveTarget.set(mid, qty);
+    }
+    for (const u of b.moveLineUpdates || []) {
+      const mid = Number(u?.moveId);
+      const qty = coerceDeliveredQty(u?.qty_done);
+      if (Number.isFinite(mid) && mid > 0 && Number.isFinite(qty)) moveTarget.set(mid, qty);
+    }
+  }
+  const moveIds = [...moveTarget.keys()];
+  if (moveIds.length) {
+    try {
+      const moveRows =
+        (await callOdoo('stock.move', 'read', [moveIds], { fields: ['id', 'quantity_done'] })) || [];
+      for (const mv of Array.isArray(moveRows) ? moveRows : []) {
+        const mid = Number(mv?.id);
+        let actual = coerceDeliveredQty(mv?.quantity_done);
+        if (!Number.isFinite(actual)) {
+          const mls = await getStockMoveLinesByMoveIds([mid]).catch(() => []);
+          actual = coerceDeliveredQty(
+            (mls || []).reduce((sum, ml) => sum + (Number(ml?.qty_done) || 0), 0)
+          );
+        }
+        byMove[String(mid)] = {
+          mobile: moveTarget.get(mid),
+          odoo: actual,
+        };
+      }
+    } catch (_) {
+      /* audit read is best-effort */
+    }
+  }
+
+  const lineIds = [
+    ...new Set(
+      (deliveredUpdates || [])
+        .map((u) => Number(u?.lineId))
+        .filter((n) => Number.isFinite(n) && n > 0)
+    ),
+  ];
+  if (lineIds.length) {
+    try {
+      const rows =
+        (await callOdoo('sale.order.line', 'read', [lineIds], { fields: ['id', 'qty_delivered'] })) || [];
+      const expById = new Map(
+        (deliveredUpdates || []).map((u) => [Number(u.lineId), coerceDeliveredQty(u.qty_delivered)])
+      );
+      for (const row of Array.isArray(rows) ? rows : []) {
+        const lid = Number(row?.id);
+        bySoLine[String(lid)] = {
+          mobile: expById.get(lid),
+          odoo: coerceDeliveredQty(row?.qty_delivered),
+        };
+      }
+    } catch (_) {
+      /* non-fatal */
+    }
+  }
+
+  return { byMove, bySoLine, readAt: new Date().toISOString() };
 }

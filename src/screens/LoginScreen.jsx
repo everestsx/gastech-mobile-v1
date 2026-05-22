@@ -278,6 +278,12 @@ export default function LoginScreen({ navigation }) {
           if (licensePlate) {
             await fetchAndStoreVehicleJournals(licensePlate);
           }
+          try {
+            const { refreshCancellationReasonsCache } = await import('../services/saleOrder.service.js');
+            await refreshCancellationReasonsCache();
+          } catch (reasonErr) {
+            console.warn('[Login] cancel reasons cache', reasonErr?.message || reasonErr);
+          }
           const syncResult = await Promise.race([
             runSync(),
             new Promise((resolve) =>
