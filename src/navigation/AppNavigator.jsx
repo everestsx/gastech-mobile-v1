@@ -45,11 +45,17 @@ import {
   flushPendingUploadsNow,
   hasPendingUploadWork,
   hasDashboardUploadIndicators,
+  hasActiveUploadWork,
   PENDING_QUEUE_FAST_RETRY_MS,
-  PENDING_QUEUE_ACTIVE_RETRY_MS,
   PENDING_QUEUE_FAST_RETRY_WINDOW_MS,
+  PENDING_QUEUE_IDLE_POLL_MS,
 } from '../services/sync.service';
 import * as syncQueueDb from '../database/syncQueue.js';
+import {
+  subscribeNetworkStatus,
+  getPendingRetryDelayMsForQuality,
+  NetworkQuality,
+} from '../services/networkStatus.service';
 
 export const rootNavigationRef = createNavigationContainerRef();
 
@@ -271,33 +277,56 @@ function MainStackScreen() {
 export default function AppNavigator() {
   const syncIntervalRef = useRef(null);
   const appStateRef = useRef(AppState.currentState);
+  const networkQualityRef = useRef(NetworkQuality.OFFLINE);
   const { hideSyncIndicator } = useSync();
   const { syncInterval } = useTheme();
   const hideSyncRef = useRef(hideSyncIndicator);
   hideSyncRef.current = hideSyncIndicator;
 
   useEffect(() => {
+    const unsubNet = subscribeNetworkStatus((snap) => {
+      networkQualityRef.current = snap.quality;
+    });
+    return () => unsubNet?.();
+  }, []);
+
+  useEffect(() => {
     const intervalMs = getSyncIntervalMs(syncInterval);
-    const run = () => {
+    const runScheduledSyncIfNeeded = async () => {
       if (hideSyncRef.current) return;
+      try {
+        if (!(await hasActiveUploadWork())) return;
+      } catch (_) {
+        return;
+      }
       runSync().catch(() => {});
     };
 
     const runFastPending = async () => {
       if (hideSyncRef.current) return;
       try {
-        const queueWork = await hasPendingUploadWork();
-        const indicatorWork = hasDashboardUploadIndicators();
-        if (!queueWork && !indicatorWork) return;
+        if (!(await hasActiveUploadWork())) return;
         const ageMs = await syncQueueDb.getOldestPendingQueueAgeMs();
         const passes = ageMs <= PENDING_QUEUE_FAST_RETRY_WINDOW_MS ? 18 : 10;
         await flushPendingUploadsNow({
           includeAttachments: true,
           queuePasses: passes,
-          aggressive: queueWork || indicatorWork,
+          aggressive: true,
         });
-        if (!(await hasPendingUploadWork()) && !hasDashboardUploadIndicators()) return;
-        runSync().catch(() => {});
+        const stillPending = await hasPendingUploadWork();
+        const stillIndicators = hasDashboardUploadIndicators();
+        if (!stillPending && !stillIndicators) return;
+        if (networkQualityRef.current === NetworkQuality.GOOD && stillPending) {
+          await flushPendingUploadsNow({
+            includeAttachments: true,
+            queuePasses: 22,
+            aggressive: true,
+          });
+          if (!(await hasPendingUploadWork()) && !hasDashboardUploadIndicators()) return;
+        }
+        if (networkQualityRef.current !== NetworkQuality.GOOD) {
+          runSync().catch(() => {});
+        }
       } catch (_) {
         /* ignore */
       }
@@ -306,8 +335,10 @@ export default function AppNavigator() {
     const sub = AppState.addEventListener('change', (nextState) => {
       if (nextState === 'active' && appStateRef.current !== 'active') {
         void enforceSessionNotExpired();
-        run();
-        syncIntervalRef.current = setInterval(run, intervalMs);
+        void runScheduledSyncIfNeeded();
+        syncIntervalRef.current = setInterval(() => {
+          void runScheduledSyncIfNeeded();
+        }, intervalMs);
       } else if (nextState !== 'active') {
         if (syncIntervalRef.current) {
           clearInterval(syncIntervalRef.current);
@@ -319,8 +350,10 @@ export default function AppNavigator() {
 
     if (AppState.currentState === 'active') {
       void enforceSessionNotExpired();
-      run();
-      syncIntervalRef.current = setInterval(run, intervalMs);
+      void runScheduledSyncIfNeeded();
+      syncIntervalRef.current = setInterval(() => {
+        void runScheduledSyncIfNeeded();
+      }, intervalMs);
     }
 
     let fastPendingTimer = null;
@@ -329,28 +362,40 @@ export default function AppNavigator() {
       if (fastPendingCancelled) return;
       fastPendingTimer = setTimeout(async () => {
         if (fastPendingCancelled) return;
-        if (AppState.currentState === 'active') {
+        let hasWork = false;
+        try {
+          hasWork = await hasActiveUploadWork();
+        } catch (_) {
+          hasWork = false;
+        }
+        if (AppState.currentState === 'active' && hasWork) {
           try {
             await runFastPending();
           } catch (_) {
             /* ignore */
           }
         }
-        let nextMs = PENDING_QUEUE_FAST_RETRY_MS;
-        if (AppState.currentState === 'active') {
-          try {
-            const queueWork = await hasPendingUploadWork();
-            const indicatorWork = hasDashboardUploadIndicators();
-            if (queueWork || indicatorWork) nextMs = PENDING_QUEUE_ACTIVE_RETRY_MS;
-          } catch (_) {
-            /* keep default delay */
-          }
+        let nextMs = PENDING_QUEUE_IDLE_POLL_MS;
+        if (hasWork) {
+          nextMs = getPendingRetryDelayMsForQuality(
+            networkQualityRef.current === NetworkQuality.OFFLINE
+              ? NetworkQuality.WEAK
+              : networkQualityRef.current
+          );
         }
         scheduleFastPendingLoop(nextMs);
       }, delayMs);
     };
-    if (AppState.currentState === 'active') void runFastPending();
-    scheduleFastPendingLoop(250);
+    if (AppState.currentState === 'active') {
+      void (async () => {
+        try {
+          if (await hasActiveUploadWork()) await runFastPending();
+        } catch (_) {
+          /* ignore */
+        }
+      })();
+    }
+    scheduleFastPendingLoop(PENDING_QUEUE_FAST_RETRY_MS);
 
     return () => {
       sub?.remove?.();

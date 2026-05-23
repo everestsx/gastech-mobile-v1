@@ -683,6 +683,20 @@ async function runMigrations(db) {
     }
     await db.runAsync('PRAGMA user_version = 28');
   }
+
+  // Migration 29: frozen invoice line snapshot (local history must match final invoiced qty)
+  if (current < 29) {
+    try {
+      const info = await db.getAllAsync('PRAGMA table_info(local_invoices)');
+      const names = new Set((info || []).map((c) => c.name));
+      if (!names.has('line_snapshot_json')) {
+        await db.runAsync('ALTER TABLE local_invoices ADD COLUMN line_snapshot_json TEXT');
+      }
+    } catch (e) {
+      console.warn('[Migration] local_invoices line_snapshot_json:', e);
+    }
+    await db.runAsync('PRAGMA user_version = 29');
+  }
 }
 
 /**

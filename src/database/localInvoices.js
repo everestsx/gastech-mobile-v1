@@ -158,6 +158,59 @@ export async function getLocalInvoicesForVehicle(vehicleId, unsyncedOnly = false
   return (rows || []).map(mapRow);
 }
 
+/** Persist frozen invoice line rows (JSON array) for a completed sale order. */
+export async function updateLocalInvoiceLineSnapshot(saleOrderId, snapshot) {
+  const soId = num(saleOrderId);
+  if (!soId) return false;
+  const json =
+    typeof snapshot === 'string'
+      ? snapshot
+      : JSON.stringify(Array.isArray(snapshot) ? snapshot : [], (_k, v) =>
+          typeof v === 'bigint' ? v.toString() : v
+        );
+  const db = await getDb();
+  const existing = await db.getFirstAsync(
+    'SELECT id FROM local_invoices WHERE sale_order_id = ?',
+    [soId]
+  );
+  if (!existing?.id) return false;
+  await db.runAsync(
+    'UPDATE local_invoices SET line_snapshot_json = ?, updated_at = ? WHERE sale_order_id = ?',
+    [json, iso(), soId]
+  );
+  return true;
+}
+
+/** Sale order ids that have a non-empty frozen line snapshot. */
+export async function getSaleOrderIdsWithInvoiceLineSnapshots(orderIds = []) {
+  const db = await getDb();
+  const ids = [...new Set((orderIds || []).map((x) => num(x)).filter((n) => n > 0))];
+  if (ids.length === 0) {
+    const rows = await db.getAllAsync(
+      `SELECT sale_order_id, line_snapshot_json FROM local_invoices
+       WHERE line_snapshot_json IS NOT NULL AND TRIM(line_snapshot_json) != '' AND TRIM(line_snapshot_json) != '[]'`
+    );
+    const out = new Set();
+    for (const r of rows || []) {
+      const id = num(r.sale_order_id);
+      if (id > 0) out.add(id);
+    }
+    return out;
+  }
+  const ph = ids.map(() => '?').join(',');
+  const rows = await db.getAllAsync(
+    `SELECT sale_order_id, line_snapshot_json FROM local_invoices
+     WHERE sale_order_id IN (${ph})`,
+    ids
+  );
+  const out = new Set();
+  for (const r of rows || []) {
+    const id = num(r.sale_order_id);
+    if (id > 0 && r.line_snapshot_json && String(r.line_snapshot_json).trim().length > 2) out.add(id);
+  }
+  return out;
+}
+
 export async function updateLocalInvoiceSynced(invoiceId, odooInvoiceId = null) {
   const db = await getDb();
   const now = iso();
@@ -190,5 +243,6 @@ function mapRow(row) {
     customer_signature_data: row.customer_signature_data ?? null,
     driver_signature_data: row.driver_signature_data ?? null,
     driver_name: row.driver_name ?? null,
+    line_snapshot_json: row.line_snapshot_json ?? null,
   };
 }

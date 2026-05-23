@@ -39,6 +39,7 @@ import {
   getLastSyncTime,
   getSyncLogRecent,
   hasPendingUploadWork,
+  hasActiveUploadWork,
   schedulePendingUploadSync,
   getUserSession,
   getOrderLineTotalsFromDB,
@@ -74,6 +75,7 @@ import * as saleOrderLinesDb from '../database/saleOrderLines.js';
 import DeliveryProgressBarChart from '../components/DeliveryProgressBarChart';
 import RichNotification from '../components/RichNotification';
 import PendingBackOfficeReminderModal from '../components/PendingBackOfficeReminderModal';
+import NetworkStatusPill from '../components/NetworkStatusPill';
 import { useSync } from '../context/SyncContext';
 
 const ORANGE_UPLOAD_SINCE_KEY = '@gastech_orange_upload_pending_since';
@@ -708,9 +710,14 @@ export default function DashboardScreen({ navigation }) {
       loadData();
       loadSyncStatus();
       tryPostLoginBanner();
-      void hasPendingUploadWork().then((pending) => {
+      void hasActiveUploadWork().then((pending) => {
         if (pending) {
-          schedulePendingUploadSync({ immediate: true, queuePasses: 12, includeAttachments: true });
+          schedulePendingUploadSync({
+            immediate: true,
+            aggressive: true,
+            queuePasses: 16,
+            includeAttachments: true,
+          });
         }
       });
     });
@@ -2118,7 +2125,7 @@ export default function DashboardScreen({ navigation }) {
                     {vehicleName}
                   </Text>
                 ) : null}
-                <Text style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 4 }}>{t('dashboard.tapForProfile', 'Tap for profile')}</Text>
+                <NetworkStatusPill />
               </View>
             </TouchableOpacity>
             <View style={styles.dateRow}>

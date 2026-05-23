@@ -25,11 +25,15 @@ import * as localPaymentsDb from '../database/localPayments.js';
 import * as stockPickingsDb from '../database/stockPickings.js';
 import * as syncQueueDb from '../database/syncQueue.js';
 import { getSaleOrderDetailsFromDB, notifyLocalInventoryChanged } from '../services/sync.service';
-import { applyInventoryUpdatesToLocalDb } from '../utils/localInventoryApply.js';
+import {
+  applyInventoryUpdatesToLocalDb,
+  applyLocalGasInventoryForSaleOrder,
+} from '../utils/localInventoryApply.js';
 import { empty } from '../database/dbHelpers.js';
 import { schedulePendingUploadSync } from '../services/sync.service';
 import { getOrAssignInvoiceNumber } from '../utils/invoiceNumber';
 import { clearCheckoutResume } from '../services/checkoutResume.service';
+import { finalizeLocalInvoiceSnapshotFromPayment } from '../utils/localInvoiceSnapshot.js';
 
 const MAX_PHOTOS = 3;
 
@@ -74,88 +78,83 @@ export default function PaymentProofScreen({ route, navigation }) {
     }
   }, [photos, soId]);
 
-  const releaseHeldQueueItemsAndFinalizeLocal = useCallback(async () => {
-    const queueRows = await syncQueueDb.getPending().catch(() => []);
-    const rowsForSo = (queueRows || []).filter((row) => {
-      const p = row?.payload || {};
-      const id = Number(p.saleOrderId ?? p.sale_order_id);
-      return Number.isFinite(id) && id === soId;
-    });
-    const latestPayment = [...rowsForSo]
-      .filter((row) => row?.action_type === syncQueueDb.ACTION_PAYMENT)
-      .sort((a, b) => Number(a?.id ?? 0) - Number(b?.id ?? 0))
-      .pop();
+  /** Release queue holds + local picking state so background sync can start immediately. */
+  const releaseQueueHoldsForSo = useCallback(async () => {
+    const latestPayment = await syncQueueDb.getPendingPaymentItemBySaleOrderId(soId);
     const paymentPayload = latestPayment?.payload || {};
 
-    for (const row of rowsForSo) {
-      const payload = { ...(row?.payload || {}) };
-      if (row.action_type === syncQueueDb.ACTION_PAYMENT) {
-        delete payload.holdUntilComplete;
-        await syncQueueDb.updateQueueItemPayload(row.id, payload);
-        continue;
-      }
-      if (row.action_type === syncQueueDb.ACTION_DELIVERY) {
-        delete payload.holdUntilPayment;
-        const invQtys = paymentPayload?.invoiceLineQtys;
-        if (Array.isArray(invQtys) && invQtys.length > 0) {
-          payload.invoiceLineQtys = invQtys;
-          payload.saleOrderLineDeliveredUpdates = invQtys
-            .map((row) => ({
-              lineId: Number(row?.lineId),
-              qty_delivered: Math.round(Number(row?.qty) * 1000) / 1000,
-            }))
-            .filter(
-              (u) =>
-                Number.isFinite(u.lineId) &&
-                u.lineId > 0 &&
-                Number.isFinite(u.qty_delivered) &&
-                u.qty_delivered >= 0
-            );
-        }
-        await syncQueueDb.updateQueueItemPayload(row.id, payload);
-        const pickings = Array.isArray(payload.pickings) ? payload.pickings : [];
-        if (pickings.length > 0) {
-          for (const p of pickings) {
-            if (p?.pickingId != null) {
-              await stockPickingsDb.updatePickingStateLocal(Number(p.pickingId), 'done');
-            }
-          }
-        } else if (payload.pickingId != null) {
-          await stockPickingsDb.updatePickingStateLocal(Number(payload.pickingId), 'done');
-        }
-        continue;
-      }
-      if (row.action_type === syncQueueDb.ACTION_INVENTORY_UPDATE) {
-        const locationId = Number(payload.locationId);
-        const vehicleId = Number(payload.vehicleId);
-        const updates = Array.isArray(payload.updates) ? payload.updates : [];
-        if (Number.isFinite(locationId) && locationId > 0 && updates.length > 0) {
-          if (payload._localGasInventoryApplied !== true) {
-            const gasUpdates = updates.filter(
-              (u) => Number.isFinite(Number(u?.newQuantity)) && u?.appliedLocally !== true
-            );
-            if (gasUpdates.length > 0) {
-              await applyInventoryUpdatesToLocalDb(locationId, vehicleId, gasUpdates, {
-                incrementsOnly: false,
-              });
-            }
-            payload._localGasInventoryApplied = true;
-          }
-          const emptyStillPending = updates.filter(
-            (u) => Number(u?.incrementQuantity) > 0 && u?.appliedLocally !== true
+    if (latestPayment) {
+      const payload = { ...paymentPayload };
+      delete payload.holdUntilComplete;
+      await syncQueueDb.updateQueueItemPayload(latestPayment.id, payload);
+    }
+
+    const deliveryRow = await syncQueueDb.getPendingDeliveryItemBySaleOrderId(soId);
+    if (deliveryRow) {
+      const payload = { ...(deliveryRow.payload || {}) };
+      delete payload.holdUntilPayment;
+      const invQtys = paymentPayload?.invoiceLineQtys;
+      if (Array.isArray(invQtys) && invQtys.length > 0) {
+        payload.invoiceLineQtys = invQtys;
+        payload.saleOrderLineDeliveredUpdates = invQtys
+          .map((row) => ({
+            lineId: Number(row?.lineId),
+            qty_delivered: Math.round(Number(row?.qty) * 1000) / 1000,
+          }))
+          .filter(
+            (u) =>
+              Number.isFinite(u.lineId) &&
+              u.lineId > 0 &&
+              Number.isFinite(u.qty_delivered) &&
+              u.qty_delivered >= 0
           );
-          if (emptyStillPending.length > 0) {
-            payload.updates = await applyInventoryUpdatesToLocalDb(
-              locationId,
-              vehicleId,
-              updates,
-              { incrementsOnly: true }
-            );
+      }
+      await syncQueueDb.updateQueueItemPayload(deliveryRow.id, payload);
+      const pickings = Array.isArray(payload.pickings) ? payload.pickings : [];
+      if (pickings.length > 0) {
+        for (const p of pickings) {
+          if (p?.pickingId != null) {
+            await stockPickingsDb.updatePickingStateLocal(Number(p.pickingId), 'done');
           }
-          notifyLocalInventoryChanged();
         }
-        delete payload.holdUntilComplete;
-        await syncQueueDb.updateQueueItemPayload(row.id, payload);
+      } else if (payload.pickingId != null) {
+        await stockPickingsDb.updatePickingStateLocal(Number(payload.pickingId), 'done');
+      }
+    }
+
+    const inventoryRow = await syncQueueDb.getPendingInventoryUpdateItemBySaleOrderId(soId);
+    if (inventoryRow) {
+      const payload = { ...(inventoryRow.payload || {}) };
+      delete payload.holdUntilComplete;
+      await syncQueueDb.updateQueueItemPayload(inventoryRow.id, payload);
+    }
+  }, [soId]);
+
+  /** Local invoice/payments/inventory — safe to finish after dashboard navigation. */
+  const finalizeLocalCheckoutState = useCallback(async () => {
+    const latestPayment = await syncQueueDb.getPendingPaymentItemBySaleOrderId(soId);
+    const paymentPayload = latestPayment?.payload || {};
+
+    const inventoryRow = await syncQueueDb.getPendingInventoryUpdateItemBySaleOrderId(soId);
+    if (inventoryRow) {
+      const payload = inventoryRow.payload || {};
+      const locationId = Number(payload.locationId);
+      const vehicleId = Number(payload.vehicleId);
+      const updates = Array.isArray(payload.updates) ? payload.updates : [];
+      if (Number.isFinite(locationId) && locationId > 0 && updates.length > 0) {
+        const emptyStillPending = updates.filter(
+          (u) => Number(u?.incrementQuantity) > 0 && u?.appliedLocally !== true
+        );
+        if (emptyStillPending.length > 0) {
+          payload.updates = await applyInventoryUpdatesToLocalDb(
+            locationId,
+            vehicleId,
+            updates,
+            { incrementsOnly: true }
+          );
+        }
+        notifyLocalInventoryChanged();
+        await syncQueueDb.updateQueueItemPayload(inventoryRow.id, payload);
       }
     }
 
@@ -218,6 +217,19 @@ export default function PaymentProofScreen({ route, navigation }) {
     await saleOrdersDb.updateSaleOrderPaymentTypeLocal(soId, primary, credit);
     await saleOrdersDb.updateSaleOrderAmountsFromLines(soId);
     await saleOrdersDb.updateSaleOrderInvoiceStatusLocal(soId, 'invoiced');
+
+    const deliveryRow = await syncQueueDb.getPendingDeliveryItemBySaleOrderId(soId);
+    const invQtys =
+      (Array.isArray(paymentPayload?.invoiceLineQtys) && paymentPayload.invoiceLineQtys.length > 0
+        ? paymentPayload.invoiceLineQtys
+        : null) ||
+      (Array.isArray(deliveryRow?.payload?.invoiceLineQtys) && deliveryRow.payload.invoiceLineQtys.length > 0
+        ? deliveryRow.payload.invoiceLineQtys
+        : null) ||
+      [];
+    if (invQtys.length > 0) {
+      await finalizeLocalInvoiceSnapshotFromPayment(soId, invQtys);
+    }
   }, [soId]);
 
   const handleComplete = useCallback(async () => {
@@ -233,24 +245,52 @@ export default function PaymentProofScreen({ route, navigation }) {
     completeGuardRef.current = true;
     setSaving(true);
     try {
-      await persistPhotos();
-      await releaseHeldQueueItemsAndFinalizeLocal();
+      if (creditProofRequired && photos.length > 0) {
+        await persistPhotos();
+      }
+      await applyLocalGasInventoryForSaleOrder(soId);
+      await releaseQueueHoldsForSo();
       await clearCheckoutResume(soId);
-      // Defensive second clear after queue release to avoid stale "pending checkout" flags.
-      await clearCheckoutResume(soId);
+
       navigation.reset({
         index: 0,
         routes: [{ name: 'MainTabs', params: { screen: 'Dashboard' } }],
       });
-      // Dashboard first; drain queue in background (stable connection → fast pending→green).
-      schedulePendingUploadSync({ immediate: true, queuePasses: 15, includeAttachments: true });
+      setSaving(false);
+
+      void (async () => {
+        try {
+          if (!creditProofRequired && photos.length > 0) {
+            await persistPhotos();
+          }
+          await finalizeLocalCheckoutState();
+          await clearCheckoutResume(soId);
+        } catch (e) {
+          console.warn('[PaymentProof] background finalize', e?.message || e);
+        }
+      })();
+
+      schedulePendingUploadSync({
+        immediate: true,
+        aggressive: true,
+        queuePasses: 18,
+        includeAttachments: true,
+      });
     } catch (e) {
       Alert.alert('Error', e?.message || 'Something went wrong. Try again.');
+      setSaving(false);
     } finally {
       completeGuardRef.current = false;
-      setSaving(false);
     }
-  }, [soId, creditProofRequired, photos.length, persistPhotos, releaseHeldQueueItemsAndFinalizeLocal, navigation]);
+  }, [
+    soId,
+    creditProofRequired,
+    photos.length,
+    persistPhotos,
+    releaseQueueHoldsForSo,
+    finalizeLocalCheckoutState,
+    navigation,
+  ]);
 
   const styles = useMemo(
     () =>

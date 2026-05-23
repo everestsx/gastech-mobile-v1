@@ -16,10 +16,15 @@ export const ACTION_INVENTORY_UPDATE = 'inventory_update';
 export const ACTION_CANCEL_ORDER = 'order_cancel';
 
 function wakePendingUploadAfterQueueChange() {
-  import('../services/sync.service.js')
-    .then((m) => {
+  Promise.all([import('../services/sync.service.js'), import('./syncQueue.js')])
+    .then(async ([m, db]) => {
+      const pending = await db.getPendingCount();
+      if (pending <= 0) return;
+      const indicators =
+        typeof m.hasDashboardUploadIndicators === 'function' ? m.hasDashboardUploadIndicators() : false;
+      if (pending <= 0 && !indicators) return;
       if (typeof m.schedulePendingUploadSync === 'function') {
-        m.schedulePendingUploadSync();
+        m.schedulePendingUploadSync({ immediate: true, aggressive: true, queuePasses: 16 });
       }
     })
     .catch(() => {});

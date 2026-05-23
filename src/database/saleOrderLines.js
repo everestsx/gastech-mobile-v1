@@ -5,6 +5,7 @@ import { getDb } from './db.js';
 import { empty, num, numOrNull, iso } from './dbHelpers.js';
 import { getProductsMap } from './products.js';
 import { DEFAULT_LINE_VAT_RATE } from '../constants/tax.js';
+import { parseInvoiceLineSnapshot } from '../utils/localInvoiceSnapshot.js';
 
 function odooRel(idName) {
   if (Array.isArray(idName)) return { id: idName[0], name: idName[1] ?? null };
@@ -57,11 +58,25 @@ export async function upsertSaleOrderLines(rows, options = {}) {
       : new Set(Array.isArray(rawPreserve) ? rawPreserve.map((x) => num(x)).filter((n) => n > 0) : []);
 
   let localByLineId = new Map();
+  const snapshotByLineId = new Map();
   if (preserveSet.size > 0) {
     const orderIds = Array.from(preserveSet);
     const localRows = await getSaleOrderLinesByOrderIds(orderIds);
     for (const lr of localRows || []) {
       if (lr?.id != null) localByLineId.set(num(lr.id), lr);
+    }
+    try {
+      const localInvoicesDb = await import('./localInvoices.js');
+      for (const oid of orderIds) {
+        const inv = await localInvoicesDb.getLocalInvoiceBySaleOrderId(oid);
+        const snap = parseInvoiceLineSnapshot(inv?.line_snapshot_json);
+        if (!snap?.length) continue;
+        for (const row of snap) {
+          if (row.lineId > 0) snapshotByLineId.set(row.lineId, row);
+        }
+      }
+    } catch (_) {
+      /* non-fatal */
     }
   }
 
@@ -80,7 +95,14 @@ export async function upsertSaleOrderLines(rows, options = {}) {
       let price_total = num(r.price_total);
       let qty_delivered = num(r.qty_delivered);
 
-      if (orderIdNum != null && preserveSet.has(orderIdNum)) {
+      const frozen = snapshotByLineId.get(lineId);
+      if (frozen != null) {
+        product_uom_qty = num(frozen.qty);
+        price_unit = num(frozen.price_unit);
+        price_subtotal = num(frozen.price_subtotal);
+        price_total = num(frozen.price_total);
+        qty_delivered = num(frozen.qty_delivered ?? frozen.qty);
+      } else if (orderIdNum != null && preserveSet.has(orderIdNum)) {
         const local = localByLineId.get(lineId);
         if (local != null) {
           product_uom_qty = num(local.product_uom_qty);

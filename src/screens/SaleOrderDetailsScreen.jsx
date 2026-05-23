@@ -666,7 +666,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
         vehicleId,
         locationId,
         holdUntilComplete: true,
-        inventoryDeductionKey: `so-${Number(order.id)}-${Date.now()}`,
+        inventoryDeductionKey: `so-${Number(order.id)}`,
         updates: Array.from(remainingByProduct.entries()).map(([productId, newQuantity]) => ({
           productId,
           quantityUsed: baselineOnLorry(productId) - newQuantity,

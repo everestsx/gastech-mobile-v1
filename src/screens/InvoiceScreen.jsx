@@ -32,7 +32,6 @@ import { formatAmount } from '../utils/format';
 import * as localPaymentsDb from '../database/localPayments.js';
 import * as localInvoicesDb from '../database/localInvoices.js';
 import * as offlineAttachmentsDb from '../database/offlineAttachments.js';
-import * as productsDb from '../database/products.js';
 import { callOdoo } from '../services/index.service';
 import { findBluetoothPrinters, printPdfFileToRongta } from '../services/printerService';
 import SyncHeaderBadge from '../components/SyncHeaderBadge';
@@ -41,6 +40,10 @@ import { resolveInvoiceCustomerDisplayName, odooLocalizedText } from '../utils/c
 import { lineSubtotalAtQuantity, lineTaxAtQuantity } from '../utils/orderLineTax.js';
 import { setCheckoutResumePhase, clearCheckoutResume, getCheckoutResumeEntry } from '../services/checkoutResume.service';
 import * as syncQueueDb from '../database/syncQueue.js';
+import {
+  mergeInvoiceLinesWithCatalog,
+  resolveInvoiceLineUnitPrice,
+} from '../utils/invoiceCatalogLines.js';
 
 /**
  * Expo `printToFileAsync` defaults to US Letter width (612pt), so a 104mm-wide layout sits in a
@@ -131,15 +134,6 @@ function safeDisplay(val) {
   if (val === undefined || val === null || val === false) return '—';
   const s = String(val).trim();
   return s === '' || s.toLowerCase() === 'false' ? '—' : s;
-}
-
-function shouldAlwaysShowInvoiceCatalogRow(productName) {
-  const name = String(productName || '').toLowerCase();
-  if (!name) return true;
-  // Keep "new issue" and "empty cylinder" products hidden unless ordered on this invoice.
-  if (name.includes('new issue')) return false;
-  if (name.includes('empty') && name.includes('cylinder')) return false;
-  return true;
 }
 
 function formatPrintedDateTime(value = new Date()) {
@@ -1202,7 +1196,7 @@ export default function InvoiceScreen({ route, navigation }) {
         thNo: { width: 26, textAlign: 'center', marginRight: 8 },
         thProduct: { flex: 2.5, paddingRight: 12, minWidth: 100 },
         thQty: { flex: 0.7, minWidth: 36, textAlign: 'right', marginLeft: 4 },
-        thTax: { flex: 0.9, minWidth: 44, textAlign: 'right', marginLeft: 4 },
+        thTax: { flex: 1, minWidth: 56, textAlign: 'right', marginLeft: 4 },
         thTotal: { flex: 1, minWidth: 52, textAlign: 'right', marginLeft: 8 },
         tableRow: {
           flexDirection: 'row',
@@ -1217,7 +1211,7 @@ export default function InvoiceScreen({ route, navigation }) {
         tdNo: { width: 26, textAlign: 'center', fontSize: 13, color: colors.text, marginRight: 8 },
         tdProduct: { flex: 2.5, paddingRight: 12, minWidth: 100 },
         tdQty: { flex: 0.7, minWidth: 36, textAlign: 'right', marginLeft: 4 },
-        tdTax: { flex: 0.9, minWidth: 44, textAlign: 'right', marginLeft: 4 },
+        tdTax: { flex: 1, minWidth: 56, textAlign: 'right', marginLeft: 4 },
         tdTotal: { flex: 1, minWidth: 52, textAlign: 'right', marginLeft: 8 },
         totalsSection: { marginTop: spacing.sm, paddingTop: spacing.sm, borderTopWidth: 1, borderTopColor: colors.border },
         totalsRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 },
@@ -1732,8 +1726,6 @@ export default function InvoiceScreen({ route, navigation }) {
           /* ignore */
         }
       }
-      setResolvedInvoiceLineQtys(Array.isArray(extraInvoiceQtys) && extraInvoiceQtys.length > 0 ? extraInvoiceQtys : null);
-
       const data = await getSaleOrderDetailsFromDB(saleOrderId);
       setOrder(data.order);
       const orderName = data?.order?.name;
@@ -1744,49 +1736,27 @@ export default function InvoiceScreen({ route, navigation }) {
           backendInvoiceNumber: data?.order?.invoice_number,
         }));
       setInvoiceNumber(invNo);
-      const rawLines = data.lines ?? [];
-      let nextLines = rawLines;
-      try {
-        const allProducts = await productsDb.getAllProductsForInvoice();
-        if (Array.isArray(allProducts) && allProducts.length > 0) {
-          const byProductId = new Map();
-          for (const line of rawLines) {
-            const pid = Array.isArray(line?.product_id) ? Number(line.product_id[0]) : Number(line?.product_id);
-            if (Number.isFinite(pid) && pid > 0 && !byProductId.has(pid)) {
-              byProductId.set(pid, line);
-            }
-          }
 
-          const catalogRows = allProducts
-            .map((p) => {
-              const existing = byProductId.get(Number(p.id));
-              if (existing) return existing;
-              if (!shouldAlwaysShowInvoiceCatalogRow(p?.name)) return null;
-              return {
-                id: `catalog-${p.id}`,
-                order_id: [Number(saleOrderId), null],
-                product_id: [Number(p.id), p.name || '—'],
-                name: p.name || '',
-                product_uom_qty: 0,
-                price_unit: Number(p.list_price) || 0,
-                price_subtotal: 0,
-                price_total: 0,
-                qty_delivered: 0,
-              };
-            })
-            .filter(Boolean);
-
-          const catalogProductIds = new Set(allProducts.map((p) => Number(p.id)).filter((n) => Number.isFinite(n) && n > 0));
-          const nonCatalogRows = rawLines.filter((line) => {
-            const pid = Array.isArray(line?.product_id) ? Number(line.product_id[0]) : Number(line?.product_id);
-            return !(Number.isFinite(pid) && pid > 0 && catalogProductIds.has(pid));
-          });
-
-          nextLines = [...catalogRows, ...nonCatalogRows];
-        }
-      } catch (e) {
-        console.warn('[InvoiceScreen] could not load product catalog rows', e?.message ?? e);
+      const { getInvoiceLineSnapshotForSaleOrder, snapshotRowsToInvoiceLines } = await import(
+        '../utils/localInvoiceSnapshot.js'
+      );
+      const frozenSnapshot = await getInvoiceLineSnapshotForSaleOrder(saleOrderId);
+      if (frozenSnapshot?.length) {
+        setResolvedInvoiceLineQtys(
+          frozenSnapshot.map((row) => ({ lineId: row.lineId, qty: row.qty }))
+        );
+      } else {
+        setResolvedInvoiceLineQtys(
+          Array.isArray(extraInvoiceQtys) && extraInvoiceQtys.length > 0 ? extraInvoiceQtys : null
+        );
       }
+
+      const rawLines = data.lines ?? [];
+      let baseLines = rawLines;
+      if (frozenSnapshot?.length) {
+        baseLines = snapshotRowsToInvoiceLines(saleOrderId, frozenSnapshot);
+      }
+      const nextLines = await mergeInvoiceLinesWithCatalog(saleOrderId, baseLines);
       setLines(nextLines);
       const split = await localPaymentsDb.getPaymentSplitBySaleOrderId(saleOrderId);
       setLocalPaymentSplit(split || { cash: 0, cheque: 0, credit: 0 });
@@ -2654,8 +2624,12 @@ export default function InvoiceScreen({ route, navigation }) {
             <Text style={[styles.th, styles.thTotal]}>{t('invoice.total', 'Total')}</Text>
           </View>
           {(invoiceVisibleLines || []).map((line, index) => {
-            const lineUnitPrice = Number(line.price_unit) || 0;
-            const lineTotal = (Number(line.product_uom_qty) || 0) * lineUnitPrice;
+            const lineUnitPrice = resolveInvoiceLineUnitPrice(line);
+            const lineQty = Number(line.product_uom_qty) || 0;
+            const lineTotal =
+              lineQty > 0 && Number(line.price_subtotal) > 0
+                ? Number(line.price_subtotal)
+                : lineQty * lineUnitPrice;
             return (
               <View
                 key={line.id}
