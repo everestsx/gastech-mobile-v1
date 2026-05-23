@@ -41,8 +41,9 @@ import {
   getUserSession,
   logout,
   isSessionExpired,
-  hasPendingUploadWork,
+  hasActionablePendingUploadWork,
   ensurePendingUploadRetryLoop,
+  stopPendingUploadRetryLoop,
   PENDING_QUEUE_FAST_RETRY_MS,
   PENDING_QUEUE_IDLE_POLL_MS,
 } from '../services/sync.service';
@@ -290,8 +291,12 @@ export default function AppNavigator() {
     const kickPendingUploadLoopIfNeeded = async () => {
       if (hideSyncRef.current) return;
       try {
-        if (!(await hasPendingUploadWork())) return;
+        if (!(await hasActionablePendingUploadWork())) {
+          stopPendingUploadRetryLoop();
+          return;
+        }
       } catch (_) {
+        stopPendingUploadRetryLoop();
         return;
       }
       ensurePendingUploadRetryLoop();
@@ -329,11 +334,13 @@ export default function AppNavigator() {
         if (fastPendingCancelled) return;
         let hasQueue = false;
         try {
-          hasQueue = await hasPendingUploadWork();
+          hasQueue = await hasActionablePendingUploadWork();
         } catch (_) {
           hasQueue = false;
         }
-        if (AppState.currentState === 'active' && hasQueue) {
+        if (!hasQueue) {
+          stopPendingUploadRetryLoop();
+        } else if (AppState.currentState === 'active') {
           ensurePendingUploadRetryLoop();
         }
         const nextMs = hasQueue

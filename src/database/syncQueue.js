@@ -15,14 +15,28 @@ export const ACTION_INVENTORY_UPDATE = 'inventory_update';
 /** Cancel sale order on Odoo when back online. Payload: { saleOrderId, reason, cancelledAt? } */
 export const ACTION_CANCEL_ORDER = 'order_cancel';
 
+/** Intentional wait — not a failed upload; scheduler must not spin on these rows. */
+export function isSyncQueueItemHeld(item) {
+  const p = item?.payload || {};
+  const type = item?.action_type;
+  if (type === ACTION_DELIVERY && p.holdUntilPayment === true) return true;
+  if (type === ACTION_INVENTORY_UPDATE && p.holdUntilComplete === true) return true;
+  if (type === ACTION_PAYMENT && p.holdUntilComplete === true) return true;
+  return false;
+}
+
+export async function hasActionablePendingQueueItems() {
+  const rows = await getPending();
+  return rows.some((item) => !isSyncQueueItemHeld(item));
+}
+
 function wakePendingUploadAfterQueueChange() {
   Promise.all([import('../services/sync.service.js'), import('./syncQueue.js')])
     .then(async ([m, db]) => {
       const pending = await db.getPendingCount();
       if (pending <= 0) return;
-      const indicators =
-        typeof m.hasDashboardUploadIndicators === 'function' ? m.hasDashboardUploadIndicators() : false;
-      if (pending <= 0 && !indicators) return;
+      const actionable = await db.hasActionablePendingQueueItems();
+      if (!actionable) return;
       if (typeof m.schedulePendingUploadSync === 'function') {
         m.schedulePendingUploadSync({ immediate: true, aggressive: true, queuePasses: 16 });
       }

@@ -40,7 +40,9 @@ import {
   getSyncLogRecent,
   hasPendingUploadWork,
   hasActiveUploadWork,
+  hasActionablePendingUploadWork,
   ensurePendingUploadRetryLoop,
+  stopPendingUploadRetryLoop,
   schedulePendingUploadSync,
   getUserSession,
   getOrderLineTotalsFromDB,
@@ -425,7 +427,7 @@ export default function DashboardScreen({ navigation }) {
       setProductIdToImageUri(imageMap || {});
       const today = formatLocalDate(new Date());
       const todayOrders = (Array.isArray(data) ? data : []).filter((o) => getOrderDateForSyncMode(o).startsWith(today));
-      console.log('todayOrders', todayOrders);
+      // console.log('todayOrders', todayOrders);
       const orderIds = todayOrders.map((o) => o.id);
       const [totals, pickings, orderLines, splits, qtyDoneMap] = await Promise.all([
         getOrderLineTotalsFromDB(todayOrders),
@@ -622,7 +624,7 @@ export default function DashboardScreen({ navigation }) {
       }
 
       lastDashboardSnapshot = {
-        orders: effectiveOrders || [],
+        orders: Array.isArray(data) ? data : [],
         user,
         routes: Array.isArray(routesData) ? routesData : [],
         lineTotalsByOrder: totals || {},
@@ -712,15 +714,20 @@ export default function DashboardScreen({ navigation }) {
       loadSyncStatus();
       tryPostLoginBanner();
       void hasActiveUploadWork().then((pending) => {
-        if (pending) {
-          schedulePendingUploadSync({
-            immediate: true,
-            aggressive: true,
-            queuePasses: 16,
-            includeAttachments: true,
-          });
-          ensurePendingUploadRetryLoop();
+        if (!pending) {
+          stopPendingUploadRetryLoop();
+          return;
         }
+        schedulePendingUploadSync({
+          immediate: true,
+          aggressive: true,
+          queuePasses: 16,
+          includeAttachments: true,
+        });
+        void hasActionablePendingUploadWork().then((actionable) => {
+          if (actionable) ensurePendingUploadRetryLoop();
+          else stopPendingUploadRetryLoop();
+        });
       });
     });
     loadData();

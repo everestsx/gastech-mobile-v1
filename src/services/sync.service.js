@@ -78,15 +78,23 @@ const PENDING_RETRY_OFFLINE_MS = 15000;
 /** When true, payment invoice step uses shorter Odoo settle delay (stable connection fast drain). */
 let _queueSyncFastDrainActive = false;
 
+export function stopPendingUploadRetryLoop() {
+  if (_pendingRetryTimer != null) {
+    clearTimeout(_pendingRetryTimer);
+    _pendingRetryTimer = null;
+  }
+}
+
 async function pendingRetryLoopIteration() {
-  let pending = false;
+  let actionable = false;
   try {
-    pending = await hasPendingUploadWork();
+    actionable = await hasActionablePendingUploadWork();
   } catch (_) {
+    stopPendingUploadRetryLoop();
     return;
   }
-  if (!pending) {
-    _pendingRetryTimer = null;
+  if (!actionable) {
+    stopPendingUploadRetryLoop();
     return;
   }
 
@@ -149,8 +157,10 @@ function runPendingUploadFlush(options = {}) {
         } catch (_) {
           /* non-fatal */
         }
-      } else {
+      } else if (await hasActionablePendingUploadWork()) {
         ensurePendingUploadRetryLoop();
+      } else {
+        stopPendingUploadRetryLoop();
       }
     })
     .finally(() => {
@@ -164,7 +174,10 @@ export function schedulePendingUploadSync(options = {}) {
   _pendingUploadWakeTimer = null;
   if (options.immediate === true) {
     runPendingUploadFlush(options);
-    ensurePendingUploadRetryLoop();
+    void hasActionablePendingUploadWork().then((actionable) => {
+      if (actionable) ensurePendingUploadRetryLoop();
+      else stopPendingUploadRetryLoop();
+    });
     return;
   }
   _pendingUploadWakeTimer = setTimeout(() => {
@@ -185,8 +198,11 @@ export function setDashboardUploadIndicators(pendingOrders, localCompleted) {
   const hasWork =
     _dashboardUploadIndicators.pendingOrders > 0 || _dashboardUploadIndicators.localCompleted > 0;
   if (hasWork && !hadWork) {
-    schedulePendingUploadSync({ immediate: true, aggressive: true, queuePasses: 14, includeAttachments: true });
-    ensurePendingUploadRetryLoop();
+    void hasActionablePendingUploadWork().then((actionable) => {
+      if (!actionable) return;
+      schedulePendingUploadSync({ immediate: true, aggressive: true, queuePasses: 14, includeAttachments: true });
+      ensurePendingUploadRetryLoop();
+    });
   }
 }
 export function hasDashboardUploadIndicators() {
@@ -206,6 +222,18 @@ export async function hasPendingUploadWork() {
   try {
     const pending = await syncQueueDb.getPendingCount();
     if (pending > 0) return true;
+    const offlineAttachmentsDb = await import('../database/offlineAttachments.js');
+    const rows = await offlineAttachmentsDb.getAllPending();
+    return (rows || []).length > 0;
+  } catch (_) {
+    return false;
+  }
+}
+
+/** Queue rows that can run now (excludes hold-until-payment / hold-until-complete). */
+export async function hasActionablePendingUploadWork() {
+  try {
+    if (await syncQueueDb.hasActionablePendingQueueItems()) return true;
     const offlineAttachmentsDb = await import('../database/offlineAttachments.js');
     const rows = await offlineAttachmentsDb.getAllPending();
     return (rows || []).length > 0;
@@ -307,9 +335,13 @@ const SYNC_INTERVAL_MAP = {
 };
 
 const LOG_TAG = '[Sync]';
+const _lastLogByKey = {};
 
 function log(step, detail = '') {
   const msg = detail ? `${LOG_TAG} ${step} — ${detail}` : `${LOG_TAG} ${step}`;
+  const key = `${step}|${detail}`;
+  if (_lastLogByKey[key] === msg) return;
+  _lastLogByKey[key] = msg;
   console.log(msg);
 }
 
@@ -2103,6 +2135,18 @@ async function processSyncQueue(options = {}) {
         const pendingAtStart = await syncQueueDb.getPendingCount();
         if (pendingAtStart === 0) break;
 
+        const pendingSnapHeldCheck = await syncQueueDb.getPending();
+        const actionableAtStart = pendingSnapHeldCheck.filter(
+          (item) => !syncQueueDb.isSyncQueueItemHeld(item)
+        );
+        if (actionableAtStart.length === 0) {
+          log(
+            'queue',
+            `${pendingSnapHeldCheck.length} pending, all held until payment/complete — idle`
+          );
+          break;
+        }
+
         try {
       const pendingSnapEarly = await syncQueueDb.getPending();
       const cancelEarly = pendingSnapEarly.filter(
@@ -3037,7 +3081,7 @@ async function processSyncQueue(options = {}) {
                       origin: `SO ${saleOrderId} EMPTY RETURN`,
                       location_id: Number(srcLocId),
                       location_dest_id: Number(destLocId),
-                      move_ids_without_package: emptyReturnLines.map((line) => [
+                      move_ids: emptyReturnLines.map((line) => [
                         0,
                         0,
                         {
@@ -3912,6 +3956,11 @@ async function processSyncQueue(options = {}) {
 
         const pendingAfter = await syncQueueDb.getPendingCount();
         if (pendingAfter === 0) break;
+        const snapAfter = await syncQueueDb.getPending();
+        if (snapAfter.length > 0 && !snapAfter.some((item) => !syncQueueDb.isSyncQueueItemHeld(item))) {
+          log('queue', `${snapAfter.length} pending, all held — idle until payment/complete`);
+          break;
+        }
         if (lastPending >= 0 && pendingAfter < lastPending) {
           lastPending = pendingAfter;
           if (pendingAfter > 0 && retryPassDelayMs > 0) {
@@ -4687,6 +4736,10 @@ export async function flushPendingUploadsNow(options = {}) {
         }
         break;
       }
+      const actionable = await hasActionablePendingUploadWork();
+      if (!actionable) {
+        break;
+      }
       if (lastPending >= 0 && pending < lastPending) {
         lastPending = pending;
         if (pass < maxPasses - 1 && stallMs > 0) {
@@ -4762,8 +4815,10 @@ export async function flushPendingUploadsNow(options = {}) {
         console.warn(`${LOG_TAG} syncCompleteListener after flush`, e?.message ?? e);
       }
     }
-    if (pendingCount > 0) {
+    if (pendingCount > 0 && (await hasActionablePendingUploadWork())) {
       ensurePendingUploadRetryLoop();
+    } else {
+      stopPendingUploadRetryLoop();
     }
     return { pendingCount };
   } catch (_) {

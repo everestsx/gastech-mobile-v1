@@ -297,7 +297,7 @@ const load = useCallback(async (forceRefresh = false) => {
 
   if (vId) {
     const locationId = await getVehicleLocationId(vId);
-    console.log(`[UI Debug] Vehicle ${vId} has location_id: ${locationId}`);
+    // console.log(`[UI Debug] Vehicle ${vId} has location_id: ${locationId}`);
 
     const orders = await getCachedOrders(vId);
     const todayLocal = formatLocalYyyyMmDd(new Date());
