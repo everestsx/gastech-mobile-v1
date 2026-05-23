@@ -279,6 +279,33 @@ export async function getSaleOrderById(id) {
   }
 }
 
+/** Batch fetch sale orders by id (local invoice list performance). */
+export async function getSaleOrdersByIds(ids = []) {
+  const unique = [...new Set((ids || []).map((id) => num(id)).filter((id) => id > 0))];
+  if (unique.length === 0) return [];
+  const db = await getDb();
+  const placeholders = unique.map(() => '?').join(',');
+  const rows = await db.getAllAsync(
+    `
+      SELECT so.*, p.city as partner_city, p.phone as partner_phone,
+        p.name_tamil as partner_name_tamil, p.name_sinhala as partner_name_sinhala
+      FROM sale_orders so
+      LEFT JOIN partners p ON so.partner_id = p.id
+      WHERE so.id IN (${placeholders})
+    `,
+    unique
+  );
+  return (rows || []).map((row) => ({
+    ...row,
+    city: row.partner_city || '',
+    partner_phone: row.partner_phone ?? '',
+    partner_name_tamil: row.partner_name_tamil ?? null,
+    partner_name_sinhala: row.partner_name_sinhala ?? null,
+    partner_id: row.partner_id != null ? [row.partner_id, row.partner_name ?? ''] : null,
+    order_line: safeParseJson(row.order_line, []),
+  }));
+}
+
 /**
  * Keep only the provided sale order ids in local table. Useful when sync window changes
  * (e.g. creation date vs delivery date) so stale local rows do not remain visible.

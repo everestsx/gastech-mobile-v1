@@ -1772,66 +1772,67 @@ export default function InvoiceScreen({ route, navigation }) {
       setLocalDriverSig(localInv?.driver_signature_data ?? null);
       setLoading(false);
 
-      let odooNo = null;
-      const odooInvoiceId = Number(localInv?.odoo_invoice_id);
-      if (Number.isFinite(odooInvoiceId) && odooInvoiceId > 0) {
-        try {
-          const invRows = await callOdoo('account.move', 'read', [[odooInvoiceId]], { fields: ['name'] });
-          const name = Array.isArray(invRows) ? invRows[0]?.name : null;
-          if (name && typeof name === 'string' && String(name).trim()) {
-            odooNo = String(name).trim();
+      void (async () => {
+        let odooNo = null;
+        const odooInvoiceId = Number(localInv?.odoo_invoice_id);
+        if (Number.isFinite(odooInvoiceId) && odooInvoiceId > 0) {
+          try {
+            const invRows = await callOdoo('account.move', 'read', [[odooInvoiceId]], { fields: ['name'] });
+            const name = Array.isArray(invRows) ? invRows[0]?.name : null;
+            if (name && typeof name === 'string' && String(name).trim()) {
+              odooNo = String(name).trim();
+            }
+          } catch (_) {
+            odooNo = null;
           }
+        }
+        setOdooInvoiceNumber(odooNo);
+
+        let nextPartyInfo = {};
+        try {
+          const companyRows = await callOdoo('res.company', 'read', [[1]], {
+            fields: ['name', 'phone', 'vat', 'partner_id'],
+          });
+          const company = Array.isArray(companyRows) ? companyRows[0] : null;
+          const companyPartnerId = Array.isArray(company?.partner_id) ? company.partner_id[0] : null;
+          let companyStreet = '';
+          let companyCity = '';
+          if (companyPartnerId != null) {
+            const companyPartnerRows = await callOdoo('res.partner', 'read', [[companyPartnerId]], {
+              fields: ['street', 'street2', 'city'],
+            });
+            const cp = Array.isArray(companyPartnerRows) ? companyPartnerRows[0] : null;
+            companyStreet = [cp?.street, cp?.street2].filter(Boolean).join(', ');
+            companyCity = cp?.city || '';
+          }
+
+          const customerPartnerId = Array.isArray(data?.order?.partner_id) ? data.order.partner_id[0] : null;
+          let customerRows = [];
+          if (customerPartnerId != null) {
+            customerRows = await callOdoo('res.partner', 'read', [[customerPartnerId]], {
+              fields: ['name', 'phone', 'street', 'street2', 'city', 'vat', 'name_tamil', 'name_sinhala'],
+            });
+          }
+          const customer = Array.isArray(customerRows) ? customerRows[0] : null;
+
+          nextPartyInfo = {
+            supplierName: company?.name || null,
+            supplierPhone: company?.phone || null,
+            supplierTin: company?.vat || null,
+            supplierAddress: [companyStreet, companyCity].filter(Boolean).join(', ') || null,
+            customerName: customer?.name || null,
+            customerNameTamil: odooLocalizedText(customer?.name_tamil),
+            customerNameSinhala: odooLocalizedText(customer?.name_sinhala),
+            customerPhone: customer?.phone || null,
+            customerTin: customer?.vat || null,
+            customerStreet: [customer?.street, customer?.street2].filter(Boolean).join(', ') || null,
+            customerCity: customer?.city || null,
+          };
         } catch (_) {
-          odooNo = null;
+          nextPartyInfo = {};
         }
-      }
-      setOdooInvoiceNumber(odooNo);
-
-      // Fetch supplier(company) and customer details for printed invoice.
-      let nextPartyInfo = {};
-      try {
-        const companyRows = await callOdoo('res.company', 'read', [[1]], {
-          fields: ['name', 'phone', 'vat', 'partner_id'],
-        });
-        const company = Array.isArray(companyRows) ? companyRows[0] : null;
-        const companyPartnerId = Array.isArray(company?.partner_id) ? company.partner_id[0] : null;
-        let companyStreet = '';
-        let companyCity = '';
-        if (companyPartnerId != null) {
-          const companyPartnerRows = await callOdoo('res.partner', 'read', [[companyPartnerId]], {
-            fields: ['street', 'street2', 'city'],
-          });
-          const cp = Array.isArray(companyPartnerRows) ? companyPartnerRows[0] : null;
-          companyStreet = [cp?.street, cp?.street2].filter(Boolean).join(', ');
-          companyCity = cp?.city || '';
-        }
-
-        const customerPartnerId = Array.isArray(data?.order?.partner_id) ? data.order.partner_id[0] : null;
-        let customerRows = [];
-        if (customerPartnerId != null) {
-          customerRows = await callOdoo('res.partner', 'read', [[customerPartnerId]], {
-            fields: ['name', 'phone', 'street', 'street2', 'city', 'vat', 'name_tamil', 'name_sinhala'],
-          });
-        }
-        const customer = Array.isArray(customerRows) ? customerRows[0] : null;
-
-        nextPartyInfo = {
-          supplierName: company?.name || null,
-          supplierPhone: company?.phone || null,
-          supplierTin: company?.vat || null,
-          supplierAddress: [companyStreet, companyCity].filter(Boolean).join(', ') || null,
-          customerName: customer?.name || null,
-          customerNameTamil: odooLocalizedText(customer?.name_tamil),
-          customerNameSinhala: odooLocalizedText(customer?.name_sinhala),
-          customerPhone: customer?.phone || null,
-          customerTin: customer?.vat || null,
-          customerStreet: [customer?.street, customer?.street2].filter(Boolean).join(', ') || null,
-          customerCity: customer?.city || null,
-        };
-      } catch (_) {
-        nextPartyInfo = {};
-      }
-      setPartyInfo(nextPartyInfo);
+        setPartyInfo(nextPartyInfo);
+      })();
     } catch (_) {
       setOrder(null);
       setLines([]);

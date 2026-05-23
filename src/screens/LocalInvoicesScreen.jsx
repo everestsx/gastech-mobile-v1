@@ -70,7 +70,7 @@ export default function LocalInvoicesScreen({ navigation }) {
   const { colors, appLanguage } = useTheme();
   const insets = useSafeAreaInsets();
   const [invoices, setInvoices] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [vehicleNumber, setVehicleNumber] = useState('');
   const [selectedDate, setSelectedDate] = useState(new Date());
@@ -105,11 +105,15 @@ export default function LocalInvoicesScreen({ navigation }) {
           : await localInvoicesDb.getAllLocalInvoices(false);
 
       const soIds = (list || []).map((inv) => Number(inv.sale_order_id)).filter((id) => id > 0);
-      const paymentBySo = await syncQueueDb.getLatestPaymentPayloadMapBySaleOrderIds(soIds).catch(() => ({}));
+      const [paymentBySo, orders] = await Promise.all([
+        syncQueueDb.getLatestPaymentPayloadMapBySaleOrderIds(soIds).catch(() => ({})),
+        saleOrdersDb.getSaleOrdersByIds(soIds),
+      ]);
+      const orderById = new Map((orders || []).map((o) => [Number(o.id), o]));
 
       const enriched = [];
       for (const inv of list || []) {
-        const order = await saleOrdersDb.getSaleOrderById(inv.sale_order_id);
+        const order = orderById.get(Number(inv.sale_order_id));
         if (!order) continue;
         const orderVehicleId = Array.isArray(order.vehicle_id)
           ? Number(order.vehicle_id[0])

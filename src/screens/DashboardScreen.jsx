@@ -40,6 +40,7 @@ import {
   getSyncLogRecent,
   hasPendingUploadWork,
   hasActiveUploadWork,
+  ensurePendingUploadRetryLoop,
   schedulePendingUploadSync,
   getUserSession,
   getOrderLineTotalsFromDB,
@@ -718,6 +719,7 @@ export default function DashboardScreen({ navigation }) {
             queuePasses: 16,
             includeAttachments: true,
           });
+          ensurePendingUploadRetryLoop();
         }
       });
     });

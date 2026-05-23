@@ -329,8 +329,6 @@ export default function ProceedPaymentScreen({ route, navigation }) {
     if (proceedGuardRef.current) return;
     proceedGuardRef.current = true;
     try {
-      setLoading(true);
-
       const data = await getSaleOrderDetailsFromDB(saleOrderId);
       const orderInfo = data?.order;
       if (!orderInfo) throw new Error('Sale order not found');

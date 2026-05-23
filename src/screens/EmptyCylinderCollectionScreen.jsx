@@ -53,6 +53,17 @@ function qtyClose(a, b) {
 
 const DISPLAY_KG_SIZES = [2.4, 5, 12.5, 37.5];
 
+function buildInitialEmptyRows() {
+  return DISPLAY_KG_SIZES.map((kg) => ({
+    kg,
+    deliveredGasQty: 0,
+    newIssueQty: 0,
+    emptyQty: 0,
+    defaultEmptyQty: 0,
+    emptyProductId: null,
+  }));
+}
+
 /** Merge inventory queue rows by product — keeps gas reductions when adding empty-return increments. */
 function mergeInventoryQueueUpdatesByProduct(existingUpdates, incomingUpdates) {
   const byProduct = new Map();
@@ -109,8 +120,8 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
     invoiceLineQtys,
   } = route.params || {};
 
-  const [rows, setRows] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [rows, setRows] = useState(buildInitialEmptyRows);
+  const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [reasonModalVisible, setReasonModalVisible] = useState(false);
   const [selectedReasonKey, setSelectedReasonKey] = useState('');
@@ -132,7 +143,6 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
   );
 
   const loadDefaults = useCallback(async () => {
-    setLoading(true);
     try {
       const details = await getSaleOrderDetailsFromDB(saleOrderId);
       const lines = Array.isArray(details?.lines) ? details.lines : [];

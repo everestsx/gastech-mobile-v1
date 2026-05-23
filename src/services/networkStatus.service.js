@@ -67,7 +67,7 @@ async function flushQueueOnStableConnection() {
   if (now - lastFlushAt < STABLE_FLUSH_COOLDOWN_MS) return;
   try {
     const m = await import('./sync.service.js');
-    if (!(await m.hasActiveUploadWork())) return;
+    if (!(await m.hasPendingUploadWork())) return;
     lastFlushAt = now;
     m.schedulePendingUploadSync({
       immediate: true,
@@ -75,6 +75,7 @@ async function flushQueueOnStableConnection() {
       queuePasses: 24,
       includeAttachments: true,
     });
+    m.ensurePendingUploadRetryLoop();
   } catch (_) {
     /* non-fatal */
   }

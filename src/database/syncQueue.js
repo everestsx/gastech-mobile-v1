@@ -26,6 +26,9 @@ function wakePendingUploadAfterQueueChange() {
       if (typeof m.schedulePendingUploadSync === 'function') {
         m.schedulePendingUploadSync({ immediate: true, aggressive: true, queuePasses: 16 });
       }
+      if (typeof m.ensurePendingUploadRetryLoop === 'function') {
+        m.ensurePendingUploadRetryLoop();
+      }
     })
     .catch(() => {});
 }

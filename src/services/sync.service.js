@@ -72,8 +72,63 @@ export const PENDING_QUEUE_IDLE_POLL_MS = 5 * 60 * 1000;
 
 let _pendingUploadWakeTimer = null;
 let _pendingUploadWakePromise = null;
+/** Continuous queue drain while pending rows exist and network is reachable. */
+let _pendingRetryTimer = null;
+const PENDING_RETRY_OFFLINE_MS = 15000;
 /** When true, payment invoice step uses shorter Odoo settle delay (stable connection fast drain). */
 let _queueSyncFastDrainActive = false;
+
+async function pendingRetryLoopIteration() {
+  let pending = false;
+  try {
+    pending = await hasPendingUploadWork();
+  } catch (_) {
+    return;
+  }
+  if (!pending) {
+    _pendingRetryTimer = null;
+    return;
+  }
+
+  let nextDelayMs = PENDING_QUEUE_ACTIVE_RETRY_MS;
+  try {
+    const net = await import('./networkStatus.service.js');
+    const snap = await net.fetchNetworkSnapshot();
+    if (snap.quality === net.NetworkQuality.OFFLINE) {
+      nextDelayMs = PENDING_RETRY_OFFLINE_MS;
+    } else {
+      nextDelayMs = net.getPendingRetryDelayMsForQuality(snap.quality);
+      if (!_pendingUploadWakePromise) {
+        runPendingUploadFlush({
+          immediate: true,
+          aggressive: true,
+          queuePasses: 18,
+          includeAttachments: true,
+        });
+      }
+    }
+  } catch (_) {
+    if (!_pendingUploadWakePromise) {
+      runPendingUploadFlush({
+        immediate: true,
+        aggressive: true,
+        queuePasses: 14,
+        includeAttachments: true,
+      });
+    }
+  }
+
+  _pendingRetryTimer = setTimeout(() => {
+    _pendingRetryTimer = null;
+    void pendingRetryLoopIteration();
+  }, nextDelayMs);
+}
+
+/** Keep retrying queue uploads until empty; idle when queue count is 0. */
+export function ensurePendingUploadRetryLoop() {
+  if (_pendingRetryTimer != null) return;
+  void pendingRetryLoopIteration();
+}
 
 function runPendingUploadFlush(options = {}) {
   if (_pendingUploadWakePromise) {
@@ -86,12 +141,16 @@ function runPendingUploadFlush(options = {}) {
     aggressive: options.immediate === true || options.aggressive === true,
   })
     .then(async (result) => {
-      if ((result?.pendingCount ?? 1) === 0) {
+      const pendingLeft =
+        result?.pendingCount != null ? Number(result.pendingCount) : await syncQueueDb.getPendingCount();
+      if (pendingLeft === 0) {
         try {
           if (_syncCompleteListener) _syncCompleteListener(true);
         } catch (_) {
           /* non-fatal */
         }
+      } else {
+        ensurePendingUploadRetryLoop();
       }
     })
     .finally(() => {
@@ -105,6 +164,7 @@ export function schedulePendingUploadSync(options = {}) {
   _pendingUploadWakeTimer = null;
   if (options.immediate === true) {
     runPendingUploadFlush(options);
+    ensurePendingUploadRetryLoop();
     return;
   }
   _pendingUploadWakeTimer = setTimeout(() => {
@@ -126,6 +186,7 @@ export function setDashboardUploadIndicators(pendingOrders, localCompleted) {
     _dashboardUploadIndicators.pendingOrders > 0 || _dashboardUploadIndicators.localCompleted > 0;
   if (hasWork && !hadWork) {
     schedulePendingUploadSync({ immediate: true, aggressive: true, queuePasses: 14, includeAttachments: true });
+    ensurePendingUploadRetryLoop();
   }
 }
 export function hasDashboardUploadIndicators() {
@@ -4700,6 +4761,9 @@ export async function flushPendingUploadsNow(options = {}) {
       } catch (e) {
         console.warn(`${LOG_TAG} syncCompleteListener after flush`, e?.message ?? e);
       }
+    }
+    if (pendingCount > 0) {
+      ensurePendingUploadRetryLoop();
     }
     return { pendingCount };
   } catch (_) {

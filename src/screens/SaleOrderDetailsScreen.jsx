@@ -17,6 +17,7 @@ import {
   Alert,
   Pressable,
   Keyboard,
+  InteractionManager,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -689,10 +690,14 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
       throw new Error('Failed to update vehicle inventory');
     }
   }, [order, lines, productIdToAvailable, productIdToOnHand]);
-  const loadDetails = useCallback(async () => {
-    setLoading(true);
+  const loadDetails = useCallback(async (opts = { silent: false }) => {
+    const silent = opts?.silent === true;
+    if (!silent) setLoading(true);
     try {
-      const data = await getSaleOrderDetailsFromDB(saleOrderId);
+      const [data, deliveryBundle] = await Promise.all([
+        getSaleOrderDetailsFromDB(saleOrderId),
+        getDeliveryDataFromDB(saleOrderId),
+      ]);
       if (!data.order) {
         setOrder(null);
         setLines([]);
@@ -702,7 +707,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
         return;
       }
       setOrder(data.order);
-      const { picking, moves, moveLines } = await getDeliveryDataFromDB(saleOrderId);
+      const { picking, moves, moveLines } = deliveryBundle || {};
       const moveIdToProductId = {};
       (moves || []).forEach((m) => {
         const pid = Array.isArray(m.product_id) ? m.product_id[0] : m.product_id;
@@ -728,58 +733,63 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
           return { ...l, newQty: String(initial) };
         })
       );
-      const imageMap = await productsDb.getProductImageUriMap();
-      setProductIdToImageUri(imageMap || {});
       setQtyChanged(false);
       setIsDeliveryDone(deliveryDone);
       setIsDelivered(data.order?.invoice_status === 'invoiced');
+      setLoading(false);
 
+      const vehicleId =
+        data.order?.vehicle_id != null
+          ? Array.isArray(data.order.vehicle_id)
+            ? data.order.vehicle_id[0]
+            : data.order.vehicle_id
+          : null;
 
-        const vehicleId = data.order?.vehicle_id != null
-            ? (Array.isArray(data.order.vehicle_id) ? data.order.vehicle_id[0] : data.order.vehicle_id)
-            : null;
-
-        console.log(`[UI Debug] This order is assigned to Vehicle ID: ${vehicleId}`);
-
-        if (vehicleId != null) {
+      InteractionManager.runAfterInteractions(() => {
+        void (async () => {
           try {
-            // Get location_id for this vehicle and fetch inventory by location
+            const imageMap = await productsDb.getProductImageUriMap();
+            setProductIdToImageUri(imageMap || {});
+          } catch (_) {
+            setProductIdToImageUri({});
+          }
+          if (vehicleId == null) {
+            setProductIdToAvailable({});
+            setProductIdToOnHand({});
+            return;
+          }
+          try {
             const locationId = await getVehicleLocationId(vehicleId);
-            console.log(`[UI Debug] Vehicle ${vehicleId} has location_id: ${locationId}`);
-
-            if (locationId) {
-              const inventories = await getCachedVehicleInventoryByLocation(locationId);
-              const mapAvail = {};
-              const mapOnHand = {};
-              (inventories || []).forEach((inv) => {
-                const pid = inv.product_id != null ? inv.product_id : inv.id;
-                if (pid != null) {
-                  mapAvail[pid] = clampNonNegativeStock(inv.available_quantity);
-                  mapOnHand[pid] = clampNonNegativeStock(inv.quantity);
-                }
-              });
-              (data.lines || []).forEach((l) => {
-                const pid = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
-                if (pid == null) return;
-                if (mapAvail[pid] === undefined) mapAvail[pid] = 0;
-                if (mapOnHand[pid] === undefined) mapOnHand[pid] = 0;
-              });
-              setProductIdToAvailable(mapAvail);
-              setProductIdToOnHand(mapOnHand);
-            } else {
-              console.warn(`[UI Debug] No location_id found for vehicle ${vehicleId}`);
+            if (!locationId) {
               setProductIdToAvailable({});
               setProductIdToOnHand({});
+              return;
             }
+            const inventories = await getCachedVehicleInventoryByLocation(locationId);
+            const mapAvail = {};
+            const mapOnHand = {};
+            (inventories || []).forEach((inv) => {
+              const pid = inv.product_id != null ? inv.product_id : inv.id;
+              if (pid != null) {
+                mapAvail[pid] = clampNonNegativeStock(inv.available_quantity);
+                mapOnHand[pid] = clampNonNegativeStock(inv.quantity);
+              }
+            });
+            (data.lines || []).forEach((l) => {
+              const pid = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
+              if (pid == null) return;
+              if (mapAvail[pid] === undefined) mapAvail[pid] = 0;
+              if (mapOnHand[pid] === undefined) mapOnHand[pid] = 0;
+            });
+            setProductIdToAvailable(mapAvail);
+            setProductIdToOnHand(mapOnHand);
           } catch (error) {
             console.error('Failed to load vehicle inventory:', error);
             setProductIdToAvailable({});
             setProductIdToOnHand({});
           }
-        } else {
-          setProductIdToAvailable({});
-          setProductIdToOnHand({});
-        }
+        })();
+      });
     } catch (_) {
       setOrder(null);
       setLines([]);
@@ -1298,7 +1308,7 @@ const getStockWarning = useCallback((lineId) => {
           await syncQueueDb.enqueue(syncQueueDb.ACTION_DELIVERY, payloadWithHold);
         }
       }
-      await loadDetails();
+      await loadDetails({ silent: true });
       setModifyEnabled(false);
       setQtyChanged(false);
       setUpdateError(null);

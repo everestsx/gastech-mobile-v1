@@ -30,7 +30,7 @@ import {
   applyLocalGasInventoryForSaleOrder,
 } from '../utils/localInventoryApply.js';
 import { empty } from '../database/dbHelpers.js';
-import { schedulePendingUploadSync } from '../services/sync.service';
+import { schedulePendingUploadSync, ensurePendingUploadRetryLoop } from '../services/sync.service';
 import { getOrAssignInvoiceNumber } from '../utils/invoiceNumber';
 import { clearCheckoutResume } from '../services/checkoutResume.service';
 import { finalizeLocalInvoiceSnapshotFromPayment } from '../utils/localInvoiceSnapshot.js';
@@ -276,6 +276,7 @@ export default function PaymentProofScreen({ route, navigation }) {
         queuePasses: 18,
         includeAttachments: true,
       });
+      ensurePendingUploadRetryLoop();
     } catch (e) {
       Alert.alert('Error', e?.message || 'Something went wrong. Try again.');
       setSaving(false);
