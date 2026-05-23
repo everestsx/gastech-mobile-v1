@@ -13,6 +13,7 @@ import {
   Pressable,
   Keyboard,
   KeyboardAvoidingView,
+  InteractionManager,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -534,129 +535,149 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
       setSyncedPaymentOrderIds(
         syncedPaymentIds instanceof Set ? new Set(syncedPaymentIds) : new Set(Array.from(syncedPaymentIds || []))
       );
-      const needsInvoiceHeader = list.filter((o) => {
-        const id = Number(o.id);
-        if (!Number.isFinite(id)) return false;
-        if (!syncedPaymentIds.has(id)) return false;
-        if (pendingSaleOrderIds.has(id)) return false;
-        return String(o.invoice_status || '').toLowerCase() !== 'invoiced';
-      });
-      if (needsInvoiceHeader.length > 0) {
-        await Promise.all(needsInvoiceHeader.map((o) => refreshSaleOrderInvoiceHeaderFromOdoo(o.id).catch(() => {})));
-        const dataHdr = await getCachedOrders(vehicleId);
-        list = buildFilteredList(Array.isArray(dataHdr) ? dataHdr : []);
-      }
 
-      const paymentRefreshSkipIds = new Set();
-      for (const id of pendingSaleOrderIds) {
-        const n = Number(id);
-        if (Number.isFinite(n)) paymentRefreshSkipIds.add(n);
-      }
-      const unsyncedInvoiceSoIds = await localInvoicesDb.getUnsyncedLocalInvoiceSaleOrderIds().catch(() => new Set());
-      for (const soId of unsyncedInvoiceSoIds) {
-        const idNum = Number(soId);
-        if (Number.isFinite(idNum) && idNum > 0) paymentRefreshSkipIds.add(idNum);
-      }
-      await refreshPaymentTypesFromOdoo(list, { skipOrderIds: paymentRefreshSkipIds }).catch(() => {});
-      const dataPay = await getCachedOrders(vehicleId);
-      list = buildFilteredList(Array.isArray(dataPay) ? dataPay : []);
-      const orderIds = list.map((o) => o.id);
-      const [totals, pickings, allLines, paymentSplits, journalsList, qtyMap, qtyByProductMap, backendDeliveredSet] =
-        await Promise.all([
-        getOrderLineTotalsFromDB(list),
-        getPickingsBySaleIdsFromDB(orderIds),
-        getOrderLinesByOrderIdsFromDB(orderIds),
-        localPaymentsDb.getPaymentSplitsWithJournalsBySaleOrderIds(orderIds),
-        getCachedJournals(),
-        orderIds.length ? deliveryQtyDb.getTotalQtyDoneBySaleOrderIds(orderIds) : Promise.resolve({}),
-        orderIds.length ? deliveryQtyDb.getQtyDoneBySaleOrderProductMap(orderIds) : Promise.resolve({}),
-        orderIds.length ? saleOrderLinesDb.getSaleOrderIdsWithPositiveQtyDelivered(orderIds) : Promise.resolve(new Set()),
-      ]);
-      setBackendQtyDeliveredOrderIds(backendDeliveredSet instanceof Set ? backendDeliveredSet : new Set());
-      setJournals(Array.isArray(journalsList) ? journalsList : []);
-      const saleIdToPickingState = mergePickingStateBySaleIdFromRows(pickings || []);
-      const linesByOrderId = {};
-      (allLines || []).forEach((line) => {
-        const oid = Array.isArray(line.order_id) ? line.order_id[0] : line.order_id;
-        if (oid != null) {
-          if (!linesByOrderId[oid]) linesByOrderId[oid] = [];
-          linesByOrderId[oid].push(line);
-        }
-      });
-      const getSplit = (order) => {
-        const id = order?.id;
-        if (id == null) return null;
-        return paymentSplits[Number(id)] ?? paymentSplits[id] ?? paymentSplits[String(id)] ?? null;
-      };
-      // Backend sync can store amount_cash, amount_cheque, amount_credit (split); else use local split or payment_type + amount_total
-      const syntheticSplit = (o) => {
-        const split = getSplit(o);
-        if (split && (Number(split.cash) || Number(split.cheque ?? split.check) || Number(split.credit))) {
+      const applyLocalDeliveredState = async (rows) => {
+        const orderIds = rows.map((o) => o.id);
+        const [totals, pickings, allLines, paymentSplits, journalsList, qtyMap, qtyByProductMap, backendDeliveredSet] =
+          await Promise.all([
+            getOrderLineTotalsFromDB(rows),
+            getPickingsBySaleIdsFromDB(orderIds),
+            getOrderLinesByOrderIdsFromDB(orderIds),
+            localPaymentsDb.getPaymentSplitsWithJournalsBySaleOrderIds(orderIds),
+            getCachedJournals(),
+            orderIds.length ? deliveryQtyDb.getTotalQtyDoneBySaleOrderIds(orderIds) : Promise.resolve({}),
+            orderIds.length ? deliveryQtyDb.getQtyDoneBySaleOrderProductMap(orderIds) : Promise.resolve({}),
+            orderIds.length
+              ? saleOrderLinesDb.getSaleOrderIdsWithPositiveQtyDelivered(orderIds)
+              : Promise.resolve(new Set()),
+          ]);
+        setBackendQtyDeliveredOrderIds(backendDeliveredSet instanceof Set ? backendDeliveredSet : new Set());
+        setJournals(Array.isArray(journalsList) ? journalsList : []);
+        const saleIdToPickingState = mergePickingStateBySaleIdFromRows(pickings || []);
+        const linesByOrderId = {};
+        (allLines || []).forEach((line) => {
+          const oid = Array.isArray(line.order_id) ? line.order_id[0] : line.order_id;
+          if (oid != null) {
+            if (!linesByOrderId[oid]) linesByOrderId[oid] = [];
+            linesByOrderId[oid].push(line);
+          }
+        });
+        const getSplit = (order) => {
+          const id = order?.id;
+          if (id == null) return null;
+          return paymentSplits[Number(id)] ?? paymentSplits[id] ?? paymentSplits[String(id)] ?? null;
+        };
+        const syntheticSplit = (o) => {
+          const split = getSplit(o);
+          if (split && (Number(split.cash) || Number(split.cheque ?? split.check) || Number(split.credit))) {
+            return {
+              cash: Number(split.cash) || 0,
+              cheque: Number(split.cheque ?? split.check) || 0,
+              credit: Number(split.credit) || 0,
+            };
+          }
+          const sc = Number(o.amount_cash) || 0;
+          const sq = Number(o.amount_cheque) || 0;
+          const sr = Number(o.amount_credit) || 0;
+          if (sc > 0 || sq > 0 || sr > 0) return { cash: sc, cheque: sq, credit: sr };
+          const pt = normalizePaymentType(o.payment_type);
+          const amt = Number(o.amount_total) || 0;
+          if (amt <= 0 || !pt) return split || null;
           return {
-            cash: Number(split.cash) || 0,
-            cheque: Number(split.cheque ?? split.check) || 0,
-            credit: Number(split.credit) || 0,
+            cash: pt === 'cash' ? amt : 0,
+            cheque: pt === 'cheque' ? amt : 0,
+            credit: pt === 'credit' ? amt : 0,
           };
+        };
+        setPickingStateBySaleId(saleIdToPickingState);
+        setQtyDoneBySaleId(qtyMap || {});
+        const mergedQtyBySaleAndProduct = {};
+        for (const o of rows) {
+          const oid = o.id;
+          const lines = linesByOrderId[oid] || [];
+          const moveMap = qtyByProductMap[oid] || {};
+          const inv = String(o.invoice_status || '').toLowerCase() === 'invoiced';
+          const merged = buildDisplayDeliveredQtyByProduct(moveMap, lines, inv);
+          if (merged != null) mergedQtyBySaleAndProduct[oid] = merged;
         }
-        const sc = Number(o.amount_cash) || 0;
-        const sq = Number(o.amount_cheque) || 0;
-        const sr = Number(o.amount_credit) || 0;
-        if (sc > 0 || sq > 0 || sr > 0)
-          return { cash: sc, cheque: sq, credit: sr };
-        const pt = normalizePaymentType(o.payment_type);
-        const amt = Number(o.amount_total) || 0;
-        if (amt <= 0 || !pt) return split || null;
-        return {
-          cash: pt === 'cash' ? amt : 0,
-          cheque: pt === 'cheque' ? amt : 0,
-          credit: pt === 'credit' ? amt : 0,
+        setQtyDoneBySaleAndProduct(mergedQtyBySaleAndProduct);
+        const nextOrders = rows.map((o) => {
+          const inv = String(o.invoice_status).toLowerCase() === 'invoiced';
+          const st = String(saleIdToPickingState[o.id] || '').toLowerCase();
+          const q = Number(qtyMap[o.id]) || 0;
+          const deliveryDone = inv || st === 'done' || st === 'cancel' || q > 0;
+          return {
+            ...o,
+            totalQty: totals[o.id] != null ? totals[o.id] : null,
+            isDelivered: deliveryDone,
+            orderLines: linesByOrderId[o.id] || [],
+            paymentSplit: syntheticSplit(o) || null,
+          };
+        });
+        setOrders(nextOrders);
+        const nextBackendDelivered =
+          backendDeliveredSet instanceof Set ? backendDeliveredSet : new Set();
+        const nextLocalInvoiced = localInvoiced instanceof Set ? localInvoiced : new Set();
+        const nextPendingCheckout = pendingCheckoutSaleOrderIdsFromResumeMap(resumeMap);
+        const nextSyncedPayment =
+          syncedPaymentIds instanceof Set
+            ? new Set(syncedPaymentIds)
+            : new Set(Array.from(syncedPaymentIds || []));
+        lastDeliveredOrdersSnapshot = {
+          orders: nextOrders,
+          pickingStateBySaleId: saleIdToPickingState,
+          qtyDoneBySaleId: qtyMap || {},
+          qtyDoneBySaleAndProduct: mergedQtyBySaleAndProduct,
+          backendQtyDeliveredOrderIds: Array.from(nextBackendDelivered),
+          pendingCheckoutOrderIds: Array.from(nextPendingCheckout),
+          localInvoicedSaleOrderIds: Array.from(nextLocalInvoiced),
+          syncedPaymentOrderIds: Array.from(nextSyncedPayment),
+          journals: Array.isArray(journalsList) ? journalsList : [],
         };
+        return nextOrders;
       };
-      setPickingStateBySaleId(saleIdToPickingState);
-      setQtyDoneBySaleId(qtyMap || {});
-      const mergedQtyBySaleAndProduct = {};
-      for (const o of list) {
-        const oid = o.id;
-        const lines = linesByOrderId[oid] || [];
-        const moveMap = qtyByProductMap[oid] || {};
-        const inv = String(o.invoice_status || '').toLowerCase() === 'invoiced';
-        const merged = buildDisplayDeliveredQtyByProduct(moveMap, lines, inv);
-        if (merged != null) mergedQtyBySaleAndProduct[oid] = merged;
-      }
-      setQtyDoneBySaleAndProduct(mergedQtyBySaleAndProduct);
-      const nextOrders = list.map((o) => {
-        const inv = String(o.invoice_status).toLowerCase() === 'invoiced';
-        const st = String(saleIdToPickingState[o.id] || '').toLowerCase();
-        const q = Number(qtyMap[o.id]) || 0;
-        const deliveryDone = inv || st === 'done' || st === 'cancel' || q > 0;
-        return {
-          ...o,
-          totalQty: totals[o.id] != null ? totals[o.id] : null,
-          isDelivered: deliveryDone,
-          orderLines: linesByOrderId[o.id] || [],
-          paymentSplit: syntheticSplit(o) || null,
-        };
+
+      await applyLocalDeliveredState(list);
+
+      InteractionManager.runAfterInteractions(() => {
+        void (async () => {
+          try {
+            let refreshedList = buildFilteredList((await getCachedOrders(vehicleId)) || []);
+            const needsInvoiceHeader = refreshedList.filter((o) => {
+              const id = Number(o.id);
+              if (!Number.isFinite(id)) return false;
+              if (!syncedPaymentIds.has(id)) return false;
+              if (pendingSaleOrderIds.has(id)) return false;
+              return String(o.invoice_status || '').toLowerCase() !== 'invoiced';
+            });
+            if (needsInvoiceHeader.length > 0) {
+              await Promise.all(
+                needsInvoiceHeader.map((o) => refreshSaleOrderInvoiceHeaderFromOdoo(o.id).catch(() => {}))
+              );
+              refreshedList = buildFilteredList((await getCachedOrders(vehicleId)) || []);
+            }
+            const paymentRefreshSkipIds = new Set();
+            for (const id of pendingSaleOrderIds) {
+              const n = Number(id);
+              if (Number.isFinite(n)) paymentRefreshSkipIds.add(n);
+            }
+            const unsyncedInvoiceSoIds = await localInvoicesDb
+              .getUnsyncedLocalInvoiceSaleOrderIds()
+              .catch(() => new Set());
+            for (const soId of unsyncedInvoiceSoIds) {
+              const idNum = Number(soId);
+              if (Number.isFinite(idNum) && idNum > 0) paymentRefreshSkipIds.add(idNum);
+            }
+            await refreshPaymentTypesFromOdoo(refreshedList, { skipOrderIds: paymentRefreshSkipIds }).catch(
+              () => {}
+            );
+            refreshedList = buildFilteredList((await getCachedOrders(vehicleId)) || []);
+            await applyLocalDeliveredState(refreshedList);
+          } catch (_) {
+            /* silent background refresh */
+          }
+        })();
       });
-      setOrders(nextOrders);
-      const nextBackendDelivered =
-        backendDeliveredSet instanceof Set ? backendDeliveredSet : new Set();
-      const nextLocalInvoiced = localInvoiced instanceof Set ? localInvoiced : new Set();
-      const nextPendingCheckout = pendingCheckoutSaleOrderIdsFromResumeMap(resumeMap);
-      const nextSyncedPayment =
-        syncedPaymentIds instanceof Set
-          ? new Set(syncedPaymentIds)
-          : new Set(Array.from(syncedPaymentIds || []));
-      lastDeliveredOrdersSnapshot = {
-        orders: nextOrders,
-        pickingStateBySaleId: saleIdToPickingState,
-        qtyDoneBySaleId: qtyMap || {},
-        qtyDoneBySaleAndProduct: mergedQtyBySaleAndProduct,
-        backendQtyDeliveredOrderIds: Array.from(nextBackendDelivered),
-        pendingCheckoutOrderIds: Array.from(nextPendingCheckout),
-        localInvoicedSaleOrderIds: Array.from(nextLocalInvoiced),
-        syncedPaymentOrderIds: Array.from(nextSyncedPayment),
-        journals: Array.isArray(journalsList) ? journalsList : [],
-      };
     } catch (err) {
       console.error('Delivered Orders Error:', err);
       setOrders([]);

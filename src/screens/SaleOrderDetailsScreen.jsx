@@ -616,7 +616,6 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
       return;
     }
 
-    console.log('[Inventory Update] Starting update for vehicle:', vehicleId, 'location:', locationId);
 
     /** Prefer live SQLite lorry qty so a stale screen snapshot cannot double-deduct. */
     const dbRows = await vehicleInventoriesDb.getVehicleInventoryByLocationId(locationId).catch(() => []);
@@ -659,7 +658,6 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
         const newStock = Math.max(0, prev - qtyUsed);
         remainingByProduct.set(pid, newStock);
 
-        console.log(`[Inventory Update] Product ${pid}: ${prev} - ${qtyUsed} → running ${newStock}`);
       }
 
       const inventoryPayload = {
@@ -684,7 +682,6 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
 
       // Intentionally do not mutate local inventory here.
       // Stock should reduce only after user confirms "Complete order" on PaymentProof.
-      console.log('[Inventory Update] Prepared held inventory update for completion');
     } catch (error) {
       console.error('[Inventory Update] Failed:', error);
       throw new Error('Failed to update vehicle inventory');

@@ -143,6 +143,7 @@ function runPendingUploadFlush(options = {}) {
     _pendingUploadWakePromise.finally(() => runPendingUploadFlush(options));
     return;
   }
+  notifySyncActivityStart();
   _pendingUploadWakePromise = flushPendingUploadsNow({
     includeAttachments: options.includeAttachments !== false,
     queuePasses: options.queuePasses ?? 12,
@@ -165,6 +166,7 @@ function runPendingUploadFlush(options = {}) {
     })
     .finally(() => {
       _pendingUploadWakePromise = null;
+      notifySyncActivityEnd();
     });
 }
 
@@ -336,13 +338,28 @@ const SYNC_INTERVAL_MAP = {
 
 const LOG_TAG = '[Sync]';
 const _lastLogByKey = {};
+/** Queue step logs are debounced and off by default (reduces JS thread noise). */
+const SYNC_QUEUE_VERBOSE_LOGS = false;
+let _syncActivityDepth = 0;
+
+function notifySyncActivityStart() {
+  _syncActivityDepth += 1;
+  if (_syncStateListener && _syncActivityDepth === 1) _syncStateListener(true);
+}
+
+function notifySyncActivityEnd() {
+  _syncActivityDepth = Math.max(0, _syncActivityDepth - 1);
+  if (!_syncStateListener) return;
+  _syncStateListener(_syncActivityDepth > 0);
+}
 
 function log(step, detail = '') {
+  if (step === 'queue' && !SYNC_QUEUE_VERBOSE_LOGS) return;
   const msg = detail ? `${LOG_TAG} ${step} — ${detail}` : `${LOG_TAG} ${step}`;
   const key = `${step}|${detail}`;
   if (_lastLogByKey[key] === msg) return;
   _lastLogByKey[key] = msg;
-  console.log(msg);
+  if (__DEV__) console.log(msg);
 }
 
 function logWarn(step, err) {
@@ -4194,7 +4211,7 @@ async function getSyncDateFieldSetting() {
 // ---------- Sync: pull from Odoo and store in SQLite ----------
 
 async function runSyncInternal() {
-  if (_syncStateListener) _syncStateListener(true);
+  notifySyncActivityStart();
   log('start', new Date().toISOString());
   const result = { customers: 0, orders: 0, orderLines: 0, pickings: 0, moves: 0, moveLines: 0, journals: 0, routes: 0, vehicles: 0, vehicleWarehouses: 0, vehicleInventories: 0, error: null };
   const syncAt = new Date().toISOString();
@@ -4688,7 +4705,7 @@ async function runSyncInternal() {
     }
     return result;
   } finally {
-    if (_syncStateListener) _syncStateListener(false);
+    notifySyncActivityEnd();
   }
 }
 

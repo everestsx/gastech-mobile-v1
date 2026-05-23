@@ -40,7 +40,7 @@ yarn-error.*
 /ios
 
 # Android (optional: generate with expo prebuild)
-/android
+
 
 # local IDE/project files
 .idea/

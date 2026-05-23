@@ -65,12 +65,36 @@ function displayInvoiceNumber(inv, vehicleNumber) {
   return num || '—';
 }
 
+/** Keeps last list visible instantly when reopening My Invoices (UI cache only). */
+let lastLocalInvoicesSnapshot = null;
+
+function buildQuickInvoiceRows(list, license) {
+  return (list || []).map((inv) => ({
+    ...inv,
+    partnerName: '—',
+    orderName: `Order ${inv.sale_order_id}`,
+    driverName: (inv.driver_name && String(inv.driver_name).trim()) || '—',
+    invoiceDisplay: displayInvoiceNumber(inv, license),
+    uploadedToOdoo: false,
+    completedAtLine: formatCompletedAtCompact(inv.created_at),
+    paymentSplit: { cash: 0, cheque: 0, credit: 0 },
+    hasCash: false,
+    hasCheque: false,
+    hasCredit: false,
+    cash: 0,
+    cheque: 0,
+    credit: 0,
+  }));
+}
+
 export default function LocalInvoicesScreen({ navigation }) {
   const { t } = useTranslation();
   const { colors, appLanguage } = useTheme();
   const insets = useSafeAreaInsets();
-  const [invoices, setInvoices] = useState([]);
-  const [loading, setLoading] = useState(false);
+  const [invoices, setInvoices] = useState(() => lastLocalInvoicesSnapshot?.invoices ?? []);
+  const [initialLoadPending, setInitialLoadPending] = useState(
+    () => !(lastLocalInvoicesSnapshot?.invoices?.length > 0)
+  );
   const [refreshing, setRefreshing] = useState(false);
   const [vehicleNumber, setVehicleNumber] = useState('');
   const [selectedDate, setSelectedDate] = useState(new Date());
@@ -94,7 +118,6 @@ export default function LocalInvoicesScreen({ navigation }) {
       const session = await getUserSession();
       const license = session?.licensePlate ?? session?.vehicleName ?? '';
       setVehicleNumber(license);
-      /** Same rule as Orders tab: vehicle login sees only this vehicle's data. */
       const vehicleId = session?.isAdmin === false ? session?.vehicleId : null;
       const vid =
         vehicleId != null && Number.isFinite(Number(vehicleId)) ? Number(vehicleId) : null;
@@ -104,10 +127,18 @@ export default function LocalInvoicesScreen({ navigation }) {
           ? await localInvoicesDb.getLocalInvoicesForVehicle(vid, false)
           : await localInvoicesDb.getAllLocalInvoices(false);
 
+      const quick = buildQuickInvoiceRows(list, license);
+      if (quick.length > 0) {
+        setInvoices(quick);
+        setInitialLoadPending(false);
+      }
+
       const soIds = (list || []).map((inv) => Number(inv.sale_order_id)).filter((id) => id > 0);
-      const [paymentBySo, orders] = await Promise.all([
+      const [paymentBySo, orders, splitsBySo, syncedAtBySo] = await Promise.all([
         syncQueueDb.getLatestPaymentPayloadMapBySaleOrderIds(soIds).catch(() => ({})),
         saleOrdersDb.getSaleOrdersByIds(soIds),
+        localPaymentsDb.getPaymentSplitsBySaleOrderIds(soIds).catch(() => ({})),
+        syncQueueDb.getPaymentSyncedAtMapBySaleOrderIds(soIds).catch(() => ({})),
       ]);
       const orderById = new Map((orders || []).map((o) => [Number(o.id), o]));
 
@@ -122,10 +153,11 @@ export default function LocalInvoicesScreen({ navigation }) {
           continue;
         }
 
-        const split = await localPaymentsDb.getPaymentSplitBySaleOrderId(inv.sale_order_id);
+        const soId = Number(inv.sale_order_id);
+        const split = splitsBySo[soId] ?? splitsBySo[String(soId)] ?? { cash: 0, cheque: 0, credit: 0 };
         const partnerName = getLocalizedCustomerNameFromOrder(order, appLanguage);
         const orderName = order?.name ?? `Order ${inv.sale_order_id}`;
-        const syncedAt = await syncQueueDb.getPaymentSyncedAtForSaleOrder(inv.sale_order_id);
+        const syncedAt = syncedAtBySo[soId] ?? syncedAtBySo[String(soId)] ?? null;
         const cash = Number(split?.cash) || 0;
         const cheque = Number(split?.cheque) || 0;
         const credit = Number(split?.credit) || 0;
@@ -133,8 +165,7 @@ export default function LocalInvoicesScreen({ navigation }) {
           license ||
           (Array.isArray(order.vehicle_id) ? order.vehicle_id[1] : order.vehicle_name) ||
           '';
-        const payPayload = paymentBySo[Number(inv.sale_order_id)]?.payload || {};
-        /** Driver who completed this order — not whoever is logged in now. */
+        const payPayload = paymentBySo[soId]?.payload || {};
         const driverName =
           (inv.driver_name && String(inv.driver_name).trim()) ||
           (payPayload.driverName && String(payPayload.driverName).trim()) ||
@@ -147,7 +178,7 @@ export default function LocalInvoicesScreen({ navigation }) {
           invoiceDisplay: displayInvoiceNumber(inv, plateForDisplay),
           uploadedToOdoo: syncedAt != null,
           completedAtLine: formatCompletedAtCompact(inv.created_at),
-          paymentSplit: split || { cash: 0, cheque: 0, credit: 0 },
+          paymentSplit: split,
           hasCash: cash > 0,
           hasCheque: cheque > 0,
           hasCredit: credit > 0,
@@ -157,11 +188,14 @@ export default function LocalInvoicesScreen({ navigation }) {
         });
       }
       setInvoices(enriched);
+      lastLocalInvoicesSnapshot = { invoices: enriched };
     } catch (e) {
       console.warn('LocalInvoicesScreen load', e?.message ?? e);
-      setInvoices([]);
+      if (!(lastLocalInvoicesSnapshot?.invoices?.length > 0)) {
+        setInvoices([]);
+      }
     } finally {
-      setLoading(false);
+      setInitialLoadPending(false);
       setRefreshing(false);
     }
   }, [appLanguage]);
@@ -322,7 +356,7 @@ export default function LocalInvoicesScreen({ navigation }) {
     [colors, insets.top, primary]
   );
 
-  if (loading) {
+  if (initialLoadPending && invoices.length === 0) {
     return (
       <View style={[styles.center, styles.container]}>
         <ActivityIndicator size="large" color={primary} />

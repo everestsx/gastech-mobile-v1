@@ -41,11 +41,13 @@ function isToday(d) {
   return formatDate(d) === formatDate(new Date());
 }
 
+let lastCancelOrdersSnapshot = null;
+
 export default function CancelOrdersScreen({ navigation }) {
   const { t } = useTranslation();
   const { colors, syncDateField } = useTheme();
   const insets = useSafeAreaInsets();
-  const [orders, setOrders] = useState([]);
+  const [orders, setOrders] = useState(() => lastCancelOrdersSnapshot?.orders ?? []);
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [showPicker, setShowPicker] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -169,7 +171,6 @@ export default function CancelOrdersScreen({ navigation }) {
         return String(selectedDateValue || '').startsWith(dateStr);
       });
 
-      const orderIds = list.map((o) => o.id);
       const pendingCancelIds = new Set();
       const pending = await syncQueueDb.getPending().catch(() => []);
       for (const row of pending || []) {
@@ -178,6 +179,19 @@ export default function CancelOrdersScreen({ navigation }) {
         if (Number.isFinite(soId) && soId > 0) pendingCancelIds.add(soId);
       }
 
+      const quickRows = list.map((o) => ({
+        ...o,
+        state: 'cancel',
+        totalQty: null,
+        pickingState: 'cancel',
+        orderLines: [],
+        deliveryBannerText: pendingCancelIds.has(Number(o.id))
+          ? t('cancelOrders.pendingBackOffice', 'Cancel pending upload to back office')
+          : null,
+      }));
+      setOrders(quickRows);
+
+      const orderIds = list.map((o) => o.id);
       const [totals, pickings, allLines] = await Promise.all([
         getOrderLineTotalsFromDB(list),
         getPickingsBySaleIdsFromDB(orderIds),
@@ -199,18 +213,18 @@ export default function CancelOrdersScreen({ navigation }) {
         }
       });
 
-      setOrders(
-        list.map((o) => ({
-          ...o,
-          state: 'cancel',
-          totalQty: totals[o.id] != null ? totals[o.id] : null,
-          pickingState: saleIdToPickingState[o.id] ?? 'cancel',
-          orderLines: linesByOrderId[o.id] || [],
-          deliveryBannerText: pendingCancelIds.has(Number(o.id))
-            ? t('cancelOrders.pendingBackOffice', 'Cancel pending upload to back office')
-            : null,
-        }))
-      );
+      const enriched = list.map((o) => ({
+        ...o,
+        state: 'cancel',
+        totalQty: totals[o.id] != null ? totals[o.id] : null,
+        pickingState: saleIdToPickingState[o.id] ?? 'cancel',
+        orderLines: linesByOrderId[o.id] || [],
+        deliveryBannerText: pendingCancelIds.has(Number(o.id))
+          ? t('cancelOrders.pendingBackOffice', 'Cancel pending upload to back office')
+          : null,
+      }));
+      setOrders(enriched);
+      lastCancelOrdersSnapshot = { orders: enriched };
     } catch (err) {
       console.warn('CancelOrdersScreen load', err);
       setOrders([]);

@@ -12,7 +12,7 @@ export const NetworkQuality = {
 
 let lastQuality = NetworkQuality.OFFLINE;
 let lastFlushAt = 0;
-const STABLE_FLUSH_COOLDOWN_MS = 600;
+const STABLE_FLUSH_COOLDOWN_MS = 0;
 
 function classify(state) {
   if (!state) return NetworkQuality.OFFLINE;

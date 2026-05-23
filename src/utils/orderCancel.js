@@ -31,6 +31,12 @@ export async function applyOrderCancelLocally(saleOrderId, reason = '') {
   } catch (_) {
     /* non-fatal */
   }
+  try {
+    const { notifyLocalInventoryChanged } = await import('../services/sync.service.js');
+    notifyLocalInventoryChanged();
+  } catch (_) {
+    /* non-fatal — refresh cancelled/delivered lists from local DB */
+  }
 
   return { reason: reasonStr, reasonLabel };
 }
