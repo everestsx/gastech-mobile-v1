@@ -139,6 +139,7 @@ export function schedulePendingUploadSync(options = {}) {
 /** Dashboard counters (red / orange) — set from DashboardScreen only; used to skip idle fast-sync. */
 let _dashboardUploadIndicators = { pendingOrders: 0, localCompleted: 0 };
 let _dashboardIndicatorsListener = null;
+let _checkoutCompleteNotificationListener = null;
 
 function emitDashboardIndicatorsChanged() {
   try {
@@ -154,6 +155,21 @@ export function setDashboardIndicatorsListener(fn) {
   _dashboardIndicatorsListener = typeof fn === 'function' ? fn : null;
 }
 
+/** One-time checkout complete toast (customer name) — not repeated on background sync. */
+export function setCheckoutCompleteNotificationListener(fn) {
+  _checkoutCompleteNotificationListener = typeof fn === 'function' ? fn : null;
+}
+
+export function notifyCheckoutCompleteForDashboard(payload = {}) {
+  try {
+    if (_checkoutCompleteNotificationListener) {
+      _checkoutCompleteNotificationListener(payload);
+    }
+  } catch (_) {
+    /* non-fatal */
+  }
+}
+
 export function getDashboardUploadIndicators() {
   return { ..._dashboardUploadIndicators };
 }
@@ -162,7 +178,7 @@ export function getDashboardUploadIndicators() {
 export function signalDashboardPendingUploadStarted() {
   _dashboardUploadIndicators = {
     ..._dashboardUploadIndicators,
-    localCompleted: _dashboardUploadIndicators.localCompleted + 1,
+    localCompleted: Math.max(1, _dashboardUploadIndicators.localCompleted),
   };
   emitDashboardIndicatorsChanged();
 }
@@ -316,10 +332,11 @@ const SYNC_INTERVAL_MAP = {
 };
 
 const LOG_TAG = '[Sync]';
+/** Set true locally when debugging sync queue passes; off by default (including __DEV__). */
 const SYNC_VERBOSE_LOGS = false;
 
 function log(step, detail = '') {
-  if (!SYNC_VERBOSE_LOGS && !__DEV__) return;
+  if (!SYNC_VERBOSE_LOGS) return;
   const msg = detail ? `${LOG_TAG} ${step} — ${detail}` : `${LOG_TAG} ${step}`;
   console.log(msg);
 }
@@ -354,7 +371,7 @@ async function logDeliveryQtyAudit({
       errorMessage,
     });
     const detail = errorMessage ? ` — ${String(errorMessage).slice(0, 160)}` : '';
-    if (SYNC_VERBOSE_LOGS || __DEV__) {
+    if (SYNC_VERBOSE_LOGS) {
       log('delivery-audit', `${phase}/${status} SO ${saleOrderId ?? '?'} txn ${String(deliveryTxnId || '').slice(0, 40)}${detail}`);
     }
   } catch (auditErr) {

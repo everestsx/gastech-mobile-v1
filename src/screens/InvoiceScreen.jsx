@@ -1989,8 +1989,9 @@ export default function InvoiceScreen({ route, navigation }) {
       saleOrderId,
       creditProofRequired: routeCreditProofRequired === true,
       orderName: routeOrderName,
+      customerLabel: safeDisplay(resolveInvoiceCustomerDisplayName(order, partyInfo, appLanguage)) || routeOrderName,
     });
-  }, [navigation, saleOrderId, routeCreditProofRequired, routeOrderName]);
+  }, [navigation, saleOrderId, routeCreditProofRequired, routeOrderName, order, partyInfo, appLanguage]);
 
   const backendSoInvoice =
     order?.invoice_number && String(order.invoice_number).trim()

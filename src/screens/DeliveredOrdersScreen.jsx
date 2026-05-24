@@ -46,6 +46,7 @@ import {
 } from '../services/checkoutResume.service';
 import { useSync } from '../context/SyncContext';
 import { formatLocalYyyyMmDd, localDateKeyFromTimestamp, isLocalToday } from '../utils/localDate';
+import { mergeUiDeliveredIntoSet, subscribeUiDeliveredOrders } from '../utils/completedOrderUi';
 
 const TAB_CASH = 'cash';
 const TAB_CHEQUE = 'cheque';
@@ -196,6 +197,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
     setFromSnapshot(lastDeliveredOrdersSnapshot?.syncedPaymentOrderIds)
   );
   const { syncCompleteTimestamp } = useSync();
+  const [uiDeliveredTick, setUiDeliveredTick] = useState(0);
   const [journals, setJournals] = useState(() => lastDeliveredOrdersSnapshot?.journals ?? []);
   const [selectedDate, setSelectedDate] = useState(() => {
     if (scannedDateParam) {
@@ -210,6 +212,32 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchField, setSearchField] = useState('customer');
   const [showFieldDropdown, setShowFieldDropdown] = useState(false);
+
+  useEffect(
+    () =>
+      subscribeUiDeliveredOrders((soId) => {
+        const id = Number(soId);
+        if (!Number.isFinite(id)) return;
+        setUiDeliveredTick((n) => n + 1);
+        setLocalInvoicedSaleOrderIds((prev) => {
+          const next = prev instanceof Set ? new Set(prev) : new Set();
+          next.add(id);
+          return next;
+        });
+        setOrders((prev) => {
+          const idx = prev.findIndex((o) => Number(o.id) === id);
+          if (idx < 0) return prev;
+          const next = [...prev];
+          next[idx] = {
+            ...next[idx],
+            invoice_status: 'invoiced',
+            isDelivered: true,
+          };
+          return next;
+        });
+      }),
+    []
+  );
 
   /**
    * Same rule as dashboard: invoiced, picking done/cancel, move qty_done, or Odoo line qty_delivered (partial delivery).
@@ -235,6 +263,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
       pendingCheckoutOrderIds,
       localInvoicedSaleOrderIds,
       syncedPaymentOrderIds,
+      uiDeliveredTick,
     ]
   );
 
@@ -501,7 +530,9 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
         localInvoicesDb.getSaleOrderIdsWithLocalInvoices().catch(() => new Set()),
       ]);
       void pruneStaleCheckoutResumeEntries();
-      setLocalInvoicedSaleOrderIds(localInvoiced instanceof Set ? localInvoiced : new Set());
+      setLocalInvoicedSaleOrderIds(
+        mergeUiDeliveredIntoSet(localInvoiced instanceof Set ? localInvoiced : new Set())
+      );
       setPendingCheckoutOrderIds(pendingCheckoutSaleOrderIdsFromResumeMap(resumeMap));
       const all = Array.isArray(data) ? data : [];
       const dateStr = formatLocalYyyyMmDd(selectedDate);
@@ -520,18 +551,6 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
       };
       let list = buildFilteredList(all);
 
-      if (list.length > 0) {
-        setOrders(
-          list.map((o) => ({
-            ...o,
-            totalQty: null,
-            isDelivered: true,
-            orderLines: [],
-            paymentSplit: null,
-          }))
-        );
-      }
-
       const [syncedPaymentIds, pendingSaleOrderIds] = await Promise.all([
         syncQueueDb.getSyncedPaymentSaleOrderIds().catch(() => new Set()),
         syncQueueDb.getPendingSaleOrderIds().catch(() => new Set()),
@@ -549,6 +568,25 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
         const idNum = Number(soId);
         if (Number.isFinite(idNum) && idNum > 0) paymentRefreshSkipIds.add(idNum);
       }
+
+      const mergeOrdersForDisplay = (prev, nextRows) => {
+        if (!Array.isArray(prev) || prev.length === 0) return nextRows;
+        const prevById = {};
+        for (const o of prev) {
+          if (o?.id != null) prevById[o.id] = o;
+        }
+        return nextRows.map((o) => {
+          const prior = prevById[o.id];
+          if (!prior) return o;
+          return {
+            ...o,
+            paymentSplit: o.paymentSplit ?? prior.paymentSplit,
+            orderLines: o.orderLines?.length ? o.orderLines : prior.orderLines,
+            totalQty: o.totalQty != null ? o.totalQty : prior.totalQty,
+            isDelivered: o.isDelivered ?? prior.isDelivered,
+          };
+        });
+      };
 
       const enrichAndApplyList = async (rows) => {
         const orderIds = rows.map((o) => o.id);
@@ -628,7 +666,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
           paymentSplit: syntheticSplit(o) || null,
         };
       });
-      setOrders(nextOrders);
+      setOrders((prev) => mergeOrdersForDisplay(prev, nextOrders));
       const nextBackendDelivered =
         backendDeliveredSet instanceof Set ? backendDeliveredSet : new Set();
       const nextLocalInvoiced = localInvoiced instanceof Set ? localInvoiced : new Set();
@@ -681,14 +719,6 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
       });
     } catch (err) {
       console.error('Delivered Orders Error:', err);
-      setOrders([]);
-      setPickingStateBySaleId({});
-      setQtyDoneBySaleId({});
-      setQtyDoneBySaleAndProduct({});
-      setBackendQtyDeliveredOrderIds(new Set());
-      setPendingCheckoutOrderIds(new Set());
-      setLocalInvoicedSaleOrderIds(new Set());
-      setSyncedPaymentOrderIds(new Set());
     }
   }, [selectedDate, syncDateField, customerId]);
 

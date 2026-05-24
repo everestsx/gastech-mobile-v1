@@ -44,6 +44,7 @@ import * as localPaymentsDb from '../database/localPayments.js';
 import * as offlineAttachmentsDb from '../database/offlineAttachments.js';
 import { getCheckoutResumeMap, pruneStaleCheckoutResumeEntries } from '../services/checkoutResume.service';
 import { useSync } from '../context/SyncContext';
+import { isSaleOrderDeliveredInUi, subscribeUiDeliveredOrders } from '../utils/completedOrderUi';
 
 const TAB_TO_DELIVER = 'to_deliver';
 
@@ -94,10 +95,15 @@ export default function SaleOrderListScreen({ route, navigation }) {
   const [cancelError, setCancelError] = useState(null);
   const [canceling, setCanceling] = useState(false);
   const { syncCompleteTimestamp } = useSync();
+  const [uiDeliveredTick, setUiDeliveredTick] = useState(0);
+
+  useEffect(() => subscribeUiDeliveredOrders(() => setUiDeliveredTick((n) => n + 1)), []);
+
   // Orders tab: hide once invoiced or delivered — unless checkout (invoice / payment photo) is still in progress.
   const filteredOrders = useMemo(
     () =>
       orders.filter((o) => {
+        if (isSaleOrderDeliveredInUi(Number(o.id))) return false;
         if (String(o.state || '') === 'cancel') return false;
         const rid = String(o.id);
         const resumeEntry = checkoutResumeMap[rid];
@@ -107,7 +113,7 @@ export default function SaleOrderListScreen({ route, navigation }) {
         // Do not treat qty_done > 0 as delivered before explicit completion.
         return !(inv || st === 'done' || st === 'cancel');
       }),
-    [orders, checkoutResumeMap]
+    [orders, checkoutResumeMap, uiDeliveredTick]
   );
   const searchFieldLabels = { customer: 'Customer', orderId: 'Order ID' };
   const ordersFilteredBySearch = useMemo(() => {

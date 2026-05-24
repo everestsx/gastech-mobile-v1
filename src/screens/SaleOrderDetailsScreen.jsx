@@ -44,6 +44,7 @@ import { isNewIssueName } from '../utils/cylinderCatalog';
 import { lineTaxAtQuantity } from '../utils/orderLineTax.js';
 import { getCheckoutResumeEntry } from '../services/checkoutResume.service';
 import { getSaleOrderDetailsUiCache, setSaleOrderDetailsUiCache } from '../utils/saleOrderDetailsUiCache';
+import { linesAfterDemandEditSave, orderAmountsFromLines } from '../utils/saleOrderLinePricing';
 
 function formatCurrency(amount) {
     const n = Number(amount);
@@ -692,51 +693,13 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
       throw new Error('Failed to update vehicle inventory');
     }
   }, [order, lines, productIdToAvailable, productIdToOnHand]);
-  const loadDetails = useCallback(async () => {
-    const hadCache = !!getSaleOrderDetailsUiCache(saleOrderId)?.order;
-    if (!hadCache) setLoading(true);
-    try {
-      const data = await getSaleOrderDetailsFromDB(saleOrderId);
-      if (!data.order) {
-        setOrder(null);
-        setLines([]);
-        setIsDelivered(false);
-        setProductIdToAvailable({});
-        setProductIdToOnHand({});
-        return;
-      }
-      setOrder(data.order);
-      const { picking, moves, moveLines } = await getDeliveryDataFromDB(saleOrderId);
-      const moveIdToProductId = {};
-      (moves || []).forEach((m) => {
-        const pid = Array.isArray(m.product_id) ? m.product_id[0] : m.product_id;
-        if (pid != null) moveIdToProductId[m.id] = pid;
-      });
-      const qtyDoneByProductId = {};
-      (moveLines || []).forEach((ml) => {
-        const mid = Array.isArray(ml.move_id) ? ml.move_id[0] : ml.move_id;
-        const pid = moveIdToProductId[mid];
-        if (pid == null) return;
-        qtyDoneByProductId[pid] = (qtyDoneByProductId[pid] || 0) + (Number(ml.qty_done) || 0);
-      });
-      const deliveryDone = ((picking?.state || '') + '').toLowerCase() === 'done';
-      const mappedLines = (data.lines || []).map((l) => {
-        const pid = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
-        const savedDone = pid != null ? qtyDoneByProductId[pid] : null;
-        const demand = Number(l.product_uom_qty ?? 0) || 0;
-        const initial =
-          deliveryDone && savedDone != null && savedDone > 0 ? savedDone : demand;
-        return { ...l, newQty: String(initial) };
-      });
-      setLines(mappedLines);
+  const enrichDetailsInBackground = useCallback(
+    async (data, mappedLines, deliveryDone) => {
       const productIds = mappedLines
         .map((l) => (Array.isArray(l.product_id) ? l.product_id[0] : l.product_id))
         .filter((pid) => pid != null);
       const imageMap = await productsDb.getProductImageUriMapForIds(productIds);
       setProductIdToImageUri(imageMap || {});
-      setQtyChanged(false);
-      setIsDeliveryDone(deliveryDone);
-      setIsDelivered(data.order?.invoice_status === 'invoiced');
 
       let mapAvail = {};
       let mapOnHand = {};
@@ -781,21 +744,76 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
         productIdToOnHand: mapOnHand,
         productIdToImageUri: imageMap || {},
       });
-    } catch (_) {
-      setOrder(null);
-      setLines([]);
-      setIsDelivered(false);
-      setIsDeliveryDone(false);
-      setProductIdToImageUri({});
-      setProductIdToOnHand({});
-    } finally {
-      setLoading(false);
-    }
-  }, [saleOrderId]);
+    },
+    [saleOrderId]
+  );
 
-  useEffect(() => {
-    loadDetails();
-  }, [loadDetails]);
+  const loadDetails = useCallback(
+    async ({ silent = false } = {}) => {
+      const hadCache = !!getSaleOrderDetailsUiCache(saleOrderId)?.order;
+      if (!silent && !hadCache) setLoading(true);
+      try {
+        const [data, { picking, moves, moveLines }] = await Promise.all([
+          getSaleOrderDetailsFromDB(saleOrderId),
+          getDeliveryDataFromDB(saleOrderId),
+        ]);
+        if (!data.order) {
+          setOrder(null);
+          setLines([]);
+          setIsDelivered(false);
+          setProductIdToAvailable({});
+          setProductIdToOnHand({});
+          return;
+        }
+        const moveIdToProductId = {};
+        (moves || []).forEach((m) => {
+          const pid = Array.isArray(m.product_id) ? m.product_id[0] : m.product_id;
+          if (pid != null) moveIdToProductId[m.id] = pid;
+        });
+        const qtyDoneByProductId = {};
+        (moveLines || []).forEach((ml) => {
+          const mid = Array.isArray(ml.move_id) ? ml.move_id[0] : ml.move_id;
+          const pid = moveIdToProductId[mid];
+          if (pid == null) return;
+          qtyDoneByProductId[pid] = (qtyDoneByProductId[pid] || 0) + (Number(ml.qty_done) || 0);
+        });
+        const deliveryDone = ((picking?.state || '') + '').toLowerCase() === 'done';
+        const mappedLines = (data.lines || []).map((l) => {
+          const pid = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
+          const savedDone = pid != null ? qtyDoneByProductId[pid] : null;
+          const demand = Number(l.product_uom_qty ?? 0) || 0;
+          const initial =
+            deliveryDone && savedDone != null && savedDone > 0 ? savedDone : demand;
+          return { ...l, newQty: String(initial) };
+        });
+        setOrder(data.order);
+        setLines(mappedLines);
+        setQtyChanged(false);
+        setIsDeliveryDone(deliveryDone);
+        setIsDelivered(data.order?.invoice_status === 'invoiced');
+        setLoading(false);
+        void enrichDetailsInBackground(data, mappedLines, deliveryDone);
+      } catch (_) {
+        if (!silent && !hadCache) {
+          setOrder(null);
+          setLines([]);
+          setIsDelivered(false);
+          setIsDeliveryDone(false);
+          setProductIdToImageUri({});
+          setProductIdToOnHand({});
+        }
+      } finally {
+        setLoading(false);
+      }
+    },
+    [enrichDetailsInBackground, saleOrderId]
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      void loadDetails({ silent: !!getSaleOrderDetailsUiCache(saleOrderId)?.order });
+    }, [loadDetails, saleOrderId])
+  );
 
   useEffect(() => {
     let active = true;
@@ -1299,9 +1317,22 @@ const getStockWarning = useCallback((lineId) => {
           await syncQueueDb.enqueue(syncQueueDb.ACTION_DELIVERY, payloadWithHold);
         }
       }
-      await loadDetails();
-      setModifyEnabled(false);
+      const updatedLines = linesAfterDemandEditSave(lines, payload.orderLineUpdates);
+      const orderAmounts = orderAmountsFromLines(updatedLines);
+      setLines(updatedLines);
+      setOrder((prev) => {
+        const next = prev ? { ...prev, ...orderAmounts } : prev;
+        if (next) {
+          setSaleOrderDetailsUiCache(saleOrderId, {
+            ...(getSaleOrderDetailsUiCache(saleOrderId) || {}),
+            order: next,
+            lines: updatedLines,
+          });
+        }
+        return next;
+      });
       setQtyChanged(false);
+      setModifyEnabled(false);
       setUpdateError(null);
     } catch (err) {
       setUpdateError(err?.message ?? 'Update failed. Try again.');

@@ -52,6 +52,7 @@ import {
   markDashboardInitialLoadComplete,
   setDashboardUploadIndicators,
   setDashboardIndicatorsListener,
+  setCheckoutCompleteNotificationListener,
 } from '../services/sync.service';
 import * as localPaymentsDb from '../database/localPayments.js';
 import * as localInvoicesDb from '../database/localInvoices.js';
@@ -265,10 +266,9 @@ export default function DashboardScreen({ navigation }) {
   );
   const dashboardSessionKeyRef = useRef(null);
   const lastSyncNotificationRef = React.useRef(null);
-  const previousSyncedPaymentIdsRef = React.useRef(new Set());
+  const uploadSyncPendingRef = React.useRef(false);
   const initialSyncStartedRef = React.useRef(false);
   /** Latched while orange pending upload counter > 0 and a flush is running; cleared when counter hits 0. */
-  const [pendingUploadSpinning, setPendingUploadSpinning] = useState(false);
   const [networkQuality, setNetworkQuality] = useState(NetworkQuality.OFFLINE);
 
   useEffect(() => subscribeNetworkStatus((snap) => setNetworkQuality(snap.quality)), []);
@@ -281,22 +281,25 @@ export default function DashboardScreen({ navigation }) {
         localCompleted: ind.localCompleted,
       }));
     });
-    return () => setDashboardIndicatorsListener(null);
-  }, []);
+    setCheckoutCompleteNotificationListener(({ customerLabel, orderLabel }) => {
+      const name = String(customerLabel || orderLabel || '').trim();
+      if (!name) return;
+      setNotification({
+        visible: true,
+        title: t('common.orderCompletedTitle', 'Order completed'),
+        message: t('common.orderCompletedBody', '{{customer}} order completed.', { customer: name }),
+        type: 'success',
+      });
+    });
+    return () => {
+      setDashboardIndicatorsListener(null);
+      setCheckoutCompleteNotificationListener(null);
+    };
+  }, [t]);
 
-  useEffect(() => {
-    if (networkQuality === NetworkQuality.OFFLINE) {
-      setPendingUploadSpinning(false);
-      return;
-    }
-    if (orderSyncStats.localCompleted <= 0) {
-      setPendingUploadSpinning(false);
-      return;
-    }
-    if (isSyncing) {
-      setPendingUploadSpinning(true);
-    }
-  }, [orderSyncStats.localCompleted, isSyncing, networkQuality]);
+  const syncButtonActive =
+    syncing ||
+    (networkQuality !== NetworkQuality.OFFLINE && orderSyncStats.localCompleted > 0);
   const sessionKey = useMemo(() => {
     if (!user) return null;
     if (user.isAdmin) {
@@ -454,7 +457,7 @@ export default function DashboardScreen({ navigation }) {
       setProductIdToImageUri(imageMap || {});
       const today = formatLocalDate(new Date());
       const todayOrders = (Array.isArray(data) ? data : []).filter((o) => getOrderDateForSyncMode(o).startsWith(today));
-      console.log('todayOrders', todayOrders);
+      // console.log('todayOrders', todayOrders);
       const orderIds = todayOrders.map((o) => o.id);
       const [totals, pickings, orderLines, splits, qtyDoneMap] = await Promise.all([
         getOrderLineTotalsFromDB(todayOrders),
@@ -795,43 +798,26 @@ export default function DashboardScreen({ navigation }) {
   }, [orderSyncStats.localCompleted]);
 
   useEffect(() => {
+    if (orderSyncStats.localCompleted > 0) {
+      uploadSyncPendingRef.current = true;
+    }
+  }, [orderSyncStats.localCompleted]);
+
+  useEffect(() => {
     if (isSyncing || !syncResult) return;
-    if (lastSyncNotificationRef.current === syncResult) return;
-    lastSyncNotificationRef.current = syncResult;
+    if (lastSyncNotificationRef.current === syncCompleteTimestamp) return;
+    lastSyncNotificationRef.current = syncCompleteTimestamp;
 
     if (syncResult === 'success') {
-      void (async () => {
-        let nextSyncedIds = new Set();
-        try {
-          nextSyncedIds = await syncQueueDb.getSyncedPaymentSaleOrderIds();
-        } catch (_) {
-          nextSyncedIds = new Set();
-        }
-
-        const newlySyncedOrderIds = [];
-        for (const id of nextSyncedIds) {
-          if (!previousSyncedPaymentIdsRef.current.has(id)) {
-            newlySyncedOrderIds.push(Number(id));
-          }
-        }
-        previousSyncedPaymentIdsRef.current = new Set(nextSyncedIds);
-
-        if (newlySyncedOrderIds.length > 0) {
-          const latestOrderId = newlySyncedOrderIds[newlySyncedOrderIds.length - 1];
-          const matchedOrder = (orders || []).find((o) => Number(o?.id) === Number(latestOrderId));
-          const customerName = matchedOrder
-            ? getLocalizedCustomerNameFromOrder(matchedOrder, appLanguage)
-            : `SO #${latestOrderId}`;
-
-          setNotification({
-            visible: true,
-            title: t('common.orderSyncCompletedTitle', 'Order sync completed'),
-            message: t('common.orderSyncCompletedBody', '{{customer}} order sync completed.', { customer: customerName }),
-            type: 'success',
-          });
-          return;
-        }
-      })();
+      if (uploadSyncPendingRef.current) {
+        uploadSyncPendingRef.current = false;
+        setNotification({
+          visible: true,
+          title: t('common.syncCompletedTitle', 'Sync completed'),
+          message: t('common.syncCompletedBody', 'Pending uploads have been synced.'),
+          type: 'success',
+        });
+      }
       return;
     }
 
@@ -841,7 +827,7 @@ export default function DashboardScreen({ navigation }) {
       message: syncErrorMessage || t('common.syncFailedBody', 'Data sync failed. Please try again.'),
       type: 'error',
     });
-  }, [isSyncing, syncResult, syncErrorMessage, t, orders, appLanguage]);
+  }, [isSyncing, syncResult, syncErrorMessage, syncCompleteTimestamp, t]);
 
   useEffect(() => {
     if (user?.licensePlate) {
@@ -1003,8 +989,6 @@ export default function DashboardScreen({ navigation }) {
     await loadCommissionData();
     setRefreshing(false);
   };
-
-  const syncButtonActive = syncing || pendingUploadSpinning;
 
   const onSync = async () => {
     if (syncing || isSyncing) return;

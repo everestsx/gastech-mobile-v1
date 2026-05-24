@@ -24,12 +24,13 @@ import * as localInvoicesDb from '../database/localInvoices.js';
 import * as localPaymentsDb from '../database/localPayments.js';
 import * as stockPickingsDb from '../database/stockPickings.js';
 import * as syncQueueDb from '../database/syncQueue.js';
-import { getSaleOrderDetailsFromDB, notifyLocalInventoryChanged, signalDashboardPendingUploadStarted, schedulePendingUploadSync } from '../services/sync.service';
+import { getSaleOrderDetailsFromDB, notifyLocalInventoryChanged, signalDashboardPendingUploadStarted, schedulePendingUploadSync, notifyCheckoutCompleteForDashboard } from '../services/sync.service';
 import {
   applyInventoryUpdatesToLocalDb,
   applyLocalGasInventoryForSaleOrder,
 } from '../utils/localInventoryApply.js';
 import { empty } from '../database/dbHelpers.js';
+import { markSaleOrderDeliveredInUi } from '../utils/completedOrderUi.js';
 import { getOrAssignInvoiceNumber } from '../utils/invoiceNumber';
 import { clearCheckoutResume } from '../services/checkoutResume.service';
 import { finalizeLocalInvoiceSnapshotFromPayment } from '../utils/localInvoiceSnapshot.js';
@@ -40,7 +41,7 @@ export default function PaymentProofScreen({ route, navigation }) {
   const { t } = useTranslation();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
-  const { saleOrderId, creditProofRequired = false, orderName } = route.params || {};
+  const { saleOrderId, creditProofRequired = false, orderName, customerLabel } = route.params || {};
   const soId = Number(saleOrderId);
   const [photos, setPhotos] = useState([]);
   const [saving, setSaving] = useState(false);
@@ -250,7 +251,15 @@ export default function PaymentProofScreen({ route, navigation }) {
       await applyLocalGasInventoryForSaleOrder(soId);
       await releaseQueueHoldsForSo();
       await clearCheckoutResume(soId);
+      await saleOrdersDb.updateSaleOrderInvoiceStatusLocal(soId, 'invoiced');
+      markSaleOrderDeliveredInUi(soId);
       signalDashboardPendingUploadStarted();
+      notifyCheckoutCompleteForDashboard({
+        customerLabel:
+          (customerLabel && String(customerLabel).trim()) ||
+          (orderName ? String(orderName) : `Order ${soId}`),
+      });
+      notifyLocalInventoryChanged();
 
       navigation.reset({
         index: 0,
@@ -290,6 +299,8 @@ export default function PaymentProofScreen({ route, navigation }) {
     releaseQueueHoldsForSo,
     finalizeLocalCheckoutState,
     navigation,
+    customerLabel,
+    orderName,
   ]);
 
   const styles = useMemo(
