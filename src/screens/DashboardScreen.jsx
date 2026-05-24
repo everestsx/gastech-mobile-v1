@@ -51,6 +51,7 @@ import {
   hydrateDashboardInitialLoadFromStorage,
   markDashboardInitialLoadComplete,
   setDashboardUploadIndicators,
+  setDashboardIndicatorsListener,
 } from '../services/sync.service';
 import * as localPaymentsDb from '../database/localPayments.js';
 import * as localInvoicesDb from '../database/localInvoices.js';
@@ -76,6 +77,7 @@ import DeliveryProgressBarChart from '../components/DeliveryProgressBarChart';
 import RichNotification from '../components/RichNotification';
 import PendingBackOfficeReminderModal from '../components/PendingBackOfficeReminderModal';
 import NetworkStatusPill from '../components/NetworkStatusPill';
+import { subscribeNetworkStatus, NetworkQuality } from '../services/networkStatus.service';
 import { useSync } from '../context/SyncContext';
 
 const ORANGE_UPLOAD_SINCE_KEY = '@gastech_orange_upload_pending_since';
@@ -265,8 +267,36 @@ export default function DashboardScreen({ navigation }) {
   const lastSyncNotificationRef = React.useRef(null);
   const previousSyncedPaymentIdsRef = React.useRef(new Set());
   const initialSyncStartedRef = React.useRef(false);
+  /** Latched while orange pending upload counter > 0 and a flush is running; cleared when counter hits 0. */
+  const [pendingUploadSpinning, setPendingUploadSpinning] = useState(false);
+  const [networkQuality, setNetworkQuality] = useState(NetworkQuality.OFFLINE);
 
-  // Compute session key as a stable string for use in useEffect
+  useEffect(() => subscribeNetworkStatus((snap) => setNetworkQuality(snap.quality)), []);
+
+  useEffect(() => {
+    setDashboardIndicatorsListener((ind) => {
+      setOrderSyncStats((prev) => ({
+        ...prev,
+        pendingOrders: ind.pendingOrders,
+        localCompleted: ind.localCompleted,
+      }));
+    });
+    return () => setDashboardIndicatorsListener(null);
+  }, []);
+
+  useEffect(() => {
+    if (networkQuality === NetworkQuality.OFFLINE) {
+      setPendingUploadSpinning(false);
+      return;
+    }
+    if (orderSyncStats.localCompleted <= 0) {
+      setPendingUploadSpinning(false);
+      return;
+    }
+    if (isSyncing) {
+      setPendingUploadSpinning(true);
+    }
+  }, [orderSyncStats.localCompleted, isSyncing, networkQuality]);
   const sessionKey = useMemo(() => {
     if (!user) return null;
     if (user.isAdmin) {
@@ -974,7 +1004,7 @@ export default function DashboardScreen({ navigation }) {
     setRefreshing(false);
   };
 
-  const syncButtonActive = syncing || isSyncing;
+  const syncButtonActive = syncing || pendingUploadSpinning;
 
   const onSync = async () => {
     if (syncing || isSyncing) return;

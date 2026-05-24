@@ -32,6 +32,18 @@ export const setIsLoggingOut = (value) => {
 
 /** Optional listener for sync state (true = syncing, false = idle). Used by SyncContext for global indicator. */
 let _syncStateListener = null;
+let _syncActivityDepth = 0;
+
+function syncActivityStart() {
+  _syncActivityDepth += 1;
+  if (_syncActivityDepth === 1 && _syncStateListener) _syncStateListener(true);
+}
+
+function syncActivityEnd() {
+  _syncActivityDepth = Math.max(0, _syncActivityDepth - 1);
+  if (_syncActivityDepth === 0 && _syncStateListener) _syncStateListener(false);
+}
+
 export function setSyncStateListener(fn) {
   _syncStateListener = fn;
 }
@@ -75,7 +87,17 @@ let _pendingUploadWakePromise = null;
 /** When true, payment invoice step uses shorter Odoo settle delay (stable connection fast drain). */
 let _queueSyncFastDrainActive = false;
 
+function canRunBackgroundUploadSync() {
+  try {
+    const { isUploadSyncNetworkAvailable } = require('./networkStatus.service.js');
+    return isUploadSyncNetworkAvailable();
+  } catch (_) {
+    return true;
+  }
+}
+
 function runPendingUploadFlush(options = {}) {
+  if (!canRunBackgroundUploadSync()) return;
   if (_pendingUploadWakePromise) {
     _pendingUploadWakePromise.finally(() => runPendingUploadFlush(options));
     return;
@@ -101,6 +123,7 @@ function runPendingUploadFlush(options = {}) {
 
 /** Debounced queue flush after enqueue/update — faster pending→completed when online. */
 export function schedulePendingUploadSync(options = {}) {
+  if (!canRunBackgroundUploadSync()) return;
   if (_pendingUploadWakeTimer) clearTimeout(_pendingUploadWakeTimer);
   _pendingUploadWakeTimer = null;
   if (options.immediate === true) {
@@ -115,16 +138,44 @@ export function schedulePendingUploadSync(options = {}) {
 
 /** Dashboard counters (red / orange) — set from DashboardScreen only; used to skip idle fast-sync. */
 let _dashboardUploadIndicators = { pendingOrders: 0, localCompleted: 0 };
+let _dashboardIndicatorsListener = null;
+
+function emitDashboardIndicatorsChanged() {
+  try {
+    if (_dashboardIndicatorsListener) {
+      _dashboardIndicatorsListener({ ..._dashboardUploadIndicators });
+    }
+  } catch (_) {
+    /* non-fatal */
+  }
+}
+
+export function setDashboardIndicatorsListener(fn) {
+  _dashboardIndicatorsListener = typeof fn === 'function' ? fn : null;
+}
+
+export function getDashboardUploadIndicators() {
+  return { ..._dashboardUploadIndicators };
+}
+
+/** Call when checkout completes — orange counter + spinner before Dashboard loadData catches up. */
+export function signalDashboardPendingUploadStarted() {
+  _dashboardUploadIndicators = {
+    ..._dashboardUploadIndicators,
+    localCompleted: _dashboardUploadIndicators.localCompleted + 1,
+  };
+  emitDashboardIndicatorsChanged();
+}
+
 export function setDashboardUploadIndicators(pendingOrders, localCompleted) {
-  const hadWork =
-    _dashboardUploadIndicators.pendingOrders > 0 || _dashboardUploadIndicators.localCompleted > 0;
+  const hadUploadWork = _dashboardUploadIndicators.localCompleted > 0;
   _dashboardUploadIndicators = {
     pendingOrders: Math.max(0, Number(pendingOrders) || 0),
     localCompleted: Math.max(0, Number(localCompleted) || 0),
   };
-  const hasWork =
-    _dashboardUploadIndicators.pendingOrders > 0 || _dashboardUploadIndicators.localCompleted > 0;
-  if (hasWork && !hadWork) {
+  emitDashboardIndicatorsChanged();
+  const hasUploadWork = _dashboardUploadIndicators.localCompleted > 0;
+  if (hasUploadWork && !hadUploadWork && canRunBackgroundUploadSync()) {
     schedulePendingUploadSync({ immediate: true, aggressive: true, queuePasses: 14, includeAttachments: true });
   }
 }
@@ -132,6 +183,11 @@ export function hasDashboardUploadIndicators() {
   return (
     _dashboardUploadIndicators.pendingOrders > 0 || _dashboardUploadIndicators.localCompleted > 0
   );
+}
+
+/** Orange counter only — drives background upload loop / dashboard sync spinner. */
+export function hasDashboardUploadQueueWork() {
+  return _dashboardUploadIndicators.localCompleted > 0;
 }
 
 /** Dashboard orange/red counters or queue/attachments still need backend upload. */
@@ -149,7 +205,21 @@ export async function hasPendingUploadWork() {
     const rows = await offlineAttachmentsDb.getAllPending();
     return (rows || []).length > 0;
   } catch (_) {
-    return false;
+    return true;
+  }
+}
+
+/** Pending upload work for background retry loop (orange dashboard counter only). */
+export async function hasActionablePendingUploadWork() {
+  if (!hasDashboardUploadQueueWork()) return false;
+  try {
+    const actionable = await syncQueueDb.getActionablePendingCount();
+    if (actionable > 0) return true;
+    const offlineAttachmentsDb = await import('../database/offlineAttachments.js');
+    const rows = await offlineAttachmentsDb.getAllPending();
+    return (rows || []).length > 0;
+  } catch (_) {
+    return true;
   }
 }
 const KEYS = {
@@ -246,8 +316,10 @@ const SYNC_INTERVAL_MAP = {
 };
 
 const LOG_TAG = '[Sync]';
+const SYNC_VERBOSE_LOGS = false;
 
 function log(step, detail = '') {
+  if (!SYNC_VERBOSE_LOGS && !__DEV__) return;
   const msg = detail ? `${LOG_TAG} ${step} — ${detail}` : `${LOG_TAG} ${step}`;
   console.log(msg);
 }
@@ -282,7 +354,9 @@ async function logDeliveryQtyAudit({
       errorMessage,
     });
     const detail = errorMessage ? ` — ${String(errorMessage).slice(0, 160)}` : '';
-    log('delivery-audit', `${phase}/${status} SO ${saleOrderId ?? '?'} txn ${String(deliveryTxnId || '').slice(0, 40)}${detail}`);
+    if (SYNC_VERBOSE_LOGS || __DEV__) {
+      log('delivery-audit', `${phase}/${status} SO ${saleOrderId ?? '?'} txn ${String(deliveryTxnId || '').slice(0, 40)}${detail}`);
+    }
   } catch (auditErr) {
     console.warn(`${LOG_TAG} delivery-audit write failed`, auditErr?.message ?? auditErr);
   }
@@ -2405,11 +2479,6 @@ async function processSyncQueue(options = {}) {
             'queue',
             `delivery SO ${saleOrderId} — no pickings (SO line updates only), synced id=${item.id}`
           );
-          try {
-            if (_syncCompleteListener) _syncCompleteListener(true);
-          } catch (_) {
-            /* non-fatal */
-          }
           return;
         }
 
@@ -2825,11 +2894,6 @@ async function processSyncQueue(options = {}) {
         }
         await syncQueueDb.markSynced(Number(item.id));
         log('queue', `delivery synced id=${item.id} (${blocks.length} picking block(s))`);
-        try {
-          if (_syncCompleteListener) _syncCompleteListener(true);
-        } catch (_) {
-          /* non-fatal */
-        }
         } finally {
           await finishDeliveryQueueItem();
         }
@@ -4084,7 +4148,7 @@ async function getSyncDateFieldSetting() {
 // ---------- Sync: pull from Odoo and store in SQLite ----------
 
 async function runSyncInternal() {
-  if (_syncStateListener) _syncStateListener(true);
+  syncActivityStart();
   log('start', new Date().toISOString());
   const result = { customers: 0, orders: 0, orderLines: 0, pickings: 0, moves: 0, moveLines: 0, journals: 0, routes: 0, vehicles: 0, vehicleWarehouses: 0, vehicleInventories: 0, error: null };
   const syncAt = new Date().toISOString();
@@ -4578,7 +4642,7 @@ async function runSyncInternal() {
     }
     return result;
   } finally {
-    if (_syncStateListener) _syncStateListener(false);
+    syncActivityEnd();
   }
 }
 
@@ -4606,10 +4670,15 @@ export async function runSync() {
  * happen immediately without waiting for the next interval.
  */
 export async function flushPendingUploadsNow(options = {}) {
+  if (!canRunBackgroundUploadSync()) {
+    return { pendingCount: null, skippedOffline: true };
+  }
   const includeAttachments = options?.includeAttachments !== false;
   const aggressive = options?.aggressive === true;
-  const maxPasses = Math.min(Math.max(Number(options?.queuePasses) || 8, 1), 20);
+  const maxPasses = Math.min(Math.max(Number(options?.queuePasses) || 8, 1), 30);
   const stallMs = aggressive ? 0 : QUEUE_SYNC_FAST_PASS_DELAY_MS;
+  const trackSpinner = hasDashboardUploadQueueWork();
+  if (trackSpinner) syncActivityStart();
   try {
     let lastPending = -1;
     for (let pass = 0; pass < maxPasses; pass++) {
@@ -4704,6 +4773,8 @@ export async function flushPendingUploadsNow(options = {}) {
     return { pendingCount };
   } catch (_) {
     return { pendingCount: null };
+  } finally {
+    if (trackSpinner) syncActivityEnd();
   }
 }
 

@@ -12,7 +12,7 @@ export const NetworkQuality = {
 
 let lastQuality = NetworkQuality.OFFLINE;
 let lastFlushAt = 0;
-const STABLE_FLUSH_COOLDOWN_MS = 600;
+const STABLE_FLUSH_COOLDOWN_MS = 0;
 
 function classify(state) {
   if (!state) return NetworkQuality.OFFLINE;
@@ -49,6 +49,11 @@ export function getLastNetworkQuality() {
   return lastQuality;
 }
 
+/** Background queue upload + dashboard upload spinner — only when not fully offline. */
+export function isUploadSyncNetworkAvailable() {
+  return lastQuality !== NetworkQuality.OFFLINE;
+}
+
 export async function fetchNetworkSnapshot() {
   const state = await NetInfo.fetch();
   const quality = classify(state);
@@ -67,7 +72,8 @@ async function flushQueueOnStableConnection() {
   if (now - lastFlushAt < STABLE_FLUSH_COOLDOWN_MS) return;
   try {
     const m = await import('./sync.service.js');
-    if (!(await m.hasActiveUploadWork())) return;
+    if (!m.hasDashboardUploadQueueWork()) return;
+    if (!(await m.hasActionablePendingUploadWork())) return;
     lastFlushAt = now;
     m.schedulePendingUploadSync({
       immediate: true,

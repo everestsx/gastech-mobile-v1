@@ -6,7 +6,6 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useTranslation } from 'react-i18next';
-import { useSync } from '../context/SyncContext';
 import { colors } from '../constants/theme';
 import SplashScreen from '../screens/SplashScreen';
 import LoginScreen from '../screens/LoginScreen';
@@ -46,6 +45,8 @@ import {
   hasPendingUploadWork,
   hasDashboardUploadIndicators,
   hasActiveUploadWork,
+  hasActionablePendingUploadWork,
+  hasDashboardUploadQueueWork,
   PENDING_QUEUE_FAST_RETRY_MS,
   PENDING_QUEUE_FAST_RETRY_WINDOW_MS,
   PENDING_QUEUE_IDLE_POLL_MS,
@@ -278,10 +279,7 @@ export default function AppNavigator() {
   const syncIntervalRef = useRef(null);
   const appStateRef = useRef(AppState.currentState);
   const networkQualityRef = useRef(NetworkQuality.OFFLINE);
-  const { hideSyncIndicator } = useSync();
   const { syncInterval } = useTheme();
-  const hideSyncRef = useRef(hideSyncIndicator);
-  hideSyncRef.current = hideSyncIndicator;
 
   useEffect(() => {
     const unsubNet = subscribeNetworkStatus((snap) => {
@@ -293,9 +291,9 @@ export default function AppNavigator() {
   useEffect(() => {
     const intervalMs = getSyncIntervalMs(syncInterval);
     const runScheduledSyncIfNeeded = async () => {
-      if (hideSyncRef.current) return;
+      if (networkQualityRef.current === NetworkQuality.OFFLINE) return;
       try {
-        if (!(await hasActiveUploadWork())) return;
+        if (!(await hasActionablePendingUploadWork())) return;
       } catch (_) {
         return;
       }
@@ -303,9 +301,9 @@ export default function AppNavigator() {
     };
 
     const runFastPending = async () => {
-      if (hideSyncRef.current) return;
+      if (networkQualityRef.current === NetworkQuality.OFFLINE) return;
       try {
-        if (!(await hasActiveUploadWork())) return;
+        if (!(await hasActionablePendingUploadWork())) return;
         const ageMs = await syncQueueDb.getOldestPendingQueueAgeMs();
         const passes = ageMs <= PENDING_QUEUE_FAST_RETRY_WINDOW_MS ? 18 : 10;
         await flushPendingUploadsNow({
@@ -314,7 +312,7 @@ export default function AppNavigator() {
           aggressive: true,
         });
         const stillPending = await hasPendingUploadWork();
-        const stillIndicators = hasDashboardUploadIndicators();
+        const stillIndicators = hasDashboardUploadQueueWork();
         if (!stillPending && !stillIndicators) return;
         if (networkQualityRef.current === NetworkQuality.GOOD && stillPending) {
           await flushPendingUploadsNow({
@@ -322,10 +320,7 @@ export default function AppNavigator() {
             queuePasses: 22,
             aggressive: true,
           });
-          if (!(await hasPendingUploadWork()) && !hasDashboardUploadIndicators()) return;
-        }
-        if (networkQualityRef.current !== NetworkQuality.GOOD) {
-          runSync().catch(() => {});
+          if (!(await hasPendingUploadWork()) && !hasDashboardUploadQueueWork()) return;
         }
       } catch (_) {
         /* ignore */
@@ -364,7 +359,9 @@ export default function AppNavigator() {
         if (fastPendingCancelled) return;
         let hasWork = false;
         try {
-          hasWork = await hasActiveUploadWork();
+          hasWork =
+            networkQualityRef.current !== NetworkQuality.OFFLINE &&
+            (await hasActionablePendingUploadWork());
         } catch (_) {
           hasWork = false;
         }
@@ -389,7 +386,7 @@ export default function AppNavigator() {
     if (AppState.currentState === 'active') {
       void (async () => {
         try {
-          if (await hasActiveUploadWork()) await runFastPending();
+          if (await hasActionablePendingUploadWork()) await runFastPending();
         } catch (_) {
           /* ignore */
         }

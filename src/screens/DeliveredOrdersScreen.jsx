@@ -13,6 +13,7 @@ import {
   Pressable,
   Keyboard,
   KeyboardAvoidingView,
+  InteractionManager,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -44,6 +45,7 @@ import {
   pruneStaleCheckoutResumeEntries,
 } from '../services/checkoutResume.service';
 import { useSync } from '../context/SyncContext';
+import { formatLocalYyyyMmDd, localDateKeyFromTimestamp, isLocalToday } from '../utils/localDate';
 
 const TAB_CASH = 'cash';
 const TAB_CHEQUE = 'cheque';
@@ -57,11 +59,15 @@ function normalizePaymentType(rawType) {
   return '';
 }
 
-function formatDate(d) {
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+function orderMatchesSelectedDate(o, dateStr, syncDateField) {
+  const primary =
+    syncDateField === 'delivery_date'
+      ? o.commitment_date || o.date_order
+      : o.date_order || o.commitment_date;
+  const secondary = syncDateField === 'delivery_date' ? o.date_order : o.commitment_date;
+  const p = localDateKeyFromTimestamp(primary);
+  const s = localDateKeyFromTimestamp(secondary);
+  return p === dateStr || (s.length > 0 && s === dateStr);
 }
 
 /** Keeps last Delivered tab state visible instantly when switching tabs (UI cache only). */
@@ -71,10 +77,6 @@ function setFromSnapshot(raw) {
   return raw instanceof Set ? raw : new Set(Array.isArray(raw) ? raw : []);
 }
 
-function isToday(d) {
-  const today = formatDate(new Date());
-  return formatDate(d) === today;
-}
 
 function lineProductId(line) {
   const raw = Array.isArray(line?.product_id) ? line.product_id[0] : line?.product_id;
@@ -492,30 +494,21 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
     try {
       const user = await getUserSession();
       const vehicleId = user?.isAdmin === false ? user.vehicleId : null;
-      const [data, cachedCustomers] = await Promise.all([
+      const [data, cachedCustomers, resumeMap, localInvoiced] = await Promise.all([
         getCachedOrders(vehicleId),
         customerId != null ? getCachedCustomers() : Promise.resolve([]),
+        getCheckoutResumeMap(),
+        localInvoicesDb.getSaleOrderIdsWithLocalInvoices().catch(() => new Set()),
       ]);
-      await pruneStaleCheckoutResumeEntries();
-      const resumeMap = await getCheckoutResumeMap();
-      const localInvoiced = await localInvoicesDb.getSaleOrderIdsWithLocalInvoices().catch(() => new Set());
+      void pruneStaleCheckoutResumeEntries();
       setLocalInvoicedSaleOrderIds(localInvoiced instanceof Set ? localInvoiced : new Set());
       setPendingCheckoutOrderIds(pendingCheckoutSaleOrderIdsFromResumeMap(resumeMap));
       const all = Array.isArray(data) ? data : [];
-      const dateStr = formatDate(selectedDate);
+      const dateStr = formatLocalYyyyMmDd(selectedDate);
       const buildFilteredList = (rows) => {
-        let out = (Array.isArray(rows) ? rows : []).filter((o) => {
-          const primary =
-            syncDateField === 'delivery_date'
-              ? (o.commitment_date || o.date_order)
-              : (o.date_order || o.commitment_date);
-          const secondary =
-            syncDateField === 'delivery_date' ? o.date_order : o.commitment_date;
-          const p = String(primary || '').startsWith(dateStr);
-          const s = String(secondary || '').trim();
-          const q = s.length > 0 && s.startsWith(dateStr);
-          return p || q;
-        });
+        let out = (Array.isArray(rows) ? rows : []).filter((o) =>
+          orderMatchesSelectedDate(o, dateStr, syncDateField)
+        );
         if (customerId != null) {
           out = out.filter((o) => o.partner_id?.[0] === customerId);
           const partner = Array.isArray(cachedCustomers)
@@ -527,6 +520,18 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
       };
       let list = buildFilteredList(all);
 
+      if (list.length > 0) {
+        setOrders(
+          list.map((o) => ({
+            ...o,
+            totalQty: null,
+            isDelivered: true,
+            orderLines: [],
+            paymentSplit: null,
+          }))
+        );
+      }
+
       const [syncedPaymentIds, pendingSaleOrderIds] = await Promise.all([
         syncQueueDb.getSyncedPaymentSaleOrderIds().catch(() => new Set()),
         syncQueueDb.getPendingSaleOrderIds().catch(() => new Set()),
@@ -534,19 +539,6 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
       setSyncedPaymentOrderIds(
         syncedPaymentIds instanceof Set ? new Set(syncedPaymentIds) : new Set(Array.from(syncedPaymentIds || []))
       );
-      const needsInvoiceHeader = list.filter((o) => {
-        const id = Number(o.id);
-        if (!Number.isFinite(id)) return false;
-        if (!syncedPaymentIds.has(id)) return false;
-        if (pendingSaleOrderIds.has(id)) return false;
-        return String(o.invoice_status || '').toLowerCase() !== 'invoiced';
-      });
-      if (needsInvoiceHeader.length > 0) {
-        await Promise.all(needsInvoiceHeader.map((o) => refreshSaleOrderInvoiceHeaderFromOdoo(o.id).catch(() => {})));
-        const dataHdr = await getCachedOrders(vehicleId);
-        list = buildFilteredList(Array.isArray(dataHdr) ? dataHdr : []);
-      }
-
       const paymentRefreshSkipIds = new Set();
       for (const id of pendingSaleOrderIds) {
         const n = Number(id);
@@ -557,13 +549,12 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
         const idNum = Number(soId);
         if (Number.isFinite(idNum) && idNum > 0) paymentRefreshSkipIds.add(idNum);
       }
-      await refreshPaymentTypesFromOdoo(list, { skipOrderIds: paymentRefreshSkipIds }).catch(() => {});
-      const dataPay = await getCachedOrders(vehicleId);
-      list = buildFilteredList(Array.isArray(dataPay) ? dataPay : []);
-      const orderIds = list.map((o) => o.id);
+
+      const enrichAndApplyList = async (rows) => {
+        const orderIds = rows.map((o) => o.id);
       const [totals, pickings, allLines, paymentSplits, journalsList, qtyMap, qtyByProductMap, backendDeliveredSet] =
         await Promise.all([
-        getOrderLineTotalsFromDB(list),
+        getOrderLineTotalsFromDB(rows),
         getPickingsBySaleIdsFromDB(orderIds),
         getOrderLinesByOrderIdsFromDB(orderIds),
         localPaymentsDb.getPaymentSplitsWithJournalsBySaleOrderIds(orderIds),
@@ -615,7 +606,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
       setPickingStateBySaleId(saleIdToPickingState);
       setQtyDoneBySaleId(qtyMap || {});
       const mergedQtyBySaleAndProduct = {};
-      for (const o of list) {
+      for (const o of rows) {
         const oid = o.id;
         const lines = linesByOrderId[oid] || [];
         const moveMap = qtyByProductMap[oid] || {};
@@ -624,7 +615,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
         if (merged != null) mergedQtyBySaleAndProduct[oid] = merged;
       }
       setQtyDoneBySaleAndProduct(mergedQtyBySaleAndProduct);
-      const nextOrders = list.map((o) => {
+      const nextOrders = rows.map((o) => {
         const inv = String(o.invoice_status).toLowerCase() === 'invoiced';
         const st = String(saleIdToPickingState[o.id] || '').toLowerCase();
         const q = Number(qtyMap[o.id]) || 0;
@@ -657,6 +648,37 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
         syncedPaymentOrderIds: Array.from(nextSyncedPayment),
         journals: Array.isArray(journalsList) ? journalsList : [],
       };
+      };
+
+      await enrichAndApplyList(list);
+
+      InteractionManager.runAfterInteractions(() => {
+        void (async () => {
+          try {
+            let netList = list;
+            const needsInvoiceHeader = netList.filter((o) => {
+              const id = Number(o.id);
+              if (!Number.isFinite(id)) return false;
+              if (!syncedPaymentIds.has(id)) return false;
+              if (pendingSaleOrderIds.has(id)) return false;
+              return String(o.invoice_status || '').toLowerCase() !== 'invoiced';
+            });
+            if (needsInvoiceHeader.length > 0) {
+              await Promise.all(
+                needsInvoiceHeader.map((o) => refreshSaleOrderInvoiceHeaderFromOdoo(o.id).catch(() => {}))
+              );
+              const dataHdr = await getCachedOrders(vehicleId);
+              netList = buildFilteredList(Array.isArray(dataHdr) ? dataHdr : []);
+            }
+            await refreshPaymentTypesFromOdoo(netList, { skipOrderIds: paymentRefreshSkipIds }).catch(() => {});
+            const dataPay = await getCachedOrders(vehicleId);
+            netList = buildFilteredList(Array.isArray(dataPay) ? dataPay : []);
+            await enrichAndApplyList(netList);
+          } catch (_) {
+            /* background refresh only */
+          }
+        })();
+      });
     } catch (err) {
       console.error('Delivered Orders Error:', err);
       setOrders([]);
@@ -687,7 +709,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
     if (syncCompleteTimestamp > 0) loadOrders();
   }, [syncCompleteTimestamp, loadOrders]);
 
-  const canGoToNextDay = !isToday(selectedDate);
+  const canGoToNextDay = !isLocalToday(selectedDate);
 
   const goToPreviousDay = () => {
     const d = new Date(selectedDate);
@@ -760,7 +782,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
               <Ionicons name="chevron-back" size={24} color={colors.primary} />
             </TouchableOpacity>
             <TouchableOpacity style={styles.dateNavDateTouch} onPress={() => setShowPicker(true)} activeOpacity={0.7}>
-              <Text style={styles.dateNavText}>{formatDate(selectedDate)}</Text>
+              <Text style={styles.dateNavText}>{formatLocalYyyyMmDd(selectedDate)}</Text>
             </TouchableOpacity>
             <TouchableOpacity
               onPress={goToNextDay}

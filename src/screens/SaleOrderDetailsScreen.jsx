@@ -17,6 +17,7 @@ import {
   Alert,
   Pressable,
   Keyboard,
+  InteractionManager,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -42,6 +43,7 @@ import { getProductImageSource } from '../utils/gasImage';
 import { isNewIssueName } from '../utils/cylinderCatalog';
 import { lineTaxAtQuantity } from '../utils/orderLineTax.js';
 import { getCheckoutResumeEntry } from '../services/checkoutResume.service';
+import { getSaleOrderDetailsUiCache, setSaleOrderDetailsUiCache } from '../utils/saleOrderDetailsUiCache';
 
 function formatCurrency(amount) {
     const n = Number(amount);
@@ -91,23 +93,24 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
   );
   const FALLBACK_ACCENT = colors.primaryLight ?? colors.primary ?? '#818cf8';
   const { saleOrderId } = route.params;
+  const cachedDetails = getSaleOrderDetailsUiCache(saleOrderId);
 
-  const [order, setOrder] = useState(null);
-  const [lines, setLines] = useState([]);
-  const [isDelivered, setIsDelivered] = useState(false);
+  const [order, setOrder] = useState(cachedDetails?.order ?? null);
+  const [lines, setLines] = useState(cachedDetails?.lines ?? []);
+  const [isDelivered, setIsDelivered] = useState(cachedDetails?.isDelivered ?? false);
   // True when the picking/delivery is already validated ("done") locally.
   // In that case, lorry stock has already been deducted once, so we should
   // allow editing delivered quantity even if remaining stock is 0.
-  const [isDeliveryDone, setIsDeliveryDone] = useState(false);
+  const [isDeliveryDone, setIsDeliveryDone] = useState(cachedDetails?.isDeliveryDone ?? false);
   const [modifyEnabled, setModifyEnabled] = useState(false);
   const [qtyChanged, setQtyChanged] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!cachedDetails?.order);
   const [updating, setUpdating] = useState(false);
   const [canceling, setCanceling] = useState(false);
   const [updateError, setUpdateError] = useState(null);
-  const [productIdToAvailable, setProductIdToAvailable] = useState({});
-  const [productIdToOnHand, setProductIdToOnHand] = useState({});
-  const [productIdToImageUri, setProductIdToImageUri] = useState({});
+  const [productIdToAvailable, setProductIdToAvailable] = useState(cachedDetails?.productIdToAvailable ?? {});
+  const [productIdToOnHand, setProductIdToOnHand] = useState(cachedDetails?.productIdToOnHand ?? {});
+  const [productIdToImageUri, setProductIdToImageUri] = useState(cachedDetails?.productIdToImageUri ?? {});
   const [showCancelConfirmModal, setShowCancelConfirmModal] = useState(false);
   const [showCancelModal, setShowCancelModal] = useState(false);
   const [cancelReasons, setCancelReasons] = useState([]);
@@ -690,7 +693,8 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
     }
   }, [order, lines, productIdToAvailable, productIdToOnHand]);
   const loadDetails = useCallback(async () => {
-    setLoading(true);
+    const hadCache = !!getSaleOrderDetailsUiCache(saleOrderId)?.order;
+    if (!hadCache) setLoading(true);
     try {
       const data = await getSaleOrderDetailsFromDB(saleOrderId);
       if (!data.order) {
@@ -716,70 +720,67 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
         qtyDoneByProductId[pid] = (qtyDoneByProductId[pid] || 0) + (Number(ml.qty_done) || 0);
       });
       const deliveryDone = ((picking?.state || '') + '').toLowerCase() === 'done';
-      setLines(
-        (data.lines || []).map((l) => {
-          const pid = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
-          const savedDone = pid != null ? qtyDoneByProductId[pid] : null;
-          const demand = Number(l.product_uom_qty ?? 0) || 0;
-          // Before delivery is finalized, always show latest edited/saved demand qty
-          // so users can re-open Modify and continue editing flexibly.
-          const initial =
-            deliveryDone && savedDone != null && savedDone > 0 ? savedDone : demand;
-          return { ...l, newQty: String(initial) };
-        })
-      );
-      const imageMap = await productsDb.getProductImageUriMap();
+      const mappedLines = (data.lines || []).map((l) => {
+        const pid = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
+        const savedDone = pid != null ? qtyDoneByProductId[pid] : null;
+        const demand = Number(l.product_uom_qty ?? 0) || 0;
+        const initial =
+          deliveryDone && savedDone != null && savedDone > 0 ? savedDone : demand;
+        return { ...l, newQty: String(initial) };
+      });
+      setLines(mappedLines);
+      const productIds = mappedLines
+        .map((l) => (Array.isArray(l.product_id) ? l.product_id[0] : l.product_id))
+        .filter((pid) => pid != null);
+      const imageMap = await productsDb.getProductImageUriMapForIds(productIds);
       setProductIdToImageUri(imageMap || {});
       setQtyChanged(false);
       setIsDeliveryDone(deliveryDone);
       setIsDelivered(data.order?.invoice_status === 'invoiced');
 
+      let mapAvail = {};
+      let mapOnHand = {};
+      const vehicleId =
+        data.order?.vehicle_id != null
+          ? Array.isArray(data.order.vehicle_id)
+            ? data.order.vehicle_id[0]
+            : data.order.vehicle_id
+          : null;
 
-        const vehicleId = data.order?.vehicle_id != null
-            ? (Array.isArray(data.order.vehicle_id) ? data.order.vehicle_id[0] : data.order.vehicle_id)
-            : null;
-
-        console.log(`[UI Debug] This order is assigned to Vehicle ID: ${vehicleId}`);
-
-        if (vehicleId != null) {
-          try {
-            // Get location_id for this vehicle and fetch inventory by location
-            const locationId = await getVehicleLocationId(vehicleId);
-            console.log(`[UI Debug] Vehicle ${vehicleId} has location_id: ${locationId}`);
-
-            if (locationId) {
-              const inventories = await getCachedVehicleInventoryByLocation(locationId);
-              const mapAvail = {};
-              const mapOnHand = {};
-              (inventories || []).forEach((inv) => {
-                const pid = inv.product_id != null ? inv.product_id : inv.id;
-                if (pid != null) {
-                  mapAvail[pid] = clampNonNegativeStock(inv.available_quantity);
-                  mapOnHand[pid] = clampNonNegativeStock(inv.quantity);
-                }
-              });
-              (data.lines || []).forEach((l) => {
-                const pid = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
-                if (pid == null) return;
-                if (mapAvail[pid] === undefined) mapAvail[pid] = 0;
-                if (mapOnHand[pid] === undefined) mapOnHand[pid] = 0;
-              });
-              setProductIdToAvailable(mapAvail);
-              setProductIdToOnHand(mapOnHand);
-            } else {
-              console.warn(`[UI Debug] No location_id found for vehicle ${vehicleId}`);
-              setProductIdToAvailable({});
-              setProductIdToOnHand({});
-            }
-          } catch (error) {
-            console.error('Failed to load vehicle inventory:', error);
-            setProductIdToAvailable({});
-            setProductIdToOnHand({});
+      if (vehicleId != null) {
+        try {
+          const locationId = await getVehicleLocationId(vehicleId);
+          if (locationId) {
+            const inventories = await getCachedVehicleInventoryByLocation(locationId);
+            (inventories || []).forEach((inv) => {
+              const pid = inv.product_id != null ? inv.product_id : inv.id;
+              if (pid != null) {
+                mapAvail[pid] = clampNonNegativeStock(inv.available_quantity);
+                mapOnHand[pid] = clampNonNegativeStock(inv.quantity);
+              }
+            });
+            (data.lines || []).forEach((l) => {
+              const pid = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
+              if (pid == null) return;
+              if (mapAvail[pid] === undefined) mapAvail[pid] = 0;
+              if (mapOnHand[pid] === undefined) mapOnHand[pid] = 0;
+            });
           }
-        } else {
-          setProductIdToAvailable({});
-          setProductIdToOnHand({});
+        } catch (error) {
+          console.error('Failed to load vehicle inventory:', error);
         }
+      }
+      setProductIdToAvailable(mapAvail);
+      setProductIdToOnHand(mapOnHand);
+      setSaleOrderDetailsUiCache(saleOrderId, {
+        order: data.order,
+        lines: mappedLines,
+        isDelivered: data.order?.invoice_status === 'invoiced',
+        isDeliveryDone: deliveryDone,
+        productIdToAvailable: mapAvail,
+        productIdToOnHand: mapOnHand,
+        productIdToImageUri: imageMap || {},
+      });
     } catch (_) {
       setOrder(null);
       setLines([]);

@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import { Animated, StyleSheet, Text, View } from 'react-native';
+import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../context/ThemeContext';
@@ -17,6 +17,18 @@ export default function RichNotification({
   const insets = useSafeAreaInsets();
   const translateY = useRef(new Animated.Value(-24)).current;
   const opacity = useRef(new Animated.Value(0)).current;
+  const hideTimerRef = useRef(null);
+
+  const dismiss = () => {
+    if (hideTimerRef.current) {
+      clearTimeout(hideTimerRef.current);
+      hideTimerRef.current = null;
+    }
+    Animated.parallel([
+      Animated.timing(opacity, { toValue: 0, duration: 160, useNativeDriver: true }),
+      Animated.timing(translateY, { toValue: -18, duration: 180, useNativeDriver: true }),
+    ]).start(() => onHide?.());
+  };
 
   useEffect(() => {
     if (!visible) return undefined;
@@ -26,15 +38,14 @@ export default function RichNotification({
     ]);
     showAnim.start();
 
-    const hideTimer = setTimeout(() => {
-      Animated.parallel([
-        Animated.timing(opacity, { toValue: 0, duration: 160, useNativeDriver: true }),
-        Animated.timing(translateY, { toValue: -18, duration: 180, useNativeDriver: true }),
-      ]).start(() => onHide?.());
+    hideTimerRef.current = setTimeout(() => {
+      dismiss();
     }, Math.max(1200, durationMs));
 
-    return () => clearTimeout(hideTimer);
-  }, [durationMs, onHide, opacity, translateY, visible]);
+    return () => {
+      if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+    };
+  }, [durationMs, opacity, translateY, visible]);
 
   if (!visible) return null;
 
@@ -44,32 +55,34 @@ export default function RichNotification({
   const accent = isError ? (colors.error || '#ef4444') : isSuccess ? '#22c55e' : colors.primary;
 
   return (
-    <View pointerEvents="none" style={[styles.root, { top: insets.top + spacing.md }]}>
-      <Animated.View
-        style={[
-          styles.card,
-          {
-            backgroundColor: colors.surface,
-            borderColor: colors.border,
-            transform: [{ translateY }],
-            opacity,
-          },
-        ]}
-      >
-        <View style={[styles.iconWrap, { backgroundColor: `${accent}1A` }]}>
-          <Ionicons name={iconName} size={18} color={accent} />
-        </View>
-        <View style={styles.textWrap}>
-          <Text style={[styles.title, { color: colors.text }]} numberOfLines={1}>
-            {title}
-          </Text>
-          {message ? (
-            <Text style={[styles.message, { color: colors.textSecondary }]} numberOfLines={3}>
-              {message}
+    <View pointerEvents="box-none" style={[styles.root, { top: insets.top + spacing.md }]}>
+      <Pressable onPress={dismiss} accessibilityRole="button" accessibilityLabel="Dismiss notification">
+        <Animated.View
+          style={[
+            styles.card,
+            {
+              backgroundColor: colors.surface,
+              borderColor: colors.border,
+              transform: [{ translateY }],
+              opacity,
+            },
+          ]}
+        >
+          <View style={[styles.iconWrap, { backgroundColor: `${accent}1A` }]}>
+            <Ionicons name={iconName} size={18} color={accent} />
+          </View>
+          <View style={styles.textWrap}>
+            <Text style={[styles.title, { color: colors.text }]} numberOfLines={1}>
+              {title}
             </Text>
-          ) : null}
-        </View>
-      </Animated.View>
+            {message ? (
+              <Text style={[styles.message, { color: colors.textSecondary }]} numberOfLines={3}>
+                {message}
+              </Text>
+            ) : null}
+          </View>
+        </Animated.View>
+      </Pressable>
     </View>
   );
 }

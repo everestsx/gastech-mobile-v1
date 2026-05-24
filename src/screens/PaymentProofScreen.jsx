@@ -24,13 +24,12 @@ import * as localInvoicesDb from '../database/localInvoices.js';
 import * as localPaymentsDb from '../database/localPayments.js';
 import * as stockPickingsDb from '../database/stockPickings.js';
 import * as syncQueueDb from '../database/syncQueue.js';
-import { getSaleOrderDetailsFromDB, notifyLocalInventoryChanged } from '../services/sync.service';
+import { getSaleOrderDetailsFromDB, notifyLocalInventoryChanged, signalDashboardPendingUploadStarted, schedulePendingUploadSync } from '../services/sync.service';
 import {
   applyInventoryUpdatesToLocalDb,
   applyLocalGasInventoryForSaleOrder,
 } from '../utils/localInventoryApply.js';
 import { empty } from '../database/dbHelpers.js';
-import { schedulePendingUploadSync } from '../services/sync.service';
 import { getOrAssignInvoiceNumber } from '../utils/invoiceNumber';
 import { clearCheckoutResume } from '../services/checkoutResume.service';
 import { finalizeLocalInvoiceSnapshotFromPayment } from '../utils/localInvoiceSnapshot.js';
@@ -251,6 +250,7 @@ export default function PaymentProofScreen({ route, navigation }) {
       await applyLocalGasInventoryForSaleOrder(soId);
       await releaseQueueHoldsForSo();
       await clearCheckoutResume(soId);
+      signalDashboardPendingUploadStarted();
 
       navigation.reset({
         index: 0,

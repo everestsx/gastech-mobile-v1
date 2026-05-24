@@ -6,6 +6,7 @@ import * as stockPickingsDb from '../database/stockPickings.js';
 import * as syncQueueDb from '../database/syncQueue.js';
 import { getCancellationReasonLabel } from '../database/cancellationReasons.js';
 import { clearCheckoutResume } from '../services/checkoutResume.service.js';
+import { notifyLocalInventoryChanged } from '../services/sync.service.js';
 
 /** Apply cancel locally (UI + SQLite) and clear pending delivery/payment work for this SO. */
 export async function applyOrderCancelLocally(saleOrderId, reason = '') {
@@ -31,6 +32,8 @@ export async function applyOrderCancelLocally(saleOrderId, reason = '') {
   } catch (_) {
     /* non-fatal */
   }
+
+  notifyLocalInventoryChanged();
 
   return { reason: reasonStr, reasonLabel };
 }
