@@ -473,6 +473,10 @@ export default function LocalInvoicesScreen({ navigation }) {
                 navigation.navigate('InvoiceScreen', {
                   saleOrderId: inv.sale_order_id,
                   total: inv.amount_total,
+                  subtotal: inv.amount_untaxed,
+                  tax: inv.amount_tax,
+                  fromLocalInvoices: true,
+                  readOnlyView: true,
                   invoiceNumber: inv.invoice_number,
                   paymentType: 'split',
                   paymentSplit: inv.paymentSplit,

@@ -47,6 +47,8 @@ import {
   hasActiveUploadWork,
   hasActionablePendingUploadWork,
   hasDashboardUploadQueueWork,
+  shouldRunPendingUploadRetryLoop,
+  wakePendingUploadSyncNow,
   PENDING_QUEUE_FAST_RETRY_MS,
   PENDING_QUEUE_FAST_RETRY_WINDOW_MS,
   PENDING_QUEUE_IDLE_POLL_MS,
@@ -55,6 +57,7 @@ import * as syncQueueDb from '../database/syncQueue.js';
 import {
   subscribeNetworkStatus,
   getPendingRetryDelayMsForQuality,
+  getPendingRetryDelayMsForAppState,
   NetworkQuality,
 } from '../services/networkStatus.service';
 
@@ -303,7 +306,7 @@ export default function AppNavigator() {
     const runFastPending = async () => {
       if (networkQualityRef.current === NetworkQuality.OFFLINE) return;
       try {
-        if (!(await hasActionablePendingUploadWork())) return;
+        if (!(await shouldRunPendingUploadRetryLoop())) return;
         const ageMs = await syncQueueDb.getOldestPendingQueueAgeMs();
         const passes = ageMs <= PENDING_QUEUE_FAST_RETRY_WINDOW_MS ? 18 : 10;
         await flushPendingUploadsNow({
@@ -328,17 +331,22 @@ export default function AppNavigator() {
     };
 
     const sub = AppState.addEventListener('change', (nextState) => {
-      if (nextState === 'active' && appStateRef.current !== 'active') {
+      const wasActive = appStateRef.current === 'active';
+      const isActive = nextState === 'active';
+      if (isActive && !wasActive) {
         void enforceSessionNotExpired();
         void runScheduledSyncIfNeeded();
         syncIntervalRef.current = setInterval(() => {
           void runScheduledSyncIfNeeded();
         }, intervalMs);
-      } else if (nextState !== 'active') {
+        void runFastPending();
+      } else if (!isActive && wasActive) {
         if (syncIntervalRef.current) {
           clearInterval(syncIntervalRef.current);
           syncIntervalRef.current = null;
         }
+        wakePendingUploadSyncNow({ queuePasses: 24, includeAttachments: true });
+        void runFastPending();
       }
       appStateRef.current = nextState;
     });
@@ -359,13 +367,11 @@ export default function AppNavigator() {
         if (fastPendingCancelled) return;
         let hasWork = false;
         try {
-          hasWork =
-            networkQualityRef.current !== NetworkQuality.OFFLINE &&
-            (await hasActionablePendingUploadWork());
+          hasWork = await shouldRunPendingUploadRetryLoop();
         } catch (_) {
           hasWork = false;
         }
-        if (AppState.currentState === 'active' && hasWork) {
+        if (hasWork) {
           try {
             await runFastPending();
           } catch (_) {
@@ -374,25 +380,27 @@ export default function AppNavigator() {
         }
         let nextMs = PENDING_QUEUE_IDLE_POLL_MS;
         if (hasWork) {
-          nextMs = getPendingRetryDelayMsForQuality(
+          const q =
             networkQualityRef.current === NetworkQuality.OFFLINE
               ? NetworkQuality.WEAK
-              : networkQualityRef.current
-          );
+              : networkQualityRef.current;
+          nextMs = getPendingRetryDelayMsForAppState(AppState.currentState, q);
         }
         scheduleFastPendingLoop(nextMs);
       }, delayMs);
     };
-    if (AppState.currentState === 'active') {
+    /** Let login/dashboard paint from SQLite before competing with heavy queue drain. */
+    const startupPendingDelayMs = 2800;
+    setTimeout(() => {
       void (async () => {
         try {
-          if (await hasActionablePendingUploadWork()) await runFastPending();
+          if (await shouldRunPendingUploadRetryLoop()) await runFastPending();
         } catch (_) {
           /* ignore */
         }
       })();
-    }
-    scheduleFastPendingLoop(PENDING_QUEUE_FAST_RETRY_MS);
+      scheduleFastPendingLoop(PENDING_QUEUE_FAST_RETRY_MS);
+    }, startupPendingDelayMs);
 
     return () => {
       sub?.remove?.();

@@ -43,6 +43,7 @@ import { getProductImageSource } from '../utils/gasImage';
 import { isNewIssueName } from '../utils/cylinderCatalog';
 import { lineTaxAtQuantity } from '../utils/orderLineTax.js';
 import { getCheckoutResumeEntry } from '../services/checkoutResume.service';
+import { mergeInventoryQueueKeepingEmpty } from '../utils/emptyCollectionLocal.js';
 import { getSaleOrderDetailsUiCache, setSaleOrderDetailsUiCache } from '../utils/saleOrderDetailsUiCache';
 import { linesAfterDemandEditSave, orderAmountsFromLines } from '../utils/saleOrderLinePricing';
 
@@ -680,7 +681,13 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
       const existingInventoryUpdate =
         await syncQueueDb.getPendingInventoryUpdateItemBySaleOrderId(Number(order.id));
       if (existingInventoryUpdate?.id != null) {
-        await syncQueueDb.updateQueueItemPayload(existingInventoryUpdate.id, inventoryPayload);
+        const existingPayload = existingInventoryUpdate.payload || {};
+        const existingUpdates = Array.isArray(existingPayload.updates) ? existingPayload.updates : [];
+        await syncQueueDb.updateQueueItemPayload(existingInventoryUpdate.id, {
+          ...inventoryPayload,
+          holdUntilComplete: true,
+          updates: mergeInventoryQueueKeepingEmpty(existingUpdates, inventoryPayload.updates),
+        });
       } else {
         await syncQueueDb.enqueue(syncQueueDb.ACTION_INVENTORY_UPDATE, inventoryPayload);
       }

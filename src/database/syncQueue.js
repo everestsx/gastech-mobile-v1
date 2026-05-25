@@ -340,6 +340,32 @@ export async function getPaymentSyncedAtForSaleOrder(saleOrderId) {
   return null;
 }
 
+/**
+ * Synced payment queue rows whose sale-order chatter (payment / gas / empty notes) was not posted yet.
+ * Used after fast-drain or early mark-synced paths so text messages are not lost while photos still upload.
+ */
+export async function getSyncedPaymentItemsMissingCheckoutChatter() {
+  const db = await getDb();
+  const rows = await db.getAllAsync(
+    `SELECT id, payload FROM sync_queue
+     WHERE action_type = ?
+       AND (COALESCE(is_uploaded, 0) = 1 OR synced_at IS NOT NULL)
+     ORDER BY id DESC`,
+    [ACTION_PAYMENT]
+  );
+  const bySo = new Map();
+  for (const row of rows || []) {
+    const p = safeParseJson(row.payload, {});
+    if (p._paymentProofChatterPosted === true) continue;
+    const soId = Number(p.saleOrderId ?? p.sale_order_id);
+    if (!Number.isFinite(soId) || soId <= 0) continue;
+    if (!bySo.has(soId)) {
+      bySo.set(soId, { id: row.id, payload: p, saleOrderId: soId });
+    }
+  }
+  return Array.from(bySo.values());
+}
+
 /** Latest payment payload by sale order id from both pending and synced queue items. */
 export async function getLatestPaymentPayloadMapBySaleOrderIds(saleOrderIds) {
   if (!Array.isArray(saleOrderIds) || saleOrderIds.length === 0) return {};

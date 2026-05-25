@@ -36,3 +36,28 @@ export function mergeInventoryQueueKeepingGas(existingUpdates, newEmptyUpdates) 
   const { gasOrAbsolute } = splitInventoryQueueUpdates(existingUpdates);
   return [...gasOrAbsolute, ...(newEmptyUpdates || [])];
 }
+
+/** Keep held empty increments; replace gas deduction rows after a delivery qty edit. */
+export function mergeInventoryQueueKeepingEmpty(existingUpdates, newGasUpdates) {
+  const { emptyIncrements } = splitInventoryQueueUpdates(existingUpdates);
+  return [...(newGasUpdates || []), ...emptyIncrements];
+}
+
+/** Sale orders with payment or inventory rows still waiting for PaymentProof "Complete order". */
+export function buildCheckoutHeldSaleOrderIds(queueItems = []) {
+  const held = new Set();
+  for (const it of queueItems || []) {
+    const p = it?.payload || {};
+    const raw = p.saleOrderId ?? p.sale_id;
+    const soId = raw != null ? Number(raw) : NaN;
+    if (!Number.isFinite(soId) || soId <= 0) continue;
+    const type = it?.action_type;
+    if (
+      (type === 'payment' && p.holdUntilComplete === true) ||
+      (type === 'inventory_update' && p.holdUntilComplete === true)
+    ) {
+      held.add(soId);
+    }
+  }
+  return held;
+}

@@ -10,6 +10,7 @@ import {
   Platform,
   LayoutAnimation,
   UIManager,
+  InteractionManager,
   Image,
   Modal,
   Pressable,
@@ -52,7 +53,6 @@ import {
   markDashboardInitialLoadComplete,
   setDashboardUploadIndicators,
   setDashboardIndicatorsListener,
-  setCheckoutCompleteNotificationListener,
 } from '../services/sync.service';
 import * as localPaymentsDb from '../database/localPayments.js';
 import * as localInvoicesDb from '../database/localInvoices.js';
@@ -211,7 +211,9 @@ export default function DashboardScreen({ navigation }) {
   const [lineTotalsByOrder, setLineTotalsByOrder] = useState(() => lastDashboardSnapshot?.lineTotalsByOrder ?? {});
   const [pickingsBySaleId, setPickingsBySaleId] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(
+    () => !isDashboardInitialLoadMemoryDone() && !(lastDashboardSnapshot?.orders?.length > 0)
+  );
   const [syncing, setSyncing] = useState(false);
   const [lastSyncTime, setLastSyncTime] = useState(null);
   const [syncLog, setSyncLog] = useState([]);
@@ -266,8 +268,6 @@ export default function DashboardScreen({ navigation }) {
   );
   const dashboardSessionKeyRef = useRef(null);
   const lastSyncNotificationRef = React.useRef(null);
-  const uploadSyncPendingRef = React.useRef(false);
-  const initialSyncStartedRef = React.useRef(false);
   /** Latched while orange pending upload counter > 0 and a flush is running; cleared when counter hits 0. */
   const [networkQuality, setNetworkQuality] = useState(NetworkQuality.OFFLINE);
 
@@ -281,21 +281,26 @@ export default function DashboardScreen({ navigation }) {
         localCompleted: ind.localCompleted,
       }));
     });
-    setCheckoutCompleteNotificationListener(({ customerLabel, orderLabel }) => {
-      const name = String(customerLabel || orderLabel || '').trim();
-      if (!name) return;
-      setNotification({
-        visible: true,
-        title: t('common.orderCompletedTitle', 'Order completed'),
-        message: t('common.orderCompletedBody', '{{customer}} order completed.', { customer: name }),
-        type: 'success',
-      });
-    });
     return () => {
       setDashboardIndicatorsListener(null);
-      setCheckoutCompleteNotificationListener(null);
     };
-  }, [t]);
+  }, []);
+
+  /** Toast only when orange pending-upload counter drops to zero (synced / green). */
+  const prevLocalCompletedRef = React.useRef(0);
+  useEffect(() => {
+    const cur = orderSyncStats.localCompleted;
+    const prev = prevLocalCompletedRef.current;
+    if (prev > 0 && cur === 0) {
+      setNotification({
+        visible: true,
+        title: t('common.syncCompletedTitle', 'Sync completed'),
+        message: t('common.syncCompletedBody', 'Pending uploads have been synced.'),
+        type: 'success',
+      });
+    }
+    prevLocalCompletedRef.current = cur;
+  }, [orderSyncStats.localCompleted, t]);
 
   const syncButtonActive =
     syncing ||
@@ -314,9 +319,36 @@ export default function DashboardScreen({ navigation }) {
     if (!sessionKey) return;
     if (dashboardSessionKeyRef.current === sessionKey) return;
     dashboardSessionKeyRef.current = sessionKey;
-    setInitialLoadGateActive(true);
-    setLoading(true);
+    void (async () => {
+      const { done } = await hydrateDashboardInitialLoadFromStorage();
+      if (done) {
+        setInitialLoadGateActive(false);
+        setLoading(false);
+        return;
+      }
+      setInitialLoadGateActive(true);
+      setLoading(!(lastDashboardSnapshot?.orders?.length > 0));
+    })();
   }, [sessionKey]);
+
+  /** Fresh login: do not keep dashboard hidden while background sync runs. */
+  useEffect(() => {
+    if (!user?.pendingInitialSync) return;
+    let cancelled = false;
+    void (async () => {
+      const u = await getUserSession();
+      if (cancelled || !u?.pendingInitialSync) return;
+      try {
+        await saveUserSession({ ...u, pendingInitialSync: false });
+      } catch (_) {}
+      if (!cancelled) {
+        setUser((prev) => (prev ? { ...prev, pendingInitialSync: false } : prev));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.pendingInitialSync]);
 
   const postLoginSyncCopy = useMemo(() => {
     return {
@@ -374,8 +406,13 @@ export default function DashboardScreen({ navigation }) {
     return String(preferred || fallback || '');
   }, [syncDateField]);
 
-  const loadData = useCallback(async () => {
-    setLoading(true);
+  const loadData = useCallback(async (options = {}) => {
+    const showLoading = options.showLoading !== false;
+    if (showLoading) setLoading(true);
+    let vehicleIdForStock = null;
+    let ordersForStock = [];
+    let pendingCheckoutForStock = new Set();
+    let localInvoicedForStock = new Set();
     try {
       const [userData, routesData] = await Promise.all([
         getUserSession(),
@@ -557,104 +594,13 @@ export default function DashboardScreen({ navigation }) {
       });
       setDashboardUploadIndicators(pendingOrders, localCompleted);
 
-      // Stock overview:
-      // pending in lorry = total loaded - delivered/invoiced quantity
-      // Delivered quantity is derived from:
-      // 1) sale_orders.invoice_status === 'invoiced' OR
-      // 2) stock.picking.state === 'done'
-      // across ALL cached orders (not just today's list), so dashboard stays accurate.
-      try {
-        if (vehicleId != null) {
-          const allOrderIds = (Array.isArray(data) ? data : [])
-            .map((o) => Number(o?.id))
-            .filter((id) => Number.isFinite(id));
-          const [allPickings, allOrderLines, allQtyDoneBySo, allBackendDeliveredSet] = await Promise.all([
-            allOrderIds.length ? getPickingsBySaleIdsFromDB(allOrderIds) : Promise.resolve([]),
-            allOrderIds.length ? getOrderLinesByOrderIdsFromDB(allOrderIds) : Promise.resolve([]),
-            allOrderIds.length ? deliveryQtyDb.getTotalQtyDoneBySaleOrderIds(allOrderIds) : Promise.resolve({}),
-            allOrderIds.length
-              ? saleOrderLinesDb.getSaleOrderIdsWithPositiveQtyDelivered(allOrderIds)
-              : Promise.resolve(new Set()),
-          ]);
-
-          const allPickingState = mergePickingStateBySaleIdFromRows(allPickings);
-          const orderByIdAll = {};
-          for (const o of Array.isArray(data) ? data : []) {
-            orderByIdAll[Number(o.id)] = o;
-          }
-
-          const deliveredQtyByProductId = {};
-          for (const line of allOrderLines || []) {
-            const orderId = Array.isArray(line.order_id) ? line.order_id[0] : line.order_id;
-            const soId = orderId != null ? Number(orderId) : null;
-            if (soId == null || !Number.isFinite(soId)) continue;
-            const order = orderByIdAll[soId];
-            if (!order) continue;
-            if (
-              !orderCountsAsDeliveredForDashboard(
-                order,
-                allPickingState,
-                allQtyDoneBySo,
-                allBackendDeliveredSet,
-                pendingCheckoutSaleOrderIds,
-                localInvoiceSaleOrderIds,
-                allOrderLines
-              )
-            ) {
-              continue;
-            }
-
-            const pidRaw = Array.isArray(line.product_id) ? line.product_id[0] : line.product_id;
-            const pid = pidRaw != null ? Number(pidRaw) : null;
-            if (pid == null || !Number.isFinite(pid)) continue;
-
-            const isInvoiced = String(order?.invoice_status || '').toLowerCase() === 'invoiced';
-            const qty = effectiveDeliveredQtyForLine(line, { isInvoiced });
-            if (qty <= 0) continue;
-            deliveredQtyByProductId[pid] = (deliveredQtyByProductId[pid] || 0) + qty;
-          }
-
-          const [inventories, productNameMap] = await Promise.all([
-            vehicleInventoriesDb.getVehicleInventoryByVehicleId(vehicleId),
-            productsDb.getProductsMap(),
-          ]);
-          const nextEmptyStockByKg = {};
-          for (const inv of inventories || []) {
-            const pid = inv?.product_id != null ? Number(inv.product_id) : null;
-            const resolvedName = (pid != null ? productNameMap?.[pid] : null) || inv?.product_name || '';
-            if (!isEmptyCylinderName(resolvedName)) continue;
-            const kg = canonicalKgFromName(resolvedName);
-            if (kg == null) continue;
-            const qty = Math.max(0, Number(inv?.quantity) || 0);
-            nextEmptyStockByKg[kg] = (nextEmptyStockByKg[kg] || 0) + qty;
-          }
-          setEmptyStockByKg(nextEmptyStockByKg);
-          const byProduct = {};
-          for (const inv of inventories || []) {
-            const pid = inv?.product_id != null ? Number(inv.product_id) : null;
-            if (pid == null) continue;
-            const total = Number(inv.quantity) || 0;
-            const delivered = Number(deliveredQtyByProductId[pid]) || 0;
-            const remaining = Math.max(0, total - delivered);
-            const resolvedName = (productNameMap && productNameMap[pid]) || inv?.product_name || `Product ${pid}`;
-            byProduct[pid] = {
-              product_id: pid,
-              product_name: resolvedName,
-              total,
-              remaining,
-            };
-          }
-          /** Always show the four default cylinder sizes; merge Odoo rows, fill missing with 0 on-hand / 0 remaining. */
-          setStockCards(buildDefaultGasDashboardStockCards(Object.values(byProduct), productNameMap || {}));
-        } else {
-          setStockCards((prev) => (prev?.length ? prev : []));
-        }
-      } catch (_) {
-        setStockCards((prev) => (prev?.length ? prev : []));
-      }
+      vehicleIdForStock = vehicleId;
+      ordersForStock = Array.isArray(data) ? data : [];
+      pendingCheckoutForStock = pendingCheckoutSaleOrderIds;
+      localInvoicedForStock = localInvoiceSaleOrderIds;
 
       lastDashboardSnapshot = {
-        orders: effectiveOrders || [],
+        orders: ordersForStock,
         user,
         routes: Array.isArray(routesData) ? routesData : [],
         lineTotalsByOrder: totals || {},
@@ -671,8 +617,109 @@ export default function DashboardScreen({ navigation }) {
       // Keep last known dashboard data on transient read failures.
       console.warn('[Dashboard] loadData failed, preserving previous view state', err?.message ?? err);
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
+
+    const runStockOverview = async () => {
+      try {
+        if (vehicleIdForStock == null) {
+          setStockCards((prev) => (prev?.length ? prev : []));
+          return;
+        }
+        const allOrderIds = ordersForStock
+          .map((o) => Number(o?.id))
+          .filter((id) => Number.isFinite(id));
+        const [allPickings, allOrderLines, allQtyDoneBySo, allBackendDeliveredSet] = await Promise.all([
+          allOrderIds.length ? getPickingsBySaleIdsFromDB(allOrderIds) : Promise.resolve([]),
+          allOrderIds.length ? getOrderLinesByOrderIdsFromDB(allOrderIds) : Promise.resolve([]),
+          allOrderIds.length ? deliveryQtyDb.getTotalQtyDoneBySaleOrderIds(allOrderIds) : Promise.resolve({}),
+          allOrderIds.length
+            ? saleOrderLinesDb.getSaleOrderIdsWithPositiveQtyDelivered(allOrderIds)
+            : Promise.resolve(new Set()),
+        ]);
+
+        const allPickingState = mergePickingStateBySaleIdFromRows(allPickings);
+        const orderByIdAll = {};
+        for (const o of ordersForStock) {
+          orderByIdAll[Number(o.id)] = o;
+        }
+
+        const deliveredQtyByProductId = {};
+        for (const line of allOrderLines || []) {
+          const orderId = Array.isArray(line.order_id) ? line.order_id[0] : line.order_id;
+          const soId = orderId != null ? Number(orderId) : null;
+          if (soId == null || !Number.isFinite(soId)) continue;
+          const order = orderByIdAll[soId];
+          if (!order) continue;
+          if (
+            !orderCountsAsDeliveredForDashboard(
+              order,
+              allPickingState,
+              allQtyDoneBySo,
+              allBackendDeliveredSet,
+              pendingCheckoutForStock,
+              localInvoicedForStock,
+              allOrderLines
+            )
+          ) {
+            continue;
+          }
+
+          const pidRaw = Array.isArray(line.product_id) ? line.product_id[0] : line.product_id;
+          const pid = pidRaw != null ? Number(pidRaw) : null;
+          if (pid == null || !Number.isFinite(pid)) continue;
+
+          const isInvoiced = String(order?.invoice_status || '').toLowerCase() === 'invoiced';
+          const qty = effectiveDeliveredQtyForLine(line, { isInvoiced });
+          if (qty <= 0) continue;
+          deliveredQtyByProductId[pid] = (deliveredQtyByProductId[pid] || 0) + qty;
+        }
+
+        const [inventories, productNameMap] = await Promise.all([
+          vehicleInventoriesDb.getVehicleInventoryByVehicleId(vehicleIdForStock),
+          productsDb.getProductsMap(),
+        ]);
+        const nextEmptyStockByKg = {};
+        for (const inv of inventories || []) {
+          const pid = inv?.product_id != null ? Number(inv.product_id) : null;
+          const resolvedName = (pid != null ? productNameMap?.[pid] : null) || inv?.product_name || '';
+          if (!isEmptyCylinderName(resolvedName)) continue;
+          const kg = canonicalKgFromName(resolvedName);
+          if (kg == null) continue;
+          const qty = Math.max(0, Number(inv?.quantity) || 0);
+          nextEmptyStockByKg[kg] = (nextEmptyStockByKg[kg] || 0) + qty;
+        }
+        setEmptyStockByKg(nextEmptyStockByKg);
+        const byProduct = {};
+        for (const inv of inventories || []) {
+          const pid = inv?.product_id != null ? Number(inv.product_id) : null;
+          if (pid == null) continue;
+          const total = Number(inv.quantity) || 0;
+          const delivered = Number(deliveredQtyByProductId[pid]) || 0;
+          const remaining = Math.max(0, total - delivered);
+          const resolvedName = (productNameMap && productNameMap[pid]) || inv?.product_name || `Product ${pid}`;
+          byProduct[pid] = {
+            product_id: pid,
+            product_name: resolvedName,
+            total,
+            remaining,
+          };
+        }
+        const nextCards = buildDefaultGasDashboardStockCards(Object.values(byProduct), productNameMap || {});
+        setStockCards(nextCards);
+        lastDashboardSnapshot = {
+          ...(lastDashboardSnapshot || {}),
+          stockCards: nextCards,
+          emptyStockByKg: nextEmptyStockByKg,
+        };
+      } catch (_) {
+        setStockCards((prev) => (prev?.length ? prev : []));
+      }
+    };
+
+    InteractionManager.runAfterInteractions(() => {
+      void runStockOverview();
+    });
   }, [formatLocalDate, getOrderDateForSyncMode]);
 
 
@@ -740,22 +787,28 @@ export default function DashboardScreen({ navigation }) {
       })();
     };
     const unsub = navigation.addListener?.('focus', () => {
-      loadData();
-      loadSyncStatus();
+      loadData({ showLoading: false });
+      InteractionManager.runAfterInteractions(() => {
+        void loadSyncStatus();
+      });
       tryPostLoginBanner();
-      void hasActiveUploadWork().then((pending) => {
-        if (pending) {
-          schedulePendingUploadSync({
-            immediate: true,
-            aggressive: true,
-            queuePasses: 16,
-            includeAttachments: true,
-          });
-        }
+      InteractionManager.runAfterInteractions(() => {
+        void hasActiveUploadWork().then((pending) => {
+          if (pending) {
+            schedulePendingUploadSync({
+              immediate: true,
+              aggressive: true,
+              queuePasses: 16,
+              includeAttachments: true,
+            });
+          }
+        });
       });
     });
-    loadData();
-    loadSyncStatus();
+    loadData({ showLoading: !isDashboardInitialLoadMemoryDone() });
+    InteractionManager.runAfterInteractions(() => {
+      void loadSyncStatus();
+    });
     tryPostLoginBanner();
     return () => unsub?.();
   }, [loadData, loadSyncStatus, navigation]);
@@ -798,28 +851,10 @@ export default function DashboardScreen({ navigation }) {
   }, [orderSyncStats.localCompleted]);
 
   useEffect(() => {
-    if (orderSyncStats.localCompleted > 0) {
-      uploadSyncPendingRef.current = true;
-    }
-  }, [orderSyncStats.localCompleted]);
-
-  useEffect(() => {
     if (isSyncing || !syncResult) return;
+    if (syncResult !== 'failed') return;
     if (lastSyncNotificationRef.current === syncCompleteTimestamp) return;
     lastSyncNotificationRef.current = syncCompleteTimestamp;
-
-    if (syncResult === 'success') {
-      if (uploadSyncPendingRef.current) {
-        uploadSyncPendingRef.current = false;
-        setNotification({
-          visible: true,
-          title: t('common.syncCompletedTitle', 'Sync completed'),
-          message: t('common.syncCompletedBody', 'Pending uploads have been synced.'),
-          type: 'success',
-        });
-      }
-      return;
-    }
 
     setNotification({
       visible: true,
@@ -830,40 +865,17 @@ export default function DashboardScreen({ navigation }) {
   }, [isSyncing, syncResult, syncErrorMessage, syncCompleteTimestamp, t]);
 
   useEffect(() => {
-    if (user?.licensePlate) {
-      loadCommissionData();
-    }
+    if (!user?.licensePlate) return;
+    const task = InteractionManager.runAfterInteractions(() => {
+      void loadCommissionData();
+    });
+    return () => task?.cancel?.();
   }, [user?.licensePlate, loadCommissionData, commissionDateRange.dateFrom, commissionDateRange.dateTo]);
 
   const totalCrewCommission = useMemo(
     () => (employeeCommissionCards || []).reduce((s, r) => s + (Number(r.totalCommission) || 0), 0),
     [employeeCommissionCards]
   );
-
-  useEffect(() => {
-    if (!user?.pendingInitialSync) {
-      initialSyncStartedRef.current = false;
-      return;
-    }
-    if (isSyncing) {
-      initialSyncStartedRef.current = true;
-      return;
-    }
-    if (!initialSyncStartedRef.current) return;
-    let cancelled = false;
-    (async () => {
-      const u = await getUserSession();
-      if (cancelled || !u?.pendingInitialSync) return;
-      try {
-        await saveUserSession({ ...u, pendingInitialSync: false });
-      } catch (_) {}
-      setUser((prev) => (prev ? { ...prev, pendingInitialSync: false } : prev));
-      initialSyncStartedRef.current = false;
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [user?.pendingInitialSync, isSyncing]);
 
   // If the user already completed the one-time initial dashboard load (stored + memory), open without the full-screen gate
   // after a cold start or when the Dashboard unmounts/remounts in the same app session.
@@ -879,36 +891,13 @@ export default function DashboardScreen({ navigation }) {
     };
   }, []);
 
-  // One-time initial login gate:
-  // show only full-screen loader (no empty dashboard) until first complete data load finishes.
+  // One-time initial login gate: hide empty shell until first SQLite read finishes (not background Odoo sync).
   useEffect(() => {
     if (!initialLoadGateActive) return;
     if (loading) return;
-    if (user?.pendingInitialSync) return;
     void markDashboardInitialLoadComplete(user);
     setInitialLoadGateActive(false);
-  }, [initialLoadGateActive, loading, user?.pendingInitialSync, user]);
-
-  // Safety: if first dashboard load is complete and sync is no longer running,
-  // clear pendingInitialSync so full-screen blocker never repeats on later visits.
-  useEffect(() => {
-    if (!user?.pendingInitialSync) return;
-    if (loading || isSyncing) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const u = await getUserSession();
-        if (cancelled || !u?.pendingInitialSync) return;
-        await saveUserSession({ ...u, pendingInitialSync: false });
-      } catch (_) {}
-      if (!cancelled) {
-        setUser((prev) => (prev ? { ...prev, pendingInitialSync: false } : prev));
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [user?.pendingInitialSync, loading, isSyncing]);
+  }, [initialLoadGateActive, loading, user]);
 
   // Short delayed reload on first mount so dashboard amounts update immediately after first-time login
   useEffect(() => {
@@ -2062,14 +2051,11 @@ export default function DashboardScreen({ navigation }) {
     (todayOrderLines?.length || 0) > 0 ||
     (stockCards?.length || 0) > 0 ||
     Object.keys(lineTotalsByOrder || {}).length > 0;
-  /** Keep full-screen loader until first dashboard load finishes (same as earlier behavior). */
+  /** Full-screen loader only for the first empty load — never wait on background Odoo sync. */
   const shouldShowInitialFullScreenLoader =
-    (initialLoadGateActive && (loading || isSyncing || !!user?.pendingInitialSync)) ||
-    (loading && !hasAnyDashboardData);
+    initialLoadGateActive && loading && !hasAnyDashboardData;
 
-  /** Blur overlay on first-session sync when dashboard shell is visible but data sync is still in flight */
-  const shouldBlockDashboard =
-    initialLoadGateActive && (isSyncing || !!user?.pendingInitialSync);
+  const shouldBlockDashboard = false;
 
   if (shouldShowInitialFullScreenLoader) {
     return (

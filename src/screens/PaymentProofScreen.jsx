@@ -24,7 +24,7 @@ import * as localInvoicesDb from '../database/localInvoices.js';
 import * as localPaymentsDb from '../database/localPayments.js';
 import * as stockPickingsDb from '../database/stockPickings.js';
 import * as syncQueueDb from '../database/syncQueue.js';
-import { getSaleOrderDetailsFromDB, notifyLocalInventoryChanged, signalDashboardPendingUploadStarted, schedulePendingUploadSync, notifyCheckoutCompleteForDashboard } from '../services/sync.service';
+import { getSaleOrderDetailsFromDB, notifyLocalInventoryChanged, signalDashboardPendingUploadStarted, schedulePendingUploadSync } from '../services/sync.service';
 import {
   applyInventoryUpdatesToLocalDb,
   applyLocalGasInventoryForSaleOrder,
@@ -127,6 +127,64 @@ export default function PaymentProofScreen({ route, navigation }) {
       const payload = { ...(inventoryRow.payload || {}) };
       delete payload.holdUntilComplete;
       await syncQueueDb.updateQueueItemPayload(inventoryRow.id, payload);
+    }
+  }, [soId]);
+
+  /** Persist local invoice + line snapshot before dashboard (amounts + VAT for My Invoices). */
+  const persistLocalInvoiceAtCheckout = useCallback(async () => {
+    const latestPayment = await syncQueueDb.getPendingPaymentItemBySaleOrderId(soId);
+    const paymentPayload = latestPayment?.payload || {};
+    const data = await getSaleOrderDetailsFromDB(soId);
+    const orderInfo = data?.order || {};
+    const existingLocalInv = await localInvoicesDb.getLocalInvoiceBySaleOrderId(soId);
+
+    const fromBackend =
+      orderInfo?.invoice_number != null && String(orderInfo.invoice_number).trim() !== ''
+        ? String(orderInfo.invoice_number).trim()
+        : '';
+    const fromLocalRow =
+      existingLocalInv?.invoice_number != null && String(existingLocalInv.invoice_number).trim() !== ''
+        ? String(existingLocalInv.invoice_number).trim()
+        : '';
+    let invoiceNumber = fromBackend || fromLocalRow;
+    if (!invoiceNumber) {
+      try {
+        invoiceNumber = await getOrAssignInvoiceNumber(soId, {
+          saleOrderName: orderInfo?.name,
+          backendInvoiceNumber: orderInfo?.invoice_number,
+        });
+      } catch (e) {
+        console.warn('[PaymentProof] resolve invoice number', e?.message || e);
+        invoiceNumber = orderInfo?.name ? `TEMP-${soId}` : '—';
+      }
+    }
+
+    const total = Number(paymentPayload.total ?? orderInfo.amount_total ?? 0) || 0;
+    const untaxed = Number(orderInfo.amount_untaxed ?? total) || 0;
+    const tax = Number(orderInfo.amount_tax ?? Math.max(0, total - untaxed)) || 0;
+    const checkoutDriverName =
+      paymentPayload?.driverName != null && String(paymentPayload.driverName).trim()
+        ? String(paymentPayload.driverName).trim()
+        : '';
+
+    await localInvoicesDb.upsertLocalInvoice({
+      sale_order_id: soId,
+      invoice_number: invoiceNumber,
+      amount_total: total,
+      amount_untaxed: untaxed,
+      amount_tax: tax,
+      state: 'posted',
+      customer_signature_data: existingLocalInv?.customer_signature_data ?? '',
+      driver_signature_data: existingLocalInv?.driver_signature_data ?? '',
+      driver_name: checkoutDriverName,
+    });
+
+    const invQtys =
+      (Array.isArray(paymentPayload?.invoiceLineQtys) && paymentPayload.invoiceLineQtys.length > 0
+        ? paymentPayload.invoiceLineQtys
+        : null) || [];
+    if (invQtys.length > 0) {
+      await finalizeLocalInvoiceSnapshotFromPayment(soId, invQtys);
     }
   }, [soId]);
 
@@ -251,14 +309,10 @@ export default function PaymentProofScreen({ route, navigation }) {
       await applyLocalGasInventoryForSaleOrder(soId);
       await releaseQueueHoldsForSo();
       await clearCheckoutResume(soId);
+      await persistLocalInvoiceAtCheckout();
       await saleOrdersDb.updateSaleOrderInvoiceStatusLocal(soId, 'invoiced');
       markSaleOrderDeliveredInUi(soId);
       signalDashboardPendingUploadStarted();
-      notifyCheckoutCompleteForDashboard({
-        customerLabel:
-          (customerLabel && String(customerLabel).trim()) ||
-          (orderName ? String(orderName) : `Order ${soId}`),
-      });
       notifyLocalInventoryChanged();
 
       navigation.reset({
@@ -282,7 +336,7 @@ export default function PaymentProofScreen({ route, navigation }) {
       schedulePendingUploadSync({
         immediate: true,
         aggressive: true,
-        queuePasses: 18,
+        queuePasses: 8,
         includeAttachments: true,
       });
     } catch (e) {
@@ -297,10 +351,9 @@ export default function PaymentProofScreen({ route, navigation }) {
     photos.length,
     persistPhotos,
     releaseQueueHoldsForSo,
+    persistLocalInvoiceAtCheckout,
     finalizeLocalCheckoutState,
     navigation,
-    customerLabel,
-    orderName,
   ]);
 
   const styles = useMemo(

@@ -91,7 +91,6 @@ export default function LoginScreen({ navigation }) {
   const loadVehicles = useCallback(async () => {
     try {
       const list = await getCachedVehicles();
-      console.log("Vehicles loaded from DB:", list.length);
       const vehicleList = Array.isArray(list) ? list : [];
       setVehicles(vehicleList);
       const lastId = await getLastVehicleId();
@@ -107,18 +106,20 @@ export default function LoginScreen({ navigation }) {
     }
   }, []);
 
-  /** On login screen load: always fetch fleet.vehicle from Odoo (search_read), then refresh local list. */
+  /** Show cached vehicles immediately; refresh fleet from Odoo in background (do not block the form). */
   const initData = useCallback(async () => {
     await loadVehicles();
-    setSyncing(true);
-    try {
-      const success = await syncVehiclesOnly();
-      if (success) await loadVehicles();
-    } catch (e) {
-      console.log("Vehicle fetch failed", e);
-    } finally {
-      setTimeout(() => setSyncing(false), 500);
-    }
+    void (async () => {
+      setSyncing(true);
+      try {
+        const success = await syncVehiclesOnly();
+        if (success) await loadVehicles();
+      } catch (e) {
+        console.warn('[Login] vehicle fetch failed', e?.message || e);
+      } finally {
+        setSyncing(false);
+      }
+    })();
   }, [loadVehicles]);
   /** Driver code / password (matched in Odoo on Driving employees; value is not shown from server). */
   const [password, setPassword] = useState('');
@@ -262,7 +263,7 @@ export default function LoginScreen({ navigation }) {
         selectedPorters,
         loggedInAt: new Date().toISOString(),
         sessionExpiresAt: getSessionExpiryAtIsoEndOfLocalDay(),
-        pendingInitialSync: true,
+        pendingInitialSync: false,
       });
 
       try {

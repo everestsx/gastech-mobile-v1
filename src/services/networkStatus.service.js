@@ -2,7 +2,11 @@
  * NetInfo wrapper — quality classification + stable-online flush trigger (does not change sync RPC logic).
  */
 import NetInfo from '@react-native-community/netinfo';
-import { PENDING_QUEUE_ACTIVE_RETRY_MS, PENDING_QUEUE_FAST_RETRY_MS } from './sync.service.js';
+import {
+  PENDING_QUEUE_ACTIVE_RETRY_MS,
+  PENDING_QUEUE_FAST_RETRY_MS,
+  PENDING_QUEUE_BACKGROUND_RETRY_MS,
+} from './sync.service.js';
 
 export const NetworkQuality = {
   GOOD: 'good',
@@ -72,15 +76,13 @@ async function flushQueueOnStableConnection() {
   if (now - lastFlushAt < STABLE_FLUSH_COOLDOWN_MS) return;
   try {
     const m = await import('./sync.service.js');
-    if (!m.hasDashboardUploadQueueWork()) return;
-    if (!(await m.hasActionablePendingUploadWork())) return;
+    const shouldRun =
+      typeof m.shouldRunPendingUploadRetryLoop === 'function'
+        ? await m.shouldRunPendingUploadRetryLoop()
+        : (await m.hasPendingUploadWork()) && m.hasDashboardUploadQueueWork();
+    if (!shouldRun) return;
     lastFlushAt = now;
-    m.schedulePendingUploadSync({
-      immediate: true,
-      aggressive: true,
-      queuePasses: 24,
-      includeAttachments: true,
-    });
+    m.wakePendingUploadSyncNow({ queuePasses: 24, includeAttachments: true });
   } catch (_) {
     /* non-fatal */
   }
@@ -106,6 +108,8 @@ export function subscribeNetworkStatus(listener) {
     });
     if (quality === NetworkQuality.GOOD && prev !== NetworkQuality.GOOD) {
       void flushQueueOnStableConnection();
+    } else if (prev === NetworkQuality.OFFLINE && quality !== NetworkQuality.OFFLINE) {
+      void flushQueueOnStableConnection();
     }
   };
 
@@ -119,4 +123,11 @@ export function getPendingRetryDelayMsForQuality(quality) {
   if (quality === NetworkQuality.GOOD) return PENDING_QUEUE_ACTIVE_RETRY_MS;
   if (quality === NetworkQuality.WEAK) return Math.max(PENDING_QUEUE_FAST_RETRY_MS, 3000);
   return 12000;
+}
+
+/** Poll interval for pending-upload loop (foreground vs background / screen off). */
+export function getPendingRetryDelayMsForAppState(appState, quality) {
+  const base = getPendingRetryDelayMsForQuality(quality);
+  if (appState === 'active') return base;
+  return Math.min(3000, Math.max(PENDING_QUEUE_BACKGROUND_RETRY_MS, base));
 }
