@@ -9,8 +9,11 @@ function odooRel(idName) {
   return { id: idName, name: null };
 }
 
-export async function upsertVehicleInventories(rows) {
+export async function upsertVehicleInventories(rows, options = {}) {
   if (!rows?.length) return;
+  const applyServerQuantities = options.applyServerQuantities === true;
+  const protectProductIds =
+    options.protectProductIds instanceof Set ? options.protectProductIds : new Set();
   const db = await getDb();
   const now = iso();
   await db.withTransactionAsync(async (tx) => {
@@ -27,12 +30,22 @@ export async function upsertVehicleInventories(rows) {
       // Check if this row was locally modified.
       // Keep local quantity/available_quantity, but still refresh product_name from backend
       // so renamed products (e.g. GAS2.3 -> GAS2.4) appear correctly in UI.
-      const existing = await tx.getFirstAsync(
+      let existing = await tx.getFirstAsync(
         `SELECT is_locally_modified FROM vehicle_inventories WHERE vehicle_id = ? AND product_id = ?`,
         [vehicleId, productId]
       );
+      if (!existing && locationId != null && productId != null) {
+        existing = await tx.getFirstAsync(
+          `SELECT is_locally_modified FROM vehicle_inventories WHERE location_id = ? AND product_id = ?`,
+          [locationId, productId]
+        );
+      }
 
-      if (existing?.is_locally_modified === 1) {
+      const protectLocalQty =
+        existing?.is_locally_modified === 1 &&
+        (!applyServerQuantities || protectProductIds.has(productId));
+
+      if (protectLocalQty) {
         await tx.runAsync(
           `UPDATE vehicle_inventories SET product_name = ?, updated_at = ? WHERE vehicle_id = ? AND product_id = ?`,
           [empty(product.name), now, vehicleId, productId]

@@ -4447,6 +4447,216 @@ async function getSyncDateFieldSetting() {
   }
 }
 
+const INVENTORY_FETCH_RETRY_MS = 500;
+
+function normalizeWarehouseKey(v) {
+  return String(v || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+/** Vehicle row for stock pull — Odoo first, then SQLite, then session plate from login. */
+async function getVehicleRecordForInventorySync(vehicleId, sessionUser) {
+  const idNum = Number(vehicleId);
+  if (!Number.isFinite(idNum) || idNum <= 0) return null;
+  let singleVehicle = await getVehicleById(idNum).catch(() => null);
+  if (singleVehicle) return singleVehicle;
+  try {
+    const cached = (await vehiclesDb.getAllVehicles()).find((x) => Number(x.id) === idNum);
+    if (cached) return cached;
+  } catch (_) {
+    /* non-fatal */
+  }
+  const plate = (sessionUser?.licensePlate || sessionUser?.license_plate || '').trim();
+  if (plate) {
+    return {
+      id: idNum,
+      license_plate: plate,
+      name: sessionUser?.vehicleName || plate,
+    };
+  }
+  return null;
+}
+
+async function resolveVehicleStockLocationId(v, warehouseByNameKey, warehouseByCodeKey, sessionLicensePlate = '') {
+  const licensePlate = (v?.license_plate || (v?.name || '').split('/').pop() || sessionLicensePlate || '').trim();
+  let resolvedLocationId = null;
+  let resolvedLocationName = '';
+  let resolvedLocationCompleteName = '';
+  const vId = v?.id != null ? Number(v.id) : null;
+
+  const plateKey = normalizeWarehouseKey(licensePlate);
+  const vehicleNameKey = normalizeWarehouseKey(v?.name);
+  const afterHyphen = String(licensePlate).split('-').pop() || '';
+  const codeKey = normalizeWarehouseKey(afterHyphen);
+  const sessionPlateKey = normalizeWarehouseKey(sessionLicensePlate);
+
+  const matchedWarehouse =
+    warehouseByNameKey.get(plateKey) ||
+    warehouseByNameKey.get(vehicleNameKey) ||
+    warehouseByNameKey.get(codeKey) ||
+    (sessionPlateKey ? warehouseByNameKey.get(sessionPlateKey) : null) ||
+    warehouseByCodeKey.get(codeKey) ||
+    (sessionPlateKey ? warehouseByCodeKey.get(sessionPlateKey) : null) ||
+    null;
+
+  if (matchedWarehouse?.lot_stock_id != null) {
+    const lot = matchedWarehouse.lot_stock_id;
+    const lotId = Array.isArray(lot) ? Number(lot[0]) : Number(lot);
+    const lotName = Array.isArray(lot) ? String(lot[1] || '') : '';
+    if (Number.isFinite(lotId) && lotId > 0) {
+      resolvedLocationId = lotId;
+      resolvedLocationName = lotName || String(matchedWarehouse?.name || '');
+      resolvedLocationCompleteName = resolvedLocationName;
+    }
+  }
+
+  const tryPlateForLocation = async (plate) => {
+    if (!plate) return;
+    const locations = await getStockLocationByVehicle(plate).catch(() => []);
+    const loc = locations && locations[0] ? locations[0] : null;
+    if (loc?.id != null && resolvedLocationId == null) {
+      resolvedLocationId = Number(loc.id);
+      resolvedLocationName = String(loc.name || '');
+      resolvedLocationCompleteName = String(loc.complete_name || loc.name || '');
+    }
+  };
+
+  if (resolvedLocationId == null) await tryPlateForLocation(licensePlate);
+  if (resolvedLocationId == null && sessionLicensePlate && sessionLicensePlate !== licensePlate) {
+    await tryPlateForLocation(sessionLicensePlate);
+  }
+
+  if (resolvedLocationId == null && vId != null) {
+    const cachedWh = await vehicleWarehousesDb.getVehicleWarehouseByVehicleId(vId);
+    const cachedLocId = cachedWh?.id != null ? Number(cachedWh.id) : null;
+    if (Number.isFinite(cachedLocId) && cachedLocId > 0) {
+      resolvedLocationId = cachedLocId;
+      resolvedLocationName = String(cachedWh.name || cachedWh.complete_name || '');
+      resolvedLocationCompleteName = String(cachedWh.complete_name || cachedWh.name || '');
+    }
+  }
+
+  if (resolvedLocationId == null && vId != null) {
+    const inv = await vehicleInventoriesDb.getVehicleInventoryByVehicleId(vId);
+    const derivedLocId = (inv || [])
+      .map((r) => Number(r?.location_id))
+      .find((id) => Number.isFinite(id) && id > 0);
+    if (derivedLocId != null) resolvedLocationId = derivedLocId;
+  }
+
+  return { licensePlate, resolvedLocationId, resolvedLocationName, resolvedLocationCompleteName };
+}
+
+async function fetchVehicleInventoryQuantsWithRetry(locationId) {
+  let lastErr = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const quants = await getVehicleInventoryByLocation(locationId);
+      return { quants, ok: true };
+    } catch (err) {
+      lastErr = err;
+      if (attempt === 0) await new Promise((r) => setTimeout(r, INVENTORY_FETCH_RETRY_MS));
+      else logWarn(`vehicle inventory fetch location ${locationId}`, err);
+    }
+  }
+  return { quants: [], ok: false, error: lastErr };
+}
+
+/** Product ids with pending local inventory uploads — keep local gas qty until queue drains. */
+async function getPendingInventoryProtectProductIds(locationId) {
+  const protectedIds = new Set();
+  try {
+    const pending = await syncQueueDb.getPending();
+    const checkoutHeldSaleOrderIds = buildCheckoutHeldSaleOrderIds(pending);
+    const locNum = locationId != null ? Number(locationId) : null;
+    for (const item of pending || []) {
+      if (item.action_type !== syncQueueDb.ACTION_INVENTORY_UPDATE) continue;
+      const p = item.payload || {};
+      const itemLoc = p.locationId != null ? Number(p.locationId) : null;
+      if (locNum != null && itemLoc != null && itemLoc !== locNum) continue;
+      const saleOrderId = p.saleOrderId != null ? Number(p.saleOrderId) : null;
+      const held =
+        p.holdUntilComplete === true ||
+        (saleOrderId != null && checkoutHeldSaleOrderIds.has(saleOrderId));
+      for (const u of p.updates || []) {
+        const pid = u?.productId != null ? Number(u.productId) : null;
+        if (!Number.isFinite(pid) || pid <= 0) continue;
+        protectedIds.add(pid);
+      }
+      if (held && saleOrderId != null) {
+        log('sync', `inventory pull: protect ${protectedIds.size} product(s) for held SO ${saleOrderId}`);
+      }
+    }
+  } catch (e) {
+    logWarn('inventory pull pending protect list', e);
+  }
+  return protectedIds;
+}
+
+async function persistVehicleInventoryForLocation({ vehicleId, locationId, quants, fetchOk }) {
+  const inventoryRowsForLocation = (quants || []).map((q) => ({
+    ...q,
+    location_id: locationId,
+    vehicle_id: vehicleId,
+  }));
+  if (fetchOk) {
+    const protectProductIds = await getPendingInventoryProtectProductIds(locationId);
+    await vehicleInventoriesDb.pruneInventoryForLocationToIds(
+      locationId,
+      inventoryRowsForLocation.map((r) => r.id)
+    );
+    if (inventoryRowsForLocation.length > 0) {
+      await vehicleInventoriesDb.upsertVehicleInventories(inventoryRowsForLocation, {
+        applyServerQuantities: true,
+        protectProductIds,
+      });
+    } else {
+      log('sync', `vehicle inventory location ${locationId}: synced empty quants (stock now zero where applicable)`);
+    }
+    return { rows: inventoryRowsForLocation, persisted: true };
+  }
+  log('sync', `vehicle inventory location ${locationId}: fetch failed, keep existing local rows`);
+  return { rows: inventoryRowsForLocation, persisted: false };
+}
+
+async function syncVehicleInventoryForRecord(v, warehouseMaps, sessionUser) {
+  const { warehouseByNameKey, warehouseByCodeKey } = warehouseMaps;
+  const sessionPlate = (sessionUser?.licensePlate || sessionUser?.license_plate || '').trim();
+  const vId = v?.id != null ? Number(v.id) : null;
+  if (vId == null) return { warehouse: null, inventories: [], persisted: false };
+
+  const { licensePlate, resolvedLocationId, resolvedLocationName, resolvedLocationCompleteName } =
+    await resolveVehicleStockLocationId(v, warehouseByNameKey, warehouseByCodeKey, sessionPlate);
+
+  if (resolvedLocationId == null) {
+    logWarn(
+      'vehicle inventory location unresolved',
+      new Error(`vehicle ${vId} plate ${licensePlate || sessionPlate || '—'}`)
+    );
+    return { warehouse: null, inventories: [], persisted: false };
+  }
+
+  log('fetch', `vehicle warehouse ${licensePlate || sessionPlate || vId}`);
+  log('fetch', `vehicle inventory location ${resolvedLocationId}  ${vId}`);
+  const { quants, ok: inventoryFetchOk } = await fetchVehicleInventoryQuantsWithRetry(resolvedLocationId);
+  const { rows, persisted } = await persistVehicleInventoryForLocation({
+    vehicleId: vId,
+    locationId: resolvedLocationId,
+    quants,
+    fetchOk: inventoryFetchOk,
+  });
+
+  return {
+    warehouse: {
+      id: resolvedLocationId,
+      vehicle_id: vId,
+      name: resolvedLocationName,
+      complete_name: resolvedLocationCompleteName,
+    },
+    inventories: rows,
+    persisted,
+  };
+}
+
 // ---------- Sync: pull from Odoo and store in SQLite ----------
 
 async function runSyncInternal() {
@@ -4741,7 +4951,7 @@ async function runSyncInternal() {
           logWarn('fetch routes', e);
           return [];
         }),
-        getVehicleById(vehicleId).catch((e) => {
+        getVehicleRecordForInventorySync(vehicleId, user).catch((e) => {
           logWarn('fetch vehicle by id', e);
           return null;
         }),
@@ -4782,7 +4992,6 @@ async function runSyncInternal() {
     const allVehicleWarehouses = [];
     const allVehicleInventories = [];
     const vehiclesToFetchInventory = vehiclesList;
-    const normalizeKey = (v) => String(v || '').toLowerCase().replace(/[^a-z0-9]/g, '');
     const stockWarehouses = await getStockWarehouses().catch((e) => {
       logWarn('fetch stock warehouses', e);
       return [];
@@ -4790,90 +4999,43 @@ async function runSyncInternal() {
     const warehouseByNameKey = new Map();
     const warehouseByCodeKey = new Map();
     for (const wh of stockWarehouses || []) {
-      const nameKey = normalizeKey(wh?.name);
-      const codeKey = normalizeKey(wh?.code);
+      const nameKey = normalizeWarehouseKey(wh?.name);
+      const codeKey = normalizeWarehouseKey(wh?.code);
       if (nameKey && !warehouseByNameKey.has(nameKey)) warehouseByNameKey.set(nameKey, wh);
       if (codeKey && !warehouseByCodeKey.has(codeKey)) warehouseByCodeKey.set(codeKey, wh);
     }
+    const warehouseMaps = { warehouseByNameKey, warehouseByCodeKey };
+    let sessionVehicleInventoryPersisted = false;
     for (const v of vehiclesToFetchInventory) {
-      const vId = v.id;
-      const licensePlate = v.license_plate || (v.name || '').split('/').pop() || '';
-      if (!licensePlate) continue;
+      const vId = v?.id != null ? Number(v.id) : null;
+      if (vId == null) continue;
       try {
-        log('fetch', `vehicle warehouse ${licensePlate}`);
-        const plateKey = normalizeKey(licensePlate);
-        const vehicleNameKey = normalizeKey(v?.name);
-        const afterHyphen = String(licensePlate).split('-').pop() || '';
-        const codeKey = normalizeKey(afterHyphen);
-        let resolvedLocationId = null;
-        let resolvedLocationName = '';
-        let resolvedLocationCompleteName = '';
-
-        const matchedWarehouse =
-          warehouseByNameKey.get(plateKey) ||
-          warehouseByNameKey.get(vehicleNameKey) ||
-          warehouseByCodeKey.get(codeKey) ||
-          null;
-        if (matchedWarehouse?.lot_stock_id != null) {
-          const lot = matchedWarehouse.lot_stock_id;
-          const lotId = Array.isArray(lot) ? Number(lot[0]) : Number(lot);
-          const lotName = Array.isArray(lot) ? String(lot[1] || '') : '';
-          if (Number.isFinite(lotId) && lotId > 0) {
-            resolvedLocationId = lotId;
-            resolvedLocationName = lotName || String(matchedWarehouse?.name || '');
-            resolvedLocationCompleteName = lotName || String(matchedWarehouse?.name || '');
-          }
-        }
-
-        if (resolvedLocationId == null) {
-          const locations = await getStockLocationByVehicle(licensePlate).catch(() => []);
-          const loc = locations && locations[0] ? locations[0] : null;
-          if (loc?.id != null) {
-            resolvedLocationId = Number(loc.id);
-            resolvedLocationName = String(loc.name || '');
-            resolvedLocationCompleteName = String(loc.complete_name || loc.name || '');
-          }
-        }
-
-        if (resolvedLocationId != null) {
-          allVehicleWarehouses.push({
-            id: resolvedLocationId,
-            vehicle_id: vId,
-            name: resolvedLocationName,
-            complete_name: resolvedLocationCompleteName,
-          });
-          log('fetch', `vehicle inventory location ${resolvedLocationId}  ${vId}`);
-          let quants = [];
-          let inventoryFetchOk = false;
-          try {
-            quants = await getVehicleInventoryByLocation(resolvedLocationId);
-            inventoryFetchOk = true;
-          } catch (invErr) {
-            inventoryFetchOk = false;
-            logWarn(`vehicle inventory fetch location ${resolvedLocationId}`, invErr);
-          }
-          const inventoryRowsForLocation = (quants || []).map((q) => ({
-            ...q,
-            location_id: resolvedLocationId,
-            vehicle_id: vId,
-          }));
-          allVehicleInventories.push(...inventoryRowsForLocation);
-          if (inventoryFetchOk) {
-            await vehicleInventoriesDb.pruneInventoryForLocationToIds(
-              resolvedLocationId,
-              inventoryRowsForLocation.map((r) => r.id)
-            );
-            if (inventoryRowsForLocation.length > 0) {
-              await vehicleInventoriesDb.upsertVehicleInventories(inventoryRowsForLocation);
-            } else {
-              log('sync', `vehicle inventory location ${resolvedLocationId}: synced empty quants (stock now zero where applicable)`);
-            }
-          } else {
-            log('sync', `vehicle inventory location ${resolvedLocationId}: fetch failed, keep existing local rows`);
-          }
+        const { warehouse, inventories, persisted } = await syncVehicleInventoryForRecord(v, warehouseMaps, user);
+        if (warehouse) allVehicleWarehouses.push(warehouse);
+        if (inventories?.length) allVehicleInventories.push(...inventories);
+        if (persisted && vehicleId != null && vId === Number(vehicleId)) {
+          sessionVehicleInventoryPersisted = true;
+          notifyLocalInventoryChanged();
         }
       } catch (e) {
         logWarn(`vehicle ${vId} warehouse/inventory`, e);
+      }
+    }
+    if (vehicleId != null && !sessionVehicleInventoryPersisted) {
+      try {
+        const sessionVehicle = await getVehicleRecordForInventorySync(vehicleId, user);
+        if (sessionVehicle) {
+          log('sync', `vehicle inventory retry for session vehicle ${vehicleId}`);
+          const retry = await syncVehicleInventoryForRecord(sessionVehicle, warehouseMaps, user);
+          if (retry.warehouse) allVehicleWarehouses.push(retry.warehouse);
+          if (retry.inventories?.length) allVehicleInventories.push(...retry.inventories);
+          if (retry.persisted) {
+            sessionVehicleInventoryPersisted = true;
+            notifyLocalInventoryChanged();
+          }
+        }
+      } catch (retryErr) {
+        logWarn(`vehicle inventory retry session ${vehicleId}`, retryErr);
       }
     }
     result.vehicleWarehouses = allVehicleWarehouses.length;
