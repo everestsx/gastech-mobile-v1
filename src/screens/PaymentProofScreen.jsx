@@ -30,6 +30,7 @@ import { empty } from '../database/dbHelpers.js';
 import { flushPendingUploadsNow, runSync } from '../services/sync.service';
 import { getOrAssignInvoiceNumber } from '../utils/invoiceNumber';
 import { clearCheckoutResume } from '../services/checkoutResume.service';
+import { testProps } from '../utils/testProps';
 
 const MAX_PHOTOS = 3;
 
@@ -460,14 +461,15 @@ export default function PaymentProofScreen({ route, navigation }) {
           }}
           disabled={saving || !canComplete}
           activeOpacity={0.88}
+          {...testProps('paymentproof-complete')}
         >
           {saving ? (
             <ActivityIndicator color="#fff" />
           ) : (
-            <>
+            <View importantForAccessibility="no-hide-descendants" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
               <Ionicons name="checkmark-done-circle" size={24} color="#fff" />
               <Text style={styles.primaryBtnText}>{t('paymentproof.completePayment', 'Complete payment')}</Text>
-            </>
+            </View>
           )}
         </TouchableOpacity>
         {!creditProofRequired ? (
@@ -483,7 +485,7 @@ export default function PaymentProofScreen({ route, navigation }) {
         onRequestClose={() => setConfirmVisible(false)}
       >
         <Pressable style={styles.confirmBackdrop} onPress={() => setConfirmVisible(false)}>
-          <Pressable style={styles.confirmCard} onPress={(e) => e.stopPropagation()}>
+          <Pressable style={styles.confirmCard} onPress={(e) => e.stopPropagation()} {...testProps('paymentproof-confirm-modal')}>
             <Text style={styles.confirmTitle}>{t('paymentproof.completeThisOrder', 'Complete this order?')}</Text>
             <Text style={styles.confirmText}>
               Once completed, delivery and invoice are finalized. You can no longer edit this order flow.
@@ -493,6 +495,7 @@ export default function PaymentProofScreen({ route, navigation }) {
                 style={[styles.confirmBtn, styles.confirmBtnKeep]}
                 onPress={() => setConfirmVisible(false)}
                 activeOpacity={0.85}
+                {...testProps('paymentproof-confirm-keep')}
               >
                 <Text style={styles.confirmBtnKeepText}>{t('paymentproof.keepOrder', 'Keep order')}</Text>
               </TouchableOpacity>
@@ -503,6 +506,7 @@ export default function PaymentProofScreen({ route, navigation }) {
                   void handleComplete();
                 }}
                 activeOpacity={0.85}
+                {...testProps('paymentproof-confirm-yes')}
               >
                 <Text style={styles.confirmBtnYesText}>{t('paymentproof.yesComplete', 'Yes, complete')}</Text>
               </TouchableOpacity>

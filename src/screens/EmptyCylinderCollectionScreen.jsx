@@ -28,6 +28,7 @@ import * as vehicleInventoriesDb from '../database/vehicleInventories.js';
 import * as productsDb from '../database/products.js';
 import { setCheckoutResumeFromPayment } from '../services/checkoutResume.service';
 import { buildEmptyCylinderChatterBody } from '../services/proofAttachment.service';
+import { testProps } from '../utils/testProps';
 import {
   canonicalKgFromName,
   findEmptyCylinderProductIdForKg,
@@ -608,8 +609,9 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
         <View style={styles.cardsWrap}>
           {rows.map((row) => {
             const adjusted = !qtyClose(row.emptyQty, row.defaultEmptyQty);
+            const kgKey = String(row.kg).replace('.', '_');
             return (
-              <View style={styles.card} key={String(row.kg)}>
+              <View style={styles.card} key={String(row.kg)} {...testProps(`emptycylinder-card-${kgKey}`)}>
                 <View style={styles.cardHeader}>
                   <Text style={styles.sizeLabel}>{labelFromKg(row.kg)}</Text>
                   {adjusted ? (
@@ -629,7 +631,7 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
 
                 <Text style={styles.sectionLabel}>{t('emptycylindercollection.emptiesCollected', 'Empties collected')}</Text>
                 <View style={styles.qtyRow}>
-                  <TouchableOpacity style={styles.qtyBtn} onPress={() => changeQtyBy(row.kg, -1)} activeOpacity={0.85}>
+                  <TouchableOpacity style={styles.qtyBtn} onPress={() => changeQtyBy(row.kg, -1)} activeOpacity={0.85} {...testProps(`emptycylinder-qty-minus-${kgKey}`)}>
                     <Ionicons name="remove" size={22} color={colors.primary} />
                   </TouchableOpacity>
                   <TextInput
@@ -638,8 +640,9 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
                     onChangeText={(text) => setQty(row.kg, text)}
                     keyboardType="decimal-pad"
                     selectTextOnFocus
+                    {...testProps(`emptycylinder-qty-${kgKey}`)}
                   />
-                  <TouchableOpacity style={styles.qtyBtn} onPress={() => changeQtyBy(row.kg, 1)} activeOpacity={0.85}>
+                  <TouchableOpacity style={styles.qtyBtn} onPress={() => changeQtyBy(row.kg, 1)} activeOpacity={0.85} {...testProps(`emptycylinder-qty-plus-${kgKey}`)}>
                     <Ionicons name="add" size={22} color={colors.primary} />
                   </TouchableOpacity>
                 </View>
@@ -655,9 +658,11 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
       </ScrollView>
 
       <View style={[styles.footerBar, { paddingBottom: Math.max(insets.bottom, spacing.md) }]}>
-        <TouchableOpacity style={styles.cta} onPress={() => void onPressConfirm()} disabled={saving} activeOpacity={0.88}>
-          {saving ? <ActivityIndicator color="#fff" /> : <Ionicons name="checkmark-circle" size={24} color="#fff" />}
-          <Text style={styles.ctaText}>{t('emptycylindercollection.continue', 'Continue')}</Text>
+        <TouchableOpacity style={styles.cta} onPress={() => void onPressConfirm()} disabled={saving} activeOpacity={0.88} {...testProps('emptycylinder-continue')}>
+          <View importantForAccessibility="no-hide-descendants" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            {saving ? <ActivityIndicator color="#fff" /> : <Ionicons name="checkmark-circle" size={24} color="#fff" />}
+            <Text style={styles.ctaText}>{t('emptycylindercollection.continue', 'Continue')}</Text>
+          </View>
         </TouchableOpacity>
         <Text style={styles.hint}>
           {hasAdjustment
@@ -682,6 +687,7 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
                   style={[styles.reasonOption, on && styles.reasonOptionOn]}
                   onPress={() => setSelectedReasonKey(reason.key)}
                   activeOpacity={0.88}
+                  {...testProps(`emptycylinder-reason-${reason.key}`)}
                 >
                   <Text style={styles.reasonOptionText}>{reason.label}</Text>
                 </TouchableOpacity>
@@ -694,10 +700,11 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
                 onPress={() => {
                   setReasonModalVisible(false);
                 }}
+                {...testProps('emptycylinder-reason-back')}
               >
                 <Text style={styles.modalBtnSecondaryText}>{t('emptycylindercollection.back', 'Back')}</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.modalBtnPrimary} onPress={onConfirmReason}>
+              <TouchableOpacity style={styles.modalBtnPrimary} onPress={onConfirmReason} {...testProps('emptycylinder-reason-confirm')}>
                 <Text style={styles.modalBtnPrimaryText}>{t('emptycylindercollection.saveAndContinue', 'Save and continue')}</Text>
               </TouchableOpacity>
             </View>

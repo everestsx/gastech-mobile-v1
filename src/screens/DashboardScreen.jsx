@@ -699,7 +699,8 @@ export default function DashboardScreen({ navigation }) {
       void (async () => {
         try {
           const show = await consumePostLoginSyncSuccessPending();
-          if (show) setPostLoginSyncModalVisible(true);
+          // Suppress the popup in E2E automated test runs
+          if (show && process.env.EXPO_PUBLIC_E2E_MODE !== 'true') setPostLoginSyncModalVisible(true);
         } catch (_) {}
       })();
     };
@@ -3012,6 +3013,7 @@ export default function DashboardScreen({ navigation }) {
               style={styles.modalCloseBtn}
               onPress={() => setPostLoginSyncModalVisible(false)}
               activeOpacity={0.88}
+              {...testProps('sync-success-dismiss')}
             >
               <Text style={styles.modalCloseBtnText}>{postLoginSyncCopy.button}</Text>
             </TouchableOpacity>

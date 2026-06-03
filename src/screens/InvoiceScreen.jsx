@@ -41,6 +41,7 @@ import { resolveInvoiceCustomerDisplayName, odooLocalizedText } from '../utils/c
 import { lineSubtotalAtQuantity, lineTaxAtQuantity } from '../utils/orderLineTax.js';
 import { setCheckoutResumePhase, clearCheckoutResume, getCheckoutResumeEntry } from '../services/checkoutResume.service';
 import * as syncQueueDb from '../database/syncQueue.js';
+import { testProps } from '../utils/testProps';
 
 /**
  * Expo `printToFileAsync` defaults to US Letter width (612pt), so a 104mm-wide layout sits in a
@@ -1891,6 +1892,17 @@ export default function InvoiceScreen({ route, navigation }) {
       (driverSignatureDataUrl && String(driverSignatureDataUrl).trim() !== '') ||
       (localDriverSig && String(localDriverSig).trim() !== '');
     if (hasCust && hasDrv) return;
+
+    // E2E test bypass: when EXPO_PUBLIC_E2E_SKIP_SIGNATURES=true inject a minimal dummy signature
+    // so automated tests don't need to interact with the WebView canvas.
+    if (process.env.EXPO_PUBLIC_E2E_SKIP_SIGNATURES === 'true') {
+      // Minimal 1×1 transparent PNG as data URL — just enough to pass non-empty check
+      const dummySig = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+      if (!hasCust) setLocalCustomerSig(dummySig);
+      if (!hasDrv) setLocalDriverSig(dummySig);
+      return; // don't open the modal
+    }
+
     setShowSignatureCaptureModal(true);
   }, [
     saleOrderId,
@@ -2992,6 +3004,7 @@ export default function InvoiceScreen({ route, navigation }) {
       {printResult == null && (
         <TouchableOpacity
           style={styles.skipPrintBtn}
+          {...testProps('invoice-skip-print')}
           onPress={() => {
             if (previewBeforePayment) {
               navigateToProceedPayment();
@@ -3027,10 +3040,12 @@ export default function InvoiceScreen({ route, navigation }) {
           disabled={printing || previewing}
           activeOpacity={0.8}
         >
-          <Ionicons name="play-forward-outline" size={22} color={colors.textSecondary} />
-          <Text style={styles.skipPrintBtnText}>
-            {previewBeforePayment ? 'Skip print, go to payment' : 'Skip invoice printing'}
-          </Text>
+          <View importantForAccessibility="no-hide-descendants" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <Ionicons name="play-forward-outline" size={22} color={colors.textSecondary} />
+            <Text style={styles.skipPrintBtnText}>
+              {previewBeforePayment ? 'Skip print, go to payment' : 'Skip invoice printing'}
+            </Text>
+          </View>
         </TouchableOpacity>
       )}
 
@@ -3118,7 +3133,7 @@ export default function InvoiceScreen({ route, navigation }) {
           setShowSignatureCaptureModal(false);
         }}
       >
-        <View style={styles.sigCapOverlay}>
+        <View style={styles.sigCapOverlay} {...testProps('invoice-signature-modal')}>
           <View style={[styles.sigCapCard, { backgroundColor: colors.surface }]}>
             <View style={styles.sigCapHero}>
               <View style={styles.sigCapHeroIconWrap}>
@@ -3137,6 +3152,7 @@ export default function InvoiceScreen({ route, navigation }) {
                 style={[styles.sigCapTab, signatureCaptureStep === 'customer' && styles.sigCapTabActive]}
                 onPress={() => setSignatureCaptureStep('customer')}
                 activeOpacity={0.85}
+                {...testProps('invoice-sig-tab-customer')}
               >
                 <Text
                   style={[
@@ -3151,6 +3167,7 @@ export default function InvoiceScreen({ route, navigation }) {
                 style={[styles.sigCapTab, signatureCaptureStep === 'driver' && styles.sigCapTabActive]}
                 onPress={() => setSignatureCaptureStep('driver')}
                 activeOpacity={0.85}
+                {...testProps('invoice-sig-tab-driver')}
               >
                 <Text
                   style={[
@@ -3164,7 +3181,7 @@ export default function InvoiceScreen({ route, navigation }) {
             </View>
 
             <View style={styles.sigCapSection}>
-              <View style={styles.sigCapCanvasWrapStack}>
+              <View style={styles.sigCapCanvasWrapStack} {...testProps('invoice-sig-canvas')}>
                 <View
                   style={[
                     styles.sigCapCanvasLayer,
@@ -3245,6 +3262,7 @@ export default function InvoiceScreen({ route, navigation }) {
                       setCaptureCustomerSig(null);
                       setCaptureCustomerSaved(false);
                     }}
+                    {...testProps('invoice-sig-clear-customer')}
                   >
                     <Text style={styles.sigCapBtnText}>{t('invoice.clear', 'Clear')}</Text>
                   </TouchableOpacity>
@@ -3254,6 +3272,7 @@ export default function InvoiceScreen({ route, navigation }) {
                       captureCustomerSaved ? styles.sigCapBtnSaved : styles.sigCapBtnPrimary
                     ]}
                     onPress={() => captureCustomerRef.current?.readSignature()}
+                    {...testProps('invoice-sig-save-customer')}
                   >
                     <Text style={captureCustomerSaved ? styles.sigCapBtnTextSaved : styles.sigCapBtnTextLight}>
                       {captureCustomerSaved ? 'Saved' : 'Save customer'}
@@ -3269,6 +3288,7 @@ export default function InvoiceScreen({ route, navigation }) {
                       setCaptureDriverSig(null);
                       setCaptureDriverSaved(false);
                     }}
+                    {...testProps('invoice-sig-clear-driver')}
                   >
                     <Text style={styles.sigCapBtnText}>{t('invoice.clear', 'Clear')}</Text>
                   </TouchableOpacity>
@@ -3278,6 +3298,7 @@ export default function InvoiceScreen({ route, navigation }) {
                       captureDriverSaved ? styles.sigCapBtnSaved : styles.sigCapBtnPrimary
                     ]}
                     onPress={() => captureDriverRef.current?.readSignature()}
+                    {...testProps('invoice-sig-save-driver')}
                   >
                     <Text style={captureDriverSaved ? styles.sigCapBtnTextSaved : styles.sigCapBtnTextLight}>
                       {captureDriverSaved ? 'Saved' : 'Save driver'}
@@ -3292,6 +3313,7 @@ export default function InvoiceScreen({ route, navigation }) {
                 styles.sigCapDoneBtn,
                 (!captureCustomerSaved || !captureDriverSaved) && styles.sigCapDoneBtnDisabled,
               ]}
+              {...testProps('invoice-sig-done')}
               onPress={() => {
                 const custOk =
                   captureCustomerSig && String(captureCustomerSig).trim() !== '' && captureCustomerSaved;

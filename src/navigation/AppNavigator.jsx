@@ -1,5 +1,6 @@
 import React, { useEffect, useRef } from 'react';
-import { AppState, View, StyleSheet } from 'react-native';
+import { AppState, View, StyleSheet, TouchableOpacity } from 'react-native';
+import { testProps } from '../utils/testProps';
 import { NavigationContainer, createNavigationContainerRef } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
@@ -92,7 +93,11 @@ function MainTabs() {
         component={DashboardScreen}
         options={{
           tabBarLabel: t('navigation.home', 'Home'),
-          tabBarTestID: 'tab-dashboard',
+          tabBarButton: ({ children, ...props }) => (
+            <TouchableOpacity {...props} {...testProps('tab-dashboard')}>
+              <View importantForAccessibility="no-hide-descendants">{children}</View>
+            </TouchableOpacity>
+          ),
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="home-outline" size={size} color={color} />
           ),
@@ -103,7 +108,11 @@ function MainTabs() {
         component={SaleOrderListScreen}
         options={{
           tabBarLabel: t('navigation.orders', 'Orders'),
-          tabBarTestID: 'tab-orders',
+          tabBarButton: ({ children, ...props }) => (
+            <TouchableOpacity {...props} {...testProps('tab-orders')}>
+              <View importantForAccessibility="no-hide-descendants">{children}</View>
+            </TouchableOpacity>
+          ),
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="cart-outline" size={size} color={color} />
           ),
@@ -114,7 +123,11 @@ function MainTabs() {
         component={DeliveredOrdersScreen}
         options={{
           tabBarLabel: t('navigation.delivered', 'Delivered'),
-          tabBarTestID: 'tab-delivered',
+          tabBarButton: ({ children, ...props }) => (
+            <TouchableOpacity {...props} {...testProps('tab-delivered')}>
+              <View importantForAccessibility="no-hide-descendants">{children}</View>
+            </TouchableOpacity>
+          ),
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="checkmark-done-outline" size={size} color={color} />
           ),
@@ -135,7 +148,11 @@ function MainTabs() {
         component={MenuScreen}
         options={{
           tabBarLabel: t('navigation.menu', 'Menu'),
-          tabBarTestID: 'tab-menu',
+          tabBarButton: ({ children, ...props }) => (
+            <TouchableOpacity {...props} {...testProps('tab-menu')}>
+              <View importantForAccessibility="no-hide-descendants">{children}</View>
+            </TouchableOpacity>
+          ),
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="menu-outline" size={size} color={color} />
           ),
