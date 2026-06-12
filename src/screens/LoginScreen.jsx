@@ -73,6 +73,7 @@ export default function LoginScreen({ navigation }) {
   const [languageMenuVisible, setLanguageMenuVisible] = useState(false);
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [vehicleFetchError, setVehicleFetchError] = useState(false);
 
   const [alertConfig, setAlertConfig] = useState({
     visible: false,
@@ -111,11 +112,18 @@ export default function LoginScreen({ navigation }) {
     await loadVehicles();
     void (async () => {
       setSyncing(true);
+      setVehicleFetchError(false);
       try {
         const success = await syncVehiclesOnly();
-        if (success) await loadVehicles();
+        if (success) {
+          const updated = await loadVehicles();
+          if (!updated.length) setVehicleFetchError(true);
+        } else {
+          setVehicleFetchError(true);
+        }
       } catch (e) {
         console.warn('[Login] vehicle fetch failed', e?.message || e);
+        setVehicleFetchError(true);
       } finally {
         setSyncing(false);
       }
@@ -853,7 +861,48 @@ export default function LoginScreen({ navigation }) {
                 <View
                     style={styles.dropdownWrapper}
                 >
-                  <Text style={styles.inputLabel}>{t('login.vehicleID', 'Vehicle ID')}</Text>
+                  {/* Vehicle ID row: label + always-visible refresh button */}
+                  <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}>
+                    <Text style={[styles.inputLabel, { marginBottom: 0, marginLeft: 4, flex: 1 }]}>
+                      {t('login.vehicleID', 'Vehicle ID')}
+                    </Text>
+                    <TouchableOpacity
+                      onPress={syncing ? undefined : initData}
+                      activeOpacity={syncing ? 1 : 0.7}
+                      style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        gap: 5,
+                        backgroundColor: vehicleFetchError
+                          ? '#ef444414'
+                          : colors.primary + '14',
+                        borderRadius: 20,
+                        paddingHorizontal: 10,
+                        paddingVertical: 5,
+                        borderWidth: 1,
+                        borderColor: vehicleFetchError
+                          ? '#ef444435'
+                          : colors.primary + '35',
+                      }}
+                    >
+                      {syncing ? (
+                        <ActivityIndicator size="small" color={colors.primary} />
+                      ) : (
+                        <Ionicons
+                          name="refresh-outline"
+                          size={13}
+                          color={vehicleFetchError ? '#ef4444' : colors.primary}
+                        />
+                      )}
+                      <Text style={{
+                        fontSize: 12,
+                        fontWeight: '700',
+                        color: vehicleFetchError ? '#ef4444' : colors.primary,
+                      }}>
+                        {syncing ? 'Fetching…' : vehicleFetchError ? 'Retry' : 'Refresh'}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
 
                   <TouchableOpacity
                       ref={dropdownRef}

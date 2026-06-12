@@ -197,6 +197,7 @@ export default function DashboardScreen({ navigation }) {
   const { syncCompleteTimestamp, isSyncing, syncResult, syncErrorMessage } = useSync();
   const {
     colors,
+    isDark,
     showCreateSalesOrder: userShowCreate,
     showReturnOrder: userShowReturn,
     syncDateField,
@@ -263,6 +264,31 @@ export default function DashboardScreen({ navigation }) {
   const [pendingBackOfficeModalVisible, setPendingBackOfficeModalVisible] = useState(false);
   const pendingBackOfficeDismissedRef = useRef(false);
   const [notification, setNotification] = useState({ visible: false, title: '', message: '', type: 'info' });
+  // PreCheck / PostCheck — persisted per calendar day via AsyncStorage
+  const PRECHECK_KEY = 'precheck_done_date';
+  const precheckDateKey = new Date().toISOString().slice(0, 10); // e.g. "2026-06-12"
+  const [preCheckDone, setPreCheckDoneState] = useState(false);
+  const setPreCheckDone = useCallback(async (val) => {
+    setPreCheckDoneState(val);
+    try {
+      if (val) {
+        await AsyncStorage.setItem(PRECHECK_KEY, precheckDateKey);
+      } else {
+        await AsyncStorage.removeItem(PRECHECK_KEY);
+      }
+    } catch (e) {
+      console.warn('[PreCheck] AsyncStorage write failed', e);
+    }
+  }, [precheckDateKey]);
+
+  useEffect(() => {
+    AsyncStorage.getItem(PRECHECK_KEY).then((stored) => {
+      if (stored === precheckDateKey) setPreCheckDoneState(true);
+    }).catch(() => {});
+  }, [precheckDateKey]);
+  const [postCheckModalVisible, setPostCheckModalVisible] = useState(false);
+  const [postCheckDropoffLocation, setPostCheckDropoffLocation] = useState('showroom');
+  const [topBarHeight, setTopBarHeight] = useState(0);
   const [initialLoadGateActive, setInitialLoadGateActive] = useState(
     () => !isDashboardInitialLoadMemoryDone()
   );
@@ -1566,6 +1592,231 @@ export default function DashboardScreen({ navigation }) {
           fontWeight: '800',
           color: '#fff',
         },
+        preCheckBtn: {
+          backgroundColor: 'rgba(245, 158, 11, 0.28)',
+          borderColor: 'rgba(251, 191, 36, 0.85)',
+          marginTop: 6,
+        },
+        postCheckBtn: {
+          backgroundColor: 'rgba(16, 185, 129, 0.28)',
+          borderColor: 'rgba(52, 211, 153, 0.85)',
+          marginTop: 6,
+        },
+        // PostCheck modal styles
+        postCheckBackdrop: {
+          flex: 1,
+          backgroundColor: 'rgba(0,0,0,0.60)',
+          justifyContent: 'flex-end',
+        },
+        postCheckSheet: {
+          backgroundColor: colors.background,
+          borderTopLeftRadius: 28,
+          borderTopRightRadius: 28,
+          paddingTop: 12,
+          maxHeight: '92%',
+          borderTopWidth: 1,
+          borderColor: colors.border,
+          overflow: 'hidden',
+        },
+        postCheckHandle: {
+          width: 44,
+          height: 4,
+          borderRadius: 2,
+          backgroundColor: colors.border,
+          alignSelf: 'center',
+          marginBottom: 18,
+        },
+        postCheckTitle: {
+          fontSize: 20,
+          fontWeight: '800',
+          color: colors.text,
+          marginBottom: 2,
+        },
+        postCheckSubtitle: {
+          fontSize: 13,
+          color: colors.textSecondary,
+          marginBottom: 4,
+        },
+        postCheckSectionLabel: {
+          fontSize: 11,
+          fontWeight: '700',
+          color: colors.textSecondary,
+          textTransform: 'uppercase',
+          letterSpacing: 0.9,
+          marginBottom: 8,
+          marginTop: 18,
+        },
+        postCheckRow: {
+          flexDirection: 'row',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          backgroundColor: colors.surface,
+          borderRadius: 14,
+          paddingHorizontal: 14,
+          paddingVertical: 13,
+          marginBottom: 8,
+          borderWidth: 1,
+          borderColor: colors.border,
+        },
+        postCheckRowLabel: {
+          fontSize: 14,
+          fontWeight: '600',
+          color: colors.text,
+          flex: 1,
+          marginRight: 8,
+        },
+        postCheckRowValue: {
+          fontSize: 14,
+          fontWeight: '800',
+          color: colors.primary,
+          flexShrink: 1,
+        },
+        postCheckTotalRow: {
+          flexDirection: 'row',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          borderRadius: 14,
+          paddingHorizontal: 16,
+          paddingVertical: 16,
+          marginTop: 4,
+          marginBottom: 8,
+          backgroundColor: colors.primarySurface,
+          borderWidth: 1.5,
+          borderColor: colors.primary + '55',
+        },
+        postCheckTotalLabel: {
+          fontSize: 15,
+          fontWeight: '800',
+          color: colors.text,
+        },
+        postCheckTotalValue: {
+          fontSize: 18,
+          fontWeight: '900',
+          color: colors.primary,
+        },
+        postCheckDropLabel: {
+          fontSize: 11,
+          fontWeight: '700',
+          color: colors.textSecondary,
+          textTransform: 'uppercase',
+          letterSpacing: 0.9,
+          marginTop: 18,
+          marginBottom: 10,
+        },
+        postCheckDropRow: {
+          flexDirection: 'row',
+          gap: 10,
+          marginBottom: 20,
+        },
+        postCheckDropOption: {
+          flex: 1,
+          borderRadius: 14,
+          paddingVertical: 14,
+          alignItems: 'center',
+          borderWidth: 1.5,
+          borderColor: colors.border,
+          backgroundColor: colors.surface,
+          gap: 5,
+        },
+        postCheckDropOptionActive: {
+          borderColor: colors.primary,
+          backgroundColor: colors.primarySurface,
+        },
+        postCheckDropOptionText: {
+          fontSize: 13,
+          fontWeight: '700',
+          color: colors.textSecondary,
+        },
+        postCheckDropOptionTextActive: {
+          color: colors.primary,
+        },
+        postCheckSubmitBtn: {
+          borderRadius: 16,
+          paddingVertical: 16,
+          alignItems: 'center',
+          justifyContent: 'center',
+          flexDirection: 'row',
+          gap: 8,
+          backgroundColor: colors.primary,
+          marginTop: 4,
+          shadowColor: colors.primary,
+          shadowOffset: { width: 0, height: 4 },
+          shadowOpacity: 0.3,
+          shadowRadius: 8,
+          elevation: 6,
+        },
+        postCheckSubmitBtnDisabled: {
+          backgroundColor: colors.border,
+          shadowOpacity: 0,
+          elevation: 0,
+        },
+        postCheckSubmitBtnText: {
+          fontSize: 16,
+          fontWeight: '800',
+          color: '#fff',
+          letterSpacing: 0.3,
+        },
+        postCheckPendingWarning: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 8,
+          backgroundColor: colors.warning + '18',
+          borderRadius: 12,
+          paddingHorizontal: 14,
+          paddingVertical: 12,
+          marginBottom: 4,
+          borderWidth: 1,
+          borderColor: colors.warning + '55',
+        },
+        postCheckPendingWarningText: {
+          fontSize: 12,
+          fontWeight: '600',
+          color: colors.warning,
+          flex: 1,
+        },
+        postCheckDivider: {
+          height: 1,
+          backgroundColor: colors.border,
+          marginVertical: 10,
+        },
+        postCheckBackOfficeNote: {
+          fontSize: 12,
+          color: colors.textSecondary,
+          textAlign: 'center',
+          marginTop: 10,
+          marginBottom: 4,
+          fontStyle: 'italic',
+          lineHeight: 18,
+        },
+        // PreCheck block message card
+        preCheckBlockCard: {
+          backgroundColor: colors.surface,
+          borderRadius: 18,
+          paddingHorizontal: 28,
+          paddingVertical: 24,
+          alignItems: 'center',
+          borderWidth: 1.5,
+          borderColor: colors.warning + '88',
+          maxWidth: 300,
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: 8 },
+          shadowOpacity: 0.35,
+          shadowRadius: 24,
+          elevation: 16,
+        },
+        preCheckBlockTitle: {
+          fontSize: 16,
+          fontWeight: '800',
+          color: colors.text,
+          textAlign: 'center',
+          marginBottom: 6,
+        },
+        preCheckBlockBody: {
+          fontSize: 13,
+          color: colors.textSecondary,
+          textAlign: 'center',
+          lineHeight: 20,
+        },
         dailyVisitBtnTop: {
           backgroundColor: 'transparent',
           borderRadius: borderRadius.md,
@@ -2090,7 +2341,10 @@ export default function DashboardScreen({ navigation }) {
       }
     >
       {/* 1. Top bar: date + route left; last synced + sync counters + Sync now (same control shows rotating icon while sync runs) */}
-      <View style={[styles.topBar, { paddingTop: spacing.lg + insets.top }]}>
+      <View
+        style={[styles.topBar, { paddingTop: spacing.lg + insets.top }]}
+        onLayout={(e) => setTopBarHeight(e.nativeEvent.layout.height)}
+      >
         <View style={[styles.topBarRow, styles.topBarRowWithMargin]}>
           <View style={styles.topBarLeft}>
             <TouchableOpacity
@@ -2244,6 +2498,36 @@ export default function DashboardScreen({ navigation }) {
                     <Text style={styles.syncNowBtnText}>{t('dashboard.syncNow', 'Sync now')}</Text>
                   )}
                 </TouchableOpacity>
+                {/* PreCheck / PostCheck button */}
+                <TouchableOpacity
+                  style={[
+                    styles.syncNowBtn,
+                    preCheckDone
+                      ? styles.postCheckBtn
+                      : styles.preCheckBtn,
+                    !preCheckDone && { opacity: 0 } // Hide real button when modal replica is shown
+                  ]}
+                  onPress={() => {
+                    if (!preCheckDone) {
+                      setPreCheckDone(true);
+                    } else {
+                      setPostCheckModalVisible(true);
+                    }
+                  }}
+                  activeOpacity={0.85}
+                  accessibilityRole="button"
+                  accessibilityLabel={preCheckDone ? 'Post Check' : 'Pre Check'}
+                >
+                  <Ionicons
+                    name={preCheckDone ? 'checkmark-done-circle-outline' : 'shield-checkmark-outline'}
+                    size={14}
+                    color="#fff"
+                    style={{ marginRight: 5 }}
+                  />
+                  <Text style={styles.syncNowBtnText}>
+                    {preCheckDone ? 'Post Check' : 'Pre Check'}
+                  </Text>
+                </TouchableOpacity>
               </View>
             {/* //Daily Visit Keep Commented for now */}
             {/* <TouchableOpacity
@@ -2257,6 +2541,7 @@ export default function DashboardScreen({ navigation }) {
             </View>
           </View>
         </View>
+
         {/* 2. Stock overview (lorry stock) */}
         <View style={{ paddingHorizontal: spacing.md, marginTop: -10, marginBottom: spacing.sm }}>
           <TouchableOpacity
@@ -2801,6 +3086,81 @@ export default function DashboardScreen({ navigation }) {
         </View>
       ) : null}
 
+      {/* PreCheck blocking overlay – rendered as Modal to also cover the tab bar */}
+      <Modal
+        visible={!preCheckDone}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => {}}
+      >
+        <View style={{ flex: 1 }} pointerEvents="box-none">
+          {/* Transparent zone matching the header height — contains a live PreCheck button */}
+          <View
+            style={{ height: topBarHeight }}
+            pointerEvents="box-none"
+          >
+            {/* Functional PreCheck button replica — sits on top of the transparent header area */}
+            <TouchableOpacity
+              style={[
+                styles.syncNowBtn,
+                styles.preCheckBtn,
+                {
+                  position: 'absolute',
+                  right: spacing.md,
+                  bottom: 14,
+                },
+              ]}
+              onPress={() => setPreCheckDone(true)}
+              activeOpacity={0.85}
+              accessibilityRole="button"
+              accessibilityLabel="Pre Check"
+            >
+              <Ionicons
+                name="shield-checkmark-outline"
+                size={14}
+                color="#fff"
+                style={{ marginRight: 5 }}
+              />
+              <Text style={styles.syncNowBtnText}>Pre Check</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Blocking frosted area below the header */}
+          <View
+            pointerEvents="auto"
+            style={{
+              flex: 1,
+              backgroundColor: isDark
+                ? 'rgba(10,15,30,0.72)'
+                : 'rgba(15,23,42,0.52)',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <View style={styles.preCheckBlockCard}>
+              <View
+                style={{
+                  width: 52, height: 52, borderRadius: 16,
+                  backgroundColor: colors.warning + '18',
+                  alignItems: 'center', justifyContent: 'center',
+                  marginBottom: 12,
+                }}
+              >
+                <Ionicons name="shield-checkmark-outline" size={28} color={colors.warning} />
+              </View>
+              <Text style={styles.preCheckBlockTitle}>Pre Check Required</Text>
+              <Text style={styles.preCheckBlockBody}>
+                Tap{' '}
+                <Text style={{ color: colors.warning, fontWeight: '800' }}>Pre Check</Text>
+                {' '}above to unlock the dashboard.
+              </Text>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+
     </View>
 
       <Modal
@@ -3068,6 +3428,221 @@ export default function DashboardScreen({ navigation }) {
             ) : null}
           </Pressable>
         </Pressable>
+      </Modal>
+
+      {/* ======= PostCheck Modal (Cash & Cheque Handover Summary) ======= */}
+      <Modal
+        visible={postCheckModalVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setPostCheckModalVisible(false)}
+      >
+        <Pressable style={styles.postCheckBackdrop} onPress={() => setPostCheckModalVisible(false)}>
+          <Pressable style={[styles.postCheckSheet, { flexDirection: 'column' }]} onPress={(e) => e.stopPropagation()}>
+
+            {/* Scrollable content */}
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={{ paddingBottom: 8, paddingHorizontal: 20 }}
+            >
+              {/* Handle */}
+              <View style={styles.postCheckHandle} />
+
+              {/* Header */}
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+                <View
+                  style={{
+                    width: 40, height: 40, borderRadius: 12,
+                    backgroundColor: (colors.primary ?? '#6366f1') + '22',
+                    alignItems: 'center', justifyContent: 'center',
+                  }}
+                >
+                  <Ionicons name="cash-outline" size={20} color={colors.primary ?? '#6366f1'} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.postCheckTitle}>Post Check</Text>
+                </View>
+              </View>
+
+              <View style={styles.postCheckDivider} />
+
+              {/* Pending sync warning - submit disabled if there are pending syncs */}
+              {orderSyncStats.localCompleted > 0 && (
+                <View style={styles.postCheckPendingWarning}>
+                  <Ionicons name="warning-outline" size={18} color="#f59e0b" />
+                  <Text style={styles.postCheckPendingWarningText}>
+                    {orderSyncStats.localCompleted} payment{orderSyncStats.localCompleted > 1 ? 's' : ''} pending upload. Sync before submitting.
+                  </Text>
+                </View>
+              )}
+
+              {/* Collection Summary */}
+              <Text style={styles.postCheckSectionLabel}>Collection Summary</Text>
+
+              <View style={styles.postCheckRow}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
+                  <View style={{ width: 32, height: 32, borderRadius: 8, backgroundColor: 'rgba(34,197,94,0.15)', alignItems: 'center', justifyContent: 'center' }}>
+                    <Ionicons name="cash" size={16} color="#22c55e" />
+                  </View>
+                  <Text style={styles.postCheckRowLabel}>Cash Collection</Text>
+                </View>
+                <Text style={[styles.postCheckRowValue, { color: '#22c55e' }]}>{formatCurrency(cashTotal)}</Text>
+              </View>
+
+              <View style={styles.postCheckRow}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
+                  <View style={{ width: 32, height: 32, borderRadius: 8, backgroundColor: 'rgba(99,102,241,0.15)', alignItems: 'center', justifyContent: 'center' }}>
+                    <Ionicons name="document-text" size={16} color={colors.primary} />
+                  </View>
+                  <Text style={styles.postCheckRowLabel}>Cheque Collection</Text>
+                </View>
+                <Text style={[styles.postCheckRowValue]}>{formatCurrency(chequeTotal)}</Text>
+              </View>
+
+              {creditTotal > 0 && (
+                <View style={styles.postCheckRow}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
+                    <View style={{ width: 32, height: 32, borderRadius: 8, backgroundColor: 'rgba(245,158,11,0.15)', alignItems: 'center', justifyContent: 'center' }}>
+                      <Ionicons name="card" size={16} color="#f59e0b" />
+                    </View>
+                    <Text style={styles.postCheckRowLabel}>Credit</Text>
+                  </View>
+                  <Text style={[styles.postCheckRowValue, { color: '#f59e0b' }]}>{formatCurrency(creditTotal)}</Text>
+                </View>
+              )}
+
+              {/* Grand Total */}
+              <View style={styles.postCheckTotalRow}>
+                <Text style={styles.postCheckTotalLabel}>Total Handover</Text>
+                <Text style={styles.postCheckTotalValue}>{formatCurrency(cashTotal + chequeTotal)}</Text>
+              </View>
+
+              <View style={styles.postCheckDivider} />
+
+              {/* Orders Delivered */}
+              <Text style={styles.postCheckSectionLabel}>Orders Summary</Text>
+              <View style={styles.postCheckRow}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
+                  <View style={{ width: 32, height: 32, borderRadius: 8, backgroundColor: 'rgba(34,197,94,0.12)', alignItems: 'center', justifyContent: 'center' }}>
+                    <Ionicons name="checkmark-circle" size={16} color="#22c55e" />
+                  </View>
+                  <Text style={styles.postCheckRowLabel}>Synced & Completed</Text>
+                </View>
+                <Text style={[styles.postCheckRowValue, { color: '#22c55e' }]}>{orderSyncStats.syncedCompleted}</Text>
+              </View>
+              <View style={styles.postCheckRow}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
+                  <View style={{ width: 32, height: 32, borderRadius: 8, backgroundColor: 'rgba(245,158,11,0.12)', alignItems: 'center', justifyContent: 'center' }}>
+                    <Ionicons name="time-outline" size={16} color="#f59e0b" />
+                  </View>
+                  <Text style={styles.postCheckRowLabel}>Pending Upload</Text>
+                </View>
+                <Text style={[styles.postCheckRowValue, { color: orderSyncStats.localCompleted > 0 ? '#f59e0b' : (colors.textSecondary ?? '#94a3b8') }]}>
+                  {orderSyncStats.localCompleted}
+                </Text>
+              </View>
+
+              <View style={styles.postCheckDivider} />
+
+              {/* Drop-off Location */}
+              <Text style={styles.postCheckDropLabel}>Drop-off Location</Text>
+              <View style={styles.postCheckDropRow}>
+                <TouchableOpacity
+                  style={[
+                    styles.postCheckDropOption,
+                    postCheckDropoffLocation === 'showroom' && styles.postCheckDropOptionActive,
+                  ]}
+                  onPress={() => setPostCheckDropoffLocation('showroom')}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons
+                    name="storefront-outline"
+                    size={22}
+                    color={postCheckDropoffLocation === 'showroom' ? (colors.primary ?? '#6366f1') : (colors.textSecondary ?? '#94a3b8')}
+                  />
+                  <Text
+                    style={[
+                      styles.postCheckDropOptionText,
+                      postCheckDropoffLocation === 'showroom' && styles.postCheckDropOptionTextActive,
+                    ]}
+                  >
+                    Showroom
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[
+                    styles.postCheckDropOption,
+                    postCheckDropoffLocation === 'headoffice' && styles.postCheckDropOptionActive,
+                  ]}
+                  onPress={() => setPostCheckDropoffLocation('headoffice')}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons
+                    name="business-outline"
+                    size={22}
+                    color={postCheckDropoffLocation === 'headoffice' ? (colors.primary ?? '#6366f1') : (colors.textSecondary ?? '#94a3b8')}
+                  />
+                  <Text
+                    style={[
+                      styles.postCheckDropOptionText,
+                      postCheckDropoffLocation === 'headoffice' && styles.postCheckDropOptionTextActive,
+                    ]}
+                  >
+                    Head Office
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+            </ScrollView>
+
+            {/* Fixed footer — Submit button always pinned at bottom */}
+            <View
+              style={{
+                paddingHorizontal: 20,
+                paddingTop: 12,
+                paddingBottom: 8,
+                borderTopWidth: 1,
+                borderTopColor: colors.border,
+                backgroundColor: colors.background,
+              }}
+            >
+              <TouchableOpacity
+                style={[
+                  styles.postCheckSubmitBtn,
+                  orderSyncStats.localCompleted > 0 && styles.postCheckSubmitBtnDisabled,
+                ]}
+                disabled={orderSyncStats.localCompleted > 0}
+                activeOpacity={0.85}
+                onPress={() => {
+                  // Backend not yet integrated – UI only
+                  Alert.alert(
+                    'Handover Submitted',
+                    `Cash: ${formatCurrency(cashTotal)}\nCheque: ${formatCurrency(chequeTotal)}\nDrop-off: ${postCheckDropoffLocation === 'showroom' ? 'Showroom' : 'Head Office'}`,
+                    [{ text: 'OK', onPress: () => setPostCheckModalVisible(false) }]
+                  );
+                }}
+              >
+                <Ionicons
+                  name="checkmark-circle-outline"
+                  size={20}
+                  color={orderSyncStats.localCompleted > 0 ? (colors.textSecondary ?? '#94a3b8') : '#fff'}
+                />
+                <Text
+                  style={[
+                    styles.postCheckSubmitBtnText,
+                    orderSyncStats.localCompleted > 0 && { color: colors.textSecondary ?? '#94a3b8' },
+                  ]}
+                >
+                  {orderSyncStats.localCompleted > 0 ? 'Sync Pending – Cannot Submit' : 'Submit Handover'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+          </Pressable>
+        </Pressable>
+
       </Modal>
 
     </>
