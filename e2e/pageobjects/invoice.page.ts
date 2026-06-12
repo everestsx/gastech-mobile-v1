@@ -20,12 +20,17 @@ class InvoicePage {
     get sigDone()           { return $('~invoice-sig-done'); }
 
     async waitForLoaded() {
-        await this.skipPrintBtn.waitForDisplayed({ timeout: 20000 });
+        // Wait for the button to exist in the DOM first (invoice generation takes time)
+        await this.skipPrintBtn.waitForExist({ timeout: 20000 });
+        // Scroll it into view — the invoice content can push it below the fold
+        await this.skipPrintBtn.scrollIntoView();
         await driver.pause(500);
     }
 
     async clickSkipPrint() {
-        await this.skipPrintBtn.waitForDisplayed({ timeout: 10000 });
+        await this.skipPrintBtn.waitForExist({ timeout: 10000 });
+        await this.skipPrintBtn.scrollIntoView();
+        await driver.pause(300);
         await this.skipPrintBtn.click();
     }
 
