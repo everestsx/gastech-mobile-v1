@@ -36,8 +36,12 @@ export const syncLanguageDictionaries = async () => {
       !cachedTranslations?.en?.translation?.dashboard?.pendingBackOffice ||
       !cachedTranslations?.ta?.translation?.dashboard?.pendingBackOffice ||
       !cachedTranslations?.si?.translation?.dashboard?.pendingBackOffice;
+    const missingPreCheck =
+      !cachedTranslations?.en?.translation?.dashboard?.preCheckTitle ||
+      !cachedTranslations?.ta?.translation?.dashboard?.preCheckTitle ||
+      !cachedTranslations?.si?.translation?.dashboard?.preCheckTitle;
 
-    if (!cachedVersion || cachedVersion !== payload.version || missingPendingBackOffice) {
+    if (!cachedVersion || cachedVersion !== payload.version || missingPendingBackOffice || missingPreCheck) {
       await AsyncStorage.setItem(TRANSLATIONS_STORAGE_KEY, JSON.stringify(payload.translations));
       await AsyncStorage.setItem(TRANSLATIONS_VERSION_KEY, payload.version);
       return payload.translations;

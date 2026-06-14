@@ -28,6 +28,7 @@ import {
   runSync,
   setPostLoginSyncSuccessPending,
   saveUserSession,
+  clearPreCheckDoneState,
   saveLastVehicleId,
   syncVehiclesOnly,
   getSessionExpiryAtIsoEndOfLocalDay,
@@ -258,6 +259,7 @@ export default function LoginScreen({ navigation }) {
 
     setLoading(true);
     try {
+      await clearPreCheckDoneState();
       await saveUserSession({
         isAdmin: false,
         vehicleId: selected.id,

@@ -272,7 +272,10 @@ const KEYS = {
   SYNC_PERIOD: '@gastech_sync_period',
   SYNC_DATE_FIELD: '@gastech_sync_date_field',
   SYNC_INTERVAL: '@gastech_sync_interval',
+  PRECHECK_DONE: 'precheck_done_date',
 };
+
+export const KEY_PRECHECK_DONE = KEYS.PRECHECK_DONE;
 
 const KEY_POST_LOGIN_SYNC_OK = '@gastech_post_login_sync_ok';
 /** Persists the one-time dashboard "initial load" gate across process restarts (per driver+vehicle session key). */
@@ -552,7 +555,21 @@ export async function getLastVehicleId() {
 export async function logout() {
   resetDashboardInitialLoadState();
   const storage = await getAsyncStorage();
-  await storage.multiRemove([KEYS.USER, KEYS.USER_MEDIA, KEYS.LAST_SYNC, KEY_DASHBOARD_INITIAL_LOAD]);
+  await storage.multiRemove([
+    KEYS.USER,
+    KEYS.USER_MEDIA,
+    KEYS.LAST_SYNC,
+    KEY_DASHBOARD_INITIAL_LOAD,
+    KEYS.PRECHECK_DONE,
+  ]);
+}
+
+/** Cleared on logout — pre-check must run again after every new login session. */
+export async function clearPreCheckDoneState() {
+  try {
+    const storage = await getAsyncStorage();
+    await storage.removeItem(KEYS.PRECHECK_DONE);
+  } catch (_) {}
 }
 
 // ---------- Local reads (from SQLite) ----------

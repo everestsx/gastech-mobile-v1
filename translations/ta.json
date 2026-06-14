@@ -1,5 +1,5 @@
 {
-  "version": "1.0.7",
+  "version": "1.0.8",
   "language": "ta",
   "translation": {
     "bluetoothprinter": {
@@ -294,6 +294,25 @@
       "delivered": "விநியோகிக்கப்பட்டது",
       "emptyCollected": "காலி சேகரிக்கப்பட்டது",
       "noStockDataAvailable": "இருப்பு தரவு இல்லை.",
+      "preCheckTitle": "முன் சரிபார்ப்பு — இருப்பு சுருக்கம்",
+      "preCheckOk": "சரி — விநியோகத்தைத் தொடங்கு",
+      "preCheckButton": "முன் சரிபார்ப்பு",
+      "preCheckShortfall": "சில பொருட்களுக்கு போதுமான இருப்பு இல்லை. விநியோகத்தைத் தொடங்கும் முன் operations team-ஐ தொடர்பு கொள்ளவும்.",
+      "preCheckSyncInProgress": "தரவு பின்னணியில் ஒத்திசைக்கப்படுகிறது. நீங்கள் இருப்பைச் சரிபார்த்து வேலையைத் தொடங்கலாம் — எண்கள் விரைவில் புதுப்பிக்கப்படலாம்.",
+      "todaysOrders": "இன்றைய ஆர்டர்கள்",
+      "totalOrdersToday": "இன்றைய மொத்த ஆர்டர்கள்",
+      "stockVsOrders": "இருப்பு மற்றும் இன்றைய ஆர்டர்கள்",
+      "onHandShort": "கையிருப்பு",
+      "orderedToday": "ஆர்டர் தேவை",
+      "shortBy": "குறைவு",
+      "contactOps": "operations team-ஐ தொடர்பு கொள்ளவும்",
+      "stockOk": "போதுமான இருப்பு",
+      "noStockData": "இருப்பு தரவு இன்னும் ஏற்றப்படவில்லை — sync செய்யவும் அல்லது refresh செய்யவும்.",
+      "emptyCylindersOnLorry": "லாரியில் காலி சேகரிப்பு",
+      "emptyKgLabel": "{{kg}} kg காலி",
+      "totalEmptyCollected": "மொத்த காலி சேகரிப்பு",
+      "totalOnHand": "மொத்த கையிருப்பு",
+      "totalOrderedToday": "இன்று மொத்த ஆர்டர் அளவு",
       "pendingBackOffice": {
         "title": "அலுவலகத்திற்கு {{count}} ஆர்டர்(கள்) காத்திருக்கின்றன",
         "title_one": "அலுவலகத்திற்கு 1 ஆர்டர் காத்திருக்கிறது",

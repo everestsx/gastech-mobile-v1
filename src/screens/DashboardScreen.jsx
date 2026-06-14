@@ -16,6 +16,7 @@ import {
   Pressable,
   Linking,
   Alert,
+  Dimensions,
 } from 'react-native';
 import { BlurView } from 'expo-blur';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -31,8 +32,9 @@ import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
 import { dashboardConfig } from '../constants/dashboardConfig';
 import { getGasTypeBlueColor, parseKgFromProductName } from '../utils/productDisplay';
-import { buildDefaultGasDashboardStockCards } from '../utils/defaultGasStock';
+import { buildDefaultGasDashboardStockCards, DEFAULT_GAS_CYLINDER_KG_SIZES } from '../utils/defaultGasStock';
 import { canonicalKgFromName, isEmptyCylinderName, isGasCylinderName } from '../utils/cylinderCatalog';
+import { isInvoiceAccessoryProduct } from '../utils/invoiceCatalogLines';
 import { getLocalizedCustomerNameFromOrder } from '../utils/customerDisplayName';
 import {
   getCachedOrders,
@@ -53,6 +55,7 @@ import {
   markDashboardInitialLoadComplete,
   setDashboardUploadIndicators,
   setDashboardIndicatorsListener,
+  KEY_PRECHECK_DONE,
 } from '../services/sync.service';
 import * as localPaymentsDb from '../database/localPayments.js';
 import * as localInvoicesDb from '../database/localInvoices.js';
@@ -264,17 +267,20 @@ export default function DashboardScreen({ navigation }) {
   const [pendingBackOfficeModalVisible, setPendingBackOfficeModalVisible] = useState(false);
   const pendingBackOfficeDismissedRef = useRef(false);
   const [notification, setNotification] = useState({ visible: false, title: '', message: '', type: 'info' });
-  // PreCheck / PostCheck — persisted per calendar day via AsyncStorage
-  const PRECHECK_KEY = 'precheck_done_date';
+  // PreCheck / PostCheck — per login session (cleared on logout)
   const precheckDateKey = new Date().toISOString().slice(0, 10); // e.g. "2026-06-12"
   const [preCheckDone, setPreCheckDoneState] = useState(false);
-  const setPreCheckDone = useCallback(async (val) => {
+  const setPreCheckDone = useCallback(async (val, loggedInAt) => {
     setPreCheckDoneState(val);
     try {
       if (val) {
-        await AsyncStorage.setItem(PRECHECK_KEY, precheckDateKey);
+        const sessionStamp = loggedInAt != null ? String(loggedInAt) : '';
+        await AsyncStorage.setItem(
+          KEY_PRECHECK_DONE,
+          JSON.stringify({ date: precheckDateKey, loggedInAt: sessionStamp })
+        );
       } else {
-        await AsyncStorage.removeItem(PRECHECK_KEY);
+        await AsyncStorage.removeItem(KEY_PRECHECK_DONE);
       }
     } catch (e) {
       console.warn('[PreCheck] AsyncStorage write failed', e);
@@ -282,11 +288,31 @@ export default function DashboardScreen({ navigation }) {
   }, [precheckDateKey]);
 
   useEffect(() => {
-    AsyncStorage.getItem(PRECHECK_KEY).then((stored) => {
-      if (stored === precheckDateKey) setPreCheckDoneState(true);
-    }).catch(() => {});
-  }, [precheckDateKey]);
+    const sessionStamp = user?.loggedInAt != null ? String(user.loggedInAt) : '';
+    if (!sessionStamp) {
+      setPreCheckDoneState(false);
+      return;
+    }
+    AsyncStorage.getItem(KEY_PRECHECK_DONE)
+      .then((stored) => {
+        if (!stored) {
+          setPreCheckDoneState(false);
+          return;
+        }
+        try {
+          const parsed = JSON.parse(stored);
+          const ok =
+            parsed?.date === precheckDateKey &&
+            String(parsed?.loggedInAt || '') === sessionStamp;
+          setPreCheckDoneState(ok);
+        } catch {
+          setPreCheckDoneState(false);
+        }
+      })
+      .catch(() => setPreCheckDoneState(false));
+  }, [precheckDateKey, user?.loggedInAt]);
   const [postCheckModalVisible, setPostCheckModalVisible] = useState(false);
+  const [preCheckSummaryModalVisible, setPreCheckSummaryModalVisible] = useState(false);
   const [postCheckDropoffLocation, setPostCheckDropoffLocation] = useState('showroom');
   const [topBarHeight, setTopBarHeight] = useState(0);
   const [initialLoadGateActive, setInitialLoadGateActive] = useState(
@@ -1294,6 +1320,172 @@ export default function DashboardScreen({ navigation }) {
 
   const shopsCompleted = deliveredTodayOrdersAllRoutes.length;
   const totalShopsToday = todayOrders.length;
+  const activeOrdersToday = todayOrders.filter((o) => String(o?.state || '').toLowerCase() !== 'cancel').length;
+
+  const preCheckOrderDemandByProduct = useMemo(() => {
+    const orderById = new Map();
+    for (const o of todayOrders || []) {
+      if (String(o?.state || '').toLowerCase() === 'cancel') continue;
+      const id = Number(o.id);
+      if (Number.isFinite(id)) orderById.set(id, o);
+    }
+    const byProduct = new Map();
+    for (const line of todayOrderLines || []) {
+      const orderId = Array.isArray(line.order_id) ? line.order_id[0] : line.order_id;
+      const soId = orderId != null ? Number(orderId) : null;
+      if (soId == null || !orderById.has(soId)) continue;
+      const pidRaw = Array.isArray(line.product_id) ? line.product_id[0] : line.product_id;
+      const productId = pidRaw != null ? Number(pidRaw) : null;
+      if (productId == null || !Number.isFinite(productId)) continue;
+      const qty = Number(line.product_uom_qty) || 0;
+      if (qty <= 0) continue;
+      const rawLabel = String(line.product_name || line.name || '').trim();
+      const label = rawLabel.replace(/^\[[^\]]+\]\s*/, '') || `Product ${productId}`;
+      if (!byProduct.has(productId)) {
+        byProduct.set(productId, {
+          productId,
+          label,
+          kg: canonicalKgFromName(rawLabel || label),
+          totalOrdered: 0,
+        });
+      }
+      byProduct.get(productId).totalOrdered += qty;
+    }
+    return byProduct;
+  }, [todayOrders, todayOrderLines]);
+
+  const formatPreCheckQty = useCallback((q) => {
+    const n = Number(q) || 0;
+    const s = n.toFixed(3).replace(/\.?0+$/, '');
+    return s === '' ? '0' : s;
+  }, []);
+
+  const preCheckStockRows = useMemo(() => {
+    const demandMap = preCheckOrderDemandByProduct;
+    const findDemand = (productId, kg) => {
+      if (productId != null && demandMap.has(productId)) return demandMap.get(productId);
+      if (kg != null && Number.isFinite(kg)) {
+        for (const d of demandMap.values()) {
+          if (d.kg != null && Math.abs(Number(d.kg) - kg) < 0.051) return d;
+        }
+      }
+      return null;
+    };
+    const isPreCheckRow = (label, productId, isGas, isAccessory, isExtra) => {
+      if (isEmptyCylinderName(label)) return false;
+      return isGas || isAccessory || isExtra;
+    };
+
+    const rows = (stockCards || []).map((s) => {
+      const label = String(s.product_name || '').replace(/^\[[^\]]+\]\s*/, '').trim() || 'Stock';
+      const onHand = Math.max(0, Number(s.total) || 0);
+      const productId = s.product_id != null ? Number(s.product_id) : null;
+      const kg = s._defaultGasKg != null ? Number(s._defaultGasKg) : canonicalKgFromName(label);
+      const isGas = s._defaultGasKg != null || isGasCylinderName(label);
+      const isAccessory = isInvoiceAccessoryProduct(label, productId);
+      const isExtra = s._isExtraProduct === true;
+      const demand = findDemand(productId, kg);
+      const totalOrdered = demand?.totalOrdered ?? 0;
+      return {
+        key: String(s.display_key ?? s.product_id ?? s._defaultGasKg ?? label),
+        productId,
+        label,
+        onHand,
+        kg,
+        isGas,
+        isAccessory,
+        isExtra,
+        totalOrdered,
+        shortfall: Math.max(0, totalOrdered - onHand),
+        insufficient: onHand < totalOrdered,
+        sortRank: isGas ? 0 : isAccessory ? 1 : 2,
+        sortKg: kg ?? 999,
+      };
+    });
+
+    const usedKeys = new Set(
+      rows.map((r) => r.productId).filter((id) => id != null && Number.isFinite(id))
+    );
+    for (const demand of demandMap.values()) {
+      if (demand.totalOrdered <= 0) continue;
+      if (usedKeys.has(demand.productId)) continue;
+      const label = demand.label || `Product ${demand.productId}`;
+      const isGas = isGasCylinderName(label) || demand.kg != null;
+      const isAccessory = isInvoiceAccessoryProduct(label, demand.productId);
+      if (!isGas && !isAccessory) continue;
+      rows.push({
+        key: `demand-${demand.productId}`,
+        productId: demand.productId,
+        label,
+        onHand: 0,
+        kg: demand.kg,
+        isGas,
+        isAccessory,
+        isExtra: false,
+        totalOrdered: demand.totalOrdered,
+        shortfall: demand.totalOrdered,
+        insufficient: demand.totalOrdered > 0,
+        sortRank: isGas ? 0 : 1,
+        sortKg: demand.kg ?? 999,
+      });
+    }
+
+    return rows
+      .filter((r) => isPreCheckRow(r.label, r.productId, r.isGas, r.isAccessory, r.isExtra))
+      .filter((r) => r.onHand > 0 || r.totalOrdered > 0)
+      .sort((a, b) => {
+        if (a.sortRank !== b.sortRank) return a.sortRank - b.sortRank;
+        if (a.sortKg !== b.sortKg) return a.sortKg - b.sortKg;
+        return a.label.localeCompare(b.label, 'en');
+      });
+  }, [stockCards, preCheckOrderDemandByProduct]);
+
+  const preCheckHasShortfall = useMemo(
+    () => preCheckStockRows.some((r) => r.insufficient),
+    [preCheckStockRows]
+  );
+
+  const preCheckTotalOrderedGas = useMemo(
+    () => preCheckStockRows.reduce((sum, r) => sum + (Number(r.totalOrdered) || 0), 0),
+    [preCheckStockRows]
+  );
+
+  const preCheckEmptyRows = useMemo(() => {
+    return DEFAULT_GAS_CYLINDER_KG_SIZES.map((kg) => ({
+      kg: Number(kg),
+      qty: Math.max(0, Number(emptyStockByKg[kg]) || 0),
+    }));
+  }, [emptyStockByKg]);
+
+  const preCheckTotalEmptyCollected = useMemo(
+    () => preCheckEmptyRows.reduce((sum, r) => sum + r.qty, 0),
+    [preCheckEmptyRows]
+  );
+
+  const preCheckTotalOnHand = useMemo(
+    () => preCheckStockRows.reduce((sum, r) => sum + r.onHand, 0),
+    [preCheckStockRows]
+  );
+
+  const openPreCheckSummary = useCallback(() => {
+    setPreCheckSummaryModalVisible(true);
+  }, []);
+
+  const confirmPreCheckSummary = useCallback(async () => {
+    setPreCheckSummaryModalVisible(false);
+    const u = await getUserSession();
+    await setPreCheckDone(true, u?.loggedInAt);
+  }, [setPreCheckDone]);
+
+  const needsPreCheckGate = !preCheckDone && !preCheckSummaryModalVisible;
+  const preCheckSheetLayout = useMemo(() => {
+    const screenH = Dimensions.get('window').height;
+    const sheetMax = Math.round(screenH * 0.88);
+    const footerH = 76 + Math.max(insets.bottom, 12);
+    const scrollH = Math.max(220, sheetMax - footerH);
+    return { sheetMax, scrollH, footerH };
+  }, [insets.bottom]);
+  const preCheckSyncInProgress = syncing || isSyncing || (initialLoadGateActive && loading);
   const shopsPct = totalShopsToday > 0 ? Math.min(100, Math.round((shopsCompleted / totalShopsToday) * 100)) : 0;
   const totalGasDelivered = useMemo(() => {
     const orderById = {};
@@ -1778,6 +1970,97 @@ export default function DashboardScreen({ navigation }) {
           height: 1,
           backgroundColor: colors.border,
           marginVertical: 10,
+        },
+        preCheckSummarySheet: {
+          width: '100%',
+          maxHeight: '88%',
+          flexDirection: 'column',
+        },
+        preCheckSummaryScrollContent: {
+          paddingBottom: 20,
+          paddingHorizontal: 20,
+        },
+        preCheckStockCard: {
+          backgroundColor: colors.surface,
+          borderRadius: 14,
+          paddingHorizontal: 14,
+          paddingVertical: 12,
+          marginBottom: 10,
+          borderWidth: 1,
+          borderColor: colors.border,
+        },
+        preCheckStockCardHeader: {
+          flexDirection: 'row',
+          alignItems: 'flex-start',
+          justifyContent: 'space-between',
+          gap: 10,
+        },
+        preCheckStockCardTitle: {
+          flex: 1,
+          fontSize: 14,
+          fontWeight: '700',
+          color: colors.text,
+        },
+        preCheckStockCardOnHand: {
+          fontSize: 13,
+          fontWeight: '800',
+          color: colors.primary,
+        },
+        preCheckStockCardMeta: {
+          fontSize: 12,
+          fontWeight: '600',
+          color: colors.textSecondary,
+          marginTop: 8,
+        },
+        preCheckStockStatusOk: {
+          fontSize: 11,
+          fontWeight: '700',
+          color: '#16a34a',
+          marginTop: 6,
+        },
+        preCheckStockStatusShort: {
+          fontSize: 11,
+          fontWeight: '700',
+          color: '#dc2626',
+          marginTop: 6,
+        },
+        preCheckShortfallBanner: {
+          flexDirection: 'row',
+          alignItems: 'flex-start',
+          gap: 10,
+          backgroundColor: colors.warning + '18',
+          borderRadius: 12,
+          paddingHorizontal: 14,
+          paddingVertical: 12,
+          marginBottom: 10,
+          borderWidth: 1,
+          borderColor: colors.warning + '55',
+        },
+        preCheckShortfallBannerText: {
+          flex: 1,
+          fontSize: 12,
+          fontWeight: '600',
+          color: colors.warning ?? '#f59e0b',
+          lineHeight: 18,
+        },
+        preCheckSyncBanner: {
+          flexDirection: 'row',
+          alignItems: 'flex-start',
+          gap: 10,
+          backgroundColor: (colors.primary ?? '#6366f1') + '14',
+          borderRadius: 12,
+          paddingHorizontal: 14,
+          paddingVertical: 12,
+          marginBottom: 10,
+          borderWidth: 1,
+          borderColor: (colors.primary ?? '#6366f1') + '44',
+        },
+        preCheckSyncBannerText: {
+          flex: 1,
+          fontSize: 12,
+          fontWeight: '600',
+          color: colors.primary ?? '#6366f1',
+          lineHeight: 18,
         },
         postCheckBackOfficeNote: {
           fontSize: 12,
@@ -2505,15 +2788,16 @@ export default function DashboardScreen({ navigation }) {
                     preCheckDone
                       ? styles.postCheckBtn
                       : styles.preCheckBtn,
-                    !preCheckDone && { opacity: 0 } // Hide real button when modal replica is shown
+                    !preCheckDone && needsPreCheckGate && { opacity: 0 },
                   ]}
                   onPress={() => {
                     if (!preCheckDone) {
-                      setPreCheckDone(true);
+                      openPreCheckSummary();
                     } else {
                       setPostCheckModalVisible(true);
                     }
                   }}
+                  disabled={!preCheckDone && needsPreCheckGate}
                   activeOpacity={0.85}
                   accessibilityRole="button"
                   accessibilityLabel={preCheckDone ? 'Post Check' : 'Pre Check'}
@@ -2525,7 +2809,7 @@ export default function DashboardScreen({ navigation }) {
                     style={{ marginRight: 5 }}
                   />
                   <Text style={styles.syncNowBtnText}>
-                    {preCheckDone ? 'Post Check' : 'Pre Check'}
+                    {preCheckDone ? 'Post Check' : t('dashboard.preCheckButton', 'Pre Check')}
                   </Text>
                 </TouchableOpacity>
               </View>
@@ -3086,80 +3370,285 @@ export default function DashboardScreen({ navigation }) {
         </View>
       ) : null}
 
-      {/* PreCheck blocking overlay – rendered as Modal to also cover the tab bar */}
+      {/* PreCheck — single Modal: dim gate, then stock summary sheet (avoids dual-Modal + zero-height scroll bugs). */}
       <Modal
         visible={!preCheckDone}
         transparent
-        animationType="fade"
+        animationType={preCheckSummaryModalVisible ? 'slide' : 'fade'}
         statusBarTranslucent
         onRequestClose={() => {}}
       >
-        <View style={{ flex: 1 }} pointerEvents="box-none">
-          {/* Transparent zone matching the header height — contains a live PreCheck button */}
-          <View
-            style={{ height: topBarHeight }}
-            pointerEvents="box-none"
-          >
-            {/* Functional PreCheck button replica — sits on top of the transparent header area */}
-            <TouchableOpacity
+        {preCheckSummaryModalVisible ? (
+          <View style={styles.postCheckBackdrop}>
+            <View
               style={[
-                styles.syncNowBtn,
-                styles.preCheckBtn,
-                {
-                  position: 'absolute',
-                  right: spacing.md,
-                  bottom: 14,
-                },
+                styles.postCheckSheet,
+                styles.preCheckSummarySheet,
+                { maxHeight: preCheckSheetLayout.sheetMax },
               ]}
-              onPress={() => setPreCheckDone(true)}
-              activeOpacity={0.85}
-              accessibilityRole="button"
-              accessibilityLabel="Pre Check"
             >
-              <Ionicons
-                name="shield-checkmark-outline"
-                size={14}
-                color="#fff"
-                style={{ marginRight: 5 }}
-              />
-              <Text style={styles.syncNowBtnText}>Pre Check</Text>
-            </TouchableOpacity>
-          </View>
+              <ScrollView
+                style={{ height: preCheckSheetLayout.scrollH }}
+                contentContainerStyle={styles.preCheckSummaryScrollContent}
+                showsVerticalScrollIndicator
+                persistentScrollbar={Platform.OS === 'android'}
+                bounces
+                overScrollMode="always"
+                keyboardShouldPersistTaps="handled"
+                scrollEventThrottle={16}
+              >
+              <View style={styles.postCheckHandle} />
 
-          {/* Blocking frosted area below the header */}
-          <View
-            pointerEvents="auto"
-            style={{
-              flex: 1,
-              backgroundColor: isDark
-                ? 'rgba(10,15,30,0.72)'
-                : 'rgba(15,23,42,0.52)',
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-          >
-            <View style={styles.preCheckBlockCard}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 6 }}>
+                <View
+                  style={{
+                    width: 44,
+                    height: 44,
+                    borderRadius: 14,
+                    backgroundColor: 'rgba(245, 158, 11, 0.18)',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <Ionicons name="shield-checkmark" size={22} color={colors.warning ?? '#f59e0b'} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.postCheckTitle}>
+                    {t('dashboard.preCheckTitle', 'Pre Check — Stock Summary')}
+                  </Text>
+                  <Text style={styles.postCheckSubtitle} numberOfLines={2}>
+                    {vehicleName}
+                    {routeName && routeName !== '—' ? ` · ${routeName}` : ''}
+                  </Text>
+                </View>
+              </View>
+
+              <Text style={[styles.postCheckSubtitle, { marginBottom: 4 }]}>{todayDateStr}</Text>
+
+              {preCheckSyncInProgress ? (
+                <View style={styles.preCheckSyncBanner}>
+                  <ActivityIndicator size="small" color={colors.primary ?? '#6366f1'} />
+                  <Text style={styles.preCheckSyncBannerText}>
+                    {t(
+                      'dashboard.preCheckSyncInProgress',
+                      'Data is still syncing in the background. You can check stock and start work — numbers may update shortly.'
+                    )}
+                  </Text>
+                </View>
+              ) : null}
+
+              <View style={styles.postCheckDivider} />
+
+              <Text style={styles.postCheckSectionLabel}>
+                {t('dashboard.todaysOrders', "Today's orders")}
+              </Text>
+              <View style={styles.postCheckRow}>
+                <Text style={styles.postCheckRowLabel}>
+                  {t('dashboard.totalOrdersToday', 'Total orders today')}
+                </Text>
+                <Text style={styles.postCheckRowValue}>{activeOrdersToday}</Text>
+              </View>
+
+              <View style={styles.postCheckDivider} />
+
+              <Text style={styles.postCheckSectionLabel}>
+                {t('dashboard.stockVsOrders', 'Stock vs today’s orders')}
+              </Text>
+
+              {preCheckHasShortfall ? (
+                <View style={styles.preCheckShortfallBanner}>
+                  <Ionicons name="warning-outline" size={20} color={colors.warning ?? '#f59e0b'} />
+                  <Text style={styles.preCheckShortfallBannerText}>
+                    {t(
+                      'dashboard.preCheckShortfall',
+                      'Not enough stock for some products. Please contact the operations team before starting delivery.'
+                    )}
+                  </Text>
+                </View>
+              ) : null}
+
+              {preCheckStockRows.length > 0 ? (
+                preCheckStockRows.map((row) => {
+                  const ordered = Number(row.totalOrdered) || 0;
+                  const onHandColor = row.insufficient
+                    ? '#dc2626'
+                    : row.onHand <= 2
+                      ? (colors.warning ?? '#f59e0b')
+                      : colors.primary;
+                  return (
+                    <View
+                      key={row.key}
+                      style={[
+                        styles.preCheckStockCard,
+                        row.insufficient && {
+                          borderColor: (colors.warning ?? '#f59e0b') + '88',
+                          backgroundColor: colors.warning + '10',
+                        },
+                      ]}
+                    >
+                      <Text style={styles.preCheckStockCardTitle}>{row.label}</Text>
+                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 8, gap: 12 }}>
+                        <Text style={styles.preCheckStockCardMeta}>
+                          {t('dashboard.onHandShort', 'On hand')}:{' '}
+                          <Text style={{ fontWeight: '800', color: onHandColor }}>
+                            {formatPreCheckQty(row.onHand)}
+                          </Text>
+                        </Text>
+                        <Text style={styles.preCheckStockCardMeta}>
+                          {t('dashboard.orderedToday', 'Orders need')}:{' '}
+                          <Text style={{ fontWeight: '800', color: colors.text }}>
+                            {formatPreCheckQty(ordered)}
+                          </Text>
+                        </Text>
+                      </View>
+                      {row.insufficient ? (
+                        <Text style={styles.preCheckStockStatusShort}>
+                          {t('dashboard.shortBy', 'Short by')} {formatPreCheckQty(row.shortfall)} —{' '}
+                          {t('dashboard.contactOps', 'contact operations team')}
+                        </Text>
+                      ) : ordered > 0 ? (
+                        <Text style={styles.preCheckStockStatusOk}>
+                          {t('dashboard.stockOk', 'Enough stock')}
+                        </Text>
+                      ) : null}
+                    </View>
+                  );
+                })
+              ) : (
+                <View style={styles.postCheckRow}>
+                  <Text style={[styles.postCheckRowLabel, { color: colors.textSecondary }]}>
+                    {t('dashboard.noStockData', 'No stock loaded yet — sync or pull to refresh.')}
+                  </Text>
+                </View>
+              )}
+
+              {preCheckEmptyRows.length > 0 ? (
+                <>
+                  <Text style={[styles.postCheckSectionLabel, { marginTop: 14 }]}>
+                    {t('dashboard.emptyCylindersOnLorry', 'Empty collected on lorry')}
+                  </Text>
+                  {preCheckEmptyRows.map((row) => (
+                    <View key={`empty-${row.kg}`} style={styles.postCheckRow}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
+                        <View
+                          style={{
+                            width: 32,
+                            height: 32,
+                            borderRadius: 8,
+                            backgroundColor: 'rgba(15, 118, 110, 0.12)',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                          }}
+                        >
+                          <Ionicons name="ellipse-outline" size={16} color="#0f766e" />
+                        </View>
+                        <Text style={styles.postCheckRowLabel}>
+                          {t('dashboard.emptyKgLabel', '{{kg}} kg empty', { kg: row.kg })}
+                        </Text>
+                      </View>
+                      <Text style={[styles.postCheckRowValue, { color: row.qty > 0 ? '#0f766e' : colors.textSecondary }]}>
+                        {row.qty.toLocaleString('en-IN')}
+                      </Text>
+                    </View>
+                  ))}
+                  <View style={[styles.postCheckTotalRow, { marginTop: 0, backgroundColor: colors.surface, borderColor: colors.border }]}>
+                    <Text style={styles.postCheckTotalLabel}>
+                      {t('dashboard.totalEmptyCollected', 'Total empty collected')}
+                    </Text>
+                    <Text style={[styles.postCheckTotalValue, { color: '#0f766e' }]}>
+                      {preCheckTotalEmptyCollected.toLocaleString('en-IN')}
+                    </Text>
+                  </View>
+                </>
+              ) : null}
+
+              <View style={styles.postCheckTotalRow}>
+                <Text style={styles.postCheckTotalLabel}>
+                  {t('dashboard.totalOnHand', 'Total on hand')}
+                </Text>
+                <Text style={styles.postCheckTotalValue}>
+                  {preCheckTotalOnHand.toLocaleString('en-IN')}
+                </Text>
+              </View>
+              {preCheckTotalOrderedGas > 0 ? (
+                <View style={[styles.postCheckTotalRow, { marginTop: 0, backgroundColor: colors.surface, borderColor: colors.border }]}>
+                  <Text style={styles.postCheckTotalLabel}>
+                    {t('dashboard.totalOrderedToday', 'Total ordered today')}
+                  </Text>
+                  <Text style={[styles.postCheckTotalValue, { color: colors.warning ?? '#f59e0b' }]}>
+                    {formatPreCheckQty(preCheckTotalOrderedGas)}
+                  </Text>
+                </View>
+              ) : null}
+              </ScrollView>
+
               <View
                 style={{
-                  width: 52, height: 52, borderRadius: 16,
-                  backgroundColor: colors.warning + '18',
-                  alignItems: 'center', justifyContent: 'center',
-                  marginBottom: 12,
+                  paddingHorizontal: 20,
+                  paddingTop: 12,
+                  paddingBottom: Math.max(insets.bottom, 12),
+                  borderTopWidth: 1,
+                  borderTopColor: colors.border,
+                  backgroundColor: colors.background,
                 }}
               >
-                <Ionicons name="shield-checkmark-outline" size={28} color={colors.warning} />
+                <TouchableOpacity
+                  style={styles.postCheckSubmitBtn}
+                  activeOpacity={0.88}
+                  onPress={() => void confirmPreCheckSummary()}
+                >
+                  <Ionicons name="checkmark-circle" size={20} color="#fff" style={{ marginRight: 8 }} />
+                  <Text style={styles.postCheckSubmitBtnText}>
+                    {t('dashboard.preCheckOk', 'OK — Start delivery')}
+                  </Text>
+                </TouchableOpacity>
               </View>
-              <Text style={styles.preCheckBlockTitle}>Pre Check Required</Text>
-              <Text style={styles.preCheckBlockBody}>
-                Tap{' '}
-                <Text style={{ color: colors.warning, fontWeight: '800' }}>Pre Check</Text>
-                {' '}above to unlock the dashboard.
-              </Text>
             </View>
           </View>
-        </View>
+        ) : (
+          <View style={{ flex: 1 }} pointerEvents="box-none">
+            <View
+              style={{ height: topBarHeight > 0 ? topBarHeight : insets.top + spacing.lg + 132 }}
+              pointerEvents="box-none"
+            >
+              <TouchableOpacity
+                style={[
+                  styles.syncNowBtn,
+                  styles.preCheckBtn,
+                  {
+                    position: 'absolute',
+                    right: spacing.md,
+                    bottom: 14,
+                    zIndex: 20,
+                    elevation: 20,
+                  },
+                ]}
+                onPress={openPreCheckSummary}
+                activeOpacity={0.85}
+                accessibilityRole="button"
+                accessibilityLabel="Pre Check"
+              >
+                <Ionicons
+                  name="shield-checkmark-outline"
+                  size={14}
+                  color="#fff"
+                  style={{ marginRight: 5 }}
+                />
+                <Text style={styles.syncNowBtnText}>
+                  {t('dashboard.preCheckButton', 'Pre Check')}
+                </Text>
+              </TouchableOpacity>
+            </View>
+            <View
+              pointerEvents="auto"
+              style={{
+                flex: 1,
+                backgroundColor: isDark ? 'rgba(10,15,30,0.55)' : 'rgba(15,23,42,0.38)',
+              }}
+            />
+          </View>
+        )}
       </Modal>
-
 
     </View>
 
