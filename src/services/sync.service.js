@@ -562,6 +562,13 @@ export async function logout() {
     KEY_DASHBOARD_INITIAL_LOAD,
     KEYS.PRECHECK_DONE,
   ]);
+  // Clear local-only postcheck submissions (session-scoped until Odoo backend is ready)
+  try {
+    const { deleteAllPostCheckSubmissions } = await import('../database/postcheckSubmissions.js');
+    await deleteAllPostCheckSubmissions();
+  } catch (e) {
+    console.warn('[Logout] postcheck_submissions wipe failed', e?.message ?? e);
+  }
 }
 
 /** Cleared on logout — pre-check must run again after every new login session. */

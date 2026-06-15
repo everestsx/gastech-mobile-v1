@@ -697,6 +697,34 @@ async function runMigrations(db) {
     }
     await db.runAsync('PRAGMA user_version = 29');
   }
+
+  // Migration 30: PostCheck submissions (local handover records; cleared on logout; odoo_sync_status for future backend)
+  if (current < 30) {
+    try {
+      await db.execAsync(`
+        CREATE TABLE IF NOT EXISTS postcheck_submissions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          submitted_at TEXT NOT NULL,
+          driver_id INTEGER,
+          driver_name TEXT,
+          vehicle_id INTEGER,
+          vehicle_name TEXT,
+          cash_total REAL NOT NULL DEFAULT 0,
+          cheque_total REAL NOT NULL DEFAULT 0,
+          credit_total REAL NOT NULL DEFAULT 0,
+          dropoff_location TEXT NOT NULL DEFAULT 'showroom',
+          orders_synced INTEGER,
+          orders_pending INTEGER,
+          odoo_sync_status TEXT NOT NULL DEFAULT 'pending'
+        );
+        CREATE INDEX IF NOT EXISTS idx_postcheck_submissions_driver ON postcheck_submissions(driver_id);
+        CREATE INDEX IF NOT EXISTS idx_postcheck_submissions_at ON postcheck_submissions(submitted_at);
+      `);
+    } catch (e) {
+      console.warn('[Migration] postcheck_submissions:', e);
+    }
+    await db.runAsync('PRAGMA user_version = 30');
+  }
 }
 
 /**

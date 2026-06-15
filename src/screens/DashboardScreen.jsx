@@ -4104,13 +4104,34 @@ export default function DashboardScreen({ navigation }) {
                 ]}
                 disabled={orderSyncStats.localCompleted > 0}
                 activeOpacity={0.85}
-                onPress={() => {
-                  // Backend not yet integrated – UI only
-                  Alert.alert(
-                    'Handover Submitted',
-                    `Cash: ${formatCurrency(cashTotal)}\nCheque: ${formatCurrency(chequeTotal)}\nDrop-off: ${postCheckDropoffLocation === 'showroom' ? 'Showroom' : 'Head Office'}`,
-                    [{ text: 'OK', onPress: () => setPostCheckModalVisible(false) }]
-                  );
+                onPress={async () => {
+                  try {
+                    const { insertPostCheckSubmission } = await import('../database/postcheckSubmissions.js');
+                    await insertPostCheckSubmission({
+                      submittedAt: new Date().toISOString(),
+                      driverId: user?.driverId ?? null,
+                      driverName: user?.driverName ?? null,
+                      vehicleId: user?.vehicleId ?? null,
+                      vehicleName: user?.vehicleName ?? null,
+                      cashTotal: cashTotal ?? 0,
+                      chequeTotal: chequeTotal ?? 0,
+                      creditTotal: creditTotal ?? 0,
+                      dropoffLocation: postCheckDropoffLocation,
+                      ordersSynced: orderSyncStats.syncedCompleted ?? 0,
+                      ordersPending: orderSyncStats.localCompleted ?? 0,
+                    });
+                    setPostCheckModalVisible(false);
+                    // Brief success notification
+                    setNotification({
+                      visible: true,
+                      title: 'Handover Submitted',
+                      message: `Cash ${formatCurrency(cashTotal)} · Cheque ${formatCurrency(chequeTotal)} · Drop-off: ${postCheckDropoffLocation === 'showroom' ? 'Showroom' : 'Head Office'}`,
+                      type: 'success',
+                    });
+                  } catch (err) {
+                    Alert.alert('Error', 'Could not save handover. Please try again.');
+                    console.error('[PostCheck] save failed', err);
+                  }
                 }}
               >
                 <Ionicons

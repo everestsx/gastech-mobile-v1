@@ -32,6 +32,7 @@ import LocalInvoicesScreen from '../screens/LocalInvoicesScreen';
 import CancelOrdersScreen from '../screens/CancelOrdersScreen';
 import InvoicedCustomersScreen from '../screens/InvoicedCustomersScreen';
 import BluetoothPrinterScreen from '../screens/BluetoothPrinterScreen';
+import MySalesScreen from '../screens/MySalesScreen';
 import SyncHeaderBadge from '../components/SyncHeaderBadge';
 
 import { useTheme } from '../context/ThemeContext';
@@ -228,6 +229,11 @@ function MainStackScreen() {
         name="Settings"
         component={SettingsScreen}
         options={{ ...headerScreenOptions, title: t('navigation.settings', 'Settings') }}
+      />
+      <MainStack.Screen
+        name="MySales"
+        component={MySalesScreen}
+        options={{ headerShown: false }}
       />
       <MainStack.Screen
         name="BluetoothPrinter"
