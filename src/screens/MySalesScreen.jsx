@@ -202,7 +202,7 @@ export default function MySalesScreen({ navigation }) {
   return (
     <SafeAreaView
       style={[{ flex: 1, backgroundColor: colors.background }]}
-      edges={['left', 'right', 'bottom']}
+      edges={['top', 'left', 'right', 'bottom']}
     >
       {/* Header */}
       <View style={[cardStyles.header, { backgroundColor: colors.primary }]}>

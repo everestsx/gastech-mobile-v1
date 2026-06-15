@@ -1815,6 +1815,8 @@ export default function DashboardScreen({ navigation }) {
           borderTopWidth: 1,
           borderColor: colors.border,
           overflow: 'hidden',
+          // flex:1 lets ScrollView fill the sheet and receive all touch events
+          flex: 1,
         },
         postCheckHandle: {
           width: 44,
@@ -3952,10 +3954,12 @@ export default function DashboardScreen({ navigation }) {
         onRequestClose={() => setPostCheckModalVisible(false)}
       >
         <Pressable style={styles.postCheckBackdrop} onPress={() => setPostCheckModalVisible(false)}>
-          <Pressable style={[styles.postCheckSheet, { flexDirection: 'column' }]} onPress={(e) => e.stopPropagation()}>
+          {/* box-none: sheet Pressable passes touches through to ScrollView; only the backdrop itself closes on tap */}
+          <Pressable style={[styles.postCheckSheet, { flexDirection: 'column' }]} onPress={(e) => e.stopPropagation()} pointerEvents="box-none">
 
-            {/* Scrollable content */}
+            {/* Scrollable content — flex:1 so it fills the sheet and captures all swipe gestures */}
             <ScrollView
+              style={{ flex: 1 }}
               showsVerticalScrollIndicator={false}
               keyboardShouldPersistTaps="handled"
               contentContainerStyle={{ paddingBottom: 8, paddingHorizontal: 20 }}
@@ -4141,12 +4145,12 @@ export default function DashboardScreen({ navigation }) {
 
             </ScrollView>
 
-            {/* Fixed footer — Submit button always pinned at bottom */}
+            {/* Fixed footer — Submit button always pinned at bottom, above device nav bar */}
             <View
               style={{
                 paddingHorizontal: 20,
                 paddingTop: 12,
-                paddingBottom: 8,
+                paddingBottom: Math.max(insets.bottom, 12),
                 borderTopWidth: 1,
                 borderTopColor: colors.border,
                 backgroundColor: colors.background,
