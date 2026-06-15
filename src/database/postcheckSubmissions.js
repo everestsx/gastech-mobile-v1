@@ -96,6 +96,19 @@ export async function deleteAllPostCheckSubmissions() {
 }
 
 /**
+ * Delete a single postcheck submission by id.
+ * @param {number} id
+ */
+export async function deletePostCheckSubmission(id) {
+  try {
+    const db = await getDb();
+    await db.runAsync(`DELETE FROM postcheck_submissions WHERE id = ?`, [id]);
+  } catch (e) {
+    console.warn('[postcheckSubmissions] deletePostCheckSubmission:', e?.message ?? e);
+  }
+}
+
+/**
  * Mark a submission as synced to Odoo (for future backend integration).
  * @param {number} id
  * @param {string} [odooId]

@@ -6,13 +6,17 @@ import {
   FlatList,
   ActivityIndicator,
   TouchableOpacity,
+  Alert,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
-import { getAllPostCheckSubmissions } from '../database/postcheckSubmissions.js';
+import {
+  getAllPostCheckSubmissions,
+  deletePostCheckSubmission,
+} from '../database/postcheckSubmissions.js';
 
 function formatCurrency(amount) {
   const num = Number(amount) || 0;
@@ -29,8 +33,7 @@ function formatDateTime(isoString) {
   );
 }
 
-// SubmissionCard receives both colors AND the shared styles object
-function SubmissionCard({ item, colors, cardStyles }) {
+function SubmissionCard({ item, colors, cardStyles, onDelete }) {
   const dropoffLabel = item.dropoff_location === 'headoffice' ? 'Head Office' : 'Showroom';
   const dropoffIcon =
     item.dropoff_location === 'headoffice' ? 'business-outline' : 'storefront-outline';
@@ -38,7 +41,7 @@ function SubmissionCard({ item, colors, cardStyles }) {
 
   return (
     <View style={[cardStyles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-      {/* Date + Sync Status */}
+      {/* Date + Status + Delete */}
       <View style={cardStyles.cardHeader}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
           <Ionicons name="time-outline" size={14} color={colors.textSecondary} />
@@ -46,67 +49,72 @@ function SubmissionCard({ item, colors, cardStyles }) {
             {formatDateTime(item.submitted_at)}
           </Text>
         </View>
-        <View
-          style={[
-            cardStyles.statusBadge,
-            { backgroundColor: colors.primary + '18', borderColor: colors.primary + '30' },
-          ]}
-        >
-          <Ionicons name="cloud-upload-outline" size={11} color={colors.primary} />
-          <Text style={[cardStyles.statusText, { color: colors.primary }]}>Pending Odoo Sync</Text>
+        <View style={cardStyles.cardHeaderRight}>
+          <View
+            style={[
+              cardStyles.statusBadge,
+              { backgroundColor: colors.primary + '18', borderColor: colors.primary + '30' },
+            ]}
+          >
+            <Ionicons name="cloud-upload-outline" size={11} color={colors.primary} />
+            <Text style={[cardStyles.statusText, { color: colors.primary }]}>Pending Odoo Sync</Text>
+          </View>
+          <TouchableOpacity
+            onPress={onDelete}
+            activeOpacity={0.7}
+            style={[cardStyles.deleteBtn, { backgroundColor: '#ef444414', borderColor: '#ef444430' }]}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Ionicons name="trash-outline" size={14} color="#ef4444" />
+          </TouchableOpacity>
         </View>
       </View>
 
       {/* Drop-off location */}
       <View
-        style={[
-          cardStyles.dropoffRow,
-          { backgroundColor: colors.background, borderColor: colors.border },
-        ]}
+        style={[cardStyles.dropoffRow, { backgroundColor: colors.background, borderColor: colors.border }]}
       >
         <Ionicons name={dropoffIcon} size={15} color={colors.primary} />
         <Text style={[cardStyles.dropoffLabel, { color: colors.text }]}>{dropoffLabel}</Text>
       </View>
 
-      {/* Amounts */}
+      {/* Amounts — Cash + Cheque + Credit */}
       <View style={cardStyles.amountsRow}>
         <View
-          style={[
-            cardStyles.amountBox,
-            { backgroundColor: 'rgba(34,197,94,0.08)', borderColor: 'rgba(34,197,94,0.2)' },
-          ]}
+          style={[cardStyles.amountBox, { backgroundColor: 'rgba(34,197,94,0.08)', borderColor: 'rgba(34,197,94,0.2)' }]}
         >
           <View style={cardStyles.amountIconWrap}>
-            <Ionicons name="cash-outline" size={14} color="#22c55e" />
+            <Ionicons name="cash-outline" size={13} color="#22c55e" />
             <Text style={[cardStyles.amountLabel, { color: colors.textSecondary }]}>Cash</Text>
           </View>
-          <Text style={[cardStyles.amountValue, { color: '#22c55e' }]}>
-            {formatCurrency(item.cash_total)}
-          </Text>
+          <Text style={[cardStyles.amountValue, { color: '#22c55e' }]}>{formatCurrency(item.cash_total)}</Text>
         </View>
 
         <View
-          style={[
-            cardStyles.amountBox,
-            { backgroundColor: colors.primary + '0d', borderColor: colors.primary + '25' },
-          ]}
+          style={[cardStyles.amountBox, { backgroundColor: colors.primary + '0d', borderColor: colors.primary + '25' }]}
         >
           <View style={cardStyles.amountIconWrap}>
-            <Ionicons name="document-text-outline" size={14} color={colors.primary} />
+            <Ionicons name="document-text-outline" size={13} color={colors.primary} />
             <Text style={[cardStyles.amountLabel, { color: colors.textSecondary }]}>Cheque</Text>
           </View>
-          <Text style={[cardStyles.amountValue, { color: colors.primary }]}>
-            {formatCurrency(item.cheque_total)}
-          </Text>
+          <Text style={[cardStyles.amountValue, { color: colors.primary }]}>{formatCurrency(item.cheque_total)}</Text>
+        </View>
+
+        <View
+          style={[cardStyles.amountBox, { backgroundColor: 'rgba(245,158,11,0.08)', borderColor: 'rgba(245,158,11,0.2)' }]}
+        >
+          <View style={cardStyles.amountIconWrap}>
+            <Ionicons name="card-outline" size={13} color="#f59e0b" />
+            <Text style={[cardStyles.amountLabel, { color: colors.textSecondary }]}>Credit</Text>
+          </View>
+          <Text style={[cardStyles.amountValue, { color: '#f59e0b' }]}>{formatCurrency(item.credit_total)}</Text>
         </View>
       </View>
 
       {/* Total */}
       <View style={[cardStyles.totalRow, { borderTopColor: colors.border }]}>
         <Text style={[cardStyles.totalLabel, { color: colors.textSecondary }]}>Total Handover</Text>
-        <Text style={[cardStyles.totalValue, { color: colors.text }]}>
-          {formatCurrency(totalHandover)}
-        </Text>
+        <Text style={[cardStyles.totalValue, { color: colors.text }]}>{formatCurrency(totalHandover)}</Text>
       </View>
 
       {/* Orders summary */}
@@ -135,7 +143,6 @@ export default function MySalesScreen({ navigation }) {
   const [submissions, setSubmissions] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  // Fix 1: useFocusEffect must not return a Promise — wrap async call inside sync callback
   useFocusEffect(
     useCallback(() => {
       let cancelled = false;
@@ -156,12 +163,40 @@ export default function MySalesScreen({ navigation }) {
     }, [])
   );
 
-  // Fix 2: styles computed inside the component and passed down to SubmissionCard as cardStyles
   const cardStyles = useMemo(() => makeStyles(), []);
 
+  const handleDelete = useCallback((item) => {
+    Alert.alert(
+      'Remove Record',
+      `Remove the handover record from ${formatDateTime(item.submitted_at)}?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await deletePostCheckSubmission(item.id);
+              setSubmissions((prev) => prev.filter((s) => s.id !== item.id));
+            } catch (e) {
+              console.warn('[MySalesScreen] delete failed:', e);
+            }
+          },
+        },
+      ]
+    );
+  }, []);
+
   const renderItem = useCallback(
-    ({ item }) => <SubmissionCard item={item} colors={colors} cardStyles={cardStyles} />,
-    [colors, cardStyles]
+    ({ item }) => (
+      <SubmissionCard
+        item={item}
+        colors={colors}
+        cardStyles={cardStyles}
+        onDelete={() => handleDelete(item)}
+      />
+    ),
+    [colors, cardStyles, handleDelete]
   );
 
   return (
@@ -214,7 +249,6 @@ export default function MySalesScreen({ navigation }) {
   );
 }
 
-// Static StyleSheet — colors are applied inline where needed
 function makeStyles() {
   return StyleSheet.create({
     header: {
@@ -247,6 +281,11 @@ function makeStyles() {
       paddingBottom: 8,
       gap: 8,
     },
+    cardHeaderRight: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+    },
     cardDate: { fontSize: 12, fontWeight: '500' },
     statusBadge: {
       flexDirection: 'row',
@@ -258,6 +297,14 @@ function makeStyles() {
       borderWidth: 1,
     },
     statusText: { fontSize: 10, fontWeight: '700' },
+    deleteBtn: {
+      width: 28,
+      height: 28,
+      borderRadius: 8,
+      borderWidth: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
     dropoffRow: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -270,11 +317,12 @@ function makeStyles() {
       borderWidth: 1,
     },
     dropoffLabel: { fontSize: 13, fontWeight: '600' },
-    amountsRow: { flexDirection: 'row', gap: 8, paddingHorizontal: spacing.md, marginBottom: 10 },
-    amountBox: { flex: 1, borderRadius: borderRadius.md, borderWidth: 1, padding: 10 },
-    amountIconWrap: { flexDirection: 'row', alignItems: 'center', gap: 5, marginBottom: 4 },
-    amountLabel: { fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.4 },
-    amountValue: { fontSize: 15, fontWeight: '800' },
+    // Three columns now (cash + cheque + credit)
+    amountsRow: { flexDirection: 'row', gap: 6, paddingHorizontal: spacing.md, marginBottom: 10 },
+    amountBox: { flex: 1, borderRadius: borderRadius.md, borderWidth: 1, padding: 8 },
+    amountIconWrap: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 3 },
+    amountLabel: { fontSize: 10, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.3 },
+    amountValue: { fontSize: 13, fontWeight: '800' },
     totalRow: {
       flexDirection: 'row',
       justifyContent: 'space-between',

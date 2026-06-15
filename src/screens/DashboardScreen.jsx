@@ -17,6 +17,8 @@ import {
   Linking,
   Alert,
   Dimensions,
+  TextInput,
+  KeyboardAvoidingView,
 } from 'react-native';
 import { BlurView } from 'expo-blur';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -313,7 +315,11 @@ export default function DashboardScreen({ navigation }) {
   }, [precheckDateKey, user?.loggedInAt]);
   const [postCheckModalVisible, setPostCheckModalVisible] = useState(false);
   const [preCheckSummaryModalVisible, setPreCheckSummaryModalVisible] = useState(false);
-  const [postCheckDropoffLocation, setPostCheckDropoffLocation] = useState('showroom');
+  const [postCheckDropoffLocation, setPostCheckDropoffLocation] = useState('headoffice');
+  // Editable amounts — pre-filled from computed totals when modal opens, user can adjust before saving
+  const [editCash, setEditCash] = useState('0');
+  const [editCheque, setEditCheque] = useState('0');
+  const [editCredit, setEditCredit] = useState('0');
   const [topBarHeight, setTopBarHeight] = useState(0);
   const [initialLoadGateActive, setInitialLoadGateActive] = useState(
     () => !isDashboardInitialLoadMemoryDone()
@@ -1886,6 +1892,21 @@ export default function DashboardScreen({ navigation }) {
           fontWeight: '900',
           color: colors.primary,
         },
+        postCheckEditWrap: {
+          borderWidth: 1,
+          borderRadius: 8,
+          paddingHorizontal: 10,
+          paddingVertical: 4,
+          minWidth: 110,
+          alignItems: 'flex-end',
+        },
+        postCheckEditInput: {
+          fontSize: 15,
+          fontWeight: '700',
+          textAlign: 'right',
+          minWidth: 90,
+          padding: 0,
+        },
         postCheckDropLabel: {
           fontSize: 11,
           fontWeight: '700',
@@ -2794,6 +2815,10 @@ export default function DashboardScreen({ navigation }) {
                     if (!preCheckDone) {
                       openPreCheckSummary();
                     } else {
+                      // Pre-fill editable amounts from computed totals
+                      setEditCash(String(cashTotal.toFixed(2)));
+                      setEditCheque(String(chequeTotal.toFixed(2)));
+                      setEditCredit(String(creditTotal.toFixed(2)));
                       setPostCheckModalVisible(true);
                     }
                   }}
@@ -3966,9 +3991,10 @@ export default function DashboardScreen({ navigation }) {
                 </View>
               )}
 
-              {/* Collection Summary */}
+              {/* Collection Summary — values editable before saving */}
               <Text style={styles.postCheckSectionLabel}>Collection Summary</Text>
 
+              {/* Cash */}
               <View style={styles.postCheckRow}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
                   <View style={{ width: 32, height: 32, borderRadius: 8, backgroundColor: 'rgba(34,197,94,0.15)', alignItems: 'center', justifyContent: 'center' }}>
@@ -3976,9 +4002,19 @@ export default function DashboardScreen({ navigation }) {
                   </View>
                   <Text style={styles.postCheckRowLabel}>Cash Collection</Text>
                 </View>
-                <Text style={[styles.postCheckRowValue, { color: '#22c55e' }]}>{formatCurrency(cashTotal)}</Text>
+                <View style={[styles.postCheckEditWrap, { borderColor: '#22c55e44', backgroundColor: 'rgba(34,197,94,0.06)' }]}>
+                  <TextInput
+                    style={[styles.postCheckEditInput, { color: '#22c55e' }]}
+                    value={editCash}
+                    onChangeText={setEditCash}
+                    keyboardType="numeric"
+                    selectTextOnFocus
+                    placeholderTextColor="#22c55e88"
+                  />
+                </View>
               </View>
 
+              {/* Cheque */}
               <View style={styles.postCheckRow}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
                   <View style={{ width: 32, height: 32, borderRadius: 8, backgroundColor: 'rgba(99,102,241,0.15)', alignItems: 'center', justifyContent: 'center' }}>
@@ -3986,25 +4022,44 @@ export default function DashboardScreen({ navigation }) {
                   </View>
                   <Text style={styles.postCheckRowLabel}>Cheque Collection</Text>
                 </View>
-                <Text style={[styles.postCheckRowValue]}>{formatCurrency(chequeTotal)}</Text>
+                <View style={[styles.postCheckEditWrap, { borderColor: (colors.primary ?? '#6366f1') + '44', backgroundColor: (colors.primary ?? '#6366f1') + '0d' }]}>
+                  <TextInput
+                    style={[styles.postCheckEditInput, { color: colors.primary }]}
+                    value={editCheque}
+                    onChangeText={setEditCheque}
+                    keyboardType="numeric"
+                    selectTextOnFocus
+                    placeholderTextColor={(colors.primary ?? '#6366f1') + '88'}
+                  />
+                </View>
               </View>
 
-              {creditTotal > 0 && (
-                <View style={styles.postCheckRow}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
-                    <View style={{ width: 32, height: 32, borderRadius: 8, backgroundColor: 'rgba(245,158,11,0.15)', alignItems: 'center', justifyContent: 'center' }}>
-                      <Ionicons name="card" size={16} color="#f59e0b" />
-                    </View>
-                    <Text style={styles.postCheckRowLabel}>Credit</Text>
+              {/* Credit — always shown */}
+              <View style={styles.postCheckRow}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
+                  <View style={{ width: 32, height: 32, borderRadius: 8, backgroundColor: 'rgba(245,158,11,0.15)', alignItems: 'center', justifyContent: 'center' }}>
+                    <Ionicons name="card" size={16} color="#f59e0b" />
                   </View>
-                  <Text style={[styles.postCheckRowValue, { color: '#f59e0b' }]}>{formatCurrency(creditTotal)}</Text>
+                  <Text style={styles.postCheckRowLabel}>Credit</Text>
                 </View>
-              )}
+                <View style={[styles.postCheckEditWrap, { borderColor: '#f59e0b44', backgroundColor: 'rgba(245,158,11,0.06)' }]}>
+                  <TextInput
+                    style={[styles.postCheckEditInput, { color: '#f59e0b' }]}
+                    value={editCredit}
+                    onChangeText={setEditCredit}
+                    keyboardType="numeric"
+                    selectTextOnFocus
+                    placeholderTextColor="#f59e0b88"
+                  />
+                </View>
+              </View>
 
-              {/* Grand Total */}
+              {/* Grand Total — live from editable values */}
               <View style={styles.postCheckTotalRow}>
                 <Text style={styles.postCheckTotalLabel}>Total Handover</Text>
-                <Text style={styles.postCheckTotalValue}>{formatCurrency(cashTotal + chequeTotal)}</Text>
+                <Text style={styles.postCheckTotalValue}>
+                  {formatCurrency((parseFloat(editCash) || 0) + (parseFloat(editCheque) || 0))}
+                </Text>
               </View>
 
               <View style={styles.postCheckDivider} />
@@ -4105,6 +4160,9 @@ export default function DashboardScreen({ navigation }) {
                 disabled={orderSyncStats.localCompleted > 0}
                 activeOpacity={0.85}
                 onPress={async () => {
+                  const finalCash = parseFloat(editCash) || 0;
+                  const finalCheque = parseFloat(editCheque) || 0;
+                  const finalCredit = parseFloat(editCredit) || 0;
                   try {
                     const { insertPostCheckSubmission } = await import('../database/postcheckSubmissions.js');
                     await insertPostCheckSubmission({
@@ -4113,19 +4171,18 @@ export default function DashboardScreen({ navigation }) {
                       driverName: user?.driverName ?? null,
                       vehicleId: user?.vehicleId ?? null,
                       vehicleName: user?.vehicleName ?? null,
-                      cashTotal: cashTotal ?? 0,
-                      chequeTotal: chequeTotal ?? 0,
-                      creditTotal: creditTotal ?? 0,
+                      cashTotal: finalCash,
+                      chequeTotal: finalCheque,
+                      creditTotal: finalCredit,
                       dropoffLocation: postCheckDropoffLocation,
                       ordersSynced: orderSyncStats.syncedCompleted ?? 0,
                       ordersPending: orderSyncStats.localCompleted ?? 0,
                     });
                     setPostCheckModalVisible(false);
-                    // Brief success notification
                     setNotification({
                       visible: true,
                       title: 'Handover Submitted',
-                      message: `Cash ${formatCurrency(cashTotal)} · Cheque ${formatCurrency(chequeTotal)} · Drop-off: ${postCheckDropoffLocation === 'showroom' ? 'Showroom' : 'Head Office'}`,
+                      message: `Cash ${formatCurrency(finalCash)} · Cheque ${formatCurrency(finalCheque)} · Credit ${formatCurrency(finalCredit)} · Drop-off: ${postCheckDropoffLocation === 'showroom' ? 'Showroom' : 'Head Office'}`,
                       type: 'success',
                     });
                   } catch (err) {
