@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import { AppState, View, StyleSheet } from 'react-native';
+import { AppState, View, StyleSheet, DeviceEventEmitter } from 'react-native';
 import { NavigationContainer, createNavigationContainerRef } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
@@ -81,10 +81,26 @@ function MainTabs() {
   const { t } = useTranslation();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
+  const [preCheckDone, setPreCheckDone] = React.useState(true);
+
+  React.useEffect(() => {
+    const sub = DeviceEventEmitter.addListener('preCheckStatusChanged', (status) => {
+      setPreCheckDone(status);
+    });
+    return () => sub.remove();
+  }, []);
+
   const tabBarHeight = 60;
   const tabBarPaddingBottom = Math.max(6, insets.bottom);
   return (
     <Tab.Navigator
+      screenListeners={{
+        tabPress: (e) => {
+          if (!preCheckDone) {
+            e.preventDefault();
+          }
+        },
+      }}
       screenOptions={{
         headerShown: false,
         tabBarActiveTintColor: colors.primary,
@@ -95,6 +111,7 @@ function MainTabs() {
           height: tabBarHeight + insets.bottom,
           backgroundColor: colors.surface,
           borderTopColor: colors.border,
+          opacity: preCheckDone ? 1 : 0.4,
         },
         tabBarLabelStyle: { fontSize: 12, fontWeight: '600' },
       }}

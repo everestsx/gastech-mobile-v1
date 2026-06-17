@@ -19,6 +19,7 @@ import {
   Dimensions,
   TextInput,
   KeyboardAvoidingView,
+  DeviceEventEmitter,
 } from 'react-native';
 import { BlurView } from 'expo-blur';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -274,6 +275,7 @@ export default function DashboardScreen({ navigation }) {
   const [preCheckDone, setPreCheckDoneState] = useState(false);
   const setPreCheckDone = useCallback(async (val, loggedInAt) => {
     setPreCheckDoneState(val);
+    DeviceEventEmitter.emit('preCheckStatusChanged', val);
     try {
       if (val) {
         const sessionStamp = loggedInAt != null ? String(loggedInAt) : '';
@@ -293,12 +295,14 @@ export default function DashboardScreen({ navigation }) {
     const sessionStamp = user?.loggedInAt != null ? String(user.loggedInAt) : '';
     if (!sessionStamp) {
       setPreCheckDoneState(false);
+      DeviceEventEmitter.emit('preCheckStatusChanged', false);
       return;
     }
     AsyncStorage.getItem(KEY_PRECHECK_DONE)
       .then((stored) => {
         if (!stored) {
           setPreCheckDoneState(false);
+          DeviceEventEmitter.emit('preCheckStatusChanged', false);
           return;
         }
         try {
@@ -307,11 +311,16 @@ export default function DashboardScreen({ navigation }) {
             parsed?.date === precheckDateKey &&
             String(parsed?.loggedInAt || '') === sessionStamp;
           setPreCheckDoneState(ok);
+          DeviceEventEmitter.emit('preCheckStatusChanged', ok);
         } catch {
           setPreCheckDoneState(false);
+          DeviceEventEmitter.emit('preCheckStatusChanged', false);
         }
       })
-      .catch(() => setPreCheckDoneState(false));
+      .catch(() => {
+        setPreCheckDoneState(false);
+        DeviceEventEmitter.emit('preCheckStatusChanged', false);
+      });
   }, [precheckDateKey, user?.loggedInAt]);
   const [postCheckModalVisible, setPostCheckModalVisible] = useState(false);
   const [preCheckSummaryModalVisible, setPreCheckSummaryModalVisible] = useState(false);
@@ -2811,7 +2820,6 @@ export default function DashboardScreen({ navigation }) {
                     preCheckDone
                       ? styles.postCheckBtn
                       : styles.preCheckBtn,
-                    !preCheckDone && needsPreCheckGate && { opacity: 0 },
                   ]}
                   onPress={() => {
                     if (!preCheckDone) {
@@ -2824,7 +2832,6 @@ export default function DashboardScreen({ navigation }) {
                       setPostCheckModalVisible(true);
                     }
                   }}
-                  disabled={!preCheckDone && needsPreCheckGate}
                   activeOpacity={0.85}
                   accessibilityRole="button"
                   accessibilityLabel={preCheckDone ? 'Post Check' : 'Pre Check'}
@@ -2852,6 +2859,9 @@ export default function DashboardScreen({ navigation }) {
             </View>
           </View>
         </View>
+
+        {/* Disabled wrapper until Pre-check is completed */}
+        <View style={{ opacity: preCheckDone ? 1 : 0.5 }} pointerEvents={preCheckDone ? 'auto' : 'none'}>
 
         {/* 2. Stock overview (lorry stock) */}
         <View style={{ paddingHorizontal: spacing.md, marginTop: -10, marginBottom: spacing.sm }}>
@@ -3342,6 +3352,7 @@ export default function DashboardScreen({ navigation }) {
               )}
             </View>
         )}
+        </View>
       </ScrollView>
 
       {shouldBlockDashboard ? (
@@ -3397,15 +3408,14 @@ export default function DashboardScreen({ navigation }) {
         </View>
       ) : null}
 
-      {/* PreCheck — single Modal: dim gate, then stock summary sheet (avoids dual-Modal + zero-height scroll bugs). */}
+      {/* PreCheck Summary Sheet */}
       <Modal
-        visible={!preCheckDone}
+        visible={preCheckSummaryModalVisible}
         transparent
-        animationType={preCheckSummaryModalVisible ? 'slide' : 'fade'}
+        animationType="slide"
         statusBarTranslucent
         onRequestClose={() => {}}
       >
-        {preCheckSummaryModalVisible ? (
           <View style={styles.postCheckBackdrop}>
             <View
               style={[
@@ -3632,49 +3642,6 @@ export default function DashboardScreen({ navigation }) {
               </View>
             </View>
           </View>
-        ) : (
-          <View style={{ flex: 1 }} pointerEvents="box-none">
-            <View
-              style={{ height: topBarHeight > 0 ? topBarHeight : insets.top + spacing.lg + 132 }}
-              pointerEvents="box-none"
-            >
-              <TouchableOpacity
-                style={[
-                  styles.syncNowBtn,
-                  styles.preCheckBtn,
-                  {
-                    position: 'absolute',
-                    right: spacing.md,
-                    bottom: 14,
-                    zIndex: 20,
-                    elevation: 20,
-                  },
-                ]}
-                onPress={openPreCheckSummary}
-                activeOpacity={0.85}
-                accessibilityRole="button"
-                accessibilityLabel="Pre Check"
-              >
-                <Ionicons
-                  name="shield-checkmark-outline"
-                  size={14}
-                  color="#fff"
-                  style={{ marginRight: 5 }}
-                />
-                <Text style={styles.syncNowBtnText}>
-                  {t('dashboard.preCheckButton', 'Pre Check')}
-                </Text>
-              </TouchableOpacity>
-            </View>
-            <View
-              pointerEvents="auto"
-              style={{
-                flex: 1,
-                backgroundColor: isDark ? 'rgba(10,15,30,0.55)' : 'rgba(15,23,42,0.38)',
-              }}
-            />
-          </View>
-        )}
       </Modal>
 
     </View>
@@ -3953,9 +3920,9 @@ export default function DashboardScreen({ navigation }) {
         animationType="slide"
         onRequestClose={() => setPostCheckModalVisible(false)}
       >
-        <Pressable style={styles.postCheckBackdrop} onPress={() => setPostCheckModalVisible(false)}>
-          {/* box-none: sheet Pressable passes touches through to ScrollView; only the backdrop itself closes on tap */}
-          <Pressable style={[styles.postCheckSheet, { flexDirection: 'column' }]} onPress={(e) => e.stopPropagation()} pointerEvents="box-none">
+        <View style={{ flex: 1, justifyContent: 'flex-end' }}>
+          <Pressable style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.60)' }]} onPress={() => setPostCheckModalVisible(false)} />
+          <View style={[styles.postCheckSheet, { flexDirection: 'column' }]}>
 
             {/* Scrollable content — flex:1 so it fills the sheet and captures all swipe gestures */}
             <ScrollView
@@ -4211,8 +4178,8 @@ export default function DashboardScreen({ navigation }) {
               </TouchableOpacity>
             </View>
 
-          </Pressable>
-        </Pressable>
+          </View>
+        </View>
 
       </Modal>
 
