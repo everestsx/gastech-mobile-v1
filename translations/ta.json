@@ -1,5 +1,5 @@
 {
-  "version": "1.0.8",
+  "version": "1.0.9",
   "language": "ta",
   "translation": {
     "bluetoothprinter": {
@@ -296,7 +296,9 @@
       "noStockDataAvailable": "இருப்பு தரவு இல்லை.",
       "preCheckTitle": "முன் சரிபார்ப்பு — இருப்பு சுருக்கம்",
       "preCheckOk": "சரி — விநியோகத்தைத் தொடங்கு",
-      "preCheckButton": "முன் சரிபார்ப்பு",
+      "preCheckButton": "நாளை தொடங்கு",
+      "postCheckButton": "நாளை முடி",
+      "postCheckTitle": "நாள் முடிவு — ஒப்படைப்பு சுருக்கம்",
       "preCheckShortfall": "சில பொருட்களுக்கு போதுமான இருப்பு இல்லை. விநியோகத்தைத் தொடங்கும் முன் operations team-ஐ தொடர்பு கொள்ளவும்.",
       "preCheckSyncInProgress": "தரவு பின்னணியில் ஒத்திசைக்கப்படுகிறது. நீங்கள் இருப்பைச் சரிபார்த்து வேலையைத் தொடங்கலாம் — எண்கள் விரைவில் புதுப்பிக்கப்படலாம்.",
       "todaysOrders": "இன்றைய ஆர்டர்கள்",

@@ -1,5 +1,5 @@
 ﻿{
-  "version": "1.0.8",
+  "version": "1.0.9",
   "language": "si",
   "translation": {
     "bluetoothprinter": {
@@ -68,7 +68,9 @@
       "ordersCompleted": "සම්පූර්ණ කළ ඕඩර්",
       "preCheckTitle": "පූර්ව පරීක්ෂණ — ස්ටොක් සාරාංශය",
       "preCheckOk": "හරි — බෙදාහැරීම ආරම්භ කරන්න",
-      "preCheckButton": "පූර්ව පරීක්ෂණ",
+      "preCheckButton": "දවස ආරම්භ කරන්න",
+      "postCheckButton": "දවස අවසන් කරන්න",
+      "postCheckTitle": "දවස අවසන් — භාරදීමේ සාරාංශය",
       "preCheckShortfall": "සමහර නිෂ්පාදන සඳහා ප්‍රමාණවත් ස්ටොක් නොමැත. බෙදාහැරීම ආරම්භ කිරීමට පෙර operations team එක සම්බන්ධ කරගන්න.",
       "preCheckSyncInProgress": "දත්ත පසුබිමෙන් sync වෙමින් පවතී. ඔබට ස්ටොක් පරීක්ෂා කර වැඩ ආරම්භ කළ හැක — අංක ටික වහාම යාවත්කාලීන විය හැක.",
       "todaysOrders": "අද ඇණවුම්",

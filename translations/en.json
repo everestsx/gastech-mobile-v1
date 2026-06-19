@@ -1,5 +1,5 @@
 {
-  "version": "1.0.8",
+  "version": "1.0.9",
   "language": "en",
   "translation": {
     "dashboard": {
@@ -28,7 +28,9 @@
       "noStockDataAvailable": "No stock data available.",
       "preCheckTitle": "Pre Check — Stock Summary",
       "preCheckOk": "OK — Start delivery",
-      "preCheckButton": "Pre Check",
+      "preCheckButton": "Start Day",
+      "postCheckButton": "End Day",
+      "postCheckTitle": "End Day — Handover Summary",
       "preCheckShortfall": "Not enough stock for some products. Please contact the operations team before starting delivery.",
       "preCheckSyncInProgress": "Data is still syncing in the background. You can check stock and start work — numbers may update shortly.",
       "todaysOrders": "Today's orders",

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from 'react';
+﻿import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -12,13 +12,6 @@ import {
   UIManager,
   InteractionManager,
   Image,
-  Modal,
-  Pressable,
-  Linking,
-  Alert,
-  Dimensions,
-  TextInput,
-  KeyboardAvoidingView,
   DeviceEventEmitter,
 } from 'react-native';
 import { BlurView } from 'expo-blur';
@@ -35,9 +28,8 @@ import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
 import { dashboardConfig } from '../constants/dashboardConfig';
 import { getGasTypeBlueColor, parseKgFromProductName } from '../utils/productDisplay';
-import { buildDefaultGasDashboardStockCards, DEFAULT_GAS_CYLINDER_KG_SIZES } from '../utils/defaultGasStock';
+import { buildDefaultGasDashboardStockCards } from '../utils/defaultGasStock';
 import { canonicalKgFromName, isEmptyCylinderName, isGasCylinderName } from '../utils/cylinderCatalog';
-import { isInvoiceAccessoryProduct } from '../utils/invoiceCatalogLines';
 import { getLocalizedCustomerNameFromOrder } from '../utils/customerDisplayName';
 import {
   getCachedOrders,
@@ -83,6 +75,14 @@ import * as saleOrderLinesDb from '../database/saleOrderLines.js';
 import DeliveryProgressBarChart from '../components/DeliveryProgressBarChart';
 import RichNotification from '../components/RichNotification';
 import PendingBackOfficeReminderModal from '../components/PendingBackOfficeReminderModal';
+import PreCheckSummaryModal from '../components/dashboard/PreCheckSummaryModal';
+import PostCheckHandoverModal from '../components/dashboard/PostCheckHandoverModal';
+import CommissionRangeModal from '../components/dashboard/CommissionRangeModal';
+import RoutePickerModal from '../components/dashboard/RoutePickerModal';
+import PostLoginSyncModal from '../components/dashboard/PostLoginSyncModal';
+import ProfileModal from '../components/dashboard/ProfileModal';
+import DashboardInitialLoadScreen from '../components/dashboard/DashboardInitialLoadScreen';
+import { usePreCheckData } from '../hooks/usePreCheckData';
 import NetworkStatusPill from '../components/NetworkStatusPill';
 import { subscribeNetworkStatus, NetworkQuality } from '../services/networkStatus.service';
 import { useSync } from '../context/SyncContext';
@@ -244,8 +244,6 @@ export default function DashboardScreen({ navigation }) {
   const [commissionRangePreset, setCommissionRangePreset] = useState('today');
   const [commissionDateRange, setCommissionDateRange] = useState(() => getTodayDateRange());
   const [commissionRangeModalVisible, setCommissionRangeModalVisible] = useState(false);
-  const [commissionRangeDraft, setCommissionRangeDraft] = useState({ dateFrom: '', dateTo: '' });
-  const [commissionRangePickerField, setCommissionRangePickerField] = useState(null);
   const [todayOrderLines, setTodayOrderLines] = useState(() => lastDashboardSnapshot?.todayOrderLines ?? []);
   const [orderSyncStats, setOrderSyncStats] = useState(
     () =>
@@ -270,7 +268,7 @@ export default function DashboardScreen({ navigation }) {
   const [pendingBackOfficeModalVisible, setPendingBackOfficeModalVisible] = useState(false);
   const pendingBackOfficeDismissedRef = useRef(false);
   const [notification, setNotification] = useState({ visible: false, title: '', message: '', type: 'info' });
-  // PreCheck / PostCheck — per login session (cleared on logout)
+  // PreCheck / PostCheck â€” per login session (cleared on logout)
   const precheckDateKey = new Date().toISOString().slice(0, 10); // e.g. "2026-06-12"
   const [preCheckDone, setPreCheckDoneState] = useState(false);
   const setPreCheckDone = useCallback(async (val, loggedInAt) => {
@@ -324,11 +322,11 @@ export default function DashboardScreen({ navigation }) {
   }, [precheckDateKey, user?.loggedInAt]);
   const [postCheckModalVisible, setPostCheckModalVisible] = useState(false);
   const [preCheckSummaryModalVisible, setPreCheckSummaryModalVisible] = useState(false);
-  const [postCheckDropoffLocation, setPostCheckDropoffLocation] = useState('headoffice');
-  // Editable amounts — pre-filled from computed totals when modal opens, user can adjust before saving
-  const [editCash, setEditCash] = useState('0');
-  const [editCheque, setEditCheque] = useState('0');
-  const [editCredit, setEditCredit] = useState('0');
+  const [postCheckInitialAmounts, setPostCheckInitialAmounts] = useState({
+    cash: '0',
+    cheque: '0',
+    credit: '0',
+  });
   const [topBarHeight, setTopBarHeight] = useState(0);
   const [initialLoadGateActive, setInitialLoadGateActive] = useState(
     () => !isDashboardInitialLoadMemoryDone()
@@ -426,16 +424,16 @@ export default function DashboardScreen({ navigation }) {
         button: 'Great',
       },
       ta: {
-        title: 'ஒத்திசைவு முடிந்தது',
+        title: 'à®’à®¤à¯à®¤à®¿à®šà¯ˆà®µà¯ à®®à¯à®Ÿà®¿à®¨à¯à®¤à®¤à¯',
         subtitle:
-          'இந்த சாதனத்தில் ஆர்டர்கள், விநியோகம் மற்றும் கட்டண விவரங்கள் புதுப்பிக்கப்பட்டன.',
-        button: 'சரி',
+          'à®‡à®¨à¯à®¤ à®šà®¾à®¤à®©à®¤à¯à®¤à®¿à®²à¯ à®†à®°à¯à®Ÿà®°à¯à®•à®³à¯, à®µà®¿à®¨à®¿à®¯à¯‹à®•à®®à¯ à®®à®±à¯à®±à¯à®®à¯ à®•à®Ÿà¯à®Ÿà®£ à®µà®¿à®µà®°à®™à¯à®•à®³à¯ à®ªà¯à®¤à¯à®ªà¯à®ªà®¿à®•à¯à®•à®ªà¯à®ªà®Ÿà¯à®Ÿà®©.',
+        button: 'à®šà®°à®¿',
       },
       si: {
-        title: 'සමමුහුර්තය අවසන්',
+        title: 'à·ƒà¶¸à¶¸à·”à·„à·”à¶»à·Šà¶­à¶º à¶…à·€à·ƒà¶±à·Š',
         subtitle:
-          'මෙම උපාංගයෙන් ඇණවුම්, බෙදාහැරීම් සහ ගෙවීම් විස්තර යාවත්කාලීනයි.',
-        button: 'හරි',
+          'à¶¸à·™à¶¸ à¶‹à¶´à·à¶‚à¶œà¶ºà·™à¶±à·Š à¶‡à¶«à·€à·”à¶¸à·Š, à¶¶à·™à¶¯à·à·„à·à¶»à·“à¶¸à·Š à·ƒà·„ à¶œà·™à·€à·“à¶¸à·Š à·€à·’à·ƒà·Šà¶­à¶» à¶ºà·à·€à¶­à·Šà¶šà·à¶½à·“à¶±à¶ºà·’.',
+        button: 'à·„à¶»à·’',
       },
     }[appLanguage] || {
       en: {
@@ -618,9 +616,9 @@ export default function DashboardScreen({ navigation }) {
       }
 
       // Dashboard top indicators:
-      // Active — not cancelled and not yet “delivery touched” (invoiced / picking / move qty_done / Odoo qty_delivered / local invoice / pay queue).
-      // Pay pending (orange) — payment upload still queued, and (invoiced OR any delivery activity).
-      // Synced (green) — no payment queue pending, and (invoiced OR any delivery activity) — includes partial backend delivery without full invoice.
+      // Active â€” not cancelled and not yet â€œdelivery touchedâ€ (invoiced / picking / move qty_done / Odoo qty_delivered / local invoice / pay queue).
+      // Pay pending (orange) â€” payment upload still queued, and (invoiced OR any delivery activity).
+      // Synced (green) â€” no payment queue pending, and (invoiced OR any delivery activity) â€” includes partial backend delivery without full invoice.
 
       let pendingOrders = 0;
       let localCompleted = 0;
@@ -1147,7 +1145,7 @@ export default function DashboardScreen({ navigation }) {
 
   /**
    * Delivery progress: count as delivered when any qty was recorded on move lines, picking is done/cancel, or order is invoiced.
-   * Does not require full Odoo invoice — matches “any delivery on this order” for progress bars and totals.
+   * Does not require full Odoo invoice â€” matches â€œany delivery on this orderâ€ for progress bars and totals.
    */
   const deliveredTodayOrders = useMemo(
     () =>
@@ -1289,7 +1287,7 @@ export default function DashboardScreen({ navigation }) {
     routes.find((r) => Number(r.id) === Number(selectedRouteId))?.name ||
     todayOrdersForDashboard[0]?.route_id?.[1] ||
     routes[0]?.name ||
-    '—';
+    'â€”';
   const vehicleName = user?.licensePlate || user?.vehicleName || 'Vehicle';
   const driverName = user?.driverName;
   const driverPhone = user?.driverPhone != null && String(user.driverPhone).trim() !== '' ? String(user.driverPhone).trim() : '';
@@ -1335,152 +1333,22 @@ export default function DashboardScreen({ navigation }) {
 
   const shopsCompleted = deliveredTodayOrdersAllRoutes.length;
   const totalShopsToday = todayOrders.length;
-  const activeOrdersToday = todayOrders.filter((o) => String(o?.state || '').toLowerCase() !== 'cancel').length;
 
-  const preCheckOrderDemandByProduct = useMemo(() => {
-    const orderById = new Map();
-    for (const o of todayOrders || []) {
-      if (String(o?.state || '').toLowerCase() === 'cancel') continue;
-      const id = Number(o.id);
-      if (Number.isFinite(id)) orderById.set(id, o);
-    }
-    const byProduct = new Map();
-    for (const line of todayOrderLines || []) {
-      const orderId = Array.isArray(line.order_id) ? line.order_id[0] : line.order_id;
-      const soId = orderId != null ? Number(orderId) : null;
-      if (soId == null || !orderById.has(soId)) continue;
-      const pidRaw = Array.isArray(line.product_id) ? line.product_id[0] : line.product_id;
-      const productId = pidRaw != null ? Number(pidRaw) : null;
-      if (productId == null || !Number.isFinite(productId)) continue;
-      const qty = Number(line.product_uom_qty) || 0;
-      if (qty <= 0) continue;
-      const rawLabel = String(line.product_name || line.name || '').trim();
-      const label = rawLabel.replace(/^\[[^\]]+\]\s*/, '') || `Product ${productId}`;
-      if (!byProduct.has(productId)) {
-        byProduct.set(productId, {
-          productId,
-          label,
-          kg: canonicalKgFromName(rawLabel || label),
-          totalOrdered: 0,
-        });
-      }
-      byProduct.get(productId).totalOrdered += qty;
-    }
-    return byProduct;
-  }, [todayOrders, todayOrderLines]);
-
-  const formatPreCheckQty = useCallback((q) => {
-    const n = Number(q) || 0;
-    const s = n.toFixed(3).replace(/\.?0+$/, '');
-    return s === '' ? '0' : s;
-  }, []);
-
-  const preCheckStockRows = useMemo(() => {
-    const demandMap = preCheckOrderDemandByProduct;
-    const findDemand = (productId, kg) => {
-      if (productId != null && demandMap.has(productId)) return demandMap.get(productId);
-      if (kg != null && Number.isFinite(kg)) {
-        for (const d of demandMap.values()) {
-          if (d.kg != null && Math.abs(Number(d.kg) - kg) < 0.051) return d;
-        }
-      }
-      return null;
-    };
-    const isPreCheckRow = (label, productId, isGas, isAccessory, isExtra) => {
-      if (isEmptyCylinderName(label)) return false;
-      return isGas || isAccessory || isExtra;
-    };
-
-    const rows = (stockCards || []).map((s) => {
-      const label = String(s.product_name || '').replace(/^\[[^\]]+\]\s*/, '').trim() || 'Stock';
-      const onHand = Math.max(0, Number(s.total) || 0);
-      const productId = s.product_id != null ? Number(s.product_id) : null;
-      const kg = s._defaultGasKg != null ? Number(s._defaultGasKg) : canonicalKgFromName(label);
-      const isGas = s._defaultGasKg != null || isGasCylinderName(label);
-      const isAccessory = isInvoiceAccessoryProduct(label, productId);
-      const isExtra = s._isExtraProduct === true;
-      const demand = findDemand(productId, kg);
-      const totalOrdered = demand?.totalOrdered ?? 0;
-      return {
-        key: String(s.display_key ?? s.product_id ?? s._defaultGasKg ?? label),
-        productId,
-        label,
-        onHand,
-        kg,
-        isGas,
-        isAccessory,
-        isExtra,
-        totalOrdered,
-        shortfall: Math.max(0, totalOrdered - onHand),
-        insufficient: onHand < totalOrdered,
-        sortRank: isGas ? 0 : isAccessory ? 1 : 2,
-        sortKg: kg ?? 999,
-      };
-    });
-
-    const usedKeys = new Set(
-      rows.map((r) => r.productId).filter((id) => id != null && Number.isFinite(id))
-    );
-    for (const demand of demandMap.values()) {
-      if (demand.totalOrdered <= 0) continue;
-      if (usedKeys.has(demand.productId)) continue;
-      const label = demand.label || `Product ${demand.productId}`;
-      const isGas = isGasCylinderName(label) || demand.kg != null;
-      const isAccessory = isInvoiceAccessoryProduct(label, demand.productId);
-      if (!isGas && !isAccessory) continue;
-      rows.push({
-        key: `demand-${demand.productId}`,
-        productId: demand.productId,
-        label,
-        onHand: 0,
-        kg: demand.kg,
-        isGas,
-        isAccessory,
-        isExtra: false,
-        totalOrdered: demand.totalOrdered,
-        shortfall: demand.totalOrdered,
-        insufficient: demand.totalOrdered > 0,
-        sortRank: isGas ? 0 : 1,
-        sortKg: demand.kg ?? 999,
-      });
-    }
-
-    return rows
-      .filter((r) => isPreCheckRow(r.label, r.productId, r.isGas, r.isAccessory, r.isExtra))
-      .filter((r) => r.onHand > 0 || r.totalOrdered > 0)
-      .sort((a, b) => {
-        if (a.sortRank !== b.sortRank) return a.sortRank - b.sortRank;
-        if (a.sortKg !== b.sortKg) return a.sortKg - b.sortKg;
-        return a.label.localeCompare(b.label, 'en');
-      });
-  }, [stockCards, preCheckOrderDemandByProduct]);
-
-  const preCheckHasShortfall = useMemo(
-    () => preCheckStockRows.some((r) => r.insufficient),
-    [preCheckStockRows]
-  );
-
-  const preCheckTotalOrderedGas = useMemo(
-    () => preCheckStockRows.reduce((sum, r) => sum + (Number(r.totalOrdered) || 0), 0),
-    [preCheckStockRows]
-  );
-
-  const preCheckEmptyRows = useMemo(() => {
-    return DEFAULT_GAS_CYLINDER_KG_SIZES.map((kg) => ({
-      kg: Number(kg),
-      qty: Math.max(0, Number(emptyStockByKg[kg]) || 0),
-    }));
-  }, [emptyStockByKg]);
-
-  const preCheckTotalEmptyCollected = useMemo(
-    () => preCheckEmptyRows.reduce((sum, r) => sum + r.qty, 0),
-    [preCheckEmptyRows]
-  );
-
-  const preCheckTotalOnHand = useMemo(
-    () => preCheckStockRows.reduce((sum, r) => sum + r.onHand, 0),
-    [preCheckStockRows]
-  );
+  const {
+    activeOrdersToday,
+    preCheckStockRows,
+    preCheckHasShortfall,
+    preCheckTotalOrderedGas,
+    preCheckEmptyRows,
+    preCheckTotalEmptyCollected,
+    preCheckTotalOnHand,
+    formatPreCheckQty,
+  } = usePreCheckData({
+    todayOrders,
+    todayOrderLines,
+    stockCards,
+    emptyStockByKg,
+  });
 
   const openPreCheckSummary = useCallback(() => {
     setPreCheckSummaryModalVisible(true);
@@ -1493,13 +1361,6 @@ export default function DashboardScreen({ navigation }) {
   }, [setPreCheckDone]);
 
   const needsPreCheckGate = !preCheckDone && !preCheckSummaryModalVisible;
-  const preCheckSheetLayout = useMemo(() => {
-    const screenH = Dimensions.get('window').height;
-    const sheetMax = Math.round(screenH * 0.88);
-    const footerH = 76 + Math.max(insets.bottom, 12);
-    const scrollH = Math.max(220, sheetMax - footerH);
-    return { sheetMax, scrollH, footerH };
-  }, [insets.bottom]);
   const preCheckSyncInProgress = syncing || isSyncing || (initialLoadGateActive && loading);
   const shopsPct = totalShopsToday > 0 ? Math.min(100, Math.round((shopsCompleted / totalShopsToday) * 100)) : 0;
   const totalGasDelivered = useMemo(() => {
@@ -1809,329 +1670,6 @@ export default function DashboardScreen({ navigation }) {
           borderColor: 'rgba(52, 211, 153, 0.85)',
           marginTop: 6,
         },
-        // PostCheck modal styles
-        postCheckBackdrop: {
-          flex: 1,
-          backgroundColor: 'rgba(0,0,0,0.60)',
-          justifyContent: 'flex-end',
-        },
-        postCheckSheet: {
-          backgroundColor: colors.background,
-          borderTopLeftRadius: 28,
-          borderTopRightRadius: 28,
-          paddingTop: 12,
-          maxHeight: '92%',
-          borderTopWidth: 1,
-          borderColor: colors.border,
-          overflow: 'hidden',
-          // flex:1 lets ScrollView fill the sheet and receive all touch events
-          flex: 1,
-        },
-        postCheckHandle: {
-          width: 44,
-          height: 4,
-          borderRadius: 2,
-          backgroundColor: colors.border,
-          alignSelf: 'center',
-          marginBottom: 18,
-        },
-        postCheckTitle: {
-          fontSize: 20,
-          fontWeight: '800',
-          color: colors.text,
-          marginBottom: 2,
-        },
-        postCheckSubtitle: {
-          fontSize: 13,
-          color: colors.textSecondary,
-          marginBottom: 4,
-        },
-        postCheckSectionLabel: {
-          fontSize: 11,
-          fontWeight: '700',
-          color: colors.textSecondary,
-          textTransform: 'uppercase',
-          letterSpacing: 0.9,
-          marginBottom: 8,
-          marginTop: 18,
-        },
-        postCheckRow: {
-          flexDirection: 'row',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          backgroundColor: colors.surface,
-          borderRadius: 14,
-          paddingHorizontal: 14,
-          paddingVertical: 13,
-          marginBottom: 8,
-          borderWidth: 1,
-          borderColor: colors.border,
-        },
-        postCheckRowLabel: {
-          fontSize: 14,
-          fontWeight: '600',
-          color: colors.text,
-          flex: 1,
-          marginRight: 8,
-        },
-        postCheckRowValue: {
-          fontSize: 14,
-          fontWeight: '800',
-          color: colors.primary,
-          flexShrink: 1,
-        },
-        postCheckTotalRow: {
-          flexDirection: 'row',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          borderRadius: 14,
-          paddingHorizontal: 16,
-          paddingVertical: 16,
-          marginTop: 4,
-          marginBottom: 8,
-          backgroundColor: colors.primarySurface,
-          borderWidth: 1.5,
-          borderColor: colors.primary + '55',
-        },
-        postCheckTotalLabel: {
-          fontSize: 15,
-          fontWeight: '800',
-          color: colors.text,
-        },
-        postCheckTotalValue: {
-          fontSize: 18,
-          fontWeight: '900',
-          color: colors.primary,
-        },
-        postCheckEditWrap: {
-          borderWidth: 1,
-          borderRadius: 8,
-          paddingHorizontal: 10,
-          paddingVertical: 4,
-          minWidth: 110,
-          alignItems: 'flex-end',
-        },
-        postCheckEditInput: {
-          fontSize: 15,
-          fontWeight: '700',
-          textAlign: 'right',
-          minWidth: 90,
-          padding: 0,
-        },
-        postCheckDropLabel: {
-          fontSize: 11,
-          fontWeight: '700',
-          color: colors.textSecondary,
-          textTransform: 'uppercase',
-          letterSpacing: 0.9,
-          marginTop: 18,
-          marginBottom: 10,
-        },
-        postCheckDropRow: {
-          flexDirection: 'row',
-          gap: 10,
-          marginBottom: 20,
-        },
-        postCheckDropOption: {
-          flex: 1,
-          borderRadius: 14,
-          paddingVertical: 14,
-          alignItems: 'center',
-          borderWidth: 1.5,
-          borderColor: colors.border,
-          backgroundColor: colors.surface,
-          gap: 5,
-        },
-        postCheckDropOptionActive: {
-          borderColor: colors.primary,
-          backgroundColor: colors.primarySurface,
-        },
-        postCheckDropOptionText: {
-          fontSize: 13,
-          fontWeight: '700',
-          color: colors.textSecondary,
-        },
-        postCheckDropOptionTextActive: {
-          color: colors.primary,
-        },
-        postCheckSubmitBtn: {
-          borderRadius: 16,
-          paddingVertical: 16,
-          alignItems: 'center',
-          justifyContent: 'center',
-          flexDirection: 'row',
-          gap: 8,
-          backgroundColor: colors.primary,
-          marginTop: 4,
-          shadowColor: colors.primary,
-          shadowOffset: { width: 0, height: 4 },
-          shadowOpacity: 0.3,
-          shadowRadius: 8,
-          elevation: 6,
-        },
-        postCheckSubmitBtnDisabled: {
-          backgroundColor: colors.border,
-          shadowOpacity: 0,
-          elevation: 0,
-        },
-        postCheckSubmitBtnText: {
-          fontSize: 16,
-          fontWeight: '800',
-          color: '#fff',
-          letterSpacing: 0.3,
-        },
-        postCheckPendingWarning: {
-          flexDirection: 'row',
-          alignItems: 'center',
-          gap: 8,
-          backgroundColor: colors.warning + '18',
-          borderRadius: 12,
-          paddingHorizontal: 14,
-          paddingVertical: 12,
-          marginBottom: 4,
-          borderWidth: 1,
-          borderColor: colors.warning + '55',
-        },
-        postCheckPendingWarningText: {
-          fontSize: 12,
-          fontWeight: '600',
-          color: colors.warning,
-          flex: 1,
-        },
-        postCheckDivider: {
-          height: 1,
-          backgroundColor: colors.border,
-          marginVertical: 10,
-        },
-        preCheckSummarySheet: {
-          width: '100%',
-          maxHeight: '88%',
-          flexDirection: 'column',
-        },
-        preCheckSummaryScrollContent: {
-          paddingBottom: 20,
-          paddingHorizontal: 20,
-        },
-        preCheckStockCard: {
-          backgroundColor: colors.surface,
-          borderRadius: 14,
-          paddingHorizontal: 14,
-          paddingVertical: 12,
-          marginBottom: 10,
-          borderWidth: 1,
-          borderColor: colors.border,
-        },
-        preCheckStockCardHeader: {
-          flexDirection: 'row',
-          alignItems: 'flex-start',
-          justifyContent: 'space-between',
-          gap: 10,
-        },
-        preCheckStockCardTitle: {
-          flex: 1,
-          fontSize: 14,
-          fontWeight: '700',
-          color: colors.text,
-        },
-        preCheckStockCardOnHand: {
-          fontSize: 13,
-          fontWeight: '800',
-          color: colors.primary,
-        },
-        preCheckStockCardMeta: {
-          fontSize: 12,
-          fontWeight: '600',
-          color: colors.textSecondary,
-          marginTop: 8,
-        },
-        preCheckStockStatusOk: {
-          fontSize: 11,
-          fontWeight: '700',
-          color: '#16a34a',
-          marginTop: 6,
-        },
-        preCheckStockStatusShort: {
-          fontSize: 11,
-          fontWeight: '700',
-          color: '#dc2626',
-          marginTop: 6,
-        },
-        preCheckShortfallBanner: {
-          flexDirection: 'row',
-          alignItems: 'flex-start',
-          gap: 10,
-          backgroundColor: colors.warning + '18',
-          borderRadius: 12,
-          paddingHorizontal: 14,
-          paddingVertical: 12,
-          marginBottom: 10,
-          borderWidth: 1,
-          borderColor: colors.warning + '55',
-        },
-        preCheckShortfallBannerText: {
-          flex: 1,
-          fontSize: 12,
-          fontWeight: '600',
-          color: colors.warning ?? '#f59e0b',
-          lineHeight: 18,
-        },
-        preCheckSyncBanner: {
-          flexDirection: 'row',
-          alignItems: 'flex-start',
-          gap: 10,
-          backgroundColor: (colors.primary ?? '#6366f1') + '14',
-          borderRadius: 12,
-          paddingHorizontal: 14,
-          paddingVertical: 12,
-          marginBottom: 10,
-          borderWidth: 1,
-          borderColor: (colors.primary ?? '#6366f1') + '44',
-        },
-        preCheckSyncBannerText: {
-          flex: 1,
-          fontSize: 12,
-          fontWeight: '600',
-          color: colors.primary ?? '#6366f1',
-          lineHeight: 18,
-        },
-        postCheckBackOfficeNote: {
-          fontSize: 12,
-          color: colors.textSecondary,
-          textAlign: 'center',
-          marginTop: 10,
-          marginBottom: 4,
-          fontStyle: 'italic',
-          lineHeight: 18,
-        },
-        // PreCheck block message card
-        preCheckBlockCard: {
-          backgroundColor: colors.surface,
-          borderRadius: 18,
-          paddingHorizontal: 28,
-          paddingVertical: 24,
-          alignItems: 'center',
-          borderWidth: 1.5,
-          borderColor: colors.warning + '88',
-          maxWidth: 300,
-          shadowColor: '#000',
-          shadowOffset: { width: 0, height: 8 },
-          shadowOpacity: 0.35,
-          shadowRadius: 24,
-          elevation: 16,
-        },
-        preCheckBlockTitle: {
-          fontSize: 16,
-          fontWeight: '800',
-          color: colors.text,
-          textAlign: 'center',
-          marginBottom: 6,
-        },
-        preCheckBlockBody: {
-          fontSize: 13,
-          color: colors.textSecondary,
-          textAlign: 'center',
-          lineHeight: 20,
-        },
         dailyVisitBtnTop: {
           backgroundColor: 'transparent',
           borderRadius: borderRadius.md,
@@ -2238,17 +1776,6 @@ export default function DashboardScreen({ navigation }) {
           fontWeight: '600',
           color: colors.text,
         },
-        commissionModalRangeRow: {
-          flexDirection: 'row',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          paddingVertical: 12,
-          paddingHorizontal: 4,
-          borderBottomWidth: 1,
-          borderBottomColor: colors.border,
-        },
-        commissionModalRangeLabel: { fontSize: 12, fontWeight: '600', color: colors.textSecondary },
-        commissionModalRangeValue: { fontSize: 15, fontWeight: '700', color: colors.primary },
         employeeCommissionCard: {
           width: 200,
           borderWidth: 0,
@@ -2493,88 +2020,6 @@ export default function DashboardScreen({ navigation }) {
         },
         syncLogStatus: { width: 8, height: 8, borderRadius: 4 },
         syncLogText: { fontSize: 12, color: colors.textSecondary, flex: 1 },
-        modalBackdrop: {
-          flex: 1,
-          backgroundColor: 'rgba(0,0,0,0.5)',
-          justifyContent: 'center',
-          padding: spacing.lg,
-        },
-        modalCard: {
-          backgroundColor: colors.surface,
-          borderRadius: borderRadius.lg,
-          padding: spacing.lg,
-          maxHeight: '85%',
-        },
-        modalTitle: { fontSize: 18, fontWeight: '800', color: colors.text, marginBottom: spacing.sm },
-        modalSubtitle: { fontSize: 13, color: colors.textSecondary, marginBottom: spacing.md },
-        routePickRow: {
-          flexDirection: 'row',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          paddingVertical: 14,
-          paddingHorizontal: spacing.sm,
-          borderBottomWidth: 1,
-          borderBottomColor: colors.border,
-        },
-        routePickRowActive: { backgroundColor: colors.primary + '12' },
-        routePickName: { fontSize: 16, fontWeight: '600', color: colors.text, flex: 1 },
-        profileHero: { alignItems: 'center', marginBottom: spacing.md },
-        profileAvatarLg: {
-          width: 96,
-          height: 96,
-          borderRadius: 48,
-          borderWidth: 3,
-          borderColor: colors.primary + '55',
-          overflow: 'hidden',
-          backgroundColor: colors.background,
-        },
-        profileNameLg: { fontSize: 20, fontWeight: '800', color: colors.text, marginTop: spacing.md, textAlign: 'center' },
-        profileRole: { fontSize: 13, fontWeight: '700', color: colors.primary, marginTop: 4 },
-        profilePhoneRow: {
-          flexDirection: 'row',
-          alignItems: 'center',
-          gap: 10,
-          marginTop: spacing.md,
-          padding: spacing.md,
-          backgroundColor: colors.background,
-          borderRadius: borderRadius.md,
-          borderWidth: 1,
-          borderColor: colors.border,
-        },
-        profilePhoneText: { flex: 1, fontSize: 16, fontWeight: '600', color: colors.text },
-        profileNoPhone: { fontSize: 14, color: colors.textSecondary, fontStyle: 'italic', marginTop: spacing.sm },
-        modalCloseBtn: {
-          marginTop: spacing.lg,
-          paddingVertical: 14,
-          borderRadius: borderRadius.md,
-          backgroundColor: colors.primary,
-          alignItems: 'center',
-        },
-        modalCloseBtnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
-        syncSuccessAccent: {
-          width: 72,
-          height: 72,
-          borderRadius: 36,
-          backgroundColor: colors.primary + '18',
-          alignItems: 'center',
-          justifyContent: 'center',
-          alignSelf: 'center',
-          marginBottom: spacing.md,
-        },
-        syncSuccessTitle: {
-          fontSize: 20,
-          fontWeight: '800',
-          color: colors.text,
-          textAlign: 'center',
-          marginBottom: spacing.sm,
-        },
-        syncSuccessSubtitle: {
-          fontSize: 14,
-          lineHeight: 21,
-          color: colors.textSecondary,
-          textAlign: 'center',
-          marginBottom: spacing.lg,
-        },
         initialSyncOverlayRoot: { flex: 1 },
         initialSyncCenter: {
           flex: 1,
@@ -2606,36 +2051,19 @@ export default function DashboardScreen({ navigation }) {
     year: 'numeric',
   });
 
-  const openDial = (raw) => {
-    const s = String(raw || '').replace(/[^\d+]/g, '');
-    if (!s) return;
-    Linking.openURL(`tel:${s}`).catch(() => {});
-  };
-
   const hasAnyDashboardData =
     (orders?.length || 0) > 0 ||
     (todayOrderLines?.length || 0) > 0 ||
     (stockCards?.length || 0) > 0 ||
     Object.keys(lineTotalsByOrder || {}).length > 0;
-  /** Full-screen loader only for the first empty load — never wait on background Odoo sync. */
+  /** Full-screen loader only for the first empty load â€” never wait on background Odoo sync. */
   const shouldShowInitialFullScreenLoader =
     initialLoadGateActive && loading && !hasAnyDashboardData;
 
   const shouldBlockDashboard = false;
 
   if (shouldShowInitialFullScreenLoader) {
-    return (
-      <View style={[styles.container, styles.initialSyncCenter]}>
-        <Ionicons name="cloud-download-outline" size={36} color={colors.primary} />
-        <Text style={[styles.initialSyncTitle, { color: colors.text }]}>
-          {t('dashboard.initialSyncTitle', 'Loading your data...')}
-        </Text>
-        <Text style={[styles.initialSyncSub, { color: colors.textSecondary }]}>
-          {t('dashboard.initialSyncSub', 'This only takes a moment.')}
-        </Text>
-        <ActivityIndicator style={{ marginTop: 16 }} size="large" color={colors.primary} />
-      </View>
-    );
+    return <DashboardInitialLoadScreen />;
   }
 
   return (
@@ -2740,7 +2168,7 @@ export default function DashboardScreen({ navigation }) {
                         minute: '2-digit',
                         hour12: true,
                       })
-                    : '—'}
+                    : 'â€”'}
                 </Text>
                 <View style={styles.syncCountersRow}>
                   <View
@@ -2825,16 +2253,21 @@ export default function DashboardScreen({ navigation }) {
                     if (!preCheckDone) {
                       openPreCheckSummary();
                     } else {
-                      // Pre-fill editable amounts from computed totals
-                      setEditCash(String(cashTotal.toFixed(2)));
-                      setEditCheque(String(chequeTotal.toFixed(2)));
-                      setEditCredit(String(creditTotal.toFixed(2)));
+                      setPostCheckInitialAmounts({
+                        cash: String(cashTotal.toFixed(2)),
+                        cheque: String(chequeTotal.toFixed(2)),
+                        credit: String(creditTotal.toFixed(2)),
+                      });
                       setPostCheckModalVisible(true);
                     }
                   }}
                   activeOpacity={0.85}
                   accessibilityRole="button"
-                  accessibilityLabel={preCheckDone ? 'Post Check' : 'Pre Check'}
+                  accessibilityLabel={
+                    preCheckDone
+                      ? t('dashboard.postCheckButton', 'End Day')
+                      : t('dashboard.preCheckButton', 'Start Day')
+                  }
                 >
                   <Ionicons
                     name={preCheckDone ? 'checkmark-done-circle-outline' : 'shield-checkmark-outline'}
@@ -2843,7 +2276,7 @@ export default function DashboardScreen({ navigation }) {
                     style={{ marginRight: 5 }}
                   />
                   <Text style={styles.syncNowBtnText}>
-                    {preCheckDone ? 'Post Check' : t('dashboard.preCheckButton', 'Pre Check')}
+                  {preCheckDone ? t('dashboard.postCheckButton', 'End Day') : t('dashboard.preCheckButton', 'Start Day')}
                   </Text>
                 </TouchableOpacity>
               </View>
@@ -3205,7 +2638,7 @@ export default function DashboardScreen({ navigation }) {
             </ScrollView>
           </View>
         )}
-      {/* Employee commission — web-style card: total + filters + crew strip */}
+      {/* Employee commission â€” web-style card: total + filters + crew strip */}
       <View style={styles.commissionSectionCard}>
         <View style={styles.commissionHero}>
           <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -3250,14 +2683,7 @@ export default function DashboardScreen({ navigation }) {
           <TouchableOpacity
             style={styles.commissionDateRangeRow}
             activeOpacity={0.86}
-            onPress={() => {
-              setCommissionRangeDraft({
-                dateFrom: commissionDateRange.dateFrom,
-                dateTo: commissionDateRange.dateTo,
-              });
-              setCommissionRangePickerField(null);
-              setCommissionRangeModalVisible(true);
-            }}
+            onPress={() => setCommissionRangeModalVisible(true)}
           >
             <Ionicons name="calendar" size={20} color={colors.primary} style={{ marginRight: 8 }} />
             <Text style={styles.commissionDateRangeRowText} numberOfLines={2}>
@@ -3408,429 +2834,41 @@ export default function DashboardScreen({ navigation }) {
         </View>
       ) : null}
 
-      {/* PreCheck Summary Sheet */}
-      <Modal
+      <PreCheckSummaryModal
         visible={preCheckSummaryModalVisible}
-        transparent
-        animationType="slide"
-        statusBarTranslucent
-        onRequestClose={() => {}}
-      >
-          <View style={styles.postCheckBackdrop}>
-            <View
-              style={[
-                styles.postCheckSheet,
-                styles.preCheckSummarySheet,
-                { maxHeight: preCheckSheetLayout.sheetMax },
-              ]}
-            >
-              <ScrollView
-                style={{ height: preCheckSheetLayout.scrollH }}
-                contentContainerStyle={styles.preCheckSummaryScrollContent}
-                showsVerticalScrollIndicator
-                persistentScrollbar={Platform.OS === 'android'}
-                bounces
-                overScrollMode="always"
-                keyboardShouldPersistTaps="handled"
-                scrollEventThrottle={16}
-              >
-              <View style={styles.postCheckHandle} />
-
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 6 }}>
-                <View
-                  style={{
-                    width: 44,
-                    height: 44,
-                    borderRadius: 14,
-                    backgroundColor: 'rgba(245, 158, 11, 0.18)',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                >
-                  <Ionicons name="shield-checkmark" size={22} color={colors.warning ?? '#f59e0b'} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.postCheckTitle}>
-                    {t('dashboard.preCheckTitle', 'Pre Check — Stock Summary')}
-                  </Text>
-                  <Text style={styles.postCheckSubtitle} numberOfLines={2}>
-                    {vehicleName}
-                    {routeName && routeName !== '—' ? ` · ${routeName}` : ''}
-                  </Text>
-                </View>
-              </View>
-
-              <Text style={[styles.postCheckSubtitle, { marginBottom: 4 }]}>{todayDateStr}</Text>
-
-              {preCheckSyncInProgress ? (
-                <View style={styles.preCheckSyncBanner}>
-                  <ActivityIndicator size="small" color={colors.primary ?? '#6366f1'} />
-                  <Text style={styles.preCheckSyncBannerText}>
-                    {t(
-                      'dashboard.preCheckSyncInProgress',
-                      'Data is still syncing in the background. You can check stock and start work — numbers may update shortly.'
-                    )}
-                  </Text>
-                </View>
-              ) : null}
-
-              <View style={styles.postCheckDivider} />
-
-              <Text style={styles.postCheckSectionLabel}>
-                {t('dashboard.todaysOrders', "Today's orders")}
-              </Text>
-              <View style={styles.postCheckRow}>
-                <Text style={styles.postCheckRowLabel}>
-                  {t('dashboard.totalOrdersToday', 'Total orders today')}
-                </Text>
-                <Text style={styles.postCheckRowValue}>{activeOrdersToday}</Text>
-              </View>
-
-              <View style={styles.postCheckDivider} />
-
-              <Text style={styles.postCheckSectionLabel}>
-                {t('dashboard.stockVsOrders', 'Stock vs today’s orders')}
-              </Text>
-
-              {preCheckHasShortfall ? (
-                <View style={styles.preCheckShortfallBanner}>
-                  <Ionicons name="warning-outline" size={20} color={colors.warning ?? '#f59e0b'} />
-                  <Text style={styles.preCheckShortfallBannerText}>
-                    {t(
-                      'dashboard.preCheckShortfall',
-                      'Not enough stock for some products. Please contact the operations team before starting delivery.'
-                    )}
-                  </Text>
-                </View>
-              ) : null}
-
-              {preCheckStockRows.length > 0 ? (
-                preCheckStockRows.map((row) => {
-                  const ordered = Number(row.totalOrdered) || 0;
-                  const onHandColor = row.insufficient
-                    ? '#dc2626'
-                    : row.onHand <= 2
-                      ? (colors.warning ?? '#f59e0b')
-                      : colors.primary;
-                  return (
-                    <View
-                      key={row.key}
-                      style={[
-                        styles.preCheckStockCard,
-                        row.insufficient && {
-                          borderColor: (colors.warning ?? '#f59e0b') + '88',
-                          backgroundColor: colors.warning + '10',
-                        },
-                      ]}
-                    >
-                      <Text style={styles.preCheckStockCardTitle}>{row.label}</Text>
-                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 8, gap: 12 }}>
-                        <Text style={styles.preCheckStockCardMeta}>
-                          {t('dashboard.onHandShort', 'On hand')}:{' '}
-                          <Text style={{ fontWeight: '800', color: onHandColor }}>
-                            {formatPreCheckQty(row.onHand)}
-                          </Text>
-                        </Text>
-                        <Text style={styles.preCheckStockCardMeta}>
-                          {t('dashboard.orderedToday', 'Orders need')}:{' '}
-                          <Text style={{ fontWeight: '800', color: colors.text }}>
-                            {formatPreCheckQty(ordered)}
-                          </Text>
-                        </Text>
-                      </View>
-                      {row.insufficient ? (
-                        <Text style={styles.preCheckStockStatusShort}>
-                          {t('dashboard.shortBy', 'Short by')} {formatPreCheckQty(row.shortfall)} —{' '}
-                          {t('dashboard.contactOps', 'contact operations team')}
-                        </Text>
-                      ) : ordered > 0 ? (
-                        <Text style={styles.preCheckStockStatusOk}>
-                          {t('dashboard.stockOk', 'Enough stock')}
-                        </Text>
-                      ) : null}
-                    </View>
-                  );
-                })
-              ) : (
-                <View style={styles.postCheckRow}>
-                  <Text style={[styles.postCheckRowLabel, { color: colors.textSecondary }]}>
-                    {t('dashboard.noStockData', 'No stock loaded yet — sync or pull to refresh.')}
-                  </Text>
-                </View>
-              )}
-
-              {preCheckEmptyRows.length > 0 ? (
-                <>
-                  <Text style={[styles.postCheckSectionLabel, { marginTop: 14 }]}>
-                    {t('dashboard.emptyCylindersOnLorry', 'Empty collected on lorry')}
-                  </Text>
-                  {preCheckEmptyRows.map((row) => (
-                    <View key={`empty-${row.kg}`} style={styles.postCheckRow}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
-                        <View
-                          style={{
-                            width: 32,
-                            height: 32,
-                            borderRadius: 8,
-                            backgroundColor: 'rgba(15, 118, 110, 0.12)',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                          }}
-                        >
-                          <Ionicons name="ellipse-outline" size={16} color="#0f766e" />
-                        </View>
-                        <Text style={styles.postCheckRowLabel}>
-                          {t('dashboard.emptyKgLabel', '{{kg}} kg empty', { kg: row.kg })}
-                        </Text>
-                      </View>
-                      <Text style={[styles.postCheckRowValue, { color: row.qty > 0 ? '#0f766e' : colors.textSecondary }]}>
-                        {row.qty.toLocaleString('en-IN')}
-                      </Text>
-                    </View>
-                  ))}
-                  <View style={[styles.postCheckTotalRow, { marginTop: 0, backgroundColor: colors.surface, borderColor: colors.border }]}>
-                    <Text style={styles.postCheckTotalLabel}>
-                      {t('dashboard.totalEmptyCollected', 'Total empty collected')}
-                    </Text>
-                    <Text style={[styles.postCheckTotalValue, { color: '#0f766e' }]}>
-                      {preCheckTotalEmptyCollected.toLocaleString('en-IN')}
-                    </Text>
-                  </View>
-                </>
-              ) : null}
-
-              <View style={styles.postCheckTotalRow}>
-                <Text style={styles.postCheckTotalLabel}>
-                  {t('dashboard.totalOnHand', 'Total on hand')}
-                </Text>
-                <Text style={styles.postCheckTotalValue}>
-                  {preCheckTotalOnHand.toLocaleString('en-IN')}
-                </Text>
-              </View>
-              {preCheckTotalOrderedGas > 0 ? (
-                <View style={[styles.postCheckTotalRow, { marginTop: 0, backgroundColor: colors.surface, borderColor: colors.border }]}>
-                  <Text style={styles.postCheckTotalLabel}>
-                    {t('dashboard.totalOrderedToday', 'Total ordered today')}
-                  </Text>
-                  <Text style={[styles.postCheckTotalValue, { color: colors.warning ?? '#f59e0b' }]}>
-                    {formatPreCheckQty(preCheckTotalOrderedGas)}
-                  </Text>
-                </View>
-              ) : null}
-              </ScrollView>
-
-              <View
-                style={{
-                  paddingHorizontal: 20,
-                  paddingTop: 12,
-                  paddingBottom: Math.max(insets.bottom, 12),
-                  borderTopWidth: 1,
-                  borderTopColor: colors.border,
-                  backgroundColor: colors.background,
-                }}
-              >
-                <TouchableOpacity
-                  style={styles.postCheckSubmitBtn}
-                  activeOpacity={0.88}
-                  onPress={() => void confirmPreCheckSummary()}
-                >
-                  <Ionicons name="checkmark-circle" size={20} color="#fff" style={{ marginRight: 8 }} />
-                  <Text style={styles.postCheckSubmitBtnText}>
-                    {t('dashboard.preCheckOk', 'OK — Start delivery')}
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          </View>
-      </Modal>
+        vehicleName={vehicleName}
+        routeName={routeName}
+        todayDateStr={todayDateStr}
+        syncInProgress={preCheckSyncInProgress}
+        activeOrdersToday={activeOrdersToday}
+        hasShortfall={preCheckHasShortfall}
+        stockRows={preCheckStockRows}
+        emptyRows={preCheckEmptyRows}
+        totalEmptyCollected={preCheckTotalEmptyCollected}
+        totalOnHand={preCheckTotalOnHand}
+        totalOrdered={preCheckTotalOrderedGas}
+        formatQty={formatPreCheckQty}
+        onConfirm={() => void confirmPreCheckSummary()}
+      />
 
     </View>
-
-      <Modal
+      <CommissionRangeModal
         visible={commissionRangeModalVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => {
-          setCommissionRangeModalVisible(false);
-          setCommissionRangePickerField(null);
+        initialRange={commissionDateRange}
+        onClose={() => setCommissionRangeModalVisible(false)}
+        onApply={({ dateFrom, dateTo }) => {
+          setCommissionDateRange({ dateFrom, dateTo });
+          setCommissionRangePreset('custom');
         }}
-      >
-        <Pressable
-          style={styles.modalBackdrop}
-          onPress={() => {
-            setCommissionRangeModalVisible(false);
-            setCommissionRangePickerField(null);
-          }}
-        >
-          <Pressable style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
-            <Text style={styles.modalTitle}>{t('dashboard.commissionDateRange', 'Date range')}</Text>
-            <Text style={styles.modalSubtitle}>
-              {t('dashboard.commissionDateRangeHint', 'Choose from and to, then apply. You can also use Today / Yesterday / This month.')}
-            </Text>
-            <TouchableOpacity
-              style={styles.commissionModalRangeRow}
-              onPress={() => setCommissionRangePickerField('from')}
-              activeOpacity={0.8}
-            >
-              <Text style={styles.commissionModalRangeLabel}>{t('dashboard.dateFrom', 'From')}</Text>
-              <Text style={styles.commissionModalRangeValue}>
-                {formatDateRangeLabel(commissionRangeDraft.dateFrom, commissionRangeDraft.dateFrom)}
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.commissionModalRangeRow}
-              onPress={() => setCommissionRangePickerField('to')}
-              activeOpacity={0.8}
-            >
-              <Text style={styles.commissionModalRangeLabel}>{t('dashboard.dateTo', 'To')}</Text>
-              <Text style={styles.commissionModalRangeValue}>
-                {formatDateRangeLabel(commissionRangeDraft.dateTo, commissionRangeDraft.dateTo)}
-              </Text>
-            </TouchableOpacity>
-            {commissionRangePickerField ? (
-              <DateTimePicker
-                value={(() => {
-                  const key = commissionRangePickerField === 'from' ? 'dateFrom' : 'dateTo';
-                  const raw =
-                    commissionRangeDraft[key] ||
-                    commissionDateRange[key] ||
-                    getTodayDateRange().dateFrom;
-                  const d = new Date(`${String(raw).slice(0, 10)}T12:00:00`);
-                  return Number.isNaN(d.getTime()) ? new Date() : d;
-                })()}
-                mode="date"
-                display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                onChange={(e, date) => {
-                  if (e?.type === 'dismissed') {
-                    if (Platform.OS === 'android') setCommissionRangePickerField(null);
-                    return;
-                  }
-                  if (!date) {
-                    if (Platform.OS === 'android') setCommissionRangePickerField(null);
-                    return;
-                  }
-                  const which = commissionRangePickerField;
-                  if (which !== 'from' && which !== 'to') return;
-                  const y = date.getFullYear();
-                  const m = String(date.getMonth() + 1).padStart(2, '0');
-                  const d0 = String(date.getDate()).padStart(2, '0');
-                  const s = `${y}-${m}-${d0}`;
-                  setCommissionRangeDraft((prev) => ({
-                    ...prev,
-                    [which === 'from' ? 'dateFrom' : 'dateTo']: s,
-                  }));
-                  if (Platform.OS === 'android') setCommissionRangePickerField(null);
-                }}
-              />
-            ) : null}
-            {commissionRangePickerField && Platform.OS === 'ios' ? (
-              <TouchableOpacity
-                onPress={() => setCommissionRangePickerField(null)}
-                style={{ alignSelf: 'flex-end', padding: 8 }}
-              >
-                <Text style={{ color: colors.primary, fontWeight: '600' }}>{t('dashboard.done', 'Done')}</Text>
-              </TouchableOpacity>
-            ) : null}
-            <View style={{ flexDirection: 'row', gap: 10, marginTop: spacing.sm }}>
-              <TouchableOpacity
-                style={{
-                  flex: 1,
-                  paddingVertical: 12,
-                  borderRadius: 12,
-                  backgroundColor: colors.background,
-                  borderWidth: 1,
-                  borderColor: colors.border,
-                  alignItems: 'center',
-                }}
-                onPress={() => {
-                  setCommissionRangeModalVisible(false);
-                  setCommissionRangePickerField(null);
-                }}
-                activeOpacity={0.86}
-              >
-                <Text style={{ fontSize: 16, fontWeight: '700', color: colors.text }}>
-                  {t('common.cancel', 'Cancel')}
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={{
-                  flex: 1,
-                  paddingVertical: 12,
-                  borderRadius: 12,
-                  backgroundColor: colors.primary,
-                  alignItems: 'center',
-                }}
-                onPress={() => {
-                  let dateFrom = commissionRangeDraft.dateFrom;
-                  let dateTo = commissionRangeDraft.dateTo;
-                  if (!dateFrom || !dateTo) {
-                    Alert.alert(
-                      t('dashboard.rangeInvalid', 'Date range'),
-                      t('dashboard.selectBothDates', 'Please choose both from and to dates.')
-                    );
-                    return;
-                  }
-                  if (dateFrom > dateTo) {
-                    const t0 = dateFrom;
-                    dateFrom = dateTo;
-                    dateTo = t0;
-                  }
-                  setCommissionDateRange({ dateFrom, dateTo });
-                  setCommissionRangePreset('custom');
-                  setCommissionRangeModalVisible(false);
-                  setCommissionRangePickerField(null);
-                }}
-                activeOpacity={0.86}
-              >
-                <Text style={{ fontSize: 16, fontWeight: '700', color: '#fff' }}>{t('dashboard.apply', 'Apply')}</Text>
-              </TouchableOpacity>
-            </View>
-          </Pressable>
-        </Pressable>
-      </Modal>
+      />
 
-      <Modal visible={routePickerVisible} transparent animationType="fade" onRequestClose={() => setRoutePickerVisible(false)}>
-        <Pressable style={styles.modalBackdrop} onPress={() => setRoutePickerVisible(false)}>
-          <Pressable style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
-            <Text style={styles.modalTitle}>{t("dashboard.chooseRoute", "Choose route")}</Text>
-            <Text style={styles.modalSubtitle}>
-              Pick a route to filter your list, or Recommended for today's usual route.
-            </Text>
-            <ScrollView style={{ maxHeight: 360 }} keyboardShouldPersistTaps="handled">
-              <TouchableOpacity
-                style={[styles.routePickRow, routeOverrideId === null && styles.routePickRowActive]}
-                onPress={() => {
-                  setRouteOverrideId(null);
-                  setRoutePickerVisible(false);
-                }}
-              >
-                <Text style={styles.routePickName}>{t("dashboard.recommendedToday", "Recommended (today)")}</Text>
-                {routeOverrideId === null ? <Ionicons name="checkmark-circle" size={22} color={colors.primary} /> : null}
-              </TouchableOpacity>
-              {routesInVehicleTodayPicker.map((r) => {
-                const id = Number(r.id);
-                const active = routeOverrideId != null && Number(routeOverrideId) === id;
-                return (
-                  <TouchableOpacity
-                    key={String(r.id)}
-                    style={[styles.routePickRow, active && styles.routePickRowActive]}
-                    onPress={() => {
-                      setRouteOverrideId(id);
-                      setRoutePickerVisible(false);
-                    }}
-                  >
-                    <Text style={styles.routePickName}>{r.name || `Route ${r.id}`}</Text>
-                    {active ? <Ionicons name="checkmark-circle" size={22} color={colors.primary} /> : null}
-                  </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
-            <TouchableOpacity style={styles.modalCloseBtn} onPress={() => setRoutePickerVisible(false)} activeOpacity={0.88}>
-              <Text style={styles.modalCloseBtnText}>{t("settings.close", "Close")}</Text>
-            </TouchableOpacity>
-          </Pressable>
-        </Pressable>
-      </Modal>
+      <RoutePickerModal
+        visible={routePickerVisible}
+        routes={routesInVehicleTodayPicker}
+        selectedRouteId={routeOverrideId}
+        onSelectRoute={setRouteOverrideId}
+        onClose={() => setRoutePickerVisible(false)}
+      />
 
       <PendingBackOfficeReminderModal
         visible={pendingBackOfficeModalVisible}
@@ -3846,342 +2884,35 @@ export default function DashboardScreen({ navigation }) {
         }}
       />
 
-      <Modal
+      <PostLoginSyncModal
         visible={postLoginSyncModalVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setPostLoginSyncModalVisible(false)}
-      >
-        <Pressable style={styles.modalBackdrop} onPress={() => setPostLoginSyncModalVisible(false)}>
-          <Pressable style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
-            <View style={styles.syncSuccessAccent}>
-              <Ionicons name="cloud-done" size={40} color={colors.primary} />
-            </View>
-            <Text style={styles.syncSuccessTitle}>{postLoginSyncCopy.title}</Text>
-            <Text style={styles.syncSuccessSubtitle}>{postLoginSyncCopy.subtitle}</Text>
-            <TouchableOpacity
-              style={styles.modalCloseBtn}
-              onPress={() => setPostLoginSyncModalVisible(false)}
-              activeOpacity={0.88}
-            >
-              <Text style={styles.modalCloseBtnText}>{postLoginSyncCopy.button}</Text>
-            </TouchableOpacity>
-          </Pressable>
-        </Pressable>
-      </Modal>
+        copy={postLoginSyncCopy}
+        onClose={() => setPostLoginSyncModalVisible(false)}
+      />
 
-      <Modal visible={profileModal != null} transparent animationType="fade" onRequestClose={() => setProfileModal(null)}>
-        <Pressable style={styles.modalBackdrop} onPress={() => setProfileModal(null)}>
-          <Pressable style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
-            {profileModal ? (
-              <>
-                <View style={styles.profileHero}>
-                  <View style={styles.profileAvatarLg}>
-                    {(() => {
-                      const uri = profileModal.imageBase64 ? odooImageToUri(profileModal.imageBase64) : null;
-                      return uri ? (
-                      <Image
-                        source={{ uri }}
-                        style={{ width: '100%', height: '100%' }}
-                        resizeMode="cover"
-                      />
-                    ) : (
-                      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-                        <Ionicons name="person" size={44} color={colors.textSecondary} />
-                      </View>
-                    );
-                    })()}
-                  </View>
-                  <Text style={styles.profileNameLg}>{profileModal.name}</Text>
-                  <Text style={styles.profileRole}>{profileModal.subtitle}</Text>
-                  {profileModal.phone ? (
-                    <TouchableOpacity style={styles.profilePhoneRow} onPress={() => openDial(profileModal.phone)} activeOpacity={0.85}>
-                      <Ionicons name="call-outline" size={22} color={colors.primary} />
-                      <Text style={styles.profilePhoneText}>{profileModal.phone}</Text>
-                      <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
-                    </TouchableOpacity>
-                  ) : (
-                    <Text style={styles.profileNoPhone}>No phone number on file</Text>
-                  )}
-                </View>
-                <TouchableOpacity style={styles.modalCloseBtn} onPress={() => setProfileModal(null)} activeOpacity={0.88}>
-                  <Text style={styles.modalCloseBtnText}>{t("settings.close", "Close")}</Text>
-                </TouchableOpacity>
-              </>
-            ) : null}
-          </Pressable>
-        </Pressable>
-      </Modal>
+      <ProfileModal
+        visible={profileModal != null}
+        profile={profileModal}
+        onClose={() => setProfileModal(null)}
+      />
 
-      {/* ======= PostCheck Modal (Cash & Cheque Handover Summary) ======= */}
-      <Modal
+      <PostCheckHandoverModal
         visible={postCheckModalVisible}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setPostCheckModalVisible(false)}
-      >
-        <View style={{ flex: 1, justifyContent: 'flex-end' }}>
-          <Pressable style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.60)' }]} onPress={() => setPostCheckModalVisible(false)} />
-          <View style={[styles.postCheckSheet, { flexDirection: 'column' }]}>
-
-            {/* Scrollable content — flex:1 so it fills the sheet and captures all swipe gestures */}
-            <ScrollView
-              style={{ flex: 1 }}
-              showsVerticalScrollIndicator={false}
-              keyboardShouldPersistTaps="handled"
-              contentContainerStyle={{ paddingBottom: 8, paddingHorizontal: 20 }}
-            >
-              {/* Handle */}
-              <View style={styles.postCheckHandle} />
-
-              {/* Header */}
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 4 }}>
-                <View
-                  style={{
-                    width: 40, height: 40, borderRadius: 12,
-                    backgroundColor: (colors.primary ?? '#6366f1') + '22',
-                    alignItems: 'center', justifyContent: 'center',
-                  }}
-                >
-                  <Ionicons name="cash-outline" size={20} color={colors.primary ?? '#6366f1'} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.postCheckTitle}>Post Check</Text>
-                </View>
-              </View>
-
-              <View style={styles.postCheckDivider} />
-
-              {/* Pending sync warning - submit disabled if there are pending syncs */}
-              {orderSyncStats.localCompleted > 0 && (
-                <View style={styles.postCheckPendingWarning}>
-                  <Ionicons name="warning-outline" size={18} color="#f59e0b" />
-                  <Text style={styles.postCheckPendingWarningText}>
-                    {orderSyncStats.localCompleted} payment{orderSyncStats.localCompleted > 1 ? 's' : ''} pending upload. Sync before submitting.
-                  </Text>
-                </View>
-              )}
-
-              {/* Collection Summary — values editable before saving */}
-              <Text style={styles.postCheckSectionLabel}>Collection Summary</Text>
-
-              {/* Cash */}
-              <View style={styles.postCheckRow}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
-                  <View style={{ width: 32, height: 32, borderRadius: 8, backgroundColor: 'rgba(34,197,94,0.15)', alignItems: 'center', justifyContent: 'center' }}>
-                    <Ionicons name="cash" size={16} color="#22c55e" />
-                  </View>
-                  <Text style={styles.postCheckRowLabel}>Cash Collection</Text>
-                </View>
-                <View style={[styles.postCheckEditWrap, { borderColor: '#22c55e44', backgroundColor: 'rgba(34,197,94,0.06)' }]}>
-                  <TextInput
-                    style={[styles.postCheckEditInput, { color: '#22c55e' }]}
-                    value={editCash}
-                    onChangeText={setEditCash}
-                    keyboardType="numeric"
-                    selectTextOnFocus
-                    placeholderTextColor="#22c55e88"
-                  />
-                </View>
-              </View>
-
-              {/* Cheque */}
-              <View style={styles.postCheckRow}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
-                  <View style={{ width: 32, height: 32, borderRadius: 8, backgroundColor: 'rgba(99,102,241,0.15)', alignItems: 'center', justifyContent: 'center' }}>
-                    <Ionicons name="document-text" size={16} color={colors.primary} />
-                  </View>
-                  <Text style={styles.postCheckRowLabel}>Cheque Collection</Text>
-                </View>
-                <View style={[styles.postCheckEditWrap, { borderColor: (colors.primary ?? '#6366f1') + '44', backgroundColor: (colors.primary ?? '#6366f1') + '0d' }]}>
-                  <TextInput
-                    style={[styles.postCheckEditInput, { color: colors.primary }]}
-                    value={editCheque}
-                    onChangeText={setEditCheque}
-                    keyboardType="numeric"
-                    selectTextOnFocus
-                    placeholderTextColor={(colors.primary ?? '#6366f1') + '88'}
-                  />
-                </View>
-              </View>
-
-              {/* Credit — always shown */}
-              <View style={styles.postCheckRow}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
-                  <View style={{ width: 32, height: 32, borderRadius: 8, backgroundColor: 'rgba(245,158,11,0.15)', alignItems: 'center', justifyContent: 'center' }}>
-                    <Ionicons name="card" size={16} color="#f59e0b" />
-                  </View>
-                  <Text style={styles.postCheckRowLabel}>Credit</Text>
-                </View>
-                <View style={[styles.postCheckEditWrap, { borderColor: '#f59e0b44', backgroundColor: 'rgba(245,158,11,0.06)' }]}>
-                  <TextInput
-                    style={[styles.postCheckEditInput, { color: '#f59e0b' }]}
-                    value={editCredit}
-                    onChangeText={setEditCredit}
-                    keyboardType="numeric"
-                    selectTextOnFocus
-                    placeholderTextColor="#f59e0b88"
-                  />
-                </View>
-              </View>
-
-              {/* Grand Total — live from editable values */}
-              <View style={styles.postCheckTotalRow}>
-                <Text style={styles.postCheckTotalLabel}>Total Handover</Text>
-                <Text style={styles.postCheckTotalValue}>
-                  {formatCurrency((parseFloat(editCash) || 0) + (parseFloat(editCheque) || 0))}
-                </Text>
-              </View>
-
-              <View style={styles.postCheckDivider} />
-
-              {/* Orders Delivered */}
-              <Text style={styles.postCheckSectionLabel}>Orders Summary</Text>
-              <View style={styles.postCheckRow}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
-                  <View style={{ width: 32, height: 32, borderRadius: 8, backgroundColor: 'rgba(34,197,94,0.12)', alignItems: 'center', justifyContent: 'center' }}>
-                    <Ionicons name="checkmark-circle" size={16} color="#22c55e" />
-                  </View>
-                  <Text style={styles.postCheckRowLabel}>Synced & Completed</Text>
-                </View>
-                <Text style={[styles.postCheckRowValue, { color: '#22c55e' }]}>{orderSyncStats.syncedCompleted}</Text>
-              </View>
-              <View style={styles.postCheckRow}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
-                  <View style={{ width: 32, height: 32, borderRadius: 8, backgroundColor: 'rgba(245,158,11,0.12)', alignItems: 'center', justifyContent: 'center' }}>
-                    <Ionicons name="time-outline" size={16} color="#f59e0b" />
-                  </View>
-                  <Text style={styles.postCheckRowLabel}>Pending Upload</Text>
-                </View>
-                <Text style={[styles.postCheckRowValue, { color: orderSyncStats.localCompleted > 0 ? '#f59e0b' : (colors.textSecondary ?? '#94a3b8') }]}>
-                  {orderSyncStats.localCompleted}
-                </Text>
-              </View>
-
-              <View style={styles.postCheckDivider} />
-
-              {/* Drop-off Location */}
-              <Text style={styles.postCheckDropLabel}>Drop-off Location</Text>
-              <View style={styles.postCheckDropRow}>
-                <TouchableOpacity
-                  style={[
-                    styles.postCheckDropOption,
-                    postCheckDropoffLocation === 'showroom' && styles.postCheckDropOptionActive,
-                  ]}
-                  onPress={() => setPostCheckDropoffLocation('showroom')}
-                  activeOpacity={0.8}
-                >
-                  <Ionicons
-                    name="storefront-outline"
-                    size={22}
-                    color={postCheckDropoffLocation === 'showroom' ? (colors.primary ?? '#6366f1') : (colors.textSecondary ?? '#94a3b8')}
-                  />
-                  <Text
-                    style={[
-                      styles.postCheckDropOptionText,
-                      postCheckDropoffLocation === 'showroom' && styles.postCheckDropOptionTextActive,
-                    ]}
-                  >
-                    Showroom
-                  </Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={[
-                    styles.postCheckDropOption,
-                    postCheckDropoffLocation === 'headoffice' && styles.postCheckDropOptionActive,
-                  ]}
-                  onPress={() => setPostCheckDropoffLocation('headoffice')}
-                  activeOpacity={0.8}
-                >
-                  <Ionicons
-                    name="business-outline"
-                    size={22}
-                    color={postCheckDropoffLocation === 'headoffice' ? (colors.primary ?? '#6366f1') : (colors.textSecondary ?? '#94a3b8')}
-                  />
-                  <Text
-                    style={[
-                      styles.postCheckDropOptionText,
-                      postCheckDropoffLocation === 'headoffice' && styles.postCheckDropOptionTextActive,
-                    ]}
-                  >
-                    Head Office
-                  </Text>
-                </TouchableOpacity>
-              </View>
-
-            </ScrollView>
-
-            {/* Fixed footer — Submit button always pinned at bottom, above device nav bar */}
-            <View
-              style={{
-                paddingHorizontal: 20,
-                paddingTop: 12,
-                paddingBottom: Math.max(insets.bottom, 12),
-                borderTopWidth: 1,
-                borderTopColor: colors.border,
-                backgroundColor: colors.background,
-              }}
-            >
-              <TouchableOpacity
-                style={[
-                  styles.postCheckSubmitBtn,
-                  orderSyncStats.localCompleted > 0 && styles.postCheckSubmitBtnDisabled,
-                ]}
-                disabled={orderSyncStats.localCompleted > 0}
-                activeOpacity={0.85}
-                onPress={async () => {
-                  const finalCash = parseFloat(editCash) || 0;
-                  const finalCheque = parseFloat(editCheque) || 0;
-                  const finalCredit = parseFloat(editCredit) || 0;
-                  try {
-                    const { insertPostCheckSubmission } = await import('../database/postcheckSubmissions.js');
-                    await insertPostCheckSubmission({
-                      submittedAt: new Date().toISOString(),
-                      driverId: user?.driverId ?? null,
-                      driverName: user?.driverName ?? null,
-                      vehicleId: user?.vehicleId ?? null,
-                      vehicleName: user?.vehicleName ?? null,
-                      cashTotal: finalCash,
-                      chequeTotal: finalCheque,
-                      creditTotal: finalCredit,
-                      dropoffLocation: postCheckDropoffLocation,
-                      ordersSynced: orderSyncStats.syncedCompleted ?? 0,
-                      ordersPending: orderSyncStats.localCompleted ?? 0,
-                    });
-                    setPostCheckModalVisible(false);
-                    setNotification({
-                      visible: true,
-                      title: 'Handover Submitted',
-                      message: `Cash ${formatCurrency(finalCash)} · Cheque ${formatCurrency(finalCheque)} · Credit ${formatCurrency(finalCredit)} · Drop-off: ${postCheckDropoffLocation === 'showroom' ? 'Showroom' : 'Head Office'}`,
-                      type: 'success',
-                    });
-                  } catch (err) {
-                    Alert.alert('Error', 'Could not save handover. Please try again.');
-                    console.error('[PostCheck] save failed', err);
-                  }
-                }}
-              >
-                <Ionicons
-                  name="checkmark-circle-outline"
-                  size={20}
-                  color={orderSyncStats.localCompleted > 0 ? (colors.textSecondary ?? '#94a3b8') : '#fff'}
-                />
-                <Text
-                  style={[
-                    styles.postCheckSubmitBtnText,
-                    orderSyncStats.localCompleted > 0 && { color: colors.textSecondary ?? '#94a3b8' },
-                  ]}
-                >
-                  {orderSyncStats.localCompleted > 0 ? 'Sync Pending – Cannot Submit' : 'Submit Handover'}
-                </Text>
-              </TouchableOpacity>
-            </View>
-
-          </View>
-        </View>
-
-      </Modal>
+        onClose={() => setPostCheckModalVisible(false)}
+        orderSyncStats={orderSyncStats}
+        user={user}
+        initialCash={postCheckInitialAmounts.cash}
+        initialCheque={postCheckInitialAmounts.cheque}
+        initialCredit={postCheckInitialAmounts.credit}
+        onSubmitted={({ finalCash, finalCheque, finalCredit, dropoffLocation }) => {
+          setNotification({
+            visible: true,
+            title: 'Handover Submitted',
+            message: `Cash ${formatCurrency(finalCash)} · Cheque ${formatCurrency(finalCheque)} · Credit ${formatCurrency(finalCredit)} · Drop-off: ${dropoffLocation === 'showroom' ? 'Showroom' : 'Head Office'}`,
+            type: 'success',
+          });
+        }}
+      />
 
     </>
   );
