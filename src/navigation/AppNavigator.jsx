@@ -250,7 +250,7 @@ function MainStackScreen() {
       <MainStack.Screen
         name="MySales"
         component={MySalesScreen}
-        options={{ headerShown: false }}
+        options={{ ...headerScreenOptions }}
       />
       <MainStack.Screen
         name="BluetoothPrinter"

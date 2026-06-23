@@ -250,7 +250,7 @@ export default function PreCheckSummaryModal({
             <TouchableOpacity style={styles.postCheckSubmitBtn} activeOpacity={0.88} onPress={onConfirm}>
               <Ionicons name="checkmark-circle" size={20} color="#fff" style={{ marginRight: 8 }} />
               <Text style={styles.postCheckSubmitBtnText}>
-                {t('dashboard.preCheckOk', 'OK — Start delivery')}
+                {t('dashboard.preCheckOk', 'OK Start delivery')}
               </Text>
             </TouchableOpacity>
           </View>

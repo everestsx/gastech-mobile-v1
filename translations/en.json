@@ -1,5 +1,5 @@
 {
-  "version": "1.0.9",
+  "version": "1.1.0",
   "language": "en",
   "translation": {
     "dashboard": {
@@ -27,7 +27,7 @@
       "emptyCollected": "Empty Collected",
       "noStockDataAvailable": "No stock data available.",
       "preCheckTitle": "Pre Check — Stock Summary",
-      "preCheckOk": "OK — Start delivery",
+      "preCheckOk": "OK  Start delivery",
       "preCheckButton": "Start Day",
       "postCheckButton": "End Day",
       "postCheckTitle": "End Day — Handover Summary",

@@ -57,7 +57,7 @@ function SubmissionCard({ item, colors, cardStyles, onDelete }) {
             ]}
           >
             <Ionicons name="cloud-upload-outline" size={11} color={colors.primary} />
-            <Text style={[cardStyles.statusText, { color: colors.primary }]}>Pending Odoo Sync</Text>
+            <Text style={[cardStyles.statusText, { color: colors.primary }]}>Pending</Text>
           </View>
           <TouchableOpacity
             onPress={onDelete}
@@ -200,12 +200,12 @@ export default function MySalesScreen({ navigation }) {
   );
 
   return (
-    <SafeAreaView
-      style={[{ flex: 1, backgroundColor: colors.background }]}
-      edges={['top', 'left', 'right', 'bottom']}
+    <
+      // style={[{ flex: 1, backgroundColor: colors.background }]}
+      // edges={['top', 'left', 'right', 'bottom']}
     >
       {/* Header */}
-      <View style={[cardStyles.header, { backgroundColor: colors.primary }]}>
+      {/* <View style={[cardStyles.header, { backgroundColor: colors.primary }]}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={cardStyles.backBtn} activeOpacity={0.7}>
           <Ionicons name="chevron-back" size={24} color="#fff" />
         </TouchableOpacity>
@@ -216,7 +216,7 @@ export default function MySalesScreen({ navigation }) {
         <View style={[cardStyles.countBadge, { backgroundColor: 'rgba(255,255,255,0.2)' }]}>
           <Text style={cardStyles.countText}>{submissions.length}</Text>
         </View>
-      </View>
+      </View> */}
 
       {loading ? (
         <View style={cardStyles.loaderWrap}>
@@ -245,7 +245,7 @@ export default function MySalesScreen({ navigation }) {
           showsVerticalScrollIndicator={false}
         />
       )}
-    </SafeAreaView>
+    </>
   );
 }
 

@@ -17,7 +17,6 @@ export function createCheckSheetStyles(colors) {
       borderTopWidth: 1,
       borderColor: colors.border,
       overflow: 'hidden',
-      flex: 1,
     },
     postCheckHandle: {
       width: 44,
@@ -199,6 +198,11 @@ export function createCheckSheetStyles(colors) {
       width: '100%',
       maxHeight: '88%',
       flexDirection: 'column',
+    },
+    postCheckHandoverSheet: {
+      width: '100%',
+      flexDirection: 'column',
+      flexShrink: 0,
     },
     preCheckSummaryScrollContent: {
       paddingBottom: 20,
