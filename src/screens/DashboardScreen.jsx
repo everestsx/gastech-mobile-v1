@@ -90,6 +90,7 @@ import { useSync } from '../context/SyncContext';
 const ORANGE_UPLOAD_SINCE_KEY = '@gastech_orange_upload_pending_since';
 const ORANGE_UPLOAD_REMINDER_MS = 10 * 60 * 1000;
 import { odooImageToUri, getDrivingEmployees, getPortersEmployees } from '../services/employee.service';
+import { updateDriverLoginRoute } from '../services/driverLoginHistory.service';
 import {
   mergePickingStateBySaleIdFromRows,
   orderIsDeliveryDoneForProgress,
@@ -332,6 +333,7 @@ export default function DashboardScreen({ navigation }) {
     () => !isDashboardInitialLoadMemoryDone()
   );
   const dashboardSessionKeyRef = useRef(null);
+  const routeSyncSentRef = useRef(new Set());
   const lastSyncNotificationRef = React.useRef(null);
   /** Latched while orange pending upload counter > 0 and a flush is running; cleared when counter hits 0. */
   const [networkQuality, setNetworkQuality] = useState(NetworkQuality.OFFLINE);
@@ -1129,6 +1131,30 @@ export default function DashboardScreen({ navigation }) {
     [routes, todayOrders]
   );
   const selectedRouteId = routeOverrideId ?? defaultRouteId;
+
+  /** Real route name from today's synced orders only — null when there are no orders yet. */
+  const todaysBackendRouteName = useMemo(() => {
+    if (!todayOrders || todayOrders.length === 0) return null;
+    if (vehicleRouteIdsToday.size === 0) return null;
+    const match = routesInVehicleTodayPicker.find((r) => Number(r.id) === Number(selectedRouteId));
+    return match?.name || routesInVehicleTodayPicker[0]?.name || null;
+  }, [todayOrders, vehicleRouteIdsToday, routesInVehicleTodayPicker, selectedRouteId]);
+
+  /** Push the route to back office once it's known from sync; skip when no orders today. */
+  useEffect(() => {
+    if (!todaysBackendRouteName) return;
+    if (!user || user.isAdmin || user.driverId == null || user.vehicleId == null || !user.driverBarcode) return;
+    const key = `${sessionKey}|${today}|${todaysBackendRouteName}`;
+    if (routeSyncSentRef.current.has(key)) return;
+    routeSyncSentRef.current.add(key);
+    void updateDriverLoginRoute({
+      batchId: user.driverBarcode,
+      driverId: user.driverId,
+      vehicleId: user.vehicleId,
+      routeName: todaysBackendRouteName,
+      date: today,
+    });
+  }, [todaysBackendRouteName, user, sessionKey, today]);
 
   const todayOrdersForDashboard = useMemo(() => {
     if (selectedRouteId == null) return todayOrders;
@@ -2901,6 +2927,7 @@ export default function DashboardScreen({ navigation }) {
         onClose={() => setPostCheckModalVisible(false)}
         orderSyncStats={orderSyncStats}
         user={user}
+        routeName={routeName}
         initialCash={postCheckInitialAmounts.cash}
         initialCheque={postCheckInitialAmounts.cheque}
         initialCredit={postCheckInitialAmounts.credit}

@@ -41,6 +41,7 @@ import {
   refreshPortersEmployeesCache,
   odooImageToUri,
 } from '../services/employee.service';
+import { recordDriverLogin } from '../services/driverLoginHistory.service';
 
 
 
@@ -282,6 +283,13 @@ export default function LoginScreen({ navigation }) {
         console.warn('[Login] saveLastVehicleId failed', e?.message || e);
       }
       const licensePlate = (selected.license_plate || selected.name || '').trim();
+
+      // Notify back office of this login session; never blocks reaching the dashboard.
+      void recordDriverLogin({
+        batchId: matchedDriver.barcode,
+        driverId: matchedDriver.id,
+        vehicleId: selected.id,
+      });
 
       // Do not block login UI on heavy network sync; driver must reach dashboard quickly.
       void (async () => {

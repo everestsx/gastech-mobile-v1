@@ -38,6 +38,8 @@ function SubmissionCard({ item, colors, cardStyles, onDelete }) {
   const dropoffIcon =
     item.dropoff_location === 'headoffice' ? 'business-outline' : 'storefront-outline';
   const totalHandover = (item.cash_total || 0) + (item.cheque_total || 0);
+  const isSynced = item.odoo_sync_status === 'synced';
+  const statusColor = isSynced ? '#22c55e' : colors.primary;
 
   return (
     <View style={[cardStyles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
@@ -53,11 +55,17 @@ function SubmissionCard({ item, colors, cardStyles, onDelete }) {
           <View
             style={[
               cardStyles.statusBadge,
-              { backgroundColor: colors.primary + '18', borderColor: colors.primary + '30' },
+              { backgroundColor: statusColor + '18', borderColor: statusColor + '30' },
             ]}
           >
-            <Ionicons name="cloud-upload-outline" size={11} color={colors.primary} />
-            <Text style={[cardStyles.statusText, { color: colors.primary }]}>Pending</Text>
+            <Ionicons
+              name={isSynced ? 'checkmark-circle-outline' : 'cloud-upload-outline'}
+              size={11}
+              color={statusColor}
+            />
+            <Text style={[cardStyles.statusText, { color: statusColor }]}>
+              {isSynced ? 'Updated' : 'Pending'}
+            </Text>
           </View>
           <TouchableOpacity
             onPress={onDelete}

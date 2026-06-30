@@ -18,14 +18,32 @@ import { Ionicons } from '@expo/vector-icons';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from '../../context/ThemeContext';
 import { formatCurrency } from '../../utils/format';
-import { insertPostCheckSubmission } from '../../database/postcheckSubmissions.js';
+import { insertPostCheckSubmission, markPostCheckSubmissionSynced } from '../../database/postcheckSubmissions.js';
+import { recordBulkSaleSummary } from '../../services/submitHandover.service';
 import { createCheckSheetStyles } from './checkSheetStyles';
+
+/** Dummy accountant directory for the handover dropdown — first entry is the default selection. */
+const HANDOVER_ACCOUNTANTS = [
+  'Accountant Ifnas',
+  'Accountant Inas',
+  'Accountant Mohamed',
+  'Accountant Fathima',
+];
+
+function localYyyyMmDd(d) {
+  const dt = d instanceof Date ? d : new Date(d);
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, '0');
+  const day = String(dt.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
 
 export default function PostCheckHandoverModal({
   visible,
   onClose,
   orderSyncStats,
   user,
+  routeName,
   initialCash,
   initialCheque,
   initialCredit,
@@ -40,6 +58,8 @@ export default function PostCheckHandoverModal({
   const [editCheque, setEditCheque] = useState(String(initialCheque ?? ''));
   const [editCredit, setEditCredit] = useState(String(initialCredit ?? ''));
   const [dropoffLocation, setDropoffLocation] = useState('headoffice');
+  const [handedOver, setHandedOver] = useState(HANDOVER_ACCOUNTANTS[0]);
+  const [handedOverMenuVisible, setHandedOverMenuVisible] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [lockedStats, setLockedStats] = useState({ localCompleted: 0, syncedCompleted: 0 });
 
@@ -59,6 +79,8 @@ export default function PostCheckHandoverModal({
       setEditCheque(String(initialCheque ?? ''));
       setEditCredit(String(initialCredit ?? ''));
       setDropoffLocation('headoffice');
+      setHandedOver(HANDOVER_ACCOUNTANTS[0]);
+      setHandedOverMenuVisible(false);
       setSubmitting(false);
       setLockedStats({
         localCompleted: orderSyncStats?.localCompleted ?? 0,
@@ -93,8 +115,9 @@ export default function PostCheckHandoverModal({
 
     setSubmitting(true);
     try {
-      await insertPostCheckSubmission({
-        submittedAt: new Date().toISOString(),
+      const submittedAt = new Date();
+      const insertedId = await insertPostCheckSubmission({
+        submittedAt: submittedAt.toISOString(),
         driverId: user?.driverId ?? null,
         driverName: user?.driverName ?? null,
         vehicleId: user?.vehicleId ?? null,
@@ -113,6 +136,30 @@ export default function PostCheckHandoverModal({
         finalCredit,
         dropoffLocation,
       });
+
+      // Local handover is already saved; push to back office best-effort so a flaky
+      // connection never blocks the driver from closing out the day.
+      void (async () => {
+        try {
+          await recordBulkSaleSummary({
+            date: localYyyyMmDd(submittedAt),
+            vehicleId: user?.vehicleId ?? null,
+            driverId: user?.driverId ?? null,
+            route: routeName || '',
+            cashAmount: finalCash,
+            chequeAmount: finalCheque,
+            creditAmount: finalCredit,
+            handedOver,
+            handedOverLocation:
+              dropoffLocation === 'showroom' ? 'Gastech Show room' : 'Head Office',
+          });
+          if (insertedId != null) {
+            await markPostCheckSubmissionSynced(insertedId);
+          }
+        } catch (syncErr) {
+          console.warn('[PostCheck] bulk sale summary sync failed', syncErr?.message || syncErr);
+        }
+      })();
     } catch (err) {
       Alert.alert(
         t('common.error', 'Error'),
@@ -129,6 +176,8 @@ export default function PostCheckHandoverModal({
     editCheque,
     editCredit,
     dropoffLocation,
+    handedOver,
+    routeName,
     user,
     onClose,
     onSubmitted,
@@ -410,7 +459,71 @@ export default function PostCheckHandoverModal({
                   );
                 })}
               </View>
+
+              <Text style={styles.postCheckDropLabel}>
+                {t('dashboard.postCheckHandedOverTo', 'Handed Over To')}
+              </Text>
+              <TouchableOpacity
+                style={styles.postCheckHandedOverField}
+                onPress={() => setHandedOverMenuVisible(true)}
+                activeOpacity={0.8}
+                disabled={submitting}
+                accessibilityRole="button"
+                accessibilityLabel={t('dashboard.postCheckHandedOverTo', 'Handed Over To')}
+              >
+                <Ionicons name="person-circle-outline" size={20} color={colors.primary ?? '#6366f1'} />
+                <Text style={styles.postCheckHandedOverText} numberOfLines={1}>
+                  {handedOver}
+                </Text>
+                <Ionicons name="chevron-down" size={18} color={colors.textSecondary ?? '#94a3b8'} />
+              </TouchableOpacity>
             </ScrollView>
+
+            <Modal
+              visible={handedOverMenuVisible}
+              transparent
+              animationType="fade"
+              onRequestClose={() => setHandedOverMenuVisible(false)}
+            >
+              <Pressable
+                style={styles.postCheckHandedOverMenuOverlay}
+                onPress={() => setHandedOverMenuVisible(false)}
+                accessibilityRole="button"
+                accessibilityLabel={t('common.close', 'Close')}
+              >
+                <View style={styles.postCheckHandedOverMenu}>
+                  {HANDOVER_ACCOUNTANTS.map((name) => {
+                    const active = handedOver === name;
+                    return (
+                      <TouchableOpacity
+                        key={name}
+                        style={[
+                          styles.postCheckHandedOverMenuRow,
+                          active && styles.postCheckHandedOverMenuRowActive,
+                        ]}
+                        onPress={() => {
+                          setHandedOver(name);
+                          setHandedOverMenuVisible(false);
+                        }}
+                        activeOpacity={0.8}
+                      >
+                        <Text
+                          style={[
+                            styles.postCheckHandedOverMenuRowText,
+                            active && styles.postCheckHandedOverMenuRowTextActive,
+                          ]}
+                        >
+                          {name}
+                        </Text>
+                        {active ? (
+                          <Ionicons name="checkmark-circle" size={18} color={colors.primary ?? '#6366f1'} />
+                        ) : null}
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </Pressable>
+            </Modal>
 
             <View style={[styles.sheetFooter, { paddingBottom: Math.max(insets.bottom, 12) }]}>
               <TouchableOpacity
