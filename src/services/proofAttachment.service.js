@@ -138,7 +138,7 @@ export function buildSinglePaymentMessageBody(pm, { hasProof = false } = {}) {
   const amountStr = Number.isFinite(amount) ? amount.toFixed(2) : String(pm.amount ?? '');
 
   const lines = [];
-  lines.push('Payment received via Mobile App');
+  lines.push('Payment received via Mobile App ');
   lines.push(SEP);
 
   if (pm.type === 'cash') {
