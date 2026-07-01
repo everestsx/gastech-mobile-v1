@@ -2249,7 +2249,7 @@ async function buildGasDeliveredCountChatterBody(soId, paymentPayload) {
 
   const sep = '────────────────────────────────────────';
   const lines = [];
-  lines.push('Gas Delivery Count from Mobile App');
+  lines.push('Gas Delivery Count from Mobile App updated ');
   lines.push(sep);
   for (const [label, qty] of qtyByProductLabel.entries()) {
     lines.push(`${label}: ${formatQty(qty)}`);
