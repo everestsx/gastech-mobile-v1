@@ -24,10 +24,8 @@ import { createCheckSheetStyles } from './checkSheetStyles';
 
 /** Dummy accountant directory for the handover dropdown — first entry is the default selection. */
 const HANDOVER_ACCOUNTANTS = [
-  'Accountant Ifnas',
-  'Accountant Inas',
-  'Accountant Mohamed',
-  'Accountant Fathima',
+  'Head Office Accountant',
+  'Gastech Showroom Staff',
 ];
 
 function localYyyyMmDd(d) {
