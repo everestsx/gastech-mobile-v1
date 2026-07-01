@@ -286,7 +286,7 @@ export default function PostCheckHandoverModal({
                     keyboardType="decimal-pad"
                     selectTextOnFocus
                     placeholderTextColor="#22c55e88"
-                    editable={!submitting}
+                    editable={false}
                   />
                 </View>
               </View>
@@ -323,7 +323,7 @@ export default function PostCheckHandoverModal({
                     keyboardType="decimal-pad"
                     selectTextOnFocus
                     placeholderTextColor={(colors.primary ?? '#6366f1') + '88'}
-                    editable={!submitting}
+                    editable={false}
                   />
                 </View>
               </View>
@@ -357,7 +357,7 @@ export default function PostCheckHandoverModal({
                     keyboardType="decimal-pad"
                     selectTextOnFocus
                     placeholderTextColor="#f59e0b88"
-                    editable={!submitting}
+                    editable={false}
                   />
                 </View>
               </View>
