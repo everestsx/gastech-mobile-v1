@@ -156,6 +156,34 @@ export const callOdooJson2 = async (model, method, params = {}) => {
 };
 
 /**
+ * POST a plain JSON body to a custom Odoo controller route (not the /json/2/ model API,
+ * e.g. a one-off @http.route endpoint). Same host resolution and Bearer auth as
+ * callOdooJson2 — always follows ODOO_URL from env/session, never a hardcoded host.
+ * @param {string} path - route path starting with '/', e.g. "/gastech/driver_login_history/route"
+ */
+export const postOdooRoute = async (path, body = {}) => {
+  const { url, apiKey } = getOdooConfig();
+  const baseUrl = url.replace(/\/jsonrpc\/?$/i, "").replace(/\/$/, "");
+  const fullUrl = `${baseUrl}${path.startsWith('/') ? path : `/${path}`}`;
+
+  const response = await fetchWithTimeout(fullUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(body),
+  });
+
+  const json = await response.json();
+  if (json?.error) {
+    const msg = json.error.data?.message || json.error.message || "Odoo route error";
+    throw new Error(msg);
+  }
+  return json?.result ?? json;
+};
+
+/**
  * Call Odoo with explicit positional args (e.g. create(vals), process([id])).
  * positionalArgs = array of positional arguments for the method.
  */

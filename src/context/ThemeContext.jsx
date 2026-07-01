@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getThemeColors } from '../constants/theme';
-import i18n, { initI18n } from '../i18n';
+import i18n, { initI18n, reloadI18nResources } from '../i18n';
 
 
 const STORAGE_KEYS = {
@@ -125,8 +125,9 @@ export function ThemeProvider({ children }) {
 
   const setAppLanguage = useCallback(async (value) => {
     const next = ['en', 'ta', 'si'].includes(value) ? value : 'en';
+    await reloadI18nResources();
     setAppLanguageState(next);
-    i18n.changeLanguage(next);
+    await i18n.changeLanguage(next);
     try {
       await AsyncStorage.setItem(STORAGE_KEYS.APP_LANGUAGE, next);
     } catch (_) {}

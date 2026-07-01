@@ -26,6 +26,7 @@ import * as syncLogDb from '../database/syncLog.js';
 import * as syncQueueDb from '../database/syncQueue.js';
 import { buildCheckoutHeldSaleOrderIds } from '../utils/emptyCollectionLocal.js';
 import { getDb } from '../database/db.js';
+import { recordDriverLogout } from './driverLoginHistory.service';
 export let isLoggingOut = false;
 export const setIsLoggingOut = (value) => {
   isLoggingOut = value;
@@ -272,7 +273,10 @@ const KEYS = {
   SYNC_PERIOD: '@gastech_sync_period',
   SYNC_DATE_FIELD: '@gastech_sync_date_field',
   SYNC_INTERVAL: '@gastech_sync_interval',
+  PRECHECK_DONE: 'precheck_done_date',
 };
+
+export const KEY_PRECHECK_DONE = KEYS.PRECHECK_DONE;
 
 const KEY_POST_LOGIN_SYNC_OK = '@gastech_post_login_sync_ok';
 /** Persists the one-time dashboard "initial load" gate across process restarts (per driver+vehicle session key). */
@@ -552,7 +556,40 @@ export async function getLastVehicleId() {
 export async function logout() {
   resetDashboardInitialLoadState();
   const storage = await getAsyncStorage();
-  await storage.multiRemove([KEYS.USER, KEYS.USER_MEDIA, KEYS.LAST_SYNC, KEY_DASHBOARD_INITIAL_LOAD]);
+  try {
+    const outgoingUser = await getUserSession();
+    if (outgoingUser?.driverBarcode && outgoingUser?.driverId != null && outgoingUser?.vehicleId != null) {
+      void recordDriverLogout({
+        batchId: outgoingUser.driverBarcode,
+        driverId: outgoingUser.driverId,
+        vehicleId: outgoingUser.vehicleId,
+      });
+    }
+  } catch (e) {
+    console.warn('[Logout] driver login history notify failed', e?.message ?? e);
+  }
+  await storage.multiRemove([
+    KEYS.USER,
+    KEYS.USER_MEDIA,
+    KEYS.LAST_SYNC,
+    KEY_DASHBOARD_INITIAL_LOAD,
+    KEYS.PRECHECK_DONE,
+  ]);
+  // Clear local-only postcheck submissions (session-scoped until Odoo backend is ready)
+  try {
+    const { deleteAllPostCheckSubmissions } = await import('../database/postcheckSubmissions.js');
+    await deleteAllPostCheckSubmissions();
+  } catch (e) {
+    console.warn('[Logout] postcheck_submissions wipe failed', e?.message ?? e);
+  }
+}
+
+/** Cleared on logout — pre-check must run again after every new login session. */
+export async function clearPreCheckDoneState() {
+  try {
+    const storage = await getAsyncStorage();
+    await storage.removeItem(KEYS.PRECHECK_DONE);
+  } catch (_) {}
 }
 
 // ---------- Local reads (from SQLite) ----------
@@ -1153,9 +1190,39 @@ export async function refreshSaleOrderInvoiceHeaderFromOdoo(saleOrderId) {
 }
 
 const DELIVERED_QTY_VERIFY_TOL = 0.02;
+/** Brief pause after picking validate so Odoo can settle move qty before SOL writes. */
+const DELIVERED_SOL_SETTLE_MS = 450;
+const DELIVERED_SOL_SETTLE_FAST_MS = 120;
 
 function roundDeliveredQty3(q) {
   return Math.round(Number(q) * 1000) / 1000;
+}
+
+/** True when mobile payload carries any positive delivered quantity (must bind SO lines before markSynced). */
+function payloadHasPositiveDeliveredQty(queuePayload) {
+  const p = queuePayload || {};
+  const snap = p.mobileQtySnapshot || {};
+  const requested = { ...(snap.requestedQtyByProduct || {}), ...(p.requestedQtyByProduct || {}) };
+  if (Object.values(requested).some((q) => roundDeliveredQty3(q) > DELIVERED_QTY_VERIFY_TOL)) return true;
+  for (const row of [...(snap.invoiceLineQtys || []), ...(p.invoiceLineQtys || [])]) {
+    if (roundDeliveredQty3(row?.qty ?? row?.quantity) > DELIVERED_QTY_VERIFY_TOL) return true;
+  }
+  for (const u of [
+    ...(p.saleOrderLineDeliveredUpdates || []),
+    ...(snap.saleOrderLineDeliveredUpdates || []),
+  ]) {
+    if (roundDeliveredQty3(u?.qty_delivered) > DELIVERED_QTY_VERIFY_TOL) return true;
+  }
+  const blocks =
+    (Array.isArray(snap.pickings) && snap.pickings.length > 0 && snap.pickings) ||
+    (Array.isArray(p.pickings) && p.pickings.length > 0 && p.pickings) ||
+    (p.pickingId != null ? [{ deliveryLines: p.deliveryLines || [] }] : []);
+  for (const b of blocks) {
+    for (const line of b.deliveryLines || []) {
+      if (roundDeliveredQty3(line?.qty_done) > DELIVERED_QTY_VERIFY_TOL) return true;
+    }
+  }
+  return false;
 }
 
 /** Merge delivered-qty rows; later entries win (queue payload overrides mobile SQLite during sync). */
@@ -1197,9 +1264,81 @@ async function getMobileDeliveredUpdatesForSaleOrder(saleOrderId) {
   return updates;
 }
 
+async function enrichDeliveredUpdatesForSaleOrder(soId, baseUpdates, queuePayload) {
+  const soNum = Number(soId);
+  if (!Number.isFinite(soNum) || soNum <= 0) return baseUpdates || [];
+  const p = queuePayload || {};
+  const snap = p.mobileQtySnapshot || {};
+  let merged = mergeDeliveredQtyUpdates(
+    baseUpdates || [],
+    deliveredUpdatesFromQueuePayload(p),
+    await getMobileDeliveredUpdatesForSaleOrder(soNum)
+  );
+
+  const orderLines = await saleOrderLinesDb.getSaleOrderLinesByOrderIds([soNum]).catch(() => []);
+  const linesByProduct = new Map();
+  for (const l of orderLines || []) {
+    const pid = Number(l.product_id);
+    if (!Number.isFinite(pid) || pid <= 0) continue;
+    if (!linesByProduct.has(pid)) linesByProduct.set(pid, []);
+    linesByProduct.get(pid).push(l);
+  }
+
+  const updateMap = new Map(merged.map((u) => [Number(u.lineId), roundDeliveredQty3(u.qty_delivered)]));
+
+  const requested = { ...(snap.requestedQtyByProduct || {}), ...(p.requestedQtyByProduct || {}) };
+  for (const [pidStr, qtyRaw] of Object.entries(requested)) {
+    const pid = Number(pidStr);
+    const qty = roundDeliveredQty3(qtyRaw);
+    if (!Number.isFinite(pid) || pid <= 0 || !Number.isFinite(qty) || qty <= 0) continue;
+    const candidates = linesByProduct.get(pid) || [];
+    if (candidates.length !== 1) continue;
+    const lid = Number(candidates[0]?.id);
+    if (!Number.isFinite(lid) || lid <= 0) continue;
+    const prev = updateMap.get(lid);
+    if (prev == null || Math.abs(prev - qty) > DELIVERED_QTY_VERIFY_TOL) {
+      updateMap.set(lid, qty);
+    }
+  }
+
+  for (const row of [...(snap.invoiceLineQtys || []), ...(p.invoiceLineQtys || [])]) {
+    const lid = Number(row?.lineId ?? row?.line_id);
+    const qty = roundDeliveredQty3(row?.qty ?? row?.quantity);
+    if (!Number.isFinite(lid) || lid <= 0 || !Number.isFinite(qty)) continue;
+    updateMap.set(lid, qty);
+  }
+
+  return Array.from(updateMap.entries()).map(([lineId, qty_delivered]) => ({ lineId, qty_delivered }));
+}
+
+/**
+ * Verify enriched SOL qty on Odoo — never allow markSynced when mobile has delivered qty but SO lines are empty/unbound.
+ */
+async function verifyDeliveryQtyBoundOnOdoo(soId, updates, queuePayload) {
+  const enriched = await enrichDeliveredUpdatesForSaleOrder(soId, updates, queuePayload);
+  if (payloadHasPositiveDeliveredQty(queuePayload)) {
+    const positive = enriched.filter((u) => roundDeliveredQty3(u.qty_delivered) > DELIVERED_QTY_VERIFY_TOL);
+    if (positive.length === 0) {
+      throw new Error(
+        `Delivery incomplete: SO ${soId} has mobile delivered qty but no sale order line updates to sync. Sync will retry.`
+      );
+    }
+    await verifySaleOrderLineDeliveredOnOdoo(enriched);
+    return enriched;
+  }
+  if (enriched.length > 0) {
+    await verifySaleOrderLineDeliveredOnOdoo(enriched);
+  }
+  return enriched;
+}
+
 async function collectAuthoritativeDeliveredUpdates(saleOrderId, queuePayload = null) {
   const snap = await resolveDeliveredSnapshotForSync(saleOrderId, queuePayload);
-  return snap.updates || [];
+  return enrichDeliveredUpdatesForSaleOrder(
+    saleOrderId,
+    snap.updates || [],
+    snap.payload || queuePayload
+  );
 }
 
 /** Payment checkout qty must win when merging pending delivery rows (online PaymentProof release path). */
@@ -1283,7 +1422,7 @@ async function verifyAllSaleOrderPickingsAreTerminal(soIdRaw) {
 async function tryMarkDeliverySyncedAfterQtyHeal(item, saleOrderId, queuePayload) {
   const soId = Number(saleOrderId);
   if (!Number.isFinite(soId) || soId <= 0 || item?.id == null) return false;
-  const updates = deliveredUpdatesFromQueuePayload(queuePayload);
+  const updates = await collectAuthoritativeDeliveredUpdates(soId, queuePayload);
   const ctx = repairContextFromQueuePayload(queuePayload);
   const repair = await attemptDeliveredQtyHealForSaleOrder(soId, queuePayload, {
     maxRounds: 2,
@@ -1307,7 +1446,10 @@ async function tryMarkDeliverySyncedAfterQtyHeal(item, saleOrderId, queuePayload
     if (blocks.length > 0) {
       await verifyStockMoveQtyDoneMatchesPayload(blocks);
     }
-    if (updates.length > 0) await verifySaleOrderLineDeliveredOnOdoo(updates);
+    const boundUpdates = await verifyDeliveryQtyBoundOnOdoo(soId, updates, queuePayload);
+    if (payloadHasPositiveDeliveredQty(queuePayload) && boundUpdates.length === 0) {
+      return false;
+    }
     await syncQueueDb.markSynced(Number(item.id));
     log('queue', `delivery id=${item.id} SO ${soId} marked synced after heal (no duplicate upload)`);
     try {
@@ -1416,7 +1558,12 @@ async function attemptDeliveredQtyHealForSaleOrder(saleOrderId, queuePayload = n
   const soId = Number(saleOrderId);
   if (!Number.isFinite(soId) || soId <= 0) return { ok: true, reason: 'invalid so' };
   const updates = await collectAuthoritativeDeliveredUpdates(soId, queuePayload);
-  if (!updates.length) return { ok: true, reason: 'no delivered rows' };
+  if (!updates.length) {
+    if (payloadHasPositiveDeliveredQty(queuePayload)) {
+      return { ok: false, reason: 'missing SOL delivered updates for positive mobile qty' };
+    }
+    return { ok: true, reason: 'no delivered rows' };
+  }
   const fromPayload = repairContextFromQueuePayload(queuePayload);
   const mergedCtx = await resolveRepairContextForSaleOrder(soId, updates, {
     pickingIds: extraContext.pickingIds?.length ? extraContext.pickingIds : fromPayload.pickingIds,
@@ -1425,6 +1572,7 @@ async function attemptDeliveredQtyHealForSaleOrder(saleOrderId, queuePayload = n
   return repairOdooDeliveredQuantitiesFromMobile(soId, updates, {
     ...mergedCtx,
     maxRounds: extraContext.maxRounds ?? 2,
+    queuePayload,
   });
 }
 
@@ -1541,7 +1689,6 @@ async function applySaleOrderLineDeliveredUpdates(deliveredUpdates, saleOrderId 
     );
     try {
       await applySaleOrderLineUpdatesBatch(soId, { delivered: deliveredUpdates });
-      return;
     } catch (batchErr) {
       log(
         'queue',
@@ -1560,8 +1707,8 @@ async function applySaleOrderLineDeliveredUpdates(deliveredUpdates, saleOrderId 
       if (lineErrors.length > 0) {
         throw lineErrors[0];
       }
-      return;
     }
+    return;
   }
   const { updateSaleOrderLineQtyDelivered } = await import('./saleOrderLine.service.js');
   for (const u of deliveredUpdates) {
@@ -1576,7 +1723,12 @@ async function applySaleOrderLineDeliveredUpdates(deliveredUpdates, saleOrderId 
  */
 async function repairOdooDeliveredQuantitiesFromMobile(saleOrderId, deliveredUpdates, options = {}) {
   const updates = Array.isArray(deliveredUpdates) ? deliveredUpdates : [];
-  if (!updates.length) return { ok: true, reason: 'no delivered rows' };
+  if (!updates.length) {
+    if (payloadHasPositiveDeliveredQty(options.queuePayload)) {
+      return { ok: false, reason: 'missing SOL delivered updates for positive mobile qty' };
+    }
+    return { ok: true, reason: 'no delivered rows' };
+  }
 
   const { getStockMovesByPickingId, applyPickingDeliverySnapshotIdempotent } = await import(
     './delivery.service.js'
@@ -1629,6 +1781,9 @@ async function repairOdooDeliveredQuantitiesFromMobile(saleOrderId, deliveredUpd
     try {
       await applyMoveQtyTargets();
       await applySaleOrderLineDeliveredUpdates(updates, saleOrderId);
+      await new Promise((r) =>
+        setTimeout(r, _queueSyncFastDrainActive ? DELIVERED_SOL_SETTLE_FAST_MS : DELIVERED_SOL_SETTLE_MS)
+      );
       await verifySaleOrderLineDeliveredOnOdoo(updates);
       log('queue', `delivery qty repair OK for SO ${saleOrderId} (round ${round + 1})`);
       return { ok: true };
@@ -2740,11 +2895,23 @@ async function processSyncQueue(options = {}) {
             await verifyStockMoveQtyDoneMatchesPayload(blocks);
           }
           const finalSnap = await resolveDeliveredSnapshotForSync(saleOrderId, p);
-          saleOrderLineDeliveredUpdates = finalSnap.updates || [];
+          saleOrderLineDeliveredUpdates = await enrichDeliveredUpdatesForSaleOrder(
+            saleOrderId,
+            finalSnap.updates || [],
+            finalSnap.payload || p
+          );
           await applyMobileDeliveredQtyToOdooOnce();
-          if (saleOrderLineDeliveredUpdates.length > 0) {
-            await verifySaleOrderLineDeliveredOnOdoo(saleOrderLineDeliveredUpdates);
+          if (validatedAnyPicking) {
+            await new Promise((r) =>
+              setTimeout(r, _queueSyncFastDrainActive ? DELIVERED_SOL_SETTLE_FAST_MS : DELIVERED_SOL_SETTLE_MS)
+            );
+            await applyMobileDeliveredQtyToOdooOnce();
           }
+          saleOrderLineDeliveredUpdates = await verifyDeliveryQtyBoundOnOdoo(
+            saleOrderId,
+            saleOrderLineDeliveredUpdates,
+            finalSnap.payload || p
+          );
           if (!_queueSyncFastDrainActive) {
             const { fetchOdooDeliveredQtySnapshot } = await import('./delivery.service.js');
             const odooQty = await fetchOdooDeliveredQtySnapshot(blocks, saleOrderLineDeliveredUpdates);
@@ -3200,6 +3367,9 @@ async function processSyncQueue(options = {}) {
         }
 
         if (validatedAnyPicking && saleOrderLineDeliveredUpdates.length > 0) {
+          await new Promise((r) =>
+            setTimeout(r, _queueSyncFastDrainActive ? DELIVERED_SOL_SETTLE_FAST_MS : DELIVERED_SOL_SETTLE_MS)
+          );
           await applyMobileDeliveredQtyToOdooOnce();
           log('queue', `delivery SO ${saleOrderId}: sale order line qty_delivered synced after picking validate`);
         }
@@ -3324,9 +3494,13 @@ async function processSyncQueue(options = {}) {
                 const heal = await attemptDeliveredQtyHealForSaleOrder(soId, healPayload, { maxRounds: 2 });
                 if (heal.ok) {
                   await verifyAllSaleOrderPickingsAreTerminal(soId);
-                  const healUpdates = await collectAuthoritativeDeliveredUpdates(soId, healPayload);
-                  if (healUpdates.length > 0) {
-                    await verifySaleOrderLineDeliveredOnOdoo(healUpdates);
+                  const healUpdates = await verifyDeliveryQtyBoundOnOdoo(
+                    soId,
+                    await collectAuthoritativeDeliveredUpdates(soId, healPayload),
+                    healPayload
+                  );
+                  if (payloadHasPositiveDeliveredQty(healPayload) && healUpdates.length === 0) {
+                    throw new Error(`Delivery heal incomplete for SO ${soId}: no SOL rows bound`);
                   }
                   await syncQueueDb.markSynced(Number(item.id));
                   deliverySyncedSoIdsThisPass.add(soId);
@@ -3708,9 +3882,13 @@ async function processSyncQueue(options = {}) {
                 const heal = await attemptDeliveredQtyHealForSaleOrder(soId, healPayload, { maxRounds: 3 });
                 if (heal.ok) {
                   await verifyAllSaleOrderPickingsAreTerminal(soId);
-                  const healUpdates = await collectAuthoritativeDeliveredUpdates(soId, healPayload);
-                  if (healUpdates.length > 0) {
-                    await verifySaleOrderLineDeliveredOnOdoo(healUpdates);
+                  const healUpdates = await verifyDeliveryQtyBoundOnOdoo(
+                    soId,
+                    await collectAuthoritativeDeliveredUpdates(soId, healPayload),
+                    healPayload
+                  );
+                  if (payloadHasPositiveDeliveredQty(healPayload) && healUpdates.length === 0) {
+                    throw new Error(`Delivery heal incomplete for SO ${soId}: no SOL rows bound`);
                   }
                   await syncQueueDb.markSynced(Number(latestHeld.id));
                   deliverySyncedSoIdsThisPass.add(soId);
@@ -3791,9 +3969,13 @@ async function processSyncQueue(options = {}) {
                     });
                     if (heal.ok) {
                       await verifyAllSaleOrderPickingsAreTerminal(soId);
-                      const healUpdates = await collectAuthoritativeDeliveredUpdates(soId, releasedPayload);
-                      if (healUpdates.length > 0) {
-                        await verifySaleOrderLineDeliveredOnOdoo(healUpdates);
+                      const healUpdates = await verifyDeliveryQtyBoundOnOdoo(
+                        soId,
+                        await collectAuthoritativeDeliveredUpdates(soId, releasedPayload),
+                        releasedPayload
+                      );
+                      if (payloadHasPositiveDeliveredQty(releasedPayload) && healUpdates.length === 0) {
+                        throw new Error(`Delivery heal incomplete for SO ${soId}: no SOL rows bound`);
                       }
                       await syncQueueDb.markSynced(Number(latestReleased.id));
                       deliverySyncedSoIdsThisPass.add(soId);
@@ -3820,9 +4002,9 @@ async function processSyncQueue(options = {}) {
                   (await syncQueueDb.getPendingDeliveryItemBySaleOrderId(soId))?.payload
                 );
                 const bindUpdates = await collectAuthoritativeDeliveredUpdates(soId, bindPayload);
-                if (bindUpdates.length > 0) {
+                if (bindUpdates.length > 0 || payloadHasPositiveDeliveredQty(bindPayload)) {
                   try {
-                    await verifySaleOrderLineDeliveredOnOdoo(bindUpdates);
+                    await verifyDeliveryQtyBoundOnOdoo(soId, bindUpdates, bindPayload);
                   } catch (_) {
                     const heal = await attemptDeliveredQtyHealForSaleOrder(soId, bindPayload, {
                       maxRounds: _queueSyncFastDrainActive ? 2 : 3,
