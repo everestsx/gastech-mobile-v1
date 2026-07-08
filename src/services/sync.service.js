@@ -2291,7 +2291,7 @@ async function postSaleOrderCheckoutChatterMessages({
   const {
     buildPaymentProofMessageBody,
     buildSinglePaymentMessageBody,
-    createProofAttachment,
+    buildGoogleDriveLink,
     postPaymentProofToChatterWithAttachmentIds,
     imageFileToBase64String,
   } = await import('./proofAttachment.service.js');
@@ -2311,12 +2311,31 @@ async function postSaleOrderCheckoutChatterMessages({
   const isPartialPayment = paymentsForMessage.length > 1;
   const gasDeliveredCountBody = await buildGasDeliveredCountChatterBody(soId, p).catch(() => null);
   const invoicePendingNote = invoiceBlockFailed
-    ? '\n\n— Invoice / delivery not fully synced in Odoo yet; confirm quantities in the office if needed. Payment proof is attached above. —'
+    ? '<br/><br/>— Invoice / delivery not fully synced in Odoo yet; confirm quantities in the office if needed. Payment proof is attached above. —'
     : '';
 
   const offlineAttachmentsDb = await import('../database/offlineAttachments.js');
   const pendingAttachments = await offlineAttachmentsDb.getPendingBySaleOrderId(soId);
   const FileSystem = await import('expo-file-system');
+
+  // Fetch user info once for Google Drive upload metadata (license plate + driver name)
+  let _driveDriverName = p.driverName || '';
+  let _driveLicensePlate = '';
+  let _customerName = '';
+  try {
+    const _driveSession = await getUserSession();
+    _driveLicensePlate = _driveSession?.licensePlate || _driveSession?.vehicleName || '';
+    if (!_driveDriverName) _driveDriverName = _driveSession?.driverName || '';
+  } catch (_) {}
+
+  // Fetch customer name from sale order for Google Drive folder organization
+  try {
+    const saleOrdersDb = await import('../database/saleOrders.js');
+    const saleOrder = await saleOrdersDb.getSaleOrderById(soId).catch(() => null);
+    if (saleOrder?.partner_name) {
+      _customerName = saleOrder.partner_name;
+    }
+  } catch (_) {}
 
   let invoiceId = Number(postedInvoiceId);
   if (!(Number.isFinite(invoiceId) && invoiceId > 0)) {
@@ -2329,9 +2348,10 @@ async function postSaleOrderCheckoutChatterMessages({
   }
 
   const attachmentIds = [];
+  const proofDriveLinks = [];
   const syncedAttachmentIds = [];
   const pendingCount = (pendingAttachments || []).length;
-  log('queue', `payment proof (SO ${soId}): ${pendingCount} pending in offline_attachments — URI→base64→create→message_post`);
+  log('queue', `payment proof (SO ${soId}): ${pendingCount} pending in offline_attachments — URI→base64→Google Drive→message_post`);
 
   for (const att of pendingAttachments || []) {
     if (!att.local_file_path || !att.file_name) continue;
@@ -2346,8 +2366,32 @@ async function postSaleOrderCheckoutChatterMessages({
         await offlineAttachmentsDb.markFailed(Number(att.id), 'Invalid or too short base64');
         continue;
       }
-      const aid = await createProofAttachment(soId, normalized, att.file_name);
-      attachmentIds.push(aid);
+      // Upload to Google Drive and capture the file ID to build a shareable link
+      let driveFileId = null;
+      try {
+        const { uploadPaymentProofToDrive } = await import('./googleDrive.service.js');
+        const _photoIdx = (pendingAttachments || []).indexOf(att) + 1;
+        driveFileId = await uploadPaymentProofToDrive(normalized, att.mime_type || 'image/jpeg', {
+          orderName: orderName || `SO-${soId}`,
+          saleOrderId: soId,
+          customerName: _customerName,
+          driverName: _driveDriverName,
+          licensePlate: _driveLicensePlate,
+          photoIndex: _photoIdx,
+        });
+        if (driveFileId) {
+          const driveLink = buildGoogleDriveLink(driveFileId);
+          if (driveLink) {
+            proofDriveLinks.push(driveLink);
+            log('queue', `payment proof link: ${driveLink}`);
+          }
+        }
+      } catch (_driveErr) {
+        // intentionally silent — Drive upload is best-effort
+        logWarn('queue payment proof drive upload', _driveErr);
+      }
+      // NOTE: We now use Google Drive links instead of creating Odoo attachments
+      // This allows users to easily view payment proofs directly from Drive
       syncedAttachmentIds.push(att.id);
     } catch (attErr) {
       await offlineAttachmentsDb.incrementRetry(att.id, attErr?.message || 'Upload error');
@@ -2364,18 +2408,19 @@ async function postSaleOrderCheckoutChatterMessages({
     }
   }
 
-  const hasProof = attachmentIds.length > 0;
+  const hasProof = proofDriveLinks.length > 0;
 
   try {
     if (isPartialPayment && paymentsForMessage.length > 0) {
       for (let i = 0; i < paymentsForMessage.length; i++) {
         const pm = paymentsForMessage[i];
-        const attachToThisMessage = i === 0 ? attachmentIds : [];
+        const driveLinksForThisMessage = i === 0 ? proofDriveLinks : [];
         const body =
-          buildSinglePaymentMessageBody(pm, { hasProof: attachToThisMessage.length > 0 }) +
+          buildSinglePaymentMessageBody(pm, { hasProof: driveLinksForThisMessage.length > 0, proofDriveLinks: driveLinksForThisMessage }) +
           (i === 0 ? invoicePendingNote : '');
-        await postPaymentProofToChatterWithAttachmentIds(soId, { body, attachmentIds: attachToThisMessage });
-        if (attachToThisMessage.length > 0) {
+        // Pass empty attachment_ids since we're using Google Drive links instead
+        await postPaymentProofToChatterWithAttachmentIds(soId, { body, attachmentIds: [] });
+        if (driveLinksForThisMessage.length > 0) {
           const pendingById = new Map((pendingAttachments || []).map((a) => [Number(a.id), a]));
           for (const id of syncedAttachmentIds) {
             const idNum = Number(id);
@@ -2397,10 +2442,12 @@ async function postSaleOrderCheckoutChatterMessages({
           chequeBankName: paymentMethod === 'cheque' ? chequeBankName : undefined,
           checkNumber: paymentMethod === 'cheque' ? (chequeNumber || undefined) : undefined,
           payments: paymentsForMessage,
-          hasProof,
+          hasProof: proofDriveLinks.length > 0,
+          proofDriveLinks,
         }) + invoicePendingNote;
-      await postPaymentProofToChatterWithAttachmentIds(soId, { body, attachmentIds });
-      if (attachmentIds.length > 0) {
+      // Pass empty attachment_ids since we're using Google Drive links instead
+      await postPaymentProofToChatterWithAttachmentIds(soId, { body, attachmentIds: [] });
+      if (proofDriveLinks.length > 0) {
         const pendingById = new Map((pendingAttachments || []).map((a) => [Number(a.id), a]));
         for (const id of syncedAttachmentIds) {
           const idNum = Number(id);
@@ -4452,7 +4499,8 @@ async function processStandaloneOfflineAttachments() {
   const { getPendingPaymentItemBySaleOrderId } = syncQueueDb;
   const FileSystem = await import('expo-file-system');
   const {
-    createProofAttachment,
+    buildDeliveryEvidenceDriveLinksBody,
+    buildGoogleDriveLink,
     postPaymentProofToChatterWithAttachmentIds,
     imageFileToBase64String,
   } = await import('./proofAttachment.service.js');
@@ -4463,7 +4511,17 @@ async function processStandaloneOfflineAttachments() {
     const pendingPaymentItem = await getPendingPaymentItemBySaleOrderId(saleOrderId);
     if (pendingPaymentItem) continue;
 
-    const attachmentIds = [];
+    // Fetch customer name for Google Drive folder organization
+    let _customerName = '';
+    try {
+      const saleOrdersDb = await import('../database/saleOrders.js');
+      const saleOrder = await saleOrdersDb.getSaleOrderById(saleOrderId).catch(() => null);
+      if (saleOrder?.partner_name) {
+        _customerName = saleOrder.partner_name;
+      }
+    } catch (_) {}
+
+    const proofDriveLinks = [];
     const syncedAttachmentIds = [];
     log('queue', `standalone evidence (SO ${saleOrderId}): ${attachments.length} pending`);
 
@@ -4480,8 +4538,27 @@ async function processStandaloneOfflineAttachments() {
           await offlineAttachmentsDb.markFailed(Number(att.id), 'Invalid or too short base64');
           continue;
         }
-        const aid = await createProofAttachment(saleOrderId, normalized, att.file_name);
-        attachmentIds.push(aid);
+        // Upload to Google Drive and capture the file ID to build a shareable link
+        let driveFileId = null;
+        try {
+          const { uploadPaymentProofToDrive } = await import('./googleDrive.service.js');
+          const _photoIdx = attachments.indexOf(att) + 1;
+          driveFileId = await uploadPaymentProofToDrive(normalized, att.mime_type || 'image/jpeg', {
+            orderName: `SO-${saleOrderId}`,
+            saleOrderId: saleOrderId,
+            customerName: _customerName,
+            photoIndex: _photoIdx,
+          });
+          if (driveFileId) {
+            const driveLink = buildGoogleDriveLink(driveFileId);
+            if (driveLink) {
+              proofDriveLinks.push(driveLink);
+              log('queue', `standalone evidence link: ${driveLink}`);
+            }
+          }
+        } catch (_driveErr) {
+          logWarn('queue standalone evidence drive upload', _driveErr);
+        }
         syncedAttachmentIds.push(att.id);
       } catch (attErr) {
         await offlineAttachmentsDb.incrementRetry(att.id, attErr?.message || 'Upload error');
@@ -4489,12 +4566,14 @@ async function processStandaloneOfflineAttachments() {
       }
     }
 
-    if (!attachmentIds.length) continue;
+    if (!proofDriveLinks.length) continue;
 
     try {
+      const body = buildDeliveryEvidenceDriveLinksBody(proofDriveLinks);
+      // Pass empty attachment_ids since we're using Google Drive links
       await postPaymentProofToChatterWithAttachmentIds(saleOrderId, {
-        body: 'Delivery evidence photo(s) uploaded.',
-        attachmentIds,
+        body,
+        attachmentIds: [],
       });
       const pendingById = new Map(attachments.map((a) => [Number(a.id), a]));
       for (const id of syncedAttachmentIds) {
@@ -4508,7 +4587,7 @@ async function processStandaloneOfflineAttachments() {
           } catch (_) { }
         }
       }
-      log('queue', `standalone evidence posted to SO ${saleOrderId} (${attachmentIds.length} images)`);
+      log('queue', `standalone evidence posted to SO ${saleOrderId} (${proofDriveLinks.length} images)`);
     } catch (e) {
       for (const id of syncedAttachmentIds) {
         await offlineAttachmentsDb.incrementRetry(Number(id), e?.message || 'API error');

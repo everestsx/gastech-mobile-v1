@@ -21,8 +21,83 @@ const MIMETYPES = {
 const MIN_BASE64_LENGTH = 50;
 const DATA_URL_PREFIX_REGEX = /^data:image\/[a-z0-9+.-]+;base64,/i;
 
-/** Plain text only — Odoo chatter often escapes HTML and shows tags literally. */
+/**
+ * Odoo 17+ escapes plain str bodies in message_post (Markup enforcement).
+ * Pass HTML with body_is_html: true so <br/> and <a> render instead of showing as text.
+ */
 const SEP = '────────────────────────────────────────';
+
+function escapeHtml(text) {
+  return String(text ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/** Join chatter lines into Odoo HTML (lines may already contain `<a>` tags). */
+export function linesToOdooHtmlBody(lines) {
+  return (Array.isArray(lines) ? lines : [])
+    .map((line) => {
+      const s = String(line ?? '');
+      if (s.includes('<a ') && s.includes('href=')) return s;
+      return escapeHtml(s);
+    })
+    .join('<br/>');
+}
+
+export function looksLikeHtmlChatterBody(body) {
+  return /<\s*(a|br|p|div|strong|b|ul|li)\b/i.test(String(body || ''));
+}
+
+/**
+ * Clickable Google Drive anchor for Odoo chatter (requires body_is_html on message_post).
+ */
+export function buildGoogleDriveLinkAnchor(url, label = 'Click And See Your Payment Proof') {
+  const trimmed = String(url || '').trim();
+  if (!trimmed) return escapeHtml(label);
+  const href = trimmed.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  return `<a href="${href}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`;
+}
+
+function normalizeDriveLinks(proofDriveLinks) {
+  return (Array.isArray(proofDriveLinks) ? proofDriveLinks : [])
+    .filter((link) => typeof link === 'string' && link.trim().length > 0)
+    .map((link) => link.trim());
+}
+
+function appendDriveProofLinkLines(lines, validDriveLinks, heading) {
+  if (!validDriveLinks.length) return;
+  lines.push(heading);
+  for (let i = 0; i < validDriveLinks.length; i++) {
+    const anchor = buildGoogleDriveLinkAnchor(
+      validDriveLinks[i],
+      `Link ${i + 1} — View photo`
+    );
+    lines.push(`&nbsp;&nbsp;${anchor}`);
+  }
+}
+
+/**
+ * Build a Google Drive view link from a file ID.
+ * @param {string} fileId - Google Drive file ID (e.g. "1a2b3c4d5e6f7g8h9i0j")
+ * @returns {string} Full Google Drive view URL
+ */
+export function buildGoogleDriveLink(fileId) {
+  if (!fileId || typeof fileId !== 'string' || fileId.trim().length === 0) return null;
+  return `https://drive.google.com/file/d/${fileId.trim()}/view`;
+}
+
+/** Chatter body for standalone delivery evidence uploads (Google Drive links). */
+export function buildDeliveryEvidenceDriveLinksBody(proofDriveLinks = []) {
+  const validDriveLinks = normalizeDriveLinks(proofDriveLinks);
+  if (!validDriveLinks.length) {
+    return escapeHtml('Delivery evidence photo(s) uploaded.');
+  }
+  const lines = [];
+  appendDriveProofLinkLines(lines, validDriveLinks, 'Delivery evidence photo(s) — Google Drive:');
+  return linesToOdooHtmlBody(lines);
+}
 
 function stripDataUrlPrefixOnly(s) {
   if (s == null || typeof s !== 'string') return '';
@@ -74,6 +149,8 @@ export async function imageFileToBase64String(fileSystem, filePathOrUri) {
  * @param {string} [opts.chequeBankName]
  * @param {string} [opts.checkNumber]
  * @param {Array<{ type: string, amount: number, checkNumber?: string, bankName?: string }>} [opts.payments] - Per-method entries for partial payments
+ * @param {boolean} [opts.hasProof] - Whether attachments exist
+ * @param {Array<string>} [opts.proofDriveLinks] - Google Drive links for payment proofs (if using Drive instead of attachments)
  */
 export function buildPaymentProofMessageBody(opts = {}) {
   const {
@@ -82,6 +159,7 @@ export function buildPaymentProofMessageBody(opts = {}) {
     checkNumber,
     payments,
     hasProof = false,
+    proofDriveLinks = [],
   } = opts;
 
   const amountToStr = (v) => {
@@ -123,17 +201,28 @@ export function buildPaymentProofMessageBody(opts = {}) {
   }
 
   lines.push(SEP);
-  lines.push(hasProof ? 'Payment proof photo(s) attached.' : 'Payment recorded (no photo proof attached).');
 
-  return lines.join('\n');
+  const validDriveLinks = normalizeDriveLinks(proofDriveLinks);
+  if (validDriveLinks.length > 0) {
+    appendDriveProofLinkLines(lines, validDriveLinks, 'Payment proof photo(s) — Google Drive:');
+  } else if (hasProof) {
+    lines.push('Payment proof photo(s) attached.');
+  } else {
+    lines.push('Payment recorded (no photo proof attached).');
+  }
+
+  return linesToOdooHtmlBody(lines);
 }
 
 /**
  * Build a single chatter message body for one payment type (used when posting separate messages per payment).
  * @param {{ type: string, amount: number, checkNumber?: string, bankName?: string }} pm
+ * @param {Object} opts
+ * @param {boolean} [opts.hasProof] - Whether attachments exist
+ * @param {Array<string>} [opts.proofDriveLinks] - Google Drive links for payment proofs
  * @returns {string}
  */
-export function buildSinglePaymentMessageBody(pm, { hasProof = false } = {}) {
+export function buildSinglePaymentMessageBody(pm, { hasProof = false, proofDriveLinks = [] } = {}) {
   const amount = Number(pm.amount);
   const amountStr = Number.isFinite(amount) ? amount.toFixed(2) : String(pm.amount ?? '');
 
@@ -152,9 +241,17 @@ export function buildSinglePaymentMessageBody(pm, { hasProof = false } = {}) {
   }
 
   lines.push(SEP);
-  lines.push(hasProof ? 'Payment proof photo(s) attached.' : 'Payment recorded (no photo proof attached).');
 
-  return lines.join('\n');
+  const validDriveLinks = normalizeDriveLinks(proofDriveLinks);
+  if (validDriveLinks.length > 0) {
+    appendDriveProofLinkLines(lines, validDriveLinks, 'Payment proof photo(s) — Google Drive:');
+  } else if (hasProof) {
+    lines.push('Payment proof photo(s) attached.');
+  } else {
+    lines.push('Payment recorded (no photo proof attached).');
+  }
+
+  return linesToOdooHtmlBody(lines);
 }
 
 /**
@@ -259,7 +356,10 @@ export async function postPaymentProofToChatterWithAttachmentIds(saleOrderId, op
     .map((id) => (typeof id === 'number' ? id : parseInt(id, 10)))
     .filter((id) => !Number.isNaN(id) && id > 0);
 
-  // Exact kwargs from Odoo doc so images show in chatter
+  const bodyIsHtml =
+    options.bodyIsHtml === true ||
+    (options.bodyIsHtml !== false && looksLikeHtmlChatterBody(body));
+
   const kwargs = {
     body,
     attachment_ids,
@@ -267,5 +367,9 @@ export async function postPaymentProofToChatterWithAttachmentIds(saleOrderId, op
     subtype_xmlid: 'mail.mt_comment',
     context: { mail_create_nosubscribe: true },
   };
+  // Odoo 17+ escapes plain str bodies; body_is_html tells Odoo to render HTML (clickable links).
+  if (bodyIsHtml) {
+    kwargs.body_is_html = true;
+  }
   await callOdooArgsKwargs('sale.order', 'message_post', [resId], kwargs);
 }
