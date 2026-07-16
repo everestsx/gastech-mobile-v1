@@ -1192,7 +1192,7 @@ export async function refreshSaleOrderInvoiceHeaderFromOdoo(saleOrderId) {
 const DELIVERED_QTY_VERIFY_TOL = 0.02;
 /** Brief pause after picking validate so Odoo can settle move qty before SOL writes. */
 const DELIVERED_SOL_SETTLE_MS = 450;
-const DELIVERED_SOL_SETTLE_FAST_MS = 120;
+const DELIVERED_SOL_SETTLE_FAST_MS = 350;
 
 function roundDeliveredQty3(q) {
   return Math.round(Number(q) * 1000) / 1000;
@@ -1306,6 +1306,52 @@ async function enrichDeliveredUpdatesForSaleOrder(soId, baseUpdates, queuePayloa
     const qty = roundDeliveredQty3(row?.qty ?? row?.quantity);
     if (!Number.isFinite(lid) || lid <= 0 || !Number.isFinite(qty)) continue;
     updateMap.set(lid, qty);
+  }
+
+  return Array.from(updateMap.entries()).map(([lineId, qty_delivered]) => ({ lineId, qty_delivered }));
+}
+
+/**
+ * Safety net: if stock picking already has qty_done for a product but a SO line update row
+ * is missing/stale, fill it from the mobile picking snapshot before SOL writes.
+ * Prevents rare partial binds (e.g. GAS2.4 picking=10 while SO line delivered stays 0).
+ */
+async function supplementDeliveredUpdatesFromStockBlocks(soId, baseUpdates, pickingBlocks) {
+  const soNum = Number(soId);
+  if (!Number.isFinite(soNum) || soNum <= 0) return baseUpdates || [];
+  const updateMap = new Map(
+    (baseUpdates || []).map((u) => [Number(u.lineId), roundDeliveredQty3(u.qty_delivered)])
+  );
+
+  const qtyByProduct = new Map();
+  for (const block of pickingBlocks || []) {
+    for (const line of block?.deliveryLines || []) {
+      const pid = Number(line?.productId ?? line?.product_id);
+      const qty = roundDeliveredQty3(line?.qty_done);
+      if (!Number.isFinite(pid) || pid <= 0 || !Number.isFinite(qty) || qty <= 0) continue;
+      qtyByProduct.set(pid, (qtyByProduct.get(pid) || 0) + qty);
+    }
+  }
+  if (qtyByProduct.size === 0) return baseUpdates || [];
+
+  const orderLines = await saleOrderLinesDb.getSaleOrderLinesByOrderIds([soNum]).catch(() => []);
+  const linesByProduct = new Map();
+  for (const l of orderLines || []) {
+    const pid = Number(l.product_id);
+    if (!Number.isFinite(pid) || pid <= 0) continue;
+    if (!linesByProduct.has(pid)) linesByProduct.set(pid, []);
+    linesByProduct.get(pid).push(l);
+  }
+
+  for (const [pid, stockQty] of qtyByProduct.entries()) {
+    const candidates = linesByProduct.get(pid) || [];
+    if (candidates.length !== 1) continue;
+    const lid = Number(candidates[0]?.id);
+    if (!Number.isFinite(lid) || lid <= 0) continue;
+    const prev = updateMap.get(lid);
+    if (prev == null || Math.abs(prev - stockQty) > DELIVERED_QTY_VERIFY_TOL) {
+      updateMap.set(lid, stockQty);
+    }
   }
 
   return Array.from(updateMap.entries()).map(([lineId, qty_delivered]) => ({ lineId, qty_delivered }));
@@ -1689,6 +1735,7 @@ async function applySaleOrderLineDeliveredUpdates(deliveredUpdates, saleOrderId 
     );
     try {
       await applySaleOrderLineUpdatesBatch(soId, { delivered: deliveredUpdates });
+      await verifySaleOrderLineDeliveredOnOdoo(deliveredUpdates);
     } catch (batchErr) {
       log(
         'queue',
@@ -1704,6 +1751,7 @@ async function applySaleOrderLineDeliveredUpdates(deliveredUpdates, saleOrderId 
           logWarn('queue delivery (SO line delivered fallback)', lineErr);
         }
       }
+      await verifySaleOrderLineDeliveredOnOdoo(deliveredUpdates);
       if (lineErrors.length > 0) {
         throw lineErrors[0];
       }
@@ -1715,6 +1763,7 @@ async function applySaleOrderLineDeliveredUpdates(deliveredUpdates, saleOrderId 
     if (u.lineId == null || u.qty_delivered == null) continue;
     await updateSaleOrderLineQtyDelivered(u.lineId, Number(u.qty_delivered));
   }
+  await verifySaleOrderLineDeliveredOnOdoo(deliveredUpdates);
 }
 
 /**
@@ -2900,6 +2949,11 @@ async function processSyncQueue(options = {}) {
             finalSnap.updates || [],
             finalSnap.payload || p
           );
+          saleOrderLineDeliveredUpdates = await supplementDeliveredUpdatesFromStockBlocks(
+            saleOrderId,
+            saleOrderLineDeliveredUpdates,
+            blocks
+          );
           await applyMobileDeliveredQtyToOdooOnce();
           if (validatedAnyPicking) {
             await new Promise((r) =>
@@ -3367,10 +3421,37 @@ async function processSyncQueue(options = {}) {
         }
 
         if (validatedAnyPicking && saleOrderLineDeliveredUpdates.length > 0) {
+          saleOrderLineDeliveredUpdates = await supplementDeliveredUpdatesFromStockBlocks(
+            saleOrderId,
+            saleOrderLineDeliveredUpdates,
+            blocks
+          );
           await new Promise((r) =>
             setTimeout(r, _queueSyncFastDrainActive ? DELIVERED_SOL_SETTLE_FAST_MS : DELIVERED_SOL_SETTLE_MS)
           );
           await applyMobileDeliveredQtyToOdooOnce();
+          try {
+            await verifySaleOrderLineDeliveredOnOdoo(saleOrderLineDeliveredUpdates);
+          } catch (postValidateSolErr) {
+            log(
+              'queue',
+              `delivery SO ${saleOrderId}: post-validate SOL verify failed — repair: ${String(postValidateSolErr?.message || postValidateSolErr).slice(0, 120)}`
+            );
+            const repairCtx = repairContextFromDeliveryBlocks(blocks);
+            const repair = await repairOdooDeliveredQuantitiesFromMobile(
+              saleOrderId,
+              saleOrderLineDeliveredUpdates,
+              {
+                queuePayload: p,
+                pickingIds: repairCtx.pickingIds,
+                deliveryLines: repairCtx.deliveryLines,
+                maxRounds: 3,
+              }
+            );
+            if (!repair.ok) {
+              throw postValidateSolErr;
+            }
+          }
           log('queue', `delivery SO ${saleOrderId}: sale order line qty_delivered synced after picking validate`);
         }
 

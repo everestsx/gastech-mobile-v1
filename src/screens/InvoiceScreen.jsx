@@ -172,6 +172,16 @@ function formatInvoiceIssueTime(value = new Date()) {
   });
 }
 
+/** Printed invoice dates use numeric month/day/year (e.g. 07/15/2026). */
+function formatPrintedInvoiceDate(value = new Date()) {
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return formatPrintedInvoiceDate(new Date());
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  const year = d.getFullYear();
+  return `${month}/${day}/${year}`;
+}
+
 /** Prefer delivery date for invoice printing; fall back to order/creation dates only when missing. */
 function resolveInvoiceDateSource(order) {
   const raw =
@@ -289,13 +299,7 @@ function buildInvoiceHtml(
   const driverNameDisplay = safeDisplay(printOptions.salesRepName || '').replace(/</g, '&lt;');
   const vehicleNoDisplay = safeDisplay(printOptions.vehicleNumber || '').replace(/</g, '&lt;');
   const invoiceDateSource = resolveInvoiceDateSource(order);
-  const date = invoiceDateSource && !Number.isNaN(invoiceDateSource.getTime())
-    ? invoiceDateSource.toLocaleDateString('en-LK', {
-        year: 'numeric',
-        month: 'short',
-        day: 'numeric',
-      })
-    : new Date().toLocaleDateString('en-LK');
+  const date = formatPrintedInvoiceDate(invoiceDateSource);
   const dateOfInvoiceWithTime = `${date}, ${invoiceIssueTimeStr}`.replace(/</g, '&lt;');
   const customerName = safeDisplay(resolveInvoiceCustomerDisplayName(order, partyInfo, appLanguage)).replace(
     /</g,
@@ -718,11 +722,7 @@ function wrapPlainLines(text, w = PLAIN_WIDTH) {
 }
 
 function formatPlainISODate(order) {
-  const d = resolveInvoiceDateSource(order);
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
+  return formatPrintedInvoiceDate(resolveInvoiceDateSource(order));
 }
 
 function buildInvoicePlainText(
@@ -2889,11 +2889,7 @@ export default function InvoiceScreen({ route, navigation }) {
     );
   }
 
-  const invoiceDate = resolveInvoiceDateSource(order).toLocaleDateString('en-LK', {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-  });
+  const invoiceDate = formatPrintedInvoiceDate(resolveInvoiceDateSource(order));
 
   return (
     <>
