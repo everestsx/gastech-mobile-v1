@@ -1358,31 +1358,211 @@ async function supplementDeliveredUpdatesFromStockBlocks(soId, baseUpdates, pick
 }
 
 /**
- * Verify enriched SOL qty on Odoo — never allow markSynced when mobile has delivered qty but SO lines are empty/unbound.
+ * Read Odoo done stock moves and build required sale.order.line qty_delivered rows.
+ * Uses sale_line_id when present; otherwise maps single SO line per product.
+ * This is the authoritative list after picking validate — catches lines missing from mobile payload.
  */
-async function verifyDeliveryQtyBoundOnOdoo(soId, updates, queuePayload) {
-  const enriched = await enrichDeliveredUpdatesForSaleOrder(soId, updates, queuePayload);
-  if (payloadHasPositiveDeliveredQty(queuePayload)) {
-    const positive = enriched.filter((u) => roundDeliveredQty3(u.qty_delivered) > DELIVERED_QTY_VERIFY_TOL);
-    if (positive.length === 0) {
-      throw new Error(
-        `Delivery incomplete: SO ${soId} has mobile delivered qty but no sale order line updates to sync. Sync will retry.`
+async function buildRequiredDeliveredUpdatesFromOdooDoneMoves(soId, pickingBlocks = []) {
+  const soNum = Number(soId);
+  if (!Number.isFinite(soNum) || soNum <= 0) return [];
+
+  const { getPickingBySaleOrder, getStockMoveLinesByMoveIds } = await import('./delivery.service.js');
+  const { callOdoo } = await import('./index.service.js');
+
+  let pickingIds = [
+    ...new Set(
+      (pickingBlocks || [])
+        .map((b) => Number(b?.pickingId ?? b?.picking_id))
+        .filter((n) => Number.isFinite(n) && n > 0)
+    ),
+  ];
+  if (!pickingIds.length) {
+    const picks = await getPickingBySaleOrder(soNum).catch(() => []);
+    pickingIds = (picks || [])
+      .filter((p) => String(p?.state || '').toLowerCase() === 'done')
+      .map((p) => Number(p?.id))
+      .filter((n) => Number.isFinite(n) && n > 0);
+  }
+
+  const qtyBySaleLine = new Map();
+  const qtyByProductUnlinked = new Map();
+
+  for (const pickingId of pickingIds) {
+    const moves =
+      (await callOdoo(
+        'stock.move',
+        'search_read',
+        [[['picking_id', '=', pickingId]]],
+        { fields: ['id', 'product_id', 'sale_line_id', 'quantity_done', 'state'] }
+      )) || [];
+
+    const moveIds = (Array.isArray(moves) ? moves : [])
+      .map((m) => Number(m?.id))
+      .filter((n) => Number.isFinite(n) && n > 0);
+    const moveLines = moveIds.length ? await getStockMoveLinesByMoveIds(moveIds).catch(() => []) : [];
+
+    for (const mv of Array.isArray(moves) ? moves : []) {
+      const mid = Number(mv?.id);
+      if (!Number.isFinite(mid) || mid <= 0) continue;
+
+      let qty = roundDeliveredQty3(mv?.quantity_done);
+      if (!Number.isFinite(qty) || qty <= DELIVERED_QTY_VERIFY_TOL) {
+        qty = roundDeliveredQty3(
+          (moveLines || [])
+            .filter((ml) => {
+              const mlMove = Array.isArray(ml?.move_id) ? ml.move_id[0] : ml?.move_id;
+              return Number(mlMove) === mid;
+            })
+            .reduce((sum, ml) => sum + (Number(ml?.qty_done) || 0), 0)
+        );
+      }
+      if (!Number.isFinite(qty) || qty <= DELIVERED_QTY_VERIFY_TOL) continue;
+
+      const saleLineId = Number(
+        Array.isArray(mv?.sale_line_id) ? mv.sale_line_id[0] : mv?.sale_line_id
       );
+      if (Number.isFinite(saleLineId) && saleLineId > 0) {
+        qtyBySaleLine.set(saleLineId, (qtyBySaleLine.get(saleLineId) || 0) + qty);
+        continue;
+      }
+
+      const pid = Number(Array.isArray(mv?.product_id) ? mv.product_id[0] : mv?.product_id);
+      if (Number.isFinite(pid) && pid > 0) {
+        qtyByProductUnlinked.set(pid, (qtyByProductUnlinked.get(pid) || 0) + qty);
+      }
     }
-    await verifySaleOrderLineDeliveredOnOdoo(enriched);
-    return enriched;
   }
-  if (enriched.length > 0) {
-    await verifySaleOrderLineDeliveredOnOdoo(enriched);
+
+  if (qtyByProductUnlinked.size > 0) {
+    const orderLines = await saleOrderLinesDb.getSaleOrderLinesByOrderIds([soNum]).catch(() => []);
+    for (const [pid, qty] of qtyByProductUnlinked.entries()) {
+      const candidates = (orderLines || []).filter((l) => Number(l?.product_id) === pid);
+      if (candidates.length !== 1) continue;
+      const lid = Number(candidates[0]?.id);
+      if (!Number.isFinite(lid) || lid <= 0) continue;
+      qtyBySaleLine.set(lid, (qtyBySaleLine.get(lid) || 0) + qty);
+    }
   }
-  return enriched;
+
+  return Array.from(qtyBySaleLine.entries()).map(([lineId, qty_delivered]) => ({
+    lineId,
+    qty_delivered,
+  }));
 }
 
-async function collectAuthoritativeDeliveredUpdates(saleOrderId, queuePayload = null) {
+/** Merge mobile payload + stock blocks + live Odoo done moves into one authoritative SOL write list. */
+async function buildCompleteDeliveredUpdatesForSync(soId, baseUpdates, pickingBlocks, queuePayload) {
+  let merged = await enrichDeliveredUpdatesForSaleOrder(soId, baseUpdates || [], queuePayload);
+  merged = await supplementDeliveredUpdatesFromStockBlocks(soId, merged, pickingBlocks);
+  const odooRequired = await buildRequiredDeliveredUpdatesFromOdooDoneMoves(soId, pickingBlocks);
+  return mergeDeliveredQtyUpdates(merged, odooRequired);
+}
+
+/** Ensure every Odoo done move qty is reflected on the linked sale.order.line (throws on any gap). */
+async function verifyOdooDoneMovesMatchSaleOrderLines(soId, pickingBlocks, deliveredUpdates) {
+  const required = await buildRequiredDeliveredUpdatesFromOdooDoneMoves(soId, pickingBlocks);
+  if (!required.length) return;
+
+  const expByLine = new Map(
+    mergeDeliveredQtyUpdates(deliveredUpdates || [], required).map((u) => [
+      Number(u.lineId),
+      roundDeliveredQty3(u.qty_delivered),
+    ])
+  );
+  const positiveRequired = required.filter(
+    (u) => roundDeliveredQty3(u.qty_delivered) > DELIVERED_QTY_VERIFY_TOL
+  );
+  if (!positiveRequired.length) return;
+
+  await verifySaleOrderLineDeliveredOnOdoo(
+    Array.from(expByLine.entries()).map(([lineId, qty_delivered]) => ({ lineId, qty_delivered }))
+  );
+
+  for (const req of positiveRequired) {
+    const lid = Number(req.lineId);
+    const exp = roundDeliveredQty3(req.qty_delivered);
+    const fromList = expByLine.get(lid);
+    if (!Number.isFinite(fromList) || Math.abs(fromList - exp) > DELIVERED_QTY_VERIFY_TOL) {
+      throw new Error(
+        `Done stock move requires SO line ${lid} qty_delivered ${exp} but sync list has ${fromList ?? 'missing'}. Sync will retry.`
+      );
+    }
+  }
+}
+
+/** Rewrite only SO lines that still mismatch Odoo after batch write. */
+async function rewriteMismatchedSaleOrderLineDelivered(deliveredUpdates) {
+  const updates = Array.isArray(deliveredUpdates) ? deliveredUpdates : [];
+  if (!updates.length) return false;
+  const ids = [
+    ...new Set(updates.map((u) => Number(u.lineId)).filter((n) => Number.isFinite(n) && n > 0)),
+  ];
+  if (!ids.length) return false;
+  const { callOdoo } = await import('./index.service.js');
+  const { updateSaleOrderLineQtyDelivered } = await import('./saleOrderLine.service.js');
+  const rows =
+    (await callOdoo('sale.order.line', 'read', [ids], { fields: ['id', 'qty_delivered'] })) || [];
+  const byId = new Map(
+    (Array.isArray(rows) ? rows : []).map((r) => [Number(r.id), roundDeliveredQty3(r.qty_delivered)])
+  );
+  let rewrote = false;
+  for (const u of updates) {
+    const lid = Number(u.lineId);
+    const exp = roundDeliveredQty3(u.qty_delivered);
+    if (!Number.isFinite(lid) || lid <= 0 || u.qty_delivered == null || !Number.isFinite(exp)) continue;
+    const actual = byId.get(lid);
+    if (Number.isFinite(actual) && Math.abs(actual - exp) <= DELIVERED_QTY_VERIFY_TOL) continue;
+    await updateSaleOrderLineQtyDelivered(lid, exp);
+    await new Promise((r) => setTimeout(r, _queueSyncFastDrainActive ? 60 : 120));
+    rewrote = true;
+  }
+  return rewrote;
+}
+
+/**
+ * Verify enriched SOL qty on Odoo — never allow markSynced when any done move product is missing from SO lines.
+ */
+async function verifyDeliveryQtyBoundOnOdoo(soId, updates, queuePayload, pickingBlocks = null) {
+  let blocks = pickingBlocks;
+  if (!Array.isArray(blocks)) {
+    const { pickingsBlocksFromDeliveryPayload } = await import('../utils/deliverySync.js');
+    blocks = pickingsBlocksFromDeliveryPayload(queuePayload || {});
+  }
+
+  let complete = await buildCompleteDeliveredUpdatesForSync(soId, updates, blocks, queuePayload);
+  const positive = complete.filter((u) => roundDeliveredQty3(u.qty_delivered) > DELIVERED_QTY_VERIFY_TOL);
+  const odooRequired = await buildRequiredDeliveredUpdatesFromOdooDoneMoves(soId, blocks);
+  const hasDeliveredStock =
+    payloadHasPositiveDeliveredQty(queuePayload) ||
+    odooRequired.some((u) => roundDeliveredQty3(u.qty_delivered) > DELIVERED_QTY_VERIFY_TOL);
+
+  if (hasDeliveredStock) {
+    if (positive.length === 0) {
+      throw new Error(
+        `Delivery incomplete: SO ${soId} has done stock moves but no sale order line updates to sync. Sync will retry.`
+      );
+    }
+    await verifySaleOrderLineDeliveredOnOdoo(positive);
+    await verifyOdooDoneMovesMatchSaleOrderLines(soId, blocks, complete);
+    return complete;
+  }
+  if (complete.length > 0) {
+    await verifySaleOrderLineDeliveredOnOdoo(complete);
+  }
+  return complete;
+}
+
+async function collectAuthoritativeDeliveredUpdates(saleOrderId, queuePayload = null, pickingBlocks = null) {
   const snap = await resolveDeliveredSnapshotForSync(saleOrderId, queuePayload);
-  return enrichDeliveredUpdatesForSaleOrder(
+  let blocks = pickingBlocks;
+  if (!Array.isArray(blocks)) {
+    const { pickingsBlocksFromDeliveryPayload } = await import('../utils/deliverySync.js');
+    blocks = pickingsBlocksFromDeliveryPayload(queuePayload || snap.payload || {});
+  }
+  return buildCompleteDeliveredUpdatesForSync(
     saleOrderId,
     snap.updates || [],
+    blocks,
     snap.payload || queuePayload
   );
 }
@@ -1492,7 +1672,7 @@ async function tryMarkDeliverySyncedAfterQtyHeal(item, saleOrderId, queuePayload
     if (blocks.length > 0) {
       await verifyStockMoveQtyDoneMatchesPayload(blocks);
     }
-    const boundUpdates = await verifyDeliveryQtyBoundOnOdoo(soId, updates, queuePayload);
+    const boundUpdates = await verifyDeliveryQtyBoundOnOdoo(soId, updates, queuePayload, blocks);
     if (payloadHasPositiveDeliveredQty(queuePayload) && boundUpdates.length === 0) {
       return false;
     }
@@ -1603,10 +1783,16 @@ async function resolveRepairContextForSaleOrder(saleOrderId, deliveredUpdates, p
 async function attemptDeliveredQtyHealForSaleOrder(saleOrderId, queuePayload = null, extraContext = {}) {
   const soId = Number(saleOrderId);
   if (!Number.isFinite(soId) || soId <= 0) return { ok: true, reason: 'invalid so' };
-  const updates = await collectAuthoritativeDeliveredUpdates(soId, queuePayload);
+  const { pickingsBlocksFromDeliveryPayload } = await import('../utils/deliverySync.js');
+  const blocks = pickingsBlocksFromDeliveryPayload(queuePayload || {});
+  const updates = await collectAuthoritativeDeliveredUpdates(soId, queuePayload, blocks);
   if (!updates.length) {
     if (payloadHasPositiveDeliveredQty(queuePayload)) {
       return { ok: false, reason: 'missing SOL delivered updates for positive mobile qty' };
+    }
+    const odooRequired = await buildRequiredDeliveredUpdatesFromOdooDoneMoves(soId, blocks);
+    if (odooRequired.some((u) => roundDeliveredQty3(u.qty_delivered) > DELIVERED_QTY_VERIFY_TOL)) {
+      return { ok: false, reason: 'done stock moves exist but no SOL rows to heal' };
     }
     return { ok: true, reason: 'no delivered rows' };
   }
@@ -1729,13 +1915,28 @@ async function verifySaleOrderLineDeliveredOnOdoo(deliveredUpdates, options = {}
 async function applySaleOrderLineDeliveredUpdates(deliveredUpdates, saleOrderId = null) {
   if (!Array.isArray(deliveredUpdates) || deliveredUpdates.length === 0) return;
   const soId = Number(saleOrderId);
+  const writeAndVerify = async () => {
+    await verifySaleOrderLineDeliveredOnOdoo(deliveredUpdates);
+  };
   if (Number.isFinite(soId) && soId > 0) {
     const { applySaleOrderLineUpdatesBatch, updateSaleOrderLineQtyDelivered } = await import(
       './saleOrderLine.service.js'
     );
     try {
       await applySaleOrderLineUpdatesBatch(soId, { delivered: deliveredUpdates });
-      await verifySaleOrderLineDeliveredOnOdoo(deliveredUpdates);
+      try {
+        await writeAndVerify();
+      } catch (verifyErr) {
+        const rewrote = await rewriteMismatchedSaleOrderLineDelivered(deliveredUpdates);
+        if (rewrote) {
+          await new Promise((r) =>
+            setTimeout(r, _queueSyncFastDrainActive ? DELIVERED_SOL_SETTLE_FAST_MS : DELIVERED_SOL_SETTLE_MS)
+          );
+          await writeAndVerify();
+        } else {
+          throw verifyErr;
+        }
+      }
     } catch (batchErr) {
       log(
         'queue',
@@ -1746,12 +1947,13 @@ async function applySaleOrderLineDeliveredUpdates(deliveredUpdates, saleOrderId 
         if (u.lineId == null || u.qty_delivered == null) continue;
         try {
           await updateSaleOrderLineQtyDelivered(u.lineId, Number(u.qty_delivered));
+          await new Promise((r) => setTimeout(r, _queueSyncFastDrainActive ? 60 : 120));
         } catch (lineErr) {
           lineErrors.push(lineErr);
           logWarn('queue delivery (SO line delivered fallback)', lineErr);
         }
       }
-      await verifySaleOrderLineDeliveredOnOdoo(deliveredUpdates);
+      await writeAndVerify();
       if (lineErrors.length > 0) {
         throw lineErrors[0];
       }
@@ -1762,8 +1964,9 @@ async function applySaleOrderLineDeliveredUpdates(deliveredUpdates, saleOrderId 
   for (const u of deliveredUpdates) {
     if (u.lineId == null || u.qty_delivered == null) continue;
     await updateSaleOrderLineQtyDelivered(u.lineId, Number(u.qty_delivered));
+    await new Promise((r) => setTimeout(r, _queueSyncFastDrainActive ? 60 : 120));
   }
-  await verifySaleOrderLineDeliveredOnOdoo(deliveredUpdates);
+  await writeAndVerify();
 }
 
 /**
@@ -1771,7 +1974,18 @@ async function applySaleOrderLineDeliveredUpdates(deliveredUpdates, saleOrderId 
  * Does not change enqueue/checkout flow — only heals partial sync before invoice/payment completion.
  */
 async function repairOdooDeliveredQuantitiesFromMobile(saleOrderId, deliveredUpdates, options = {}) {
-  const updates = Array.isArray(deliveredUpdates) ? deliveredUpdates : [];
+  let updates = Array.isArray(deliveredUpdates) ? [...deliveredUpdates] : [];
+  const soNum = Number(saleOrderId);
+  if (Number.isFinite(soNum) && soNum > 0 && options.queuePayload) {
+    const { pickingsBlocksFromDeliveryPayload } = await import('../utils/deliverySync.js');
+    const blocks = pickingsBlocksFromDeliveryPayload(options.queuePayload);
+    updates = await buildCompleteDeliveredUpdatesForSync(
+      soNum,
+      updates,
+      blocks,
+      options.queuePayload
+    );
+  }
   if (!updates.length) {
     if (payloadHasPositiveDeliveredQty(options.queuePayload)) {
       return { ok: false, reason: 'missing SOL delivered updates for positive mobile qty' };
@@ -1833,7 +2047,13 @@ async function repairOdooDeliveredQuantitiesFromMobile(saleOrderId, deliveredUpd
       await new Promise((r) =>
         setTimeout(r, _queueSyncFastDrainActive ? DELIVERED_SOL_SETTLE_FAST_MS : DELIVERED_SOL_SETTLE_MS)
       );
-      await verifySaleOrderLineDeliveredOnOdoo(updates);
+      if (options.queuePayload) {
+        const { pickingsBlocksFromDeliveryPayload } = await import('../utils/deliverySync.js');
+        const repairBlocks = pickingsBlocksFromDeliveryPayload(options.queuePayload);
+        await verifyOdooDoneMovesMatchSaleOrderLines(saleOrderId, repairBlocks, updates);
+      } else {
+        await verifySaleOrderLineDeliveredOnOdoo(updates);
+      }
       log('queue', `delivery qty repair OK for SO ${saleOrderId} (round ${round + 1})`);
       return { ok: true };
     } catch (e) {
@@ -2932,6 +3152,12 @@ async function processSyncQueue(options = {}) {
 
         /** After all pickings validated: one SOL write from the mobile snapshot (not during validate). */
         const applyMobileDeliveredQtyToOdooOnce = async () => {
+          saleOrderLineDeliveredUpdates = await buildCompleteDeliveredUpdatesForSync(
+            saleOrderId,
+            saleOrderLineDeliveredUpdates,
+            blocks,
+            p
+          );
           if (!saleOrderLineDeliveredUpdates.length) return;
           await applySoLineDeliveredQty();
         };
@@ -2944,18 +3170,18 @@ async function processSyncQueue(options = {}) {
             await verifyStockMoveQtyDoneMatchesPayload(blocks);
           }
           const finalSnap = await resolveDeliveredSnapshotForSync(saleOrderId, p);
-          saleOrderLineDeliveredUpdates = await enrichDeliveredUpdatesForSaleOrder(
+          saleOrderLineDeliveredUpdates = await buildCompleteDeliveredUpdatesForSync(
             saleOrderId,
             finalSnap.updates || [],
+            blocks,
             finalSnap.payload || p
-          );
-          saleOrderLineDeliveredUpdates = await supplementDeliveredUpdatesFromStockBlocks(
-            saleOrderId,
-            saleOrderLineDeliveredUpdates,
-            blocks
           );
           await applyMobileDeliveredQtyToOdooOnce();
           if (validatedAnyPicking) {
+            await new Promise((r) =>
+              setTimeout(r, _queueSyncFastDrainActive ? DELIVERED_SOL_SETTLE_FAST_MS : DELIVERED_SOL_SETTLE_MS)
+            );
+            await applyMobileDeliveredQtyToOdooOnce();
             await new Promise((r) =>
               setTimeout(r, _queueSyncFastDrainActive ? DELIVERED_SOL_SETTLE_FAST_MS : DELIVERED_SOL_SETTLE_MS)
             );
@@ -2964,7 +3190,8 @@ async function processSyncQueue(options = {}) {
           saleOrderLineDeliveredUpdates = await verifyDeliveryQtyBoundOnOdoo(
             saleOrderId,
             saleOrderLineDeliveredUpdates,
-            finalSnap.payload || p
+            finalSnap.payload || p,
+            blocks
           );
           if (!_queueSyncFastDrainActive) {
             const { fetchOdooDeliveredQtySnapshot } = await import('./delivery.service.js');
@@ -3420,39 +3647,51 @@ async function processSyncQueue(options = {}) {
           block.deliveryLines = deliveryLines;
         }
 
-        if (validatedAnyPicking && saleOrderLineDeliveredUpdates.length > 0) {
-          saleOrderLineDeliveredUpdates = await supplementDeliveredUpdatesFromStockBlocks(
+        if (validatedAnyPicking) {
+          saleOrderLineDeliveredUpdates = await buildCompleteDeliveredUpdatesForSync(
             saleOrderId,
             saleOrderLineDeliveredUpdates,
-            blocks
+            blocks,
+            p
           );
-          await new Promise((r) =>
-            setTimeout(r, _queueSyncFastDrainActive ? DELIVERED_SOL_SETTLE_FAST_MS : DELIVERED_SOL_SETTLE_MS)
-          );
-          await applyMobileDeliveredQtyToOdooOnce();
-          try {
-            await verifySaleOrderLineDeliveredOnOdoo(saleOrderLineDeliveredUpdates);
-          } catch (postValidateSolErr) {
-            log(
-              'queue',
-              `delivery SO ${saleOrderId}: post-validate SOL verify failed — repair: ${String(postValidateSolErr?.message || postValidateSolErr).slice(0, 120)}`
+          if (saleOrderLineDeliveredUpdates.length > 0) {
+            await new Promise((r) =>
+              setTimeout(r, _queueSyncFastDrainActive ? DELIVERED_SOL_SETTLE_FAST_MS : DELIVERED_SOL_SETTLE_MS)
             );
-            const repairCtx = repairContextFromDeliveryBlocks(blocks);
-            const repair = await repairOdooDeliveredQuantitiesFromMobile(
-              saleOrderId,
-              saleOrderLineDeliveredUpdates,
-              {
-                queuePayload: p,
-                pickingIds: repairCtx.pickingIds,
-                deliveryLines: repairCtx.deliveryLines,
-                maxRounds: 3,
+            await applyMobileDeliveredQtyToOdooOnce();
+            try {
+              await verifyOdooDoneMovesMatchSaleOrderLines(
+                saleOrderId,
+                blocks,
+                saleOrderLineDeliveredUpdates
+              );
+            } catch (postValidateSolErr) {
+              log(
+                'queue',
+                `delivery SO ${saleOrderId}: post-validate SOL verify failed — repair: ${String(postValidateSolErr?.message || postValidateSolErr).slice(0, 120)}`
+              );
+              const repairCtx = repairContextFromDeliveryBlocks(blocks);
+              const repair = await repairOdooDeliveredQuantitiesFromMobile(
+                saleOrderId,
+                saleOrderLineDeliveredUpdates,
+                {
+                  queuePayload: p,
+                  pickingIds: repairCtx.pickingIds,
+                  deliveryLines: repairCtx.deliveryLines,
+                  maxRounds: 4,
+                }
+              );
+              if (!repair.ok) {
+                throw postValidateSolErr;
               }
-            );
-            if (!repair.ok) {
-              throw postValidateSolErr;
+              await verifyOdooDoneMovesMatchSaleOrderLines(
+                saleOrderId,
+                blocks,
+                saleOrderLineDeliveredUpdates
+              );
             }
+            log('queue', `delivery SO ${saleOrderId}: sale order line qty_delivered synced after picking validate`);
           }
-          log('queue', `delivery SO ${saleOrderId}: sale order line qty_delivered synced after picking validate`);
         }
 
         if (validatedAnyPicking && saleOrderId != null) {
