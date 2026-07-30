@@ -24,13 +24,13 @@ import * as localInvoicesDb from '../database/localInvoices.js';
 import * as localPaymentsDb from '../database/localPayments.js';
 import * as stockPickingsDb from '../database/stockPickings.js';
 import * as syncQueueDb from '../database/syncQueue.js';
-import { getSaleOrderDetailsFromDB, notifyLocalInventoryChanged } from '../services/sync.service';
+import { getSaleOrderDetailsFromDB, notifyLocalInventoryChanged, signalDashboardPendingUploadStarted, startCheckoutUploadInBackground } from '../services/sync.service';
 import {
   applyInventoryUpdatesToLocalDb,
   applyLocalGasInventoryForSaleOrder,
 } from '../utils/localInventoryApply.js';
 import { empty } from '../database/dbHelpers.js';
-import { schedulePendingUploadSync } from '../services/sync.service';
+import { markSaleOrderDeliveredInUi } from '../utils/completedOrderUi.js';
 import { getOrAssignInvoiceNumber } from '../utils/invoiceNumber';
 import { clearCheckoutResume } from '../services/checkoutResume.service';
 import { finalizeLocalInvoiceSnapshotFromPayment } from '../utils/localInvoiceSnapshot.js';
@@ -41,7 +41,7 @@ export default function PaymentProofScreen({ route, navigation }) {
   const { t } = useTranslation();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
-  const { saleOrderId, creditProofRequired = false, orderName } = route.params || {};
+  const { saleOrderId, creditProofRequired = false, orderName, customerLabel } = route.params || {};
   const soId = Number(saleOrderId);
   const [photos, setPhotos] = useState([]);
   const [saving, setSaving] = useState(false);
@@ -86,7 +86,7 @@ export default function PaymentProofScreen({ route, navigation }) {
     if (latestPayment) {
       const payload = { ...paymentPayload };
       delete payload.holdUntilComplete;
-      await syncQueueDb.updateQueueItemPayload(latestPayment.id, payload);
+      await syncQueueDb.updateQueueItemPayload(latestPayment.id, payload, { suppressWake: true });
     }
 
     const deliveryRow = await syncQueueDb.getPendingDeliveryItemBySaleOrderId(soId);
@@ -109,7 +109,7 @@ export default function PaymentProofScreen({ route, navigation }) {
               u.qty_delivered >= 0
           );
       }
-      await syncQueueDb.updateQueueItemPayload(deliveryRow.id, payload);
+      await syncQueueDb.updateQueueItemPayload(deliveryRow.id, payload, { suppressWake: true });
       const pickings = Array.isArray(payload.pickings) ? payload.pickings : [];
       if (pickings.length > 0) {
         for (const p of pickings) {
@@ -126,7 +126,65 @@ export default function PaymentProofScreen({ route, navigation }) {
     if (inventoryRow) {
       const payload = { ...(inventoryRow.payload || {}) };
       delete payload.holdUntilComplete;
-      await syncQueueDb.updateQueueItemPayload(inventoryRow.id, payload);
+      await syncQueueDb.updateQueueItemPayload(inventoryRow.id, payload, { suppressWake: true });
+    }
+  }, [soId]);
+
+  /** Persist local invoice + line snapshot before dashboard (amounts + VAT for My Invoices). */
+  const persistLocalInvoiceAtCheckout = useCallback(async () => {
+    const latestPayment = await syncQueueDb.getPendingPaymentItemBySaleOrderId(soId);
+    const paymentPayload = latestPayment?.payload || {};
+    const data = await getSaleOrderDetailsFromDB(soId);
+    const orderInfo = data?.order || {};
+    const existingLocalInv = await localInvoicesDb.getLocalInvoiceBySaleOrderId(soId);
+
+    const fromBackend =
+      orderInfo?.invoice_number != null && String(orderInfo.invoice_number).trim() !== ''
+        ? String(orderInfo.invoice_number).trim()
+        : '';
+    const fromLocalRow =
+      existingLocalInv?.invoice_number != null && String(existingLocalInv.invoice_number).trim() !== ''
+        ? String(existingLocalInv.invoice_number).trim()
+        : '';
+    let invoiceNumber = fromBackend || fromLocalRow;
+    if (!invoiceNumber) {
+      try {
+        invoiceNumber = await getOrAssignInvoiceNumber(soId, {
+          saleOrderName: orderInfo?.name,
+          backendInvoiceNumber: orderInfo?.invoice_number,
+        });
+      } catch (e) {
+        console.warn('[PaymentProof] resolve invoice number', e?.message || e);
+        invoiceNumber = orderInfo?.name ? `TEMP-${soId}` : '—';
+      }
+    }
+
+    const total = Number(paymentPayload.total ?? orderInfo.amount_total ?? 0) || 0;
+    const untaxed = Number(orderInfo.amount_untaxed ?? total) || 0;
+    const tax = Number(orderInfo.amount_tax ?? Math.max(0, total - untaxed)) || 0;
+    const checkoutDriverName =
+      paymentPayload?.driverName != null && String(paymentPayload.driverName).trim()
+        ? String(paymentPayload.driverName).trim()
+        : '';
+
+    await localInvoicesDb.upsertLocalInvoice({
+      sale_order_id: soId,
+      invoice_number: invoiceNumber,
+      amount_total: total,
+      amount_untaxed: untaxed,
+      amount_tax: tax,
+      state: 'posted',
+      customer_signature_data: existingLocalInv?.customer_signature_data ?? '',
+      driver_signature_data: existingLocalInv?.driver_signature_data ?? '',
+      driver_name: checkoutDriverName,
+    });
+
+    const invQtys =
+      (Array.isArray(paymentPayload?.invoiceLineQtys) && paymentPayload.invoiceLineQtys.length > 0
+        ? paymentPayload.invoiceLineQtys
+        : null) || [];
+    if (invQtys.length > 0) {
+      await finalizeLocalInvoiceSnapshotFromPayment(soId, invQtys);
     }
   }, [soId]);
 
@@ -245,12 +303,17 @@ export default function PaymentProofScreen({ route, navigation }) {
     completeGuardRef.current = true;
     setSaving(true);
     try {
-      if (creditProofRequired && photos.length > 0) {
+      if (photos.length > 0) {
         await persistPhotos();
       }
       await applyLocalGasInventoryForSaleOrder(soId);
       await releaseQueueHoldsForSo();
       await clearCheckoutResume(soId);
+      await persistLocalInvoiceAtCheckout();
+      await saleOrdersDb.updateSaleOrderInvoiceStatusLocal(soId, 'invoiced');
+      markSaleOrderDeliveredInUi(soId);
+      signalDashboardPendingUploadStarted();
+      notifyLocalInventoryChanged();
 
       navigation.reset({
         index: 0,
@@ -258,24 +321,18 @@ export default function PaymentProofScreen({ route, navigation }) {
       });
       setSaving(false);
 
+      startCheckoutUploadInBackground(soId, {
+        includeAttachments: creditProofRequired || photos.length > 0,
+      });
+
       void (async () => {
         try {
-          if (!creditProofRequired && photos.length > 0) {
-            await persistPhotos();
-          }
           await finalizeLocalCheckoutState();
           await clearCheckoutResume(soId);
         } catch (e) {
           console.warn('[PaymentProof] background finalize', e?.message || e);
         }
       })();
-
-      schedulePendingUploadSync({
-        immediate: true,
-        aggressive: true,
-        queuePasses: 18,
-        includeAttachments: true,
-      });
     } catch (e) {
       Alert.alert('Error', e?.message || 'Something went wrong. Try again.');
       setSaving(false);
@@ -288,6 +345,7 @@ export default function PaymentProofScreen({ route, navigation }) {
     photos.length,
     persistPhotos,
     releaseQueueHoldsForSo,
+    persistLocalInvoiceAtCheckout,
     finalizeLocalCheckoutState,
     navigation,
   ]);

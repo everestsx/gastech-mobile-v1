@@ -21,6 +21,20 @@ const buildPayloadFromFiles = () => ({
   },
 });
 
+/** Bundled JSON is source of truth — refresh cache when version or required keys are missing. */
+function isTranslationCacheStale(cached) {
+  if (!cached) return true;
+  const langs = ['en', 'si', 'ta'];
+  for (const lng of langs) {
+    const dash = cached?.[lng]?.translation?.dashboard;
+    if (!dash?.pendingBackOffice) return true;
+    if (!dash?.preCheckTitle) return true;
+    if (!dash?.preCheckButton) return true;
+    if (!dash?.postCheckButton) return true;
+  }
+  return false;
+}
+
 /**
  * Core function to fetch and cache translations.
  * The JSON files in /translations are now the source of truth.
@@ -32,12 +46,12 @@ export const syncLanguageDictionaries = async () => {
 
     const cachedTranslationsRaw = await AsyncStorage.getItem(TRANSLATIONS_STORAGE_KEY);
     const cachedTranslations = cachedTranslationsRaw ? JSON.parse(cachedTranslationsRaw) : null;
-    const missingPendingBackOffice =
-      !cachedTranslations?.en?.translation?.dashboard?.pendingBackOffice ||
-      !cachedTranslations?.ta?.translation?.dashboard?.pendingBackOffice ||
-      !cachedTranslations?.si?.translation?.dashboard?.pendingBackOffice;
+    const shouldRefresh =
+      !cachedVersion ||
+      cachedVersion !== payload.version ||
+      isTranslationCacheStale(cachedTranslations);
 
-    if (!cachedVersion || cachedVersion !== payload.version || missingPendingBackOffice) {
+    if (shouldRefresh) {
       await AsyncStorage.setItem(TRANSLATIONS_STORAGE_KEY, JSON.stringify(payload.translations));
       await AsyncStorage.setItem(TRANSLATIONS_VERSION_KEY, payload.version);
       return payload.translations;

@@ -177,6 +177,34 @@ export async function ensureDeliveryTxnOnPayload(payload) {
   out.syncTimestamp = out.syncTimestamp || out.mobileConfirmedAt || new Date().toISOString();
   if (!out.mobileQtySnapshot || out.mobileQtySnapshot.version !== 1) {
     out.mobileQtySnapshot = buildMobileQtySnapshot(out);
+  } else if (Array.isArray(out.invoiceLineQtys) && out.invoiceLineQtys.length > 0) {
+    // Checkout may add invoiceLineQtys after first enqueue — keep frozen snapshot aligned for retries.
+    const fromInvoice = out.invoiceLineQtys
+      .map((row) => ({
+        lineId: Number(row?.lineId ?? row?.line_id),
+        qty_delivered: coerceDeliveredQty(row?.qty ?? row?.quantity),
+      }))
+      .filter((u) => Number.isFinite(u.lineId) && u.lineId > 0 && Number.isFinite(u.qty_delivered));
+    out.mobileQtySnapshot = {
+      ...out.mobileQtySnapshot,
+      invoiceLineQtys: out.invoiceLineQtys.map((row) => ({
+        lineId: Number(row?.lineId ?? row?.line_id),
+        productId: Number(row?.productId ?? row?.product_id),
+        qty: coerceDeliveredQty(row?.qty ?? row?.quantity),
+      })),
+      saleOrderLineDeliveredUpdates:
+        fromInvoice.length > 0
+          ? fromInvoice
+          : (out.saleOrderLineDeliveredUpdates || [])
+              .map((u) => ({
+                lineId: Number(u?.lineId),
+                qty_delivered: coerceDeliveredQty(u?.qty_delivered),
+              }))
+              .filter((u) => Number.isFinite(u.lineId) && u.lineId > 0 && Number.isFinite(u.qty_delivered)),
+    };
+    if (fromInvoice.length > 0) {
+      out.saleOrderLineDeliveredUpdates = fromInvoice;
+    }
   }
   return out;
 }

@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import React, { useState, useCallback, useEffect, useMemo } from 'react';
+import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -27,22 +27,10 @@ import * as saleOrdersDb from '../database/saleOrders.js';
 import * as syncQueueDb from '../database/syncQueue.js';
 import { getLocalizedCustomerNameFromOrder } from '../utils/customerDisplayName';
 import { useSync } from '../context/SyncContext';
+import { formatLocalYyyyMmDd, invoiceMatchesLocalDate, isLocalToday } from '../utils/localDate';
 
-function formatDateKey(d) {
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
-
-function isToday(d) {
-  return formatDateKey(d) === formatDateKey(new Date());
-}
-
-function invoiceMatchesDate(inv, dateStr) {
-  const raw = inv.created_at || inv.dateOrder || '';
-  return String(raw).startsWith(dateStr);
-}
+/** UI-only: instant My Invoices tab when switching back (not sync state). */
+let lastLocalInvoicesSnapshot = null;
 
 /** Compact completion time for list cards. */
 function formatCompletedAtCompact(isoStr) {
@@ -69,8 +57,9 @@ export default function LocalInvoicesScreen({ navigation }) {
   const { t } = useTranslation();
   const { colors, appLanguage } = useTheme();
   const insets = useSafeAreaInsets();
-  const [invoices, setInvoices] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [invoices, setInvoices] = useState(() => lastLocalInvoicesSnapshot?.invoices ?? []);
+  const [loading, setLoading] = useState(() => !(lastLocalInvoicesSnapshot?.invoices?.length > 0));
+  const hasListDataRef = useRef((lastLocalInvoicesSnapshot?.invoices?.length ?? 0) > 0);
   const [refreshing, setRefreshing] = useState(false);
   const [vehicleNumber, setVehicleNumber] = useState('');
   const [selectedDate, setSelectedDate] = useState(new Date());
@@ -89,7 +78,9 @@ export default function LocalInvoicesScreen({ navigation }) {
     invoice: t('localinvoices.searchInvoice', 'Invoice'),
   };
 
-  const loadInvoices = useCallback(async () => {
+  const loadInvoices = useCallback(async (opts = {}) => {
+    const silent = opts?.silent === true;
+    if (!silent && !hasListDataRef.current) setLoading(true);
     try {
       const session = await getUserSession();
       const license = session?.licensePlate ?? session?.vehicleName ?? '';
@@ -105,11 +96,16 @@ export default function LocalInvoicesScreen({ navigation }) {
           : await localInvoicesDb.getAllLocalInvoices(false);
 
       const soIds = (list || []).map((inv) => Number(inv.sale_order_id)).filter((id) => id > 0);
-      const paymentBySo = await syncQueueDb.getLatestPaymentPayloadMapBySaleOrderIds(soIds).catch(() => ({}));
+      const [paymentBySo, ordersById, splitsBySo, syncedAtBySo] = await Promise.all([
+        syncQueueDb.getLatestPaymentPayloadMapBySaleOrderIds(soIds).catch(() => ({})),
+        saleOrdersDb.getSaleOrdersByIds(soIds).catch(() => ({})),
+        localPaymentsDb.getPaymentSplitsBySaleOrderIds(soIds).catch(() => ({})),
+        syncQueueDb.getPaymentSyncedAtMapBySaleOrderIds(soIds).catch(() => ({})),
+      ]);
 
       const enriched = [];
       for (const inv of list || []) {
-        const order = await saleOrdersDb.getSaleOrderById(inv.sale_order_id);
+        const order = ordersById[Number(inv.sale_order_id)];
         if (!order) continue;
         const orderVehicleId = Array.isArray(order.vehicle_id)
           ? Number(order.vehicle_id[0])
@@ -118,10 +114,10 @@ export default function LocalInvoicesScreen({ navigation }) {
           continue;
         }
 
-        const split = await localPaymentsDb.getPaymentSplitBySaleOrderId(inv.sale_order_id);
+        const split = splitsBySo[Number(inv.sale_order_id)] || splitsBySo[inv.sale_order_id];
         const partnerName = getLocalizedCustomerNameFromOrder(order, appLanguage);
         const orderName = order?.name ?? `Order ${inv.sale_order_id}`;
-        const syncedAt = await syncQueueDb.getPaymentSyncedAtForSaleOrder(inv.sale_order_id);
+        const syncedAt = syncedAtBySo[Number(inv.sale_order_id)] ?? null;
         const cash = Number(split?.cash) || 0;
         const cheque = Number(split?.cheque) || 0;
         const credit = Number(split?.credit) || 0;
@@ -152,10 +148,12 @@ export default function LocalInvoicesScreen({ navigation }) {
           credit,
         });
       }
+      hasListDataRef.current = enriched.length > 0;
       setInvoices(enriched);
+      lastLocalInvoicesSnapshot = { invoices: enriched, vehicleNumber: license };
     } catch (e) {
       console.warn('LocalInvoicesScreen load', e?.message ?? e);
-      setInvoices([]);
+      if (!hasListDataRef.current) setInvoices([]);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -167,12 +165,12 @@ export default function LocalInvoicesScreen({ navigation }) {
   }, [loadInvoices]);
 
   useEffect(() => {
-    const unsub = navigation.addListener?.('focus', loadInvoices);
+    const unsub = navigation.addListener?.('focus', () => loadInvoices({ silent: true }));
     return () => unsub?.();
   }, [loadInvoices, navigation]);
 
   useEffect(() => {
-    if (syncCompleteTimestamp > 0) loadInvoices();
+    if (syncCompleteTimestamp > 0) loadInvoices({ silent: true });
   }, [syncCompleteTimestamp, loadInvoices]);
 
   const onRefresh = useCallback(() => {
@@ -180,10 +178,10 @@ export default function LocalInvoicesScreen({ navigation }) {
     loadInvoices();
   }, [loadInvoices]);
 
-  const dateStr = formatDateKey(selectedDate);
+  const dateStr = formatLocalYyyyMmDd(selectedDate);
   const invoicesForDate = useMemo(
     () =>
-      [...invoices.filter((inv) => invoiceMatchesDate(inv, dateStr))].sort((a, b) =>
+      [...invoices.filter((inv) => invoiceMatchesLocalDate(inv, dateStr))].sort((a, b) =>
         String(b.created_at || '').localeCompare(String(a.created_at || ''))
       ),
     [invoices, dateStr]
@@ -200,7 +198,7 @@ export default function LocalInvoicesScreen({ navigation }) {
     });
   }, [invoicesForDate, searchQuery, searchField]);
 
-  const canGoToNextDay = !isToday(selectedDate);
+  const canGoToNextDay = !isLocalToday(selectedDate);
 
   const styles = useMemo(
     () =>
@@ -318,7 +316,7 @@ export default function LocalInvoicesScreen({ navigation }) {
     [colors, insets.top, primary]
   );
 
-  if (loading) {
+  if (loading && invoices.length === 0) {
     return (
       <View style={[styles.center, styles.container]}>
         <ActivityIndicator size="large" color={primary} />
@@ -433,6 +431,10 @@ export default function LocalInvoicesScreen({ navigation }) {
       <FlatList
         data={invoicesFiltered}
         keyExtractor={(item) => String(item.id)}
+        initialNumToRender={12}
+        maxToRenderPerBatch={12}
+        windowSize={7}
+        removeClippedSubviews={Platform.OS === 'android'}
         contentContainerStyle={styles.list}
         keyboardShouldPersistTaps="handled"
         refreshControl={
@@ -471,6 +473,10 @@ export default function LocalInvoicesScreen({ navigation }) {
                 navigation.navigate('InvoiceScreen', {
                   saleOrderId: inv.sale_order_id,
                   total: inv.amount_total,
+                  subtotal: inv.amount_untaxed,
+                  tax: inv.amount_tax,
+                  fromLocalInvoices: true,
+                  readOnlyView: true,
                   invoiceNumber: inv.invoice_number,
                   paymentType: 'split',
                   paymentSplit: inv.paymentSplit,

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from 'react';
+﻿import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -10,11 +10,9 @@ import {
   Platform,
   LayoutAnimation,
   UIManager,
+  InteractionManager,
   Image,
-  Modal,
-  Pressable,
-  Linking,
-  Alert,
+  DeviceEventEmitter,
 } from 'react-native';
 import { BlurView } from 'expo-blur';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -51,6 +49,9 @@ import {
   hydrateDashboardInitialLoadFromStorage,
   markDashboardInitialLoadComplete,
   setDashboardUploadIndicators,
+  setDashboardIndicatorsListener,
+  isCheckoutUploadActive,
+  KEY_PRECHECK_DONE,
 } from '../services/sync.service';
 import * as localPaymentsDb from '../database/localPayments.js';
 import * as localInvoicesDb from '../database/localInvoices.js';
@@ -75,12 +76,22 @@ import * as saleOrderLinesDb from '../database/saleOrderLines.js';
 import DeliveryProgressBarChart from '../components/DeliveryProgressBarChart';
 import RichNotification from '../components/RichNotification';
 import PendingBackOfficeReminderModal from '../components/PendingBackOfficeReminderModal';
+import PreCheckSummaryModal from '../components/dashboard/PreCheckSummaryModal';
+import PostCheckHandoverModal from '../components/dashboard/PostCheckHandoverModal';
+import CommissionRangeModal from '../components/dashboard/CommissionRangeModal';
+import RoutePickerModal from '../components/dashboard/RoutePickerModal';
+import PostLoginSyncModal from '../components/dashboard/PostLoginSyncModal';
+import ProfileModal from '../components/dashboard/ProfileModal';
+import DashboardInitialLoadScreen from '../components/dashboard/DashboardInitialLoadScreen';
+import { usePreCheckData } from '../hooks/usePreCheckData';
 import NetworkStatusPill from '../components/NetworkStatusPill';
+import { subscribeNetworkStatus, NetworkQuality } from '../services/networkStatus.service';
 import { useSync } from '../context/SyncContext';
 
 const ORANGE_UPLOAD_SINCE_KEY = '@gastech_orange_upload_pending_since';
 const ORANGE_UPLOAD_REMINDER_MS = 10 * 60 * 1000;
 import { odooImageToUri, getDrivingEmployees, getPortersEmployees } from '../services/employee.service';
+import { updateDriverLoginRoute } from '../services/driverLoginHistory.service';
 import {
   mergePickingStateBySaleIdFromRows,
   orderIsDeliveryDoneForProgress,
@@ -194,6 +205,7 @@ export default function DashboardScreen({ navigation }) {
   const { syncCompleteTimestamp, isSyncing, syncResult, syncErrorMessage } = useSync();
   const {
     colors,
+    isDark,
     showCreateSalesOrder: userShowCreate,
     showReturnOrder: userShowReturn,
     syncDateField,
@@ -208,7 +220,9 @@ export default function DashboardScreen({ navigation }) {
   const [lineTotalsByOrder, setLineTotalsByOrder] = useState(() => lastDashboardSnapshot?.lineTotalsByOrder ?? {});
   const [pickingsBySaleId, setPickingsBySaleId] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(
+    () => !isDashboardInitialLoadMemoryDone() && !(lastDashboardSnapshot?.orders?.length > 0)
+  );
   const [syncing, setSyncing] = useState(false);
   const [lastSyncTime, setLastSyncTime] = useState(null);
   const [syncLog, setSyncLog] = useState([]);
@@ -232,8 +246,6 @@ export default function DashboardScreen({ navigation }) {
   const [commissionRangePreset, setCommissionRangePreset] = useState('today');
   const [commissionDateRange, setCommissionDateRange] = useState(() => getTodayDateRange());
   const [commissionRangeModalVisible, setCommissionRangeModalVisible] = useState(false);
-  const [commissionRangeDraft, setCommissionRangeDraft] = useState({ dateFrom: '', dateTo: '' });
-  const [commissionRangePickerField, setCommissionRangePickerField] = useState(null);
   const [todayOrderLines, setTodayOrderLines] = useState(() => lastDashboardSnapshot?.todayOrderLines ?? []);
   const [orderSyncStats, setOrderSyncStats] = useState(
     () =>
@@ -258,15 +270,109 @@ export default function DashboardScreen({ navigation }) {
   const [pendingBackOfficeModalVisible, setPendingBackOfficeModalVisible] = useState(false);
   const pendingBackOfficeDismissedRef = useRef(false);
   const [notification, setNotification] = useState({ visible: false, title: '', message: '', type: 'info' });
+  // PreCheck / PostCheck â€” per login session (cleared on logout)
+  const precheckDateKey = new Date().toISOString().slice(0, 10); // e.g. "2026-06-12"
+  const [preCheckDone, setPreCheckDoneState] = useState(false);
+  const setPreCheckDone = useCallback(async (val, loggedInAt) => {
+    setPreCheckDoneState(val);
+    DeviceEventEmitter.emit('preCheckStatusChanged', val);
+    try {
+      if (val) {
+        const sessionStamp = loggedInAt != null ? String(loggedInAt) : '';
+        await AsyncStorage.setItem(
+          KEY_PRECHECK_DONE,
+          JSON.stringify({ date: precheckDateKey, loggedInAt: sessionStamp })
+        );
+      } else {
+        await AsyncStorage.removeItem(KEY_PRECHECK_DONE);
+      }
+    } catch (e) {
+      console.warn('[PreCheck] AsyncStorage write failed', e);
+    }
+  }, [precheckDateKey]);
+
+  useEffect(() => {
+    const sessionStamp = user?.loggedInAt != null ? String(user.loggedInAt) : '';
+    if (!sessionStamp) {
+      setPreCheckDoneState(false);
+      DeviceEventEmitter.emit('preCheckStatusChanged', false);
+      return;
+    }
+    AsyncStorage.getItem(KEY_PRECHECK_DONE)
+      .then((stored) => {
+        if (!stored) {
+          setPreCheckDoneState(false);
+          DeviceEventEmitter.emit('preCheckStatusChanged', false);
+          return;
+        }
+        try {
+          const parsed = JSON.parse(stored);
+          const ok =
+            parsed?.date === precheckDateKey &&
+            String(parsed?.loggedInAt || '') === sessionStamp;
+          setPreCheckDoneState(ok);
+          DeviceEventEmitter.emit('preCheckStatusChanged', ok);
+        } catch {
+          setPreCheckDoneState(false);
+          DeviceEventEmitter.emit('preCheckStatusChanged', false);
+        }
+      })
+      .catch(() => {
+        setPreCheckDoneState(false);
+        DeviceEventEmitter.emit('preCheckStatusChanged', false);
+      });
+  }, [precheckDateKey, user?.loggedInAt]);
+  const [postCheckModalVisible, setPostCheckModalVisible] = useState(false);
+  const [preCheckSummaryModalVisible, setPreCheckSummaryModalVisible] = useState(false);
+  const [postCheckInitialAmounts, setPostCheckInitialAmounts] = useState({
+    cash: '0',
+    cheque: '0',
+    credit: '0',
+  });
+  const [topBarHeight, setTopBarHeight] = useState(0);
   const [initialLoadGateActive, setInitialLoadGateActive] = useState(
     () => !isDashboardInitialLoadMemoryDone()
   );
   const dashboardSessionKeyRef = useRef(null);
+  const routeSyncSentRef = useRef(new Set());
   const lastSyncNotificationRef = React.useRef(null);
-  const previousSyncedPaymentIdsRef = React.useRef(new Set());
-  const initialSyncStartedRef = React.useRef(false);
+  /** Latched while orange pending upload counter > 0 and a flush is running; cleared when counter hits 0. */
+  const [networkQuality, setNetworkQuality] = useState(NetworkQuality.OFFLINE);
 
-  // Compute session key as a stable string for use in useEffect
+  useEffect(() => subscribeNetworkStatus((snap) => setNetworkQuality(snap.quality)), []);
+
+  useEffect(() => {
+    setDashboardIndicatorsListener((ind) => {
+      setOrderSyncStats((prev) => ({
+        ...prev,
+        pendingOrders: ind.pendingOrders,
+        localCompleted: ind.localCompleted,
+      }));
+    });
+    return () => {
+      setDashboardIndicatorsListener(null);
+    };
+  }, []);
+
+  /** Toast only when orange pending-upload counter drops to zero (synced / green). */
+  const prevLocalCompletedRef = React.useRef(0);
+  useEffect(() => {
+    const cur = orderSyncStats.localCompleted;
+    const prev = prevLocalCompletedRef.current;
+    if (prev > 0 && cur === 0) {
+      setNotification({
+        visible: true,
+        title: t('common.syncCompletedTitle', 'Sync completed'),
+        message: t('common.syncCompletedBody', 'Pending uploads have been synced.'),
+        type: 'success',
+      });
+    }
+    prevLocalCompletedRef.current = cur;
+  }, [orderSyncStats.localCompleted, t]);
+
+  const syncButtonActive =
+    syncing ||
+    (networkQuality !== NetworkQuality.OFFLINE && orderSyncStats.localCompleted > 0);
   const sessionKey = useMemo(() => {
     if (!user) return null;
     if (user.isAdmin) {
@@ -281,9 +387,36 @@ export default function DashboardScreen({ navigation }) {
     if (!sessionKey) return;
     if (dashboardSessionKeyRef.current === sessionKey) return;
     dashboardSessionKeyRef.current = sessionKey;
-    setInitialLoadGateActive(true);
-    setLoading(true);
+    void (async () => {
+      const { done } = await hydrateDashboardInitialLoadFromStorage();
+      if (done) {
+        setInitialLoadGateActive(false);
+        setLoading(false);
+        return;
+      }
+      setInitialLoadGateActive(true);
+      setLoading(!(lastDashboardSnapshot?.orders?.length > 0));
+    })();
   }, [sessionKey]);
+
+  /** Fresh login: do not keep dashboard hidden while background sync runs. */
+  useEffect(() => {
+    if (!user?.pendingInitialSync) return;
+    let cancelled = false;
+    void (async () => {
+      const u = await getUserSession();
+      if (cancelled || !u?.pendingInitialSync) return;
+      try {
+        await saveUserSession({ ...u, pendingInitialSync: false });
+      } catch (_) {}
+      if (!cancelled) {
+        setUser((prev) => (prev ? { ...prev, pendingInitialSync: false } : prev));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.pendingInitialSync]);
 
   const postLoginSyncCopy = useMemo(() => {
     return {
@@ -294,16 +427,16 @@ export default function DashboardScreen({ navigation }) {
         button: 'Great',
       },
       ta: {
-        title: 'ஒத்திசைவு முடிந்தது',
+        title: 'à®’à®¤à¯à®¤à®¿à®šà¯ˆà®µà¯ à®®à¯à®Ÿà®¿à®¨à¯à®¤à®¤à¯',
         subtitle:
-          'இந்த சாதனத்தில் ஆர்டர்கள், விநியோகம் மற்றும் கட்டண விவரங்கள் புதுப்பிக்கப்பட்டன.',
-        button: 'சரி',
+          'à®‡à®¨à¯à®¤ à®šà®¾à®¤à®©à®¤à¯à®¤à®¿à®²à¯ à®†à®°à¯à®Ÿà®°à¯à®•à®³à¯, à®µà®¿à®¨à®¿à®¯à¯‹à®•à®®à¯ à®®à®±à¯à®±à¯à®®à¯ à®•à®Ÿà¯à®Ÿà®£ à®µà®¿à®µà®°à®™à¯à®•à®³à¯ à®ªà¯à®¤à¯à®ªà¯à®ªà®¿à®•à¯à®•à®ªà¯à®ªà®Ÿà¯à®Ÿà®©.',
+        button: 'à®šà®°à®¿',
       },
       si: {
-        title: 'සමමුහුර්තය අවසන්',
+        title: 'à·ƒà¶¸à¶¸à·”à·„à·”à¶»à·Šà¶­à¶º à¶…à·€à·ƒà¶±à·Š',
         subtitle:
-          'මෙම උපාංගයෙන් ඇණවුම්, බෙදාහැරීම් සහ ගෙවීම් විස්තර යාවත්කාලීනයි.',
-        button: 'හරි',
+          'à¶¸à·™à¶¸ à¶‹à¶´à·à¶‚à¶œà¶ºà·™à¶±à·Š à¶‡à¶«à·€à·”à¶¸à·Š, à¶¶à·™à¶¯à·à·„à·à¶»à·“à¶¸à·Š à·ƒà·„ à¶œà·™à·€à·“à¶¸à·Š à·€à·’à·ƒà·Šà¶­à¶» à¶ºà·à·€à¶­à·Šà¶šà·à¶½à·“à¶±à¶ºà·’.',
+        button: 'à·„à¶»à·’',
       },
     }[appLanguage] || {
       en: {
@@ -341,8 +474,13 @@ export default function DashboardScreen({ navigation }) {
     return String(preferred || fallback || '');
   }, [syncDateField]);
 
-  const loadData = useCallback(async () => {
-    setLoading(true);
+  const loadData = useCallback(async (options = {}) => {
+    const showLoading = options.showLoading !== false;
+    if (showLoading) setLoading(true);
+    let vehicleIdForStock = null;
+    let ordersForStock = [];
+    let pendingCheckoutForStock = new Set();
+    let localInvoicedForStock = new Set();
     try {
       const [userData, routesData] = await Promise.all([
         getUserSession(),
@@ -424,7 +562,7 @@ export default function DashboardScreen({ navigation }) {
       setProductIdToImageUri(imageMap || {});
       const today = formatLocalDate(new Date());
       const todayOrders = (Array.isArray(data) ? data : []).filter((o) => getOrderDateForSyncMode(o).startsWith(today));
-      console.log('todayOrders', todayOrders);
+      // console.log('todayOrders', todayOrders);
       const orderIds = todayOrders.map((o) => o.id);
       const [totals, pickings, orderLines, splits, qtyDoneMap] = await Promise.all([
         getOrderLineTotalsFromDB(todayOrders),
@@ -481,9 +619,9 @@ export default function DashboardScreen({ navigation }) {
       }
 
       // Dashboard top indicators:
-      // Active — not cancelled and not yet “delivery touched” (invoiced / picking / move qty_done / Odoo qty_delivered / local invoice / pay queue).
-      // Pay pending (orange) — payment upload still queued, and (invoiced OR any delivery activity).
-      // Synced (green) — no payment queue pending, and (invoiced OR any delivery activity) — includes partial backend delivery without full invoice.
+      // Active â€” not cancelled and not yet â€œdelivery touchedâ€ (invoiced / picking / move qty_done / Odoo qty_delivered / local invoice / pay queue).
+      // Pay pending (orange) â€” payment upload still queued, and (invoiced OR any delivery activity).
+      // Synced (green) â€” no payment queue pending, and (invoiced OR any delivery activity) â€” includes partial backend delivery without full invoice.
 
       let pendingOrders = 0;
       let localCompleted = 0;
@@ -510,9 +648,9 @@ export default function DashboardScreen({ navigation }) {
           String(order?.invoice_status || '').toLowerCase() === 'invoiced' ||
           localInvoiceSaleOrderIds.has(orderId);
         const payPending = pendingPaymentOrderIds.has(orderId);
-        if (payPending && (isInvoiced || deliveryDone)) {
+        if (payPending) {
           localCompleted += 1;
-        } else if (!payPending && (isInvoiced || deliveryDone)) {
+        } else if (isInvoiced || deliveryDone) {
           syncedCompleted += 1;
         }
       }
@@ -524,104 +662,13 @@ export default function DashboardScreen({ navigation }) {
       });
       setDashboardUploadIndicators(pendingOrders, localCompleted);
 
-      // Stock overview:
-      // pending in lorry = total loaded - delivered/invoiced quantity
-      // Delivered quantity is derived from:
-      // 1) sale_orders.invoice_status === 'invoiced' OR
-      // 2) stock.picking.state === 'done'
-      // across ALL cached orders (not just today's list), so dashboard stays accurate.
-      try {
-        if (vehicleId != null) {
-          const allOrderIds = (Array.isArray(data) ? data : [])
-            .map((o) => Number(o?.id))
-            .filter((id) => Number.isFinite(id));
-          const [allPickings, allOrderLines, allQtyDoneBySo, allBackendDeliveredSet] = await Promise.all([
-            allOrderIds.length ? getPickingsBySaleIdsFromDB(allOrderIds) : Promise.resolve([]),
-            allOrderIds.length ? getOrderLinesByOrderIdsFromDB(allOrderIds) : Promise.resolve([]),
-            allOrderIds.length ? deliveryQtyDb.getTotalQtyDoneBySaleOrderIds(allOrderIds) : Promise.resolve({}),
-            allOrderIds.length
-              ? saleOrderLinesDb.getSaleOrderIdsWithPositiveQtyDelivered(allOrderIds)
-              : Promise.resolve(new Set()),
-          ]);
-
-          const allPickingState = mergePickingStateBySaleIdFromRows(allPickings);
-          const orderByIdAll = {};
-          for (const o of Array.isArray(data) ? data : []) {
-            orderByIdAll[Number(o.id)] = o;
-          }
-
-          const deliveredQtyByProductId = {};
-          for (const line of allOrderLines || []) {
-            const orderId = Array.isArray(line.order_id) ? line.order_id[0] : line.order_id;
-            const soId = orderId != null ? Number(orderId) : null;
-            if (soId == null || !Number.isFinite(soId)) continue;
-            const order = orderByIdAll[soId];
-            if (!order) continue;
-            if (
-              !orderCountsAsDeliveredForDashboard(
-                order,
-                allPickingState,
-                allQtyDoneBySo,
-                allBackendDeliveredSet,
-                pendingCheckoutSaleOrderIds,
-                localInvoiceSaleOrderIds,
-                allOrderLines
-              )
-            ) {
-              continue;
-            }
-
-            const pidRaw = Array.isArray(line.product_id) ? line.product_id[0] : line.product_id;
-            const pid = pidRaw != null ? Number(pidRaw) : null;
-            if (pid == null || !Number.isFinite(pid)) continue;
-
-            const isInvoiced = String(order?.invoice_status || '').toLowerCase() === 'invoiced';
-            const qty = effectiveDeliveredQtyForLine(line, { isInvoiced });
-            if (qty <= 0) continue;
-            deliveredQtyByProductId[pid] = (deliveredQtyByProductId[pid] || 0) + qty;
-          }
-
-          const [inventories, productNameMap] = await Promise.all([
-            vehicleInventoriesDb.getVehicleInventoryByVehicleId(vehicleId),
-            productsDb.getProductsMap(),
-          ]);
-          const nextEmptyStockByKg = {};
-          for (const inv of inventories || []) {
-            const pid = inv?.product_id != null ? Number(inv.product_id) : null;
-            const resolvedName = (pid != null ? productNameMap?.[pid] : null) || inv?.product_name || '';
-            if (!isEmptyCylinderName(resolvedName)) continue;
-            const kg = canonicalKgFromName(resolvedName);
-            if (kg == null) continue;
-            const qty = Math.max(0, Number(inv?.quantity) || 0);
-            nextEmptyStockByKg[kg] = (nextEmptyStockByKg[kg] || 0) + qty;
-          }
-          setEmptyStockByKg(nextEmptyStockByKg);
-          const byProduct = {};
-          for (const inv of inventories || []) {
-            const pid = inv?.product_id != null ? Number(inv.product_id) : null;
-            if (pid == null) continue;
-            const total = Number(inv.quantity) || 0;
-            const delivered = Number(deliveredQtyByProductId[pid]) || 0;
-            const remaining = Math.max(0, total - delivered);
-            const resolvedName = (productNameMap && productNameMap[pid]) || inv?.product_name || `Product ${pid}`;
-            byProduct[pid] = {
-              product_id: pid,
-              product_name: resolvedName,
-              total,
-              remaining,
-            };
-          }
-          /** Always show the four default cylinder sizes; merge Odoo rows, fill missing with 0 on-hand / 0 remaining. */
-          setStockCards(buildDefaultGasDashboardStockCards(Object.values(byProduct), productNameMap || {}));
-        } else {
-          setStockCards((prev) => (prev?.length ? prev : []));
-        }
-      } catch (_) {
-        setStockCards((prev) => (prev?.length ? prev : []));
-      }
+      vehicleIdForStock = vehicleId;
+      ordersForStock = Array.isArray(data) ? data : [];
+      pendingCheckoutForStock = pendingCheckoutSaleOrderIds;
+      localInvoicedForStock = localInvoiceSaleOrderIds;
 
       lastDashboardSnapshot = {
-        orders: effectiveOrders || [],
+        orders: ordersForStock,
         user,
         routes: Array.isArray(routesData) ? routesData : [],
         lineTotalsByOrder: totals || {},
@@ -638,8 +685,109 @@ export default function DashboardScreen({ navigation }) {
       // Keep last known dashboard data on transient read failures.
       console.warn('[Dashboard] loadData failed, preserving previous view state', err?.message ?? err);
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
+
+    const runStockOverview = async () => {
+      try {
+        if (vehicleIdForStock == null) {
+          setStockCards((prev) => (prev?.length ? prev : []));
+          return;
+        }
+        const allOrderIds = ordersForStock
+          .map((o) => Number(o?.id))
+          .filter((id) => Number.isFinite(id));
+        const [allPickings, allOrderLines, allQtyDoneBySo, allBackendDeliveredSet] = await Promise.all([
+          allOrderIds.length ? getPickingsBySaleIdsFromDB(allOrderIds) : Promise.resolve([]),
+          allOrderIds.length ? getOrderLinesByOrderIdsFromDB(allOrderIds) : Promise.resolve([]),
+          allOrderIds.length ? deliveryQtyDb.getTotalQtyDoneBySaleOrderIds(allOrderIds) : Promise.resolve({}),
+          allOrderIds.length
+            ? saleOrderLinesDb.getSaleOrderIdsWithPositiveQtyDelivered(allOrderIds)
+            : Promise.resolve(new Set()),
+        ]);
+
+        const allPickingState = mergePickingStateBySaleIdFromRows(allPickings);
+        const orderByIdAll = {};
+        for (const o of ordersForStock) {
+          orderByIdAll[Number(o.id)] = o;
+        }
+
+        const deliveredQtyByProductId = {};
+        for (const line of allOrderLines || []) {
+          const orderId = Array.isArray(line.order_id) ? line.order_id[0] : line.order_id;
+          const soId = orderId != null ? Number(orderId) : null;
+          if (soId == null || !Number.isFinite(soId)) continue;
+          const order = orderByIdAll[soId];
+          if (!order) continue;
+          if (
+            !orderCountsAsDeliveredForDashboard(
+              order,
+              allPickingState,
+              allQtyDoneBySo,
+              allBackendDeliveredSet,
+              pendingCheckoutForStock,
+              localInvoicedForStock,
+              allOrderLines
+            )
+          ) {
+            continue;
+          }
+
+          const pidRaw = Array.isArray(line.product_id) ? line.product_id[0] : line.product_id;
+          const pid = pidRaw != null ? Number(pidRaw) : null;
+          if (pid == null || !Number.isFinite(pid)) continue;
+
+          const isInvoiced = String(order?.invoice_status || '').toLowerCase() === 'invoiced';
+          const qty = effectiveDeliveredQtyForLine(line, { isInvoiced });
+          if (qty <= 0) continue;
+          deliveredQtyByProductId[pid] = (deliveredQtyByProductId[pid] || 0) + qty;
+        }
+
+        const [inventories, productNameMap] = await Promise.all([
+          vehicleInventoriesDb.getVehicleInventoryByVehicleId(vehicleIdForStock),
+          productsDb.getProductsMap(),
+        ]);
+        const nextEmptyStockByKg = {};
+        for (const inv of inventories || []) {
+          const pid = inv?.product_id != null ? Number(inv.product_id) : null;
+          const resolvedName = (pid != null ? productNameMap?.[pid] : null) || inv?.product_name || '';
+          if (!isEmptyCylinderName(resolvedName)) continue;
+          const kg = canonicalKgFromName(resolvedName);
+          if (kg == null) continue;
+          const qty = Math.max(0, Number(inv?.quantity) || 0);
+          nextEmptyStockByKg[kg] = (nextEmptyStockByKg[kg] || 0) + qty;
+        }
+        setEmptyStockByKg(nextEmptyStockByKg);
+        const byProduct = {};
+        for (const inv of inventories || []) {
+          const pid = inv?.product_id != null ? Number(inv.product_id) : null;
+          if (pid == null) continue;
+          const total = Number(inv.quantity) || 0;
+          const delivered = Number(deliveredQtyByProductId[pid]) || 0;
+          const remaining = Math.max(0, total - delivered);
+          const resolvedName = (productNameMap && productNameMap[pid]) || inv?.product_name || `Product ${pid}`;
+          byProduct[pid] = {
+            product_id: pid,
+            product_name: resolvedName,
+            total,
+            remaining,
+          };
+        }
+        const nextCards = buildDefaultGasDashboardStockCards(Object.values(byProduct), productNameMap || {});
+        setStockCards(nextCards);
+        lastDashboardSnapshot = {
+          ...(lastDashboardSnapshot || {}),
+          stockCards: nextCards,
+          emptyStockByKg: nextEmptyStockByKg,
+        };
+      } catch (_) {
+        setStockCards((prev) => (prev?.length ? prev : []));
+      }
+    };
+
+    InteractionManager.runAfterInteractions(() => {
+      void runStockOverview();
+    });
   }, [formatLocalDate, getOrderDateForSyncMode]);
 
 
@@ -707,22 +855,27 @@ export default function DashboardScreen({ navigation }) {
       })();
     };
     const unsub = navigation.addListener?.('focus', () => {
-      loadData();
-      loadSyncStatus();
+      loadData({ showLoading: false });
+      InteractionManager.runAfterInteractions(() => {
+        void loadSyncStatus();
+      });
       tryPostLoginBanner();
-      void hasActiveUploadWork().then((pending) => {
-        if (pending) {
+      InteractionManager.runAfterInteractions(() => {
+        void hasActiveUploadWork().then((pending) => {
+          if (!pending || isCheckoutUploadActive()) return;
           schedulePendingUploadSync({
             immediate: true,
             aggressive: true,
-            queuePasses: 16,
+            queuePasses: 4,
             includeAttachments: true,
           });
-        }
+        });
       });
     });
-    loadData();
-    loadSyncStatus();
+    loadData({ showLoading: !isDashboardInitialLoadMemoryDone() });
+    InteractionManager.runAfterInteractions(() => {
+      void loadSyncStatus();
+    });
     tryPostLoginBanner();
     return () => unsub?.();
   }, [loadData, loadSyncStatus, navigation]);
@@ -766,44 +919,9 @@ export default function DashboardScreen({ navigation }) {
 
   useEffect(() => {
     if (isSyncing || !syncResult) return;
-    if (lastSyncNotificationRef.current === syncResult) return;
-    lastSyncNotificationRef.current = syncResult;
-
-    if (syncResult === 'success') {
-      void (async () => {
-        let nextSyncedIds = new Set();
-        try {
-          nextSyncedIds = await syncQueueDb.getSyncedPaymentSaleOrderIds();
-        } catch (_) {
-          nextSyncedIds = new Set();
-        }
-
-        const newlySyncedOrderIds = [];
-        for (const id of nextSyncedIds) {
-          if (!previousSyncedPaymentIdsRef.current.has(id)) {
-            newlySyncedOrderIds.push(Number(id));
-          }
-        }
-        previousSyncedPaymentIdsRef.current = new Set(nextSyncedIds);
-
-        if (newlySyncedOrderIds.length > 0) {
-          const latestOrderId = newlySyncedOrderIds[newlySyncedOrderIds.length - 1];
-          const matchedOrder = (orders || []).find((o) => Number(o?.id) === Number(latestOrderId));
-          const customerName = matchedOrder
-            ? getLocalizedCustomerNameFromOrder(matchedOrder, appLanguage)
-            : `SO #${latestOrderId}`;
-
-          setNotification({
-            visible: true,
-            title: t('common.orderSyncCompletedTitle', 'Order sync completed'),
-            message: t('common.orderSyncCompletedBody', '{{customer}} order sync completed.', { customer: customerName }),
-            type: 'success',
-          });
-          return;
-        }
-      })();
-      return;
-    }
+    if (syncResult !== 'failed') return;
+    if (lastSyncNotificationRef.current === syncCompleteTimestamp) return;
+    lastSyncNotificationRef.current = syncCompleteTimestamp;
 
     setNotification({
       visible: true,
@@ -811,43 +929,20 @@ export default function DashboardScreen({ navigation }) {
       message: syncErrorMessage || t('common.syncFailedBody', 'Data sync failed. Please try again.'),
       type: 'error',
     });
-  }, [isSyncing, syncResult, syncErrorMessage, t, orders, appLanguage]);
+  }, [isSyncing, syncResult, syncErrorMessage, syncCompleteTimestamp, t]);
 
   useEffect(() => {
-    if (user?.licensePlate) {
-      loadCommissionData();
-    }
+    if (!user?.licensePlate) return;
+    const task = InteractionManager.runAfterInteractions(() => {
+      void loadCommissionData();
+    });
+    return () => task?.cancel?.();
   }, [user?.licensePlate, loadCommissionData, commissionDateRange.dateFrom, commissionDateRange.dateTo]);
 
   const totalCrewCommission = useMemo(
     () => (employeeCommissionCards || []).reduce((s, r) => s + (Number(r.totalCommission) || 0), 0),
     [employeeCommissionCards]
   );
-
-  useEffect(() => {
-    if (!user?.pendingInitialSync) {
-      initialSyncStartedRef.current = false;
-      return;
-    }
-    if (isSyncing) {
-      initialSyncStartedRef.current = true;
-      return;
-    }
-    if (!initialSyncStartedRef.current) return;
-    let cancelled = false;
-    (async () => {
-      const u = await getUserSession();
-      if (cancelled || !u?.pendingInitialSync) return;
-      try {
-        await saveUserSession({ ...u, pendingInitialSync: false });
-      } catch (_) {}
-      setUser((prev) => (prev ? { ...prev, pendingInitialSync: false } : prev));
-      initialSyncStartedRef.current = false;
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [user?.pendingInitialSync, isSyncing]);
 
   // If the user already completed the one-time initial dashboard load (stored + memory), open without the full-screen gate
   // after a cold start or when the Dashboard unmounts/remounts in the same app session.
@@ -863,36 +958,13 @@ export default function DashboardScreen({ navigation }) {
     };
   }, []);
 
-  // One-time initial login gate:
-  // show only full-screen loader (no empty dashboard) until first complete data load finishes.
+  // One-time initial login gate: hide empty shell until first SQLite read finishes (not background Odoo sync).
   useEffect(() => {
     if (!initialLoadGateActive) return;
     if (loading) return;
-    if (user?.pendingInitialSync) return;
     void markDashboardInitialLoadComplete(user);
     setInitialLoadGateActive(false);
-  }, [initialLoadGateActive, loading, user?.pendingInitialSync, user]);
-
-  // Safety: if first dashboard load is complete and sync is no longer running,
-  // clear pendingInitialSync so full-screen blocker never repeats on later visits.
-  useEffect(() => {
-    if (!user?.pendingInitialSync) return;
-    if (loading || isSyncing) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const u = await getUserSession();
-        if (cancelled || !u?.pendingInitialSync) return;
-        await saveUserSession({ ...u, pendingInitialSync: false });
-      } catch (_) {}
-      if (!cancelled) {
-        setUser((prev) => (prev ? { ...prev, pendingInitialSync: false } : prev));
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [user?.pendingInitialSync, loading, isSyncing]);
+  }, [initialLoadGateActive, loading, user]);
 
   // Short delayed reload on first mount so dashboard amounts update immediately after first-time login
   useEffect(() => {
@@ -973,8 +1045,6 @@ export default function DashboardScreen({ navigation }) {
     await loadCommissionData();
     setRefreshing(false);
   };
-
-  const syncButtonActive = syncing || isSyncing;
 
   const onSync = async () => {
     if (syncing || isSyncing) return;
@@ -1062,6 +1132,30 @@ export default function DashboardScreen({ navigation }) {
   );
   const selectedRouteId = routeOverrideId ?? defaultRouteId;
 
+  /** Real route name from today's synced orders only — null when there are no orders yet. */
+  const todaysBackendRouteName = useMemo(() => {
+    if (!todayOrders || todayOrders.length === 0) return null;
+    if (vehicleRouteIdsToday.size === 0) return null;
+    const match = routesInVehicleTodayPicker.find((r) => Number(r.id) === Number(selectedRouteId));
+    return match?.name || routesInVehicleTodayPicker[0]?.name || null;
+  }, [todayOrders, vehicleRouteIdsToday, routesInVehicleTodayPicker, selectedRouteId]);
+
+  /** Push the route to back office once it's known from sync; skip when no orders today. */
+  useEffect(() => {
+    if (!todaysBackendRouteName) return;
+    if (!user || user.isAdmin || user.driverId == null || user.vehicleId == null || !user.driverBarcode) return;
+    const key = `${sessionKey}|${today}|${todaysBackendRouteName}`;
+    if (routeSyncSentRef.current.has(key)) return;
+    routeSyncSentRef.current.add(key);
+    void updateDriverLoginRoute({
+      batchId: user.driverBarcode,
+      driverId: user.driverId,
+      vehicleId: user.vehicleId,
+      routeName: todaysBackendRouteName,
+      date: today,
+    });
+  }, [todaysBackendRouteName, user, sessionKey, today]);
+
   const todayOrdersForDashboard = useMemo(() => {
     if (selectedRouteId == null) return todayOrders;
     return todayOrders.filter((o) => {
@@ -1077,7 +1171,7 @@ export default function DashboardScreen({ navigation }) {
 
   /**
    * Delivery progress: count as delivered when any qty was recorded on move lines, picking is done/cancel, or order is invoiced.
-   * Does not require full Odoo invoice — matches “any delivery on this order” for progress bars and totals.
+   * Does not require full Odoo invoice â€” matches â€œany delivery on this orderâ€ for progress bars and totals.
    */
   const deliveredTodayOrders = useMemo(
     () =>
@@ -1219,7 +1313,7 @@ export default function DashboardScreen({ navigation }) {
     routes.find((r) => Number(r.id) === Number(selectedRouteId))?.name ||
     todayOrdersForDashboard[0]?.route_id?.[1] ||
     routes[0]?.name ||
-    '—';
+    'â€”';
   const vehicleName = user?.licensePlate || user?.vehicleName || 'Vehicle';
   const driverName = user?.driverName;
   const driverPhone = user?.driverPhone != null && String(user.driverPhone).trim() !== '' ? String(user.driverPhone).trim() : '';
@@ -1265,6 +1359,35 @@ export default function DashboardScreen({ navigation }) {
 
   const shopsCompleted = deliveredTodayOrdersAllRoutes.length;
   const totalShopsToday = todayOrders.length;
+
+  const {
+    activeOrdersToday,
+    preCheckStockRows,
+    preCheckHasShortfall,
+    preCheckTotalOrderedGas,
+    preCheckEmptyRows,
+    preCheckTotalEmptyCollected,
+    preCheckTotalOnHand,
+    formatPreCheckQty,
+  } = usePreCheckData({
+    todayOrders,
+    todayOrderLines,
+    stockCards,
+    emptyStockByKg,
+  });
+
+  const openPreCheckSummary = useCallback(() => {
+    setPreCheckSummaryModalVisible(true);
+  }, []);
+
+  const confirmPreCheckSummary = useCallback(async () => {
+    setPreCheckSummaryModalVisible(false);
+    const u = await getUserSession();
+    await setPreCheckDone(true, u?.loggedInAt);
+  }, [setPreCheckDone]);
+
+  const needsPreCheckGate = !preCheckDone && !preCheckSummaryModalVisible;
+  const preCheckSyncInProgress = syncing || isSyncing || (initialLoadGateActive && loading);
   const shopsPct = totalShopsToday > 0 ? Math.min(100, Math.round((shopsCompleted / totalShopsToday) * 100)) : 0;
   const totalGasDelivered = useMemo(() => {
     const orderById = {};
@@ -1563,6 +1686,16 @@ export default function DashboardScreen({ navigation }) {
           fontWeight: '800',
           color: '#fff',
         },
+        preCheckBtn: {
+          backgroundColor: 'rgba(245, 158, 11, 0.28)',
+          borderColor: 'rgba(251, 191, 36, 0.85)',
+          marginTop: 6,
+        },
+        postCheckBtn: {
+          backgroundColor: 'rgba(16, 185, 129, 0.28)',
+          borderColor: 'rgba(52, 211, 153, 0.85)',
+          marginTop: 6,
+        },
         dailyVisitBtnTop: {
           backgroundColor: 'transparent',
           borderRadius: borderRadius.md,
@@ -1669,17 +1802,6 @@ export default function DashboardScreen({ navigation }) {
           fontWeight: '600',
           color: colors.text,
         },
-        commissionModalRangeRow: {
-          flexDirection: 'row',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          paddingVertical: 12,
-          paddingHorizontal: 4,
-          borderBottomWidth: 1,
-          borderBottomColor: colors.border,
-        },
-        commissionModalRangeLabel: { fontSize: 12, fontWeight: '600', color: colors.textSecondary },
-        commissionModalRangeValue: { fontSize: 15, fontWeight: '700', color: colors.primary },
         employeeCommissionCard: {
           width: 200,
           borderWidth: 0,
@@ -1924,88 +2046,6 @@ export default function DashboardScreen({ navigation }) {
         },
         syncLogStatus: { width: 8, height: 8, borderRadius: 4 },
         syncLogText: { fontSize: 12, color: colors.textSecondary, flex: 1 },
-        modalBackdrop: {
-          flex: 1,
-          backgroundColor: 'rgba(0,0,0,0.5)',
-          justifyContent: 'center',
-          padding: spacing.lg,
-        },
-        modalCard: {
-          backgroundColor: colors.surface,
-          borderRadius: borderRadius.lg,
-          padding: spacing.lg,
-          maxHeight: '85%',
-        },
-        modalTitle: { fontSize: 18, fontWeight: '800', color: colors.text, marginBottom: spacing.sm },
-        modalSubtitle: { fontSize: 13, color: colors.textSecondary, marginBottom: spacing.md },
-        routePickRow: {
-          flexDirection: 'row',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          paddingVertical: 14,
-          paddingHorizontal: spacing.sm,
-          borderBottomWidth: 1,
-          borderBottomColor: colors.border,
-        },
-        routePickRowActive: { backgroundColor: colors.primary + '12' },
-        routePickName: { fontSize: 16, fontWeight: '600', color: colors.text, flex: 1 },
-        profileHero: { alignItems: 'center', marginBottom: spacing.md },
-        profileAvatarLg: {
-          width: 96,
-          height: 96,
-          borderRadius: 48,
-          borderWidth: 3,
-          borderColor: colors.primary + '55',
-          overflow: 'hidden',
-          backgroundColor: colors.background,
-        },
-        profileNameLg: { fontSize: 20, fontWeight: '800', color: colors.text, marginTop: spacing.md, textAlign: 'center' },
-        profileRole: { fontSize: 13, fontWeight: '700', color: colors.primary, marginTop: 4 },
-        profilePhoneRow: {
-          flexDirection: 'row',
-          alignItems: 'center',
-          gap: 10,
-          marginTop: spacing.md,
-          padding: spacing.md,
-          backgroundColor: colors.background,
-          borderRadius: borderRadius.md,
-          borderWidth: 1,
-          borderColor: colors.border,
-        },
-        profilePhoneText: { flex: 1, fontSize: 16, fontWeight: '600', color: colors.text },
-        profileNoPhone: { fontSize: 14, color: colors.textSecondary, fontStyle: 'italic', marginTop: spacing.sm },
-        modalCloseBtn: {
-          marginTop: spacing.lg,
-          paddingVertical: 14,
-          borderRadius: borderRadius.md,
-          backgroundColor: colors.primary,
-          alignItems: 'center',
-        },
-        modalCloseBtnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
-        syncSuccessAccent: {
-          width: 72,
-          height: 72,
-          borderRadius: 36,
-          backgroundColor: colors.primary + '18',
-          alignItems: 'center',
-          justifyContent: 'center',
-          alignSelf: 'center',
-          marginBottom: spacing.md,
-        },
-        syncSuccessTitle: {
-          fontSize: 20,
-          fontWeight: '800',
-          color: colors.text,
-          textAlign: 'center',
-          marginBottom: spacing.sm,
-        },
-        syncSuccessSubtitle: {
-          fontSize: 14,
-          lineHeight: 21,
-          color: colors.textSecondary,
-          textAlign: 'center',
-          marginBottom: spacing.lg,
-        },
         initialSyncOverlayRoot: { flex: 1 },
         initialSyncCenter: {
           flex: 1,
@@ -2037,39 +2077,19 @@ export default function DashboardScreen({ navigation }) {
     year: 'numeric',
   });
 
-  const openDial = (raw) => {
-    const s = String(raw || '').replace(/[^\d+]/g, '');
-    if (!s) return;
-    Linking.openURL(`tel:${s}`).catch(() => {});
-  };
-
   const hasAnyDashboardData =
     (orders?.length || 0) > 0 ||
     (todayOrderLines?.length || 0) > 0 ||
     (stockCards?.length || 0) > 0 ||
     Object.keys(lineTotalsByOrder || {}).length > 0;
-  /** Keep full-screen loader until first dashboard load finishes (same as earlier behavior). */
+  /** Full-screen loader only for the first empty load â€” never wait on background Odoo sync. */
   const shouldShowInitialFullScreenLoader =
-    (initialLoadGateActive && (loading || isSyncing || !!user?.pendingInitialSync)) ||
-    (loading && !hasAnyDashboardData);
+    initialLoadGateActive && loading && !hasAnyDashboardData;
 
-  /** Blur overlay on first-session sync when dashboard shell is visible but data sync is still in flight */
-  const shouldBlockDashboard =
-    initialLoadGateActive && (isSyncing || !!user?.pendingInitialSync);
+  const shouldBlockDashboard = false;
 
   if (shouldShowInitialFullScreenLoader) {
-    return (
-      <View style={[styles.container, styles.initialSyncCenter]}>
-        <Ionicons name="cloud-download-outline" size={36} color={colors.primary} />
-        <Text style={[styles.initialSyncTitle, { color: colors.text }]}>
-          {t('dashboard.initialSyncTitle', 'Loading your data...')}
-        </Text>
-        <Text style={[styles.initialSyncSub, { color: colors.textSecondary }]}>
-          {t('dashboard.initialSyncSub', 'This only takes a moment.')}
-        </Text>
-        <ActivityIndicator style={{ marginTop: 16 }} size="large" color={colors.primary} />
-      </View>
-    );
+    return <DashboardInitialLoadScreen />;
   }
 
   return (
@@ -2090,7 +2110,10 @@ export default function DashboardScreen({ navigation }) {
       }
     >
       {/* 1. Top bar: date + route left; last synced + sync counters + Sync now (same control shows rotating icon while sync runs) */}
-      <View style={[styles.topBar, { paddingTop: spacing.lg + insets.top }]}>
+      <View
+        style={[styles.topBar, { paddingTop: spacing.lg + insets.top }]}
+        onLayout={(e) => setTopBarHeight(e.nativeEvent.layout.height)}
+      >
         <View style={[styles.topBarRow, styles.topBarRowWithMargin]}>
           <View style={styles.topBarLeft}>
             <TouchableOpacity
@@ -2171,7 +2194,7 @@ export default function DashboardScreen({ navigation }) {
                         minute: '2-digit',
                         hour12: true,
                       })
-                    : '—'}
+                    : 'â€”'}
                 </Text>
                 <View style={styles.syncCountersRow}>
                   <View
@@ -2244,6 +2267,44 @@ export default function DashboardScreen({ navigation }) {
                     <Text style={styles.syncNowBtnText}>{t('dashboard.syncNow', 'Sync now')}</Text>
                   )}
                 </TouchableOpacity>
+                {/* PreCheck / PostCheck button */}
+                <TouchableOpacity
+                  style={[
+                    styles.syncNowBtn,
+                    preCheckDone
+                      ? styles.postCheckBtn
+                      : styles.preCheckBtn,
+                  ]}
+                  onPress={() => {
+                    if (!preCheckDone) {
+                      openPreCheckSummary();
+                    } else {
+                      setPostCheckInitialAmounts({
+                        cash: String(cashTotal.toFixed(2)),
+                        cheque: String(chequeTotal.toFixed(2)),
+                        credit: String(creditTotal.toFixed(2)),
+                      });
+                      setPostCheckModalVisible(true);
+                    }
+                  }}
+                  activeOpacity={0.85}
+                  accessibilityRole="button"
+                  accessibilityLabel={
+                    preCheckDone
+                      ? t('dashboard.postCheckButton', 'End Day')
+                      : t('dashboard.preCheckButton', 'Start Day')
+                  }
+                >
+                  <Ionicons
+                    name={preCheckDone ? 'checkmark-done-circle-outline' : 'shield-checkmark-outline'}
+                    size={14}
+                    color="#fff"
+                    style={{ marginRight: 5 }}
+                  />
+                  <Text style={styles.syncNowBtnText}>
+                  {preCheckDone ? t('dashboard.postCheckButton', 'End Day') : t('dashboard.preCheckButton', 'Start Day')}
+                  </Text>
+                </TouchableOpacity>
               </View>
             {/* //Daily Visit Keep Commented for now */}
             {/* <TouchableOpacity
@@ -2257,6 +2318,10 @@ export default function DashboardScreen({ navigation }) {
             </View>
           </View>
         </View>
+
+        {/* Disabled wrapper until Pre-check is completed */}
+        <View style={{ opacity: preCheckDone ? 1 : 0.5 }} pointerEvents={preCheckDone ? 'auto' : 'none'}>
+
         {/* 2. Stock overview (lorry stock) */}
         <View style={{ paddingHorizontal: spacing.md, marginTop: -10, marginBottom: spacing.sm }}>
           <TouchableOpacity
@@ -2599,7 +2664,7 @@ export default function DashboardScreen({ navigation }) {
             </ScrollView>
           </View>
         )}
-      {/* Employee commission — web-style card: total + filters + crew strip */}
+      {/* Employee commission â€” web-style card: total + filters + crew strip */}
       <View style={styles.commissionSectionCard}>
         <View style={styles.commissionHero}>
           <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -2644,14 +2709,7 @@ export default function DashboardScreen({ navigation }) {
           <TouchableOpacity
             style={styles.commissionDateRangeRow}
             activeOpacity={0.86}
-            onPress={() => {
-              setCommissionRangeDraft({
-                dateFrom: commissionDateRange.dateFrom,
-                dateTo: commissionDateRange.dateTo,
-              });
-              setCommissionRangePickerField(null);
-              setCommissionRangeModalVisible(true);
-            }}
+            onPress={() => setCommissionRangeModalVisible(true)}
           >
             <Ionicons name="calendar" size={20} color={colors.primary} style={{ marginRight: 8 }} />
             <Text style={styles.commissionDateRangeRowText} numberOfLines={2}>
@@ -2746,6 +2804,7 @@ export default function DashboardScreen({ navigation }) {
               )}
             </View>
         )}
+        </View>
       </ScrollView>
 
       {shouldBlockDashboard ? (
@@ -2801,193 +2860,41 @@ export default function DashboardScreen({ navigation }) {
         </View>
       ) : null}
 
+      <PreCheckSummaryModal
+        visible={preCheckSummaryModalVisible}
+        vehicleName={vehicleName}
+        routeName={routeName}
+        todayDateStr={todayDateStr}
+        syncInProgress={preCheckSyncInProgress}
+        activeOrdersToday={activeOrdersToday}
+        hasShortfall={preCheckHasShortfall}
+        stockRows={preCheckStockRows}
+        emptyRows={preCheckEmptyRows}
+        totalEmptyCollected={preCheckTotalEmptyCollected}
+        totalOnHand={preCheckTotalOnHand}
+        totalOrdered={preCheckTotalOrderedGas}
+        formatQty={formatPreCheckQty}
+        onConfirm={() => void confirmPreCheckSummary()}
+      />
+
     </View>
-
-      <Modal
+      <CommissionRangeModal
         visible={commissionRangeModalVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => {
-          setCommissionRangeModalVisible(false);
-          setCommissionRangePickerField(null);
+        initialRange={commissionDateRange}
+        onClose={() => setCommissionRangeModalVisible(false)}
+        onApply={({ dateFrom, dateTo }) => {
+          setCommissionDateRange({ dateFrom, dateTo });
+          setCommissionRangePreset('custom');
         }}
-      >
-        <Pressable
-          style={styles.modalBackdrop}
-          onPress={() => {
-            setCommissionRangeModalVisible(false);
-            setCommissionRangePickerField(null);
-          }}
-        >
-          <Pressable style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
-            <Text style={styles.modalTitle}>{t('dashboard.commissionDateRange', 'Date range')}</Text>
-            <Text style={styles.modalSubtitle}>
-              {t('dashboard.commissionDateRangeHint', 'Choose from and to, then apply. You can also use Today / Yesterday / This month.')}
-            </Text>
-            <TouchableOpacity
-              style={styles.commissionModalRangeRow}
-              onPress={() => setCommissionRangePickerField('from')}
-              activeOpacity={0.8}
-            >
-              <Text style={styles.commissionModalRangeLabel}>{t('dashboard.dateFrom', 'From')}</Text>
-              <Text style={styles.commissionModalRangeValue}>
-                {formatDateRangeLabel(commissionRangeDraft.dateFrom, commissionRangeDraft.dateFrom)}
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.commissionModalRangeRow}
-              onPress={() => setCommissionRangePickerField('to')}
-              activeOpacity={0.8}
-            >
-              <Text style={styles.commissionModalRangeLabel}>{t('dashboard.dateTo', 'To')}</Text>
-              <Text style={styles.commissionModalRangeValue}>
-                {formatDateRangeLabel(commissionRangeDraft.dateTo, commissionRangeDraft.dateTo)}
-              </Text>
-            </TouchableOpacity>
-            {commissionRangePickerField ? (
-              <DateTimePicker
-                value={(() => {
-                  const key = commissionRangePickerField === 'from' ? 'dateFrom' : 'dateTo';
-                  const raw =
-                    commissionRangeDraft[key] ||
-                    commissionDateRange[key] ||
-                    getTodayDateRange().dateFrom;
-                  const d = new Date(`${String(raw).slice(0, 10)}T12:00:00`);
-                  return Number.isNaN(d.getTime()) ? new Date() : d;
-                })()}
-                mode="date"
-                display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                onChange={(e, date) => {
-                  if (e?.type === 'dismissed') {
-                    if (Platform.OS === 'android') setCommissionRangePickerField(null);
-                    return;
-                  }
-                  if (!date) {
-                    if (Platform.OS === 'android') setCommissionRangePickerField(null);
-                    return;
-                  }
-                  const which = commissionRangePickerField;
-                  if (which !== 'from' && which !== 'to') return;
-                  const y = date.getFullYear();
-                  const m = String(date.getMonth() + 1).padStart(2, '0');
-                  const d0 = String(date.getDate()).padStart(2, '0');
-                  const s = `${y}-${m}-${d0}`;
-                  setCommissionRangeDraft((prev) => ({
-                    ...prev,
-                    [which === 'from' ? 'dateFrom' : 'dateTo']: s,
-                  }));
-                  if (Platform.OS === 'android') setCommissionRangePickerField(null);
-                }}
-              />
-            ) : null}
-            {commissionRangePickerField && Platform.OS === 'ios' ? (
-              <TouchableOpacity
-                onPress={() => setCommissionRangePickerField(null)}
-                style={{ alignSelf: 'flex-end', padding: 8 }}
-              >
-                <Text style={{ color: colors.primary, fontWeight: '600' }}>{t('dashboard.done', 'Done')}</Text>
-              </TouchableOpacity>
-            ) : null}
-            <View style={{ flexDirection: 'row', gap: 10, marginTop: spacing.sm }}>
-              <TouchableOpacity
-                style={{
-                  flex: 1,
-                  paddingVertical: 12,
-                  borderRadius: 12,
-                  backgroundColor: colors.background,
-                  borderWidth: 1,
-                  borderColor: colors.border,
-                  alignItems: 'center',
-                }}
-                onPress={() => {
-                  setCommissionRangeModalVisible(false);
-                  setCommissionRangePickerField(null);
-                }}
-                activeOpacity={0.86}
-              >
-                <Text style={{ fontSize: 16, fontWeight: '700', color: colors.text }}>
-                  {t('common.cancel', 'Cancel')}
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={{
-                  flex: 1,
-                  paddingVertical: 12,
-                  borderRadius: 12,
-                  backgroundColor: colors.primary,
-                  alignItems: 'center',
-                }}
-                onPress={() => {
-                  let dateFrom = commissionRangeDraft.dateFrom;
-                  let dateTo = commissionRangeDraft.dateTo;
-                  if (!dateFrom || !dateTo) {
-                    Alert.alert(
-                      t('dashboard.rangeInvalid', 'Date range'),
-                      t('dashboard.selectBothDates', 'Please choose both from and to dates.')
-                    );
-                    return;
-                  }
-                  if (dateFrom > dateTo) {
-                    const t0 = dateFrom;
-                    dateFrom = dateTo;
-                    dateTo = t0;
-                  }
-                  setCommissionDateRange({ dateFrom, dateTo });
-                  setCommissionRangePreset('custom');
-                  setCommissionRangeModalVisible(false);
-                  setCommissionRangePickerField(null);
-                }}
-                activeOpacity={0.86}
-              >
-                <Text style={{ fontSize: 16, fontWeight: '700', color: '#fff' }}>{t('dashboard.apply', 'Apply')}</Text>
-              </TouchableOpacity>
-            </View>
-          </Pressable>
-        </Pressable>
-      </Modal>
+      />
 
-      <Modal visible={routePickerVisible} transparent animationType="fade" onRequestClose={() => setRoutePickerVisible(false)}>
-        <Pressable style={styles.modalBackdrop} onPress={() => setRoutePickerVisible(false)}>
-          <Pressable style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
-            <Text style={styles.modalTitle}>{t("dashboard.chooseRoute", "Choose route")}</Text>
-            <Text style={styles.modalSubtitle}>
-              Pick a route to filter your list, or Recommended for today's usual route.
-            </Text>
-            <ScrollView style={{ maxHeight: 360 }} keyboardShouldPersistTaps="handled">
-              <TouchableOpacity
-                style={[styles.routePickRow, routeOverrideId === null && styles.routePickRowActive]}
-                onPress={() => {
-                  setRouteOverrideId(null);
-                  setRoutePickerVisible(false);
-                }}
-              >
-                <Text style={styles.routePickName}>{t("dashboard.recommendedToday", "Recommended (today)")}</Text>
-                {routeOverrideId === null ? <Ionicons name="checkmark-circle" size={22} color={colors.primary} /> : null}
-              </TouchableOpacity>
-              {routesInVehicleTodayPicker.map((r) => {
-                const id = Number(r.id);
-                const active = routeOverrideId != null && Number(routeOverrideId) === id;
-                return (
-                  <TouchableOpacity
-                    key={String(r.id)}
-                    style={[styles.routePickRow, active && styles.routePickRowActive]}
-                    onPress={() => {
-                      setRouteOverrideId(id);
-                      setRoutePickerVisible(false);
-                    }}
-                  >
-                    <Text style={styles.routePickName}>{r.name || `Route ${r.id}`}</Text>
-                    {active ? <Ionicons name="checkmark-circle" size={22} color={colors.primary} /> : null}
-                  </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
-            <TouchableOpacity style={styles.modalCloseBtn} onPress={() => setRoutePickerVisible(false)} activeOpacity={0.88}>
-              <Text style={styles.modalCloseBtnText}>{t("settings.close", "Close")}</Text>
-            </TouchableOpacity>
-          </Pressable>
-        </Pressable>
-      </Modal>
+      <RoutePickerModal
+        visible={routePickerVisible}
+        routes={routesInVehicleTodayPicker}
+        selectedRouteId={routeOverrideId}
+        onSelectRoute={setRouteOverrideId}
+        onClose={() => setRoutePickerVisible(false)}
+      />
 
       <PendingBackOfficeReminderModal
         visible={pendingBackOfficeModalVisible}
@@ -3003,72 +2910,36 @@ export default function DashboardScreen({ navigation }) {
         }}
       />
 
-      <Modal
+      <PostLoginSyncModal
         visible={postLoginSyncModalVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setPostLoginSyncModalVisible(false)}
-      >
-        <Pressable style={styles.modalBackdrop} onPress={() => setPostLoginSyncModalVisible(false)}>
-          <Pressable style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
-            <View style={styles.syncSuccessAccent}>
-              <Ionicons name="cloud-done" size={40} color={colors.primary} />
-            </View>
-            <Text style={styles.syncSuccessTitle}>{postLoginSyncCopy.title}</Text>
-            <Text style={styles.syncSuccessSubtitle}>{postLoginSyncCopy.subtitle}</Text>
-            <TouchableOpacity
-              style={styles.modalCloseBtn}
-              onPress={() => setPostLoginSyncModalVisible(false)}
-              activeOpacity={0.88}
-            >
-              <Text style={styles.modalCloseBtnText}>{postLoginSyncCopy.button}</Text>
-            </TouchableOpacity>
-          </Pressable>
-        </Pressable>
-      </Modal>
+        copy={postLoginSyncCopy}
+        onClose={() => setPostLoginSyncModalVisible(false)}
+      />
 
-      <Modal visible={profileModal != null} transparent animationType="fade" onRequestClose={() => setProfileModal(null)}>
-        <Pressable style={styles.modalBackdrop} onPress={() => setProfileModal(null)}>
-          <Pressable style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
-            {profileModal ? (
-              <>
-                <View style={styles.profileHero}>
-                  <View style={styles.profileAvatarLg}>
-                    {(() => {
-                      const uri = profileModal.imageBase64 ? odooImageToUri(profileModal.imageBase64) : null;
-                      return uri ? (
-                      <Image
-                        source={{ uri }}
-                        style={{ width: '100%', height: '100%' }}
-                        resizeMode="cover"
-                      />
-                    ) : (
-                      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-                        <Ionicons name="person" size={44} color={colors.textSecondary} />
-                      </View>
-                    );
-                    })()}
-                  </View>
-                  <Text style={styles.profileNameLg}>{profileModal.name}</Text>
-                  <Text style={styles.profileRole}>{profileModal.subtitle}</Text>
-                  {profileModal.phone ? (
-                    <TouchableOpacity style={styles.profilePhoneRow} onPress={() => openDial(profileModal.phone)} activeOpacity={0.85}>
-                      <Ionicons name="call-outline" size={22} color={colors.primary} />
-                      <Text style={styles.profilePhoneText}>{profileModal.phone}</Text>
-                      <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
-                    </TouchableOpacity>
-                  ) : (
-                    <Text style={styles.profileNoPhone}>No phone number on file</Text>
-                  )}
-                </View>
-                <TouchableOpacity style={styles.modalCloseBtn} onPress={() => setProfileModal(null)} activeOpacity={0.88}>
-                  <Text style={styles.modalCloseBtnText}>{t("settings.close", "Close")}</Text>
-                </TouchableOpacity>
-              </>
-            ) : null}
-          </Pressable>
-        </Pressable>
-      </Modal>
+      <ProfileModal
+        visible={profileModal != null}
+        profile={profileModal}
+        onClose={() => setProfileModal(null)}
+      />
+
+      <PostCheckHandoverModal
+        visible={postCheckModalVisible}
+        onClose={() => setPostCheckModalVisible(false)}
+        orderSyncStats={orderSyncStats}
+        user={user}
+        routeName={routeName}
+        initialCash={postCheckInitialAmounts.cash}
+        initialCheque={postCheckInitialAmounts.cheque}
+        initialCredit={postCheckInitialAmounts.credit}
+        onSubmitted={({ finalCash, finalCheque, finalCredit, dropoffLocation }) => {
+          setNotification({
+            visible: true,
+            title: 'Handover Submitted',
+            message: `Cash ${formatCurrency(finalCash)} · Cheque ${formatCurrency(finalCheque)} · Credit ${formatCurrency(finalCredit)} · Drop-off: ${dropoffLocation === 'showroom' ? 'Showroom' : 'Head Office'}`,
+            type: 'success',
+          });
+        }}
+      />
 
     </>
   );

@@ -17,6 +17,7 @@ import {
   Alert,
   Pressable,
   Keyboard,
+  InteractionManager,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -42,6 +43,9 @@ import { getProductImageSource } from '../utils/gasImage';
 import { isNewIssueName } from '../utils/cylinderCatalog';
 import { lineTaxAtQuantity } from '../utils/orderLineTax.js';
 import { getCheckoutResumeEntry } from '../services/checkoutResume.service';
+import { mergeInventoryQueueKeepingEmpty } from '../utils/emptyCollectionLocal.js';
+import { getSaleOrderDetailsUiCache, setSaleOrderDetailsUiCache } from '../utils/saleOrderDetailsUiCache';
+import { linesAfterDemandEditSave, orderAmountsFromLines } from '../utils/saleOrderLinePricing';
 
 function formatCurrency(amount) {
     const n = Number(amount);
@@ -91,23 +95,24 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
   );
   const FALLBACK_ACCENT = colors.primaryLight ?? colors.primary ?? '#818cf8';
   const { saleOrderId } = route.params;
+  const cachedDetails = getSaleOrderDetailsUiCache(saleOrderId);
 
-  const [order, setOrder] = useState(null);
-  const [lines, setLines] = useState([]);
-  const [isDelivered, setIsDelivered] = useState(false);
+  const [order, setOrder] = useState(cachedDetails?.order ?? null);
+  const [lines, setLines] = useState(cachedDetails?.lines ?? []);
+  const [isDelivered, setIsDelivered] = useState(cachedDetails?.isDelivered ?? false);
   // True when the picking/delivery is already validated ("done") locally.
   // In that case, lorry stock has already been deducted once, so we should
   // allow editing delivered quantity even if remaining stock is 0.
-  const [isDeliveryDone, setIsDeliveryDone] = useState(false);
+  const [isDeliveryDone, setIsDeliveryDone] = useState(cachedDetails?.isDeliveryDone ?? false);
   const [modifyEnabled, setModifyEnabled] = useState(false);
   const [qtyChanged, setQtyChanged] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!cachedDetails?.order);
   const [updating, setUpdating] = useState(false);
   const [canceling, setCanceling] = useState(false);
   const [updateError, setUpdateError] = useState(null);
-  const [productIdToAvailable, setProductIdToAvailable] = useState({});
-  const [productIdToOnHand, setProductIdToOnHand] = useState({});
-  const [productIdToImageUri, setProductIdToImageUri] = useState({});
+  const [productIdToAvailable, setProductIdToAvailable] = useState(cachedDetails?.productIdToAvailable ?? {});
+  const [productIdToOnHand, setProductIdToOnHand] = useState(cachedDetails?.productIdToOnHand ?? {});
+  const [productIdToImageUri, setProductIdToImageUri] = useState(cachedDetails?.productIdToImageUri ?? {});
   const [showCancelConfirmModal, setShowCancelConfirmModal] = useState(false);
   const [showCancelModal, setShowCancelModal] = useState(false);
   const [cancelReasons, setCancelReasons] = useState([]);
@@ -676,7 +681,13 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
       const existingInventoryUpdate =
         await syncQueueDb.getPendingInventoryUpdateItemBySaleOrderId(Number(order.id));
       if (existingInventoryUpdate?.id != null) {
-        await syncQueueDb.updateQueueItemPayload(existingInventoryUpdate.id, inventoryPayload);
+        const existingPayload = existingInventoryUpdate.payload || {};
+        const existingUpdates = Array.isArray(existingPayload.updates) ? existingPayload.updates : [];
+        await syncQueueDb.updateQueueItemPayload(existingInventoryUpdate.id, {
+          ...inventoryPayload,
+          holdUntilComplete: true,
+          updates: mergeInventoryQueueKeepingEmpty(existingUpdates, inventoryPayload.updates),
+        });
       } else {
         await syncQueueDb.enqueue(syncQueueDb.ACTION_INVENTORY_UPDATE, inventoryPayload);
       }
@@ -689,112 +700,127 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
       throw new Error('Failed to update vehicle inventory');
     }
   }, [order, lines, productIdToAvailable, productIdToOnHand]);
-  const loadDetails = useCallback(async () => {
-    setLoading(true);
-    try {
-      const data = await getSaleOrderDetailsFromDB(saleOrderId);
-      if (!data.order) {
-        setOrder(null);
-        setLines([]);
-        setIsDelivered(false);
-        setProductIdToAvailable({});
-        setProductIdToOnHand({});
-        return;
+  const enrichDetailsInBackground = useCallback(
+    async (data, mappedLines, deliveryDone) => {
+      const productIds = mappedLines
+        .map((l) => (Array.isArray(l.product_id) ? l.product_id[0] : l.product_id))
+        .filter((pid) => pid != null);
+      const imageMap = await productsDb.getProductImageUriMapForIds(productIds);
+      setProductIdToImageUri(imageMap || {});
+
+      let mapAvail = {};
+      let mapOnHand = {};
+      const vehicleId =
+        data.order?.vehicle_id != null
+          ? Array.isArray(data.order.vehicle_id)
+            ? data.order.vehicle_id[0]
+            : data.order.vehicle_id
+          : null;
+
+      if (vehicleId != null) {
+        try {
+          const locationId = await getVehicleLocationId(vehicleId);
+          if (locationId) {
+            const inventories = await getCachedVehicleInventoryByLocation(locationId);
+            (inventories || []).forEach((inv) => {
+              const pid = inv.product_id != null ? inv.product_id : inv.id;
+              if (pid != null) {
+                mapAvail[pid] = clampNonNegativeStock(inv.available_quantity);
+                mapOnHand[pid] = clampNonNegativeStock(inv.quantity);
+              }
+            });
+            (data.lines || []).forEach((l) => {
+              const pid = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
+              if (pid == null) return;
+              if (mapAvail[pid] === undefined) mapAvail[pid] = 0;
+              if (mapOnHand[pid] === undefined) mapOnHand[pid] = 0;
+            });
+          }
+        } catch (error) {
+          console.error('Failed to load vehicle inventory:', error);
+        }
       }
-      setOrder(data.order);
-      const { picking, moves, moveLines } = await getDeliveryDataFromDB(saleOrderId);
-      const moveIdToProductId = {};
-      (moves || []).forEach((m) => {
-        const pid = Array.isArray(m.product_id) ? m.product_id[0] : m.product_id;
-        if (pid != null) moveIdToProductId[m.id] = pid;
+      setProductIdToAvailable(mapAvail);
+      setProductIdToOnHand(mapOnHand);
+      setSaleOrderDetailsUiCache(saleOrderId, {
+        order: data.order,
+        lines: mappedLines,
+        isDelivered: data.order?.invoice_status === 'invoiced',
+        isDeliveryDone: deliveryDone,
+        productIdToAvailable: mapAvail,
+        productIdToOnHand: mapOnHand,
+        productIdToImageUri: imageMap || {},
       });
-      const qtyDoneByProductId = {};
-      (moveLines || []).forEach((ml) => {
-        const mid = Array.isArray(ml.move_id) ? ml.move_id[0] : ml.move_id;
-        const pid = moveIdToProductId[mid];
-        if (pid == null) return;
-        qtyDoneByProductId[pid] = (qtyDoneByProductId[pid] || 0) + (Number(ml.qty_done) || 0);
-      });
-      const deliveryDone = ((picking?.state || '') + '').toLowerCase() === 'done';
-      setLines(
-        (data.lines || []).map((l) => {
+    },
+    [saleOrderId]
+  );
+
+  const loadDetails = useCallback(
+    async ({ silent = false } = {}) => {
+      const hadCache = !!getSaleOrderDetailsUiCache(saleOrderId)?.order;
+      if (!silent && !hadCache) setLoading(true);
+      try {
+        const [data, { picking, moves, moveLines }] = await Promise.all([
+          getSaleOrderDetailsFromDB(saleOrderId),
+          getDeliveryDataFromDB(saleOrderId),
+        ]);
+        if (!data.order) {
+          setOrder(null);
+          setLines([]);
+          setIsDelivered(false);
+          setProductIdToAvailable({});
+          setProductIdToOnHand({});
+          return;
+        }
+        const moveIdToProductId = {};
+        (moves || []).forEach((m) => {
+          const pid = Array.isArray(m.product_id) ? m.product_id[0] : m.product_id;
+          if (pid != null) moveIdToProductId[m.id] = pid;
+        });
+        const qtyDoneByProductId = {};
+        (moveLines || []).forEach((ml) => {
+          const mid = Array.isArray(ml.move_id) ? ml.move_id[0] : ml.move_id;
+          const pid = moveIdToProductId[mid];
+          if (pid == null) return;
+          qtyDoneByProductId[pid] = (qtyDoneByProductId[pid] || 0) + (Number(ml.qty_done) || 0);
+        });
+        const deliveryDone = ((picking?.state || '') + '').toLowerCase() === 'done';
+        const mappedLines = (data.lines || []).map((l) => {
           const pid = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
           const savedDone = pid != null ? qtyDoneByProductId[pid] : null;
           const demand = Number(l.product_uom_qty ?? 0) || 0;
-          // Before delivery is finalized, always show latest edited/saved demand qty
-          // so users can re-open Modify and continue editing flexibly.
           const initial =
             deliveryDone && savedDone != null && savedDone > 0 ? savedDone : demand;
           return { ...l, newQty: String(initial) };
-        })
-      );
-      const imageMap = await productsDb.getProductImageUriMap();
-      setProductIdToImageUri(imageMap || {});
-      setQtyChanged(false);
-      setIsDeliveryDone(deliveryDone);
-      setIsDelivered(data.order?.invoice_status === 'invoiced');
-
-
-        const vehicleId = data.order?.vehicle_id != null
-            ? (Array.isArray(data.order.vehicle_id) ? data.order.vehicle_id[0] : data.order.vehicle_id)
-            : null;
-
-        console.log(`[UI Debug] This order is assigned to Vehicle ID: ${vehicleId}`);
-
-        if (vehicleId != null) {
-          try {
-            // Get location_id for this vehicle and fetch inventory by location
-            const locationId = await getVehicleLocationId(vehicleId);
-            console.log(`[UI Debug] Vehicle ${vehicleId} has location_id: ${locationId}`);
-
-            if (locationId) {
-              const inventories = await getCachedVehicleInventoryByLocation(locationId);
-              const mapAvail = {};
-              const mapOnHand = {};
-              (inventories || []).forEach((inv) => {
-                const pid = inv.product_id != null ? inv.product_id : inv.id;
-                if (pid != null) {
-                  mapAvail[pid] = clampNonNegativeStock(inv.available_quantity);
-                  mapOnHand[pid] = clampNonNegativeStock(inv.quantity);
-                }
-              });
-              (data.lines || []).forEach((l) => {
-                const pid = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
-                if (pid == null) return;
-                if (mapAvail[pid] === undefined) mapAvail[pid] = 0;
-                if (mapOnHand[pid] === undefined) mapOnHand[pid] = 0;
-              });
-              setProductIdToAvailable(mapAvail);
-              setProductIdToOnHand(mapOnHand);
-            } else {
-              console.warn(`[UI Debug] No location_id found for vehicle ${vehicleId}`);
-              setProductIdToAvailable({});
-              setProductIdToOnHand({});
-            }
-          } catch (error) {
-            console.error('Failed to load vehicle inventory:', error);
-            setProductIdToAvailable({});
-            setProductIdToOnHand({});
-          }
-        } else {
-          setProductIdToAvailable({});
+        });
+        setOrder(data.order);
+        setLines(mappedLines);
+        setQtyChanged(false);
+        setIsDeliveryDone(deliveryDone);
+        setIsDelivered(data.order?.invoice_status === 'invoiced');
+        setLoading(false);
+        void enrichDetailsInBackground(data, mappedLines, deliveryDone);
+      } catch (_) {
+        if (!silent && !hadCache) {
+          setOrder(null);
+          setLines([]);
+          setIsDelivered(false);
+          setIsDeliveryDone(false);
+          setProductIdToImageUri({});
           setProductIdToOnHand({});
         }
-    } catch (_) {
-      setOrder(null);
-      setLines([]);
-      setIsDelivered(false);
-      setIsDeliveryDone(false);
-      setProductIdToImageUri({});
-      setProductIdToOnHand({});
-    } finally {
-      setLoading(false);
-    }
-  }, [saleOrderId]);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [enrichDetailsInBackground, saleOrderId]
+  );
 
-  useEffect(() => {
-    loadDetails();
-  }, [loadDetails]);
+  useFocusEffect(
+    useCallback(() => {
+      void loadDetails({ silent: !!getSaleOrderDetailsUiCache(saleOrderId)?.order });
+    }, [loadDetails, saleOrderId])
+  );
 
   useEffect(() => {
     let active = true;
@@ -1298,9 +1324,22 @@ const getStockWarning = useCallback((lineId) => {
           await syncQueueDb.enqueue(syncQueueDb.ACTION_DELIVERY, payloadWithHold);
         }
       }
-      await loadDetails();
-      setModifyEnabled(false);
+      const updatedLines = linesAfterDemandEditSave(lines, payload.orderLineUpdates);
+      const orderAmounts = orderAmountsFromLines(updatedLines);
+      setLines(updatedLines);
+      setOrder((prev) => {
+        const next = prev ? { ...prev, ...orderAmounts } : prev;
+        if (next) {
+          setSaleOrderDetailsUiCache(saleOrderId, {
+            ...(getSaleOrderDetailsUiCache(saleOrderId) || {}),
+            order: next,
+            lines: updatedLines,
+          });
+        }
+        return next;
+      });
       setQtyChanged(false);
+      setModifyEnabled(false);
       setUpdateError(null);
     } catch (err) {
       setUpdateError(err?.message ?? 'Update failed. Try again.');

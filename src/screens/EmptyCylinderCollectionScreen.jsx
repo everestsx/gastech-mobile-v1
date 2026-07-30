@@ -27,6 +27,11 @@ import {
 import * as syncQueueDb from '../database/syncQueue.js';
 import * as productsDb from '../database/products.js';
 import { applyInventoryUpdatesToLocalDb } from '../utils/localInventoryApply.js';
+import {
+  mergeInventoryQueueKeepingGas,
+  revertAppliedEmptyIncrements,
+  splitInventoryQueueUpdates,
+} from '../utils/emptyCollectionLocal.js';
 import { setCheckoutResumeFromPayment } from '../services/checkoutResume.service';
 import { buildEmptyCylinderChatterBody } from '../services/proofAttachment.service';
 import {
@@ -53,17 +58,6 @@ function qtyClose(a, b) {
 
 const DISPLAY_KG_SIZES = [2.4, 5, 12.5, 37.5];
 
-/** Merge inventory queue rows by product — keeps gas reductions when adding empty-return increments. */
-function mergeInventoryQueueUpdatesByProduct(existingUpdates, incomingUpdates) {
-  const byProduct = new Map();
-  for (const u of [...(existingUpdates || []), ...(incomingUpdates || [])]) {
-    const pid = Number(u?.productId);
-    if (!Number.isFinite(pid) || pid <= 0) continue;
-    const prev = byProduct.get(pid);
-    byProduct.set(pid, prev ? { ...prev, ...u } : { ...u });
-  }
-  return Array.from(byProduct.values());
-}
 const REASON_PRESET_KEYS = [
   'loanReturnPending',
   'newIssueReplacement',
@@ -303,6 +297,15 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
         }
 
         if (locationId != null) {
+          const existingInventoryUpdate =
+            await syncQueueDb.getPendingInventoryUpdateItemBySaleOrderId(Number(saleOrderId));
+          const existingPayload = existingInventoryUpdate?.payload || {};
+          const existingUpdates = Array.isArray(existingPayload.updates) ? existingPayload.updates : [];
+          const { emptyIncrements: previousEmptyIncrements } = splitInventoryQueueUpdates(existingUpdates);
+          if (previousEmptyIncrements.length > 0) {
+            await revertAppliedEmptyIncrements(Number(locationId), previousEmptyIncrements);
+          }
+
           const inventory = await getCachedVehicleInventoryByLocation(locationId);
           const byProductId = {};
           const inventoryQueueUpdates = [];
@@ -352,18 +355,15 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
               updates: updatesWithLocal,
               holdUntilComplete: true,
             };
-            const existingInventoryUpdate =
-              await syncQueueDb.getPendingInventoryUpdateItemBySaleOrderId(Number(saleOrderId));
             if (existingInventoryUpdate?.id != null) {
-              const existingPayload = existingInventoryUpdate.payload || {};
               await syncQueueDb.updateQueueItemPayload(existingInventoryUpdate.id, {
                 ...existingPayload,
                 saleOrderId: Number(saleOrderId),
                 vehicleId: Number(vehicleId),
                 locationId: Number(locationId),
                 holdUntilComplete: true,
-                /** Empty-return rows merge with held gas reductions; latest row wins per product id. */
-                updates: mergeInventoryQueueUpdatesByProduct(existingPayload.updates, updatesWithLocal),
+                /** Replace prior empty increments; keep held gas reductions on the same queue row. */
+                updates: mergeInventoryQueueKeepingGas(existingUpdates, updatesWithLocal),
               });
             } else {
               await syncQueueDb.enqueue(syncQueueDb.ACTION_INVENTORY_UPDATE, inventoryPayload);

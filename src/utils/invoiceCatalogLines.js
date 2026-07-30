@@ -20,6 +20,8 @@ export function resolveInvoiceLineUnitPrice(line) {
   const q = Number(line?.product_uom_qty) || 0;
   const sub = Number(line?.price_subtotal) || 0;
   if (q > 0 && sub > 0) return sub / q;
+  const catalog = Number(line?.list_price);
+  if (Number.isFinite(catalog) && catalog > 0) return catalog;
   return 0;
 }
 
@@ -57,7 +59,7 @@ export async function mergeInvoiceLinesWithCatalog(saleOrderId, baseLines = []) 
       if (unit <= 0 && q > 0 && Number(line?.price_subtotal) > 0) {
         unit = Number(line.price_subtotal) / q;
       }
-      return { ...line, price_unit: unit };
+      return { ...line, price_unit: unit, list_price: catalogUnit > 0 ? catalogUnit : line?.list_price };
     };
 
     const byProductId = new Map();

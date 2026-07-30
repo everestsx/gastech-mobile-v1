@@ -28,6 +28,7 @@ import {
   runSync,
   setPostLoginSyncSuccessPending,
   saveUserSession,
+  clearPreCheckDoneState,
   saveLastVehicleId,
   syncVehiclesOnly,
   getSessionExpiryAtIsoEndOfLocalDay,
@@ -40,6 +41,7 @@ import {
   refreshPortersEmployeesCache,
   odooImageToUri,
 } from '../services/employee.service';
+import { recordDriverLogin } from '../services/driverLoginHistory.service';
 
 
 
@@ -73,6 +75,7 @@ export default function LoginScreen({ navigation }) {
   const [languageMenuVisible, setLanguageMenuVisible] = useState(false);
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [vehicleFetchError, setVehicleFetchError] = useState(false);
 
   const [alertConfig, setAlertConfig] = useState({
     visible: false,
@@ -91,7 +94,6 @@ export default function LoginScreen({ navigation }) {
   const loadVehicles = useCallback(async () => {
     try {
       const list = await getCachedVehicles();
-      console.log("Vehicles loaded from DB:", list.length);
       const vehicleList = Array.isArray(list) ? list : [];
       setVehicles(vehicleList);
       const lastId = await getLastVehicleId();
@@ -107,18 +109,27 @@ export default function LoginScreen({ navigation }) {
     }
   }, []);
 
-  /** On login screen load: always fetch fleet.vehicle from Odoo (search_read), then refresh local list. */
+  /** Show cached vehicles immediately; refresh fleet from Odoo in background (do not block the form). */
   const initData = useCallback(async () => {
     await loadVehicles();
-    setSyncing(true);
-    try {
-      const success = await syncVehiclesOnly();
-      if (success) await loadVehicles();
-    } catch (e) {
-      console.log("Vehicle fetch failed", e);
-    } finally {
-      setTimeout(() => setSyncing(false), 500);
-    }
+    void (async () => {
+      setSyncing(true);
+      setVehicleFetchError(false);
+      try {
+        const success = await syncVehiclesOnly();
+        if (success) {
+          const updated = await loadVehicles();
+          if (!updated.length) setVehicleFetchError(true);
+        } else {
+          setVehicleFetchError(true);
+        }
+      } catch (e) {
+        console.warn('[Login] vehicle fetch failed', e?.message || e);
+        setVehicleFetchError(true);
+      } finally {
+        setSyncing(false);
+      }
+    })();
   }, [loadVehicles]);
   /** Driver code / password (matched in Odoo on Driving employees; value is not shown from server). */
   const [password, setPassword] = useState('');
@@ -249,6 +260,7 @@ export default function LoginScreen({ navigation }) {
 
     setLoading(true);
     try {
+      await clearPreCheckDoneState();
       await saveUserSession({
         isAdmin: false,
         vehicleId: selected.id,
@@ -262,7 +274,7 @@ export default function LoginScreen({ navigation }) {
         selectedPorters,
         loggedInAt: new Date().toISOString(),
         sessionExpiresAt: getSessionExpiryAtIsoEndOfLocalDay(),
-        pendingInitialSync: true,
+        pendingInitialSync: false,
       });
 
       try {
@@ -271,6 +283,13 @@ export default function LoginScreen({ navigation }) {
         console.warn('[Login] saveLastVehicleId failed', e?.message || e);
       }
       const licensePlate = (selected.license_plate || selected.name || '').trim();
+
+      // Notify back office of this login session; never blocks reaching the dashboard.
+      void recordDriverLogin({
+        batchId: matchedDriver.barcode,
+        driverId: matchedDriver.id,
+        vehicleId: selected.id,
+      });
 
       // Do not block login UI on heavy network sync; driver must reach dashboard quickly.
       void (async () => {
@@ -852,7 +871,48 @@ export default function LoginScreen({ navigation }) {
                 <View
                     style={styles.dropdownWrapper}
                 >
-                  <Text style={styles.inputLabel}>{t('login.vehicleID', 'Vehicle ID')}</Text>
+                  {/* Vehicle ID row: label + always-visible refresh button */}
+                  <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}>
+                    <Text style={[styles.inputLabel, { marginBottom: 0, marginLeft: 4, flex: 1 }]}>
+                      {t('login.vehicleID', 'Vehicle ID')}
+                    </Text>
+                    <TouchableOpacity
+                      onPress={syncing ? undefined : initData}
+                      activeOpacity={syncing ? 1 : 0.7}
+                      style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        gap: 5,
+                        backgroundColor: vehicleFetchError
+                          ? '#ef444414'
+                          : colors.primary + '14',
+                        borderRadius: 20,
+                        paddingHorizontal: 10,
+                        paddingVertical: 5,
+                        borderWidth: 1,
+                        borderColor: vehicleFetchError
+                          ? '#ef444435'
+                          : colors.primary + '35',
+                      }}
+                    >
+                      {syncing ? (
+                        <ActivityIndicator size="small" color={colors.primary} />
+                      ) : (
+                        <Ionicons
+                          name="refresh-outline"
+                          size={13}
+                          color={vehicleFetchError ? '#ef4444' : colors.primary}
+                        />
+                      )}
+                      <Text style={{
+                        fontSize: 12,
+                        fontWeight: '700',
+                        color: vehicleFetchError ? '#ef4444' : colors.primary,
+                      }}>
+                        {syncing ? 'Fetching…' : vehicleFetchError ? 'Retry' : 'Refresh'}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
 
                   <TouchableOpacity
                       ref={dropdownRef}

@@ -1,12 +1,11 @@
 import React, { useEffect, useRef } from 'react';
-import { AppState, View, StyleSheet } from 'react-native';
+import { AppState, View, StyleSheet, DeviceEventEmitter } from 'react-native';
 import { NavigationContainer, createNavigationContainerRef } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useTranslation } from 'react-i18next';
-import { useSync } from '../context/SyncContext';
 import { colors } from '../constants/theme';
 import SplashScreen from '../screens/SplashScreen';
 import LoginScreen from '../screens/LoginScreen';
@@ -33,11 +32,11 @@ import LocalInvoicesScreen from '../screens/LocalInvoicesScreen';
 import CancelOrdersScreen from '../screens/CancelOrdersScreen';
 import InvoicedCustomersScreen from '../screens/InvoicedCustomersScreen';
 import BluetoothPrinterScreen from '../screens/BluetoothPrinterScreen';
+import MySalesScreen from '../screens/MySalesScreen';
 import SyncHeaderBadge from '../components/SyncHeaderBadge';
 
 import { useTheme } from '../context/ThemeContext';
 import {
-  runSync,
   getSyncIntervalMs,
   getUserSession,
   logout,
@@ -46,6 +45,11 @@ import {
   hasPendingUploadWork,
   hasDashboardUploadIndicators,
   hasActiveUploadWork,
+  hasActionablePendingUploadWork,
+  hasDashboardUploadQueueWork,
+  shouldRunPendingUploadRetryLoop,
+  isCheckoutUploadActive,
+  wakePendingUploadSyncNow,
   PENDING_QUEUE_FAST_RETRY_MS,
   PENDING_QUEUE_FAST_RETRY_WINDOW_MS,
   PENDING_QUEUE_IDLE_POLL_MS,
@@ -54,6 +58,7 @@ import * as syncQueueDb from '../database/syncQueue.js';
 import {
   subscribeNetworkStatus,
   getPendingRetryDelayMsForQuality,
+  getPendingRetryDelayMsForAppState,
   NetworkQuality,
 } from '../services/networkStatus.service';
 
@@ -76,10 +81,26 @@ function MainTabs() {
   const { t } = useTranslation();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
+  const [preCheckDone, setPreCheckDone] = React.useState(true);
+
+  React.useEffect(() => {
+    const sub = DeviceEventEmitter.addListener('preCheckStatusChanged', (status) => {
+      setPreCheckDone(status);
+    });
+    return () => sub.remove();
+  }, []);
+
   const tabBarHeight = 60;
   const tabBarPaddingBottom = Math.max(6, insets.bottom);
   return (
     <Tab.Navigator
+      screenListeners={{
+        tabPress: (e) => {
+          if (!preCheckDone) {
+            e.preventDefault();
+          }
+        },
+      }}
       screenOptions={{
         headerShown: false,
         tabBarActiveTintColor: colors.primary,
@@ -90,6 +111,7 @@ function MainTabs() {
           height: tabBarHeight + insets.bottom,
           backgroundColor: colors.surface,
           borderTopColor: colors.border,
+          opacity: preCheckDone ? 1 : 0.4,
         },
         tabBarLabelStyle: { fontSize: 12, fontWeight: '600' },
       }}
@@ -226,6 +248,11 @@ function MainStackScreen() {
         options={{ ...headerScreenOptions, title: t('navigation.settings', 'Settings') }}
       />
       <MainStack.Screen
+        name="MySales"
+        component={MySalesScreen}
+        options={{ ...headerScreenOptions }}
+      />
+      <MainStack.Screen
         name="BluetoothPrinter"
         component={BluetoothPrinterScreen}
         options={{ ...headerScreenOptions, title: t('navigation.bluetoothPrinter', 'Bluetooth printer') }}
@@ -278,10 +305,7 @@ export default function AppNavigator() {
   const syncIntervalRef = useRef(null);
   const appStateRef = useRef(AppState.currentState);
   const networkQualityRef = useRef(NetworkQuality.OFFLINE);
-  const { hideSyncIndicator } = useSync();
   const { syncInterval } = useTheme();
-  const hideSyncRef = useRef(hideSyncIndicator);
-  hideSyncRef.current = hideSyncIndicator;
 
   useEffect(() => {
     const unsubNet = subscribeNetworkStatus((snap) => {
@@ -293,39 +317,43 @@ export default function AppNavigator() {
   useEffect(() => {
     const intervalMs = getSyncIntervalMs(syncInterval);
     const runScheduledSyncIfNeeded = async () => {
-      if (hideSyncRef.current) return;
+      if (networkQualityRef.current === NetworkQuality.OFFLINE) return;
+      if (isCheckoutUploadActive()) return;
       try {
-        if (!(await hasActiveUploadWork())) return;
+        if (await hasActionablePendingUploadWork()) {
+          await flushPendingUploadsNow({
+            includeAttachments: true,
+            queuePasses: 4,
+            aggressive: true,
+          });
+        }
       } catch (_) {
-        return;
+        /* ignore */
       }
-      runSync().catch(() => {});
     };
 
     const runFastPending = async () => {
-      if (hideSyncRef.current) return;
+      if (networkQualityRef.current === NetworkQuality.OFFLINE) return;
+      if (isCheckoutUploadActive()) return;
       try {
-        if (!(await hasActiveUploadWork())) return;
+        if (!(await shouldRunPendingUploadRetryLoop())) return;
         const ageMs = await syncQueueDb.getOldestPendingQueueAgeMs();
-        const passes = ageMs <= PENDING_QUEUE_FAST_RETRY_WINDOW_MS ? 18 : 10;
+        const passes = ageMs <= PENDING_QUEUE_FAST_RETRY_WINDOW_MS ? 4 : 3;
         await flushPendingUploadsNow({
           includeAttachments: true,
           queuePasses: passes,
           aggressive: true,
         });
         const stillPending = await hasPendingUploadWork();
-        const stillIndicators = hasDashboardUploadIndicators();
+        const stillIndicators = hasDashboardUploadQueueWork();
         if (!stillPending && !stillIndicators) return;
         if (networkQualityRef.current === NetworkQuality.GOOD && stillPending) {
           await flushPendingUploadsNow({
             includeAttachments: true,
-            queuePasses: 22,
+            queuePasses: 4,
             aggressive: true,
           });
-          if (!(await hasPendingUploadWork()) && !hasDashboardUploadIndicators()) return;
-        }
-        if (networkQualityRef.current !== NetworkQuality.GOOD) {
-          runSync().catch(() => {});
+          if (!(await hasPendingUploadWork()) && !hasDashboardUploadQueueWork()) return;
         }
       } catch (_) {
         /* ignore */
@@ -333,17 +361,22 @@ export default function AppNavigator() {
     };
 
     const sub = AppState.addEventListener('change', (nextState) => {
-      if (nextState === 'active' && appStateRef.current !== 'active') {
+      const wasActive = appStateRef.current === 'active';
+      const isActive = nextState === 'active';
+      if (isActive && !wasActive) {
         void enforceSessionNotExpired();
         void runScheduledSyncIfNeeded();
         syncIntervalRef.current = setInterval(() => {
           void runScheduledSyncIfNeeded();
         }, intervalMs);
-      } else if (nextState !== 'active') {
+        void runFastPending();
+      } else if (!isActive && wasActive) {
         if (syncIntervalRef.current) {
           clearInterval(syncIntervalRef.current);
           syncIntervalRef.current = null;
         }
+        wakePendingUploadSyncNow({ queuePasses: 24, includeAttachments: true });
+        void runFastPending();
       }
       appStateRef.current = nextState;
     });
@@ -364,11 +397,11 @@ export default function AppNavigator() {
         if (fastPendingCancelled) return;
         let hasWork = false;
         try {
-          hasWork = await hasActiveUploadWork();
+          hasWork = await shouldRunPendingUploadRetryLoop();
         } catch (_) {
           hasWork = false;
         }
-        if (AppState.currentState === 'active' && hasWork) {
+        if (hasWork) {
           try {
             await runFastPending();
           } catch (_) {
@@ -377,25 +410,35 @@ export default function AppNavigator() {
         }
         let nextMs = PENDING_QUEUE_IDLE_POLL_MS;
         if (hasWork) {
-          nextMs = getPendingRetryDelayMsForQuality(
+          const q =
             networkQualityRef.current === NetworkQuality.OFFLINE
               ? NetworkQuality.WEAK
-              : networkQualityRef.current
-          );
+              : networkQualityRef.current;
+          nextMs = getPendingRetryDelayMsForAppState(AppState.currentState, q);
         }
         scheduleFastPendingLoop(nextMs);
       }, delayMs);
     };
-    if (AppState.currentState === 'active') {
-      void (async () => {
-        try {
-          if (await hasActiveUploadWork()) await runFastPending();
-        } catch (_) {
-          /* ignore */
-        }
-      })();
-    }
-    scheduleFastPendingLoop(PENDING_QUEUE_FAST_RETRY_MS);
+    /** Start upload drain quickly when a prior session left pending checkout uploads. */
+    void (async () => {
+      let startupPendingDelayMs = 2800;
+      try {
+        const n = await syncQueueDb.getActionablePendingCount();
+        if (Number(n) > 0) startupPendingDelayMs = 400;
+      } catch (_) {
+        /* use default delay */
+      }
+      setTimeout(() => {
+        void (async () => {
+          try {
+            if (await shouldRunPendingUploadRetryLoop()) await runFastPending();
+          } catch (_) {
+            /* ignore */
+          }
+        })();
+        scheduleFastPendingLoop(PENDING_QUEUE_FAST_RETRY_MS);
+      }, startupPendingDelayMs);
+    })();
 
     return () => {
       sub?.remove?.();

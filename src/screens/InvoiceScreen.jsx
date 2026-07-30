@@ -11,6 +11,7 @@ import {
   Modal,
   Alert,
   FlatList,
+  InteractionManager,
 } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import { Ionicons } from '@expo/vector-icons';
@@ -27,6 +28,7 @@ import { spacing, borderRadius } from '../constants/theme';
 import { INVOICE_LOGO_PNG_BASE64 } from '../constants/invoiceLogoBase64';
 import { getSaleOrderDetailsFromDB, getUserSession, runSync } from '../services/sync.service';
 import { getOrAssignInvoiceNumber } from '../utils/invoiceNumber';
+import { getInvoiceScreenUiCache, setInvoiceScreenUiCache } from '../utils/invoiceScreenUiCache';
 import { getProductDisplayName, sortInvoiceLinesByGasKgAsc } from '../utils/productDisplay';
 import { formatAmount } from '../utils/format';
 import * as localPaymentsDb from '../database/localPayments.js';
@@ -36,7 +38,8 @@ import { callOdoo } from '../services/index.service';
 import { findBluetoothPrinters, printPdfFileToRongta } from '../services/printerService';
 import SyncHeaderBadge from '../components/SyncHeaderBadge';
 import SignatureCanvas from 'react-native-signature-canvas';
-import { resolveInvoiceCustomerDisplayName, odooLocalizedText } from '../utils/customerDisplayName';
+import { resolveInvoiceCustomerDisplayName } from '../utils/customerDisplayName';
+import { fetchInvoicePartyInfo, partyInfoReadyForPrint } from '../utils/invoicePartyInfo';
 import { lineSubtotalAtQuantity, lineTaxAtQuantity } from '../utils/orderLineTax.js';
 import { setCheckoutResumePhase, clearCheckoutResume, getCheckoutResumeEntry } from '../services/checkoutResume.service';
 import * as syncQueueDb from '../database/syncQueue.js';
@@ -59,6 +62,15 @@ function paymentSplitHasLineItems(split) {
   const chq = Number(split.check ?? split.cheque) || 0;
   const cred = Number(split.credit) || 0;
   return cash > 0 || chq > 0 || cred > 0;
+}
+
+/** Ignore empty/placeholder SQLite rows — still prompt when a real signature is missing. */
+function isUsableSignatureBlob(v) {
+  const s = v != null ? String(v).trim() : '';
+  if (!s || s === '[object Object]') return false;
+  const m = /^data:image\/[a-z0-9+.-]+;base64,(.+)$/i.exec(s);
+  if (m) return (m[1] || '').length >= 40;
+  return s.length >= 120;
 }
 
 /** PNG/JPEG base64 payload only (for Rongta native header bitmap). */
@@ -134,6 +146,20 @@ function safeDisplay(val) {
   if (val === undefined || val === null || val === false) return '—';
   const s = String(val).trim();
   return s === '' || s.toLowerCase() === 'false' ? '—' : s;
+}
+
+/** MM/DD/YYYY with zero-padded month and day (e.g. 07/25/2026) — invoice & delivery on screen and print. */
+function formatPrintedInvoiceDate(value) {
+  const d = value instanceof Date ? value : value != null ? new Date(value) : new Date();
+  if (Number.isNaN(d.getTime())) {
+    const now = new Date();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    return `${month}/${day}/${now.getFullYear()}`;
+  }
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${month}/${day}/${d.getFullYear()}`;
 }
 
 function formatPrintedDateTime(value = new Date()) {
@@ -278,13 +304,7 @@ function buildInvoiceHtml(
   const driverNameDisplay = safeDisplay(printOptions.salesRepName || '').replace(/</g, '&lt;');
   const vehicleNoDisplay = safeDisplay(printOptions.vehicleNumber || '').replace(/</g, '&lt;');
   const invoiceDateSource = resolveInvoiceDateSource(order);
-  const date = invoiceDateSource && !Number.isNaN(invoiceDateSource.getTime())
-    ? invoiceDateSource.toLocaleDateString('en-LK', {
-        year: 'numeric',
-        month: 'short',
-        day: 'numeric',
-      })
-    : new Date().toLocaleDateString('en-LK');
+  const date = formatPrintedInvoiceDate(invoiceDateSource);
   const dateOfInvoiceWithTime = `${date}, ${invoiceIssueTimeStr}`.replace(/</g, '&lt;');
   const customerName = safeDisplay(resolveInvoiceCustomerDisplayName(order, partyInfo, appLanguage)).replace(
     /</g,
@@ -707,11 +727,7 @@ function wrapPlainLines(text, w = PLAIN_WIDTH) {
 }
 
 function formatPlainISODate(order) {
-  const d = resolveInvoiceDateSource(order);
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
+  return formatPrintedInvoiceDate(resolveInvoiceDateSource(order));
 }
 
 function buildInvoicePlainText(
@@ -996,7 +1012,12 @@ export default function InvoiceScreen({ route, navigation }) {
     creditProofRequired: routeCreditProofRequired,
     orderName: routeOrderName,
     emptyCylinderEntries: routeEmptyCylinderEntries,
+    fromLocalInvoices: routeFromLocalInvoices,
+    readOnlyView: routeReadOnlyView,
   } = route.params ?? {};
+
+  const fromLocalInvoices = routeFromLocalInvoices === true;
+  const readOnlyView = routeReadOnlyView === true || fromLocalInvoices;
 
   const fromProceedPayment = routeFromProceedPayment === true;
   const promptSignatures = routePromptSignatures === true;
@@ -1006,8 +1027,16 @@ export default function InvoiceScreen({ route, navigation }) {
     promptSignatures && (openPaymentProofAfterPrint || fromProceedPayment);
 
   const { setHideSyncIndicator } = useSync();
-  const [order, setOrder] = useState(null);
-  const [lines, setLines] = useState([]);
+  const [order, setOrder] = useState(() => {
+    const id = Number(saleOrderId);
+    if (!Number.isFinite(id) || id <= 0) return null;
+    return getInvoiceScreenUiCache(id)?.order ?? null;
+  });
+  const [lines, setLines] = useState(() => {
+    const id = Number(saleOrderId);
+    if (!Number.isFinite(id) || id <= 0) return [];
+    return getInvoiceScreenUiCache(id)?.lines ?? [];
+  });
   /** When route omits invoiceLineQtys (e.g. opened from Delivered tab), restore from payment queue or checkout resume. */
   const [resolvedInvoiceLineQtys, setResolvedInvoiceLineQtys] = useState(null);
 
@@ -1082,7 +1111,11 @@ export default function InvoiceScreen({ route, navigation }) {
 
   const [invoiceNumber, setInvoiceNumber] = useState(null);
   const [odooInvoiceNumber, setOdooInvoiceNumber] = useState(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(() => {
+    const id = Number(saleOrderId);
+    if (!Number.isFinite(id) || id <= 0) return true;
+    return !getInvoiceScreenUiCache(id)?.order;
+  });
   const [printing, setPrinting] = useState(false);
   const [previewing, setPreviewing] = useState(false);
   const [printResult, setPrintResult] = useState(null);
@@ -1091,7 +1124,12 @@ export default function InvoiceScreen({ route, navigation }) {
   const [localChequeMeta, setLocalChequeMeta] = useState({ bankName: null, checkNumber: null });
   const [localCustomerSig, setLocalCustomerSig] = useState(null);
   const [localDriverSig, setLocalDriverSig] = useState(null);
-  const [partyInfo, setPartyInfo] = useState({});
+  const [partyInfo, setPartyInfo] = useState(() => {
+    const id = Number(saleOrderId);
+    if (!Number.isFinite(id) || id <= 0) return {};
+    return getInvoiceScreenUiCache(id)?.partyInfo ?? {};
+  });
+  const partyInfoLoadRef = useRef(null);
   const [showEvidenceModal, setShowEvidenceModal] = useState(false);
   const [deliveryPhotos, setDeliveryPhotos] = useState([]);
   const [savingEvidence, setSavingEvidence] = useState(false);
@@ -1706,6 +1744,8 @@ export default function InvoiceScreen({ route, navigation }) {
       setLoading(false);
       return;
     }
+    const hadCache = !!getInvoiceScreenUiCache(Number(saleOrderId))?.order;
+    if (!hadCache) setLoading(true);
     try {
       let extraInvoiceQtys = route.params?.invoiceLineQtys;
       if (!Array.isArray(extraInvoiceQtys) || extraInvoiceQtys.length === 0) {
@@ -1726,7 +1766,19 @@ export default function InvoiceScreen({ route, navigation }) {
           /* ignore */
         }
       }
-      const data = await getSaleOrderDetailsFromDB(saleOrderId);
+
+      const { getInvoiceLineSnapshotForSaleOrder, snapshotRowsToInvoiceLines } = await import(
+        '../utils/localInvoiceSnapshot.js'
+      );
+
+      const [data, localInv, split, paymentRows, frozenSnapshot] = await Promise.all([
+        getSaleOrderDetailsFromDB(saleOrderId),
+        localInvoicesDb.getLocalInvoiceBySaleOrderId(saleOrderId),
+        localPaymentsDb.getPaymentSplitBySaleOrderId(saleOrderId),
+        localPaymentsDb.getLocalPaymentsBySaleOrderId(saleOrderId),
+        getInvoiceLineSnapshotForSaleOrder(saleOrderId),
+      ]);
+
       setOrder(data.order);
       const orderName = data?.order?.name;
       const invNo =
@@ -1737,10 +1789,6 @@ export default function InvoiceScreen({ route, navigation }) {
         }));
       setInvoiceNumber(invNo);
 
-      const { getInvoiceLineSnapshotForSaleOrder, snapshotRowsToInvoiceLines } = await import(
-        '../utils/localInvoiceSnapshot.js'
-      );
-      const frozenSnapshot = await getInvoiceLineSnapshotForSaleOrder(saleOrderId);
       if (frozenSnapshot?.length) {
         setResolvedInvoiceLineQtys(
           frozenSnapshot.map((row) => ({ lineId: row.lineId, qty: row.qty }))
@@ -1758,114 +1806,118 @@ export default function InvoiceScreen({ route, navigation }) {
       }
       const nextLines = await mergeInvoiceLinesWithCatalog(saleOrderId, baseLines);
       setLines(nextLines);
-      const split = await localPaymentsDb.getPaymentSplitBySaleOrderId(saleOrderId);
       setLocalPaymentSplit(split || { cash: 0, cheque: 0, credit: 0 });
-      const paymentRows = await localPaymentsDb.getLocalPaymentsBySaleOrderId(saleOrderId);
-      const chequeRow = [...(paymentRows || [])].reverse().find((p) => String(p.payment_type || '').toLowerCase() === 'cheque');
+      const chequeRow = [...(paymentRows || [])]
+        .reverse()
+        .find((p) => String(p.payment_type || '').toLowerCase() === 'cheque');
       setLocalChequeMeta({
         bankName: chequeRow?.bank_name || null,
         checkNumber: chequeRow?.check_number || null,
       });
-
-      const localInv = await localInvoicesDb.getLocalInvoiceBySaleOrderId(saleOrderId);
       setLocalCustomerSig(localInv?.customer_signature_data ?? null);
       setLocalDriverSig(localInv?.driver_signature_data ?? null);
       setLoading(false);
 
-      let odooNo = null;
-      const odooInvoiceId = Number(localInv?.odoo_invoice_id);
-      if (Number.isFinite(odooInvoiceId) && odooInvoiceId > 0) {
-        try {
-          const invRows = await callOdoo('account.move', 'read', [[odooInvoiceId]], { fields: ['name'] });
-          const name = Array.isArray(invRows) ? invRows[0]?.name : null;
-          if (name && typeof name === 'string' && String(name).trim()) {
-            odooNo = String(name).trim();
+      setInvoiceScreenUiCache(Number(saleOrderId), {
+        order: data.order,
+        lines: nextLines,
+        invoiceNumber: invNo,
+        localPaymentSplit: split || { cash: 0, cheque: 0, credit: 0 },
+      });
+
+      if (!fromLocalInvoices) {
+        let odooNo = null;
+        const odooInvoiceId = Number(localInv?.odoo_invoice_id);
+        if (Number.isFinite(odooInvoiceId) && odooInvoiceId > 0) {
+          try {
+            const invRows = await callOdoo('account.move', 'read', [[odooInvoiceId]], { fields: ['name'] });
+            const name = Array.isArray(invRows) ? invRows[0]?.name : null;
+            if (name && typeof name === 'string' && String(name).trim()) {
+              odooNo = String(name).trim();
+            }
+          } catch (_) {
+            odooNo = null;
           }
-        } catch (_) {
-          odooNo = null;
         }
+        setOdooInvoiceNumber(odooNo);
       }
-      setOdooInvoiceNumber(odooNo);
 
-      // Fetch supplier(company) and customer details for printed invoice.
-      let nextPartyInfo = {};
-      try {
-        const companyRows = await callOdoo('res.company', 'read', [[1]], {
-          fields: ['name', 'phone', 'vat', 'partner_id'],
-        });
-        const company = Array.isArray(companyRows) ? companyRows[0] : null;
-        const companyPartnerId = Array.isArray(company?.partner_id) ? company.partner_id[0] : null;
-        let companyStreet = '';
-        let companyCity = '';
-        if (companyPartnerId != null) {
-          const companyPartnerRows = await callOdoo('res.partner', 'read', [[companyPartnerId]], {
-            fields: ['street', 'street2', 'city'],
-          });
-          const cp = Array.isArray(companyPartnerRows) ? companyPartnerRows[0] : null;
-          companyStreet = [cp?.street, cp?.street2].filter(Boolean).join(', ');
-          companyCity = cp?.city || '';
-        }
-
-        const customerPartnerId = Array.isArray(data?.order?.partner_id) ? data.order.partner_id[0] : null;
-        let customerRows = [];
-        if (customerPartnerId != null) {
-          customerRows = await callOdoo('res.partner', 'read', [[customerPartnerId]], {
-            fields: ['name', 'phone', 'street', 'street2', 'city', 'vat', 'name_tamil', 'name_sinhala'],
-          });
-        }
-        const customer = Array.isArray(customerRows) ? customerRows[0] : null;
-
-        nextPartyInfo = {
-          supplierName: company?.name || null,
-          supplierPhone: company?.phone || null,
-          supplierTin: company?.vat || null,
-          supplierAddress: [companyStreet, companyCity].filter(Boolean).join(', ') || null,
-          customerName: customer?.name || null,
-          customerNameTamil: odooLocalizedText(customer?.name_tamil),
-          customerNameSinhala: odooLocalizedText(customer?.name_sinhala),
-          customerPhone: customer?.phone || null,
-          customerTin: customer?.vat || null,
-          customerStreet: [customer?.street, customer?.street2].filter(Boolean).join(', ') || null,
-          customerCity: customer?.city || null,
-        };
-      } catch (_) {
-        nextPartyInfo = {};
-      }
-      setPartyInfo(nextPartyInfo);
+      const partyPromise = fetchInvoicePartyInfo(data.order).then((nextPartyInfo) => {
+        setPartyInfo(nextPartyInfo);
+        const prevCache = getInvoiceScreenUiCache(Number(saleOrderId)) || {};
+        setInvoiceScreenUiCache(Number(saleOrderId), { ...prevCache, partyInfo: nextPartyInfo });
+        return nextPartyInfo;
+      });
+      partyInfoLoadRef.current = partyPromise.finally(() => {
+        if (partyInfoLoadRef.current === partyPromise) partyInfoLoadRef.current = null;
+      });
     } catch (_) {
-      setOrder(null);
-      setLines([]);
-      setInvoiceNumber(null);
-      setLocalPaymentSplit(null);
-      setLocalChequeMeta({ bankName: null, checkNumber: null });
-      setLocalCustomerSig(null);
-      setLocalDriverSig(null);
-      setPartyInfo({});
-      setOdooInvoiceNumber(null);
+      if (!hadCache) {
+        setOrder(null);
+        setLines([]);
+        setInvoiceNumber(null);
+        setLocalPaymentSplit(null);
+        setLocalChequeMeta({ bankName: null, checkNumber: null });
+        setLocalCustomerSig(null);
+        setLocalDriverSig(null);
+        setPartyInfo({});
+        setOdooInvoiceNumber(null);
+      }
     } finally {
       setLoading(false);
     }
-  }, [saleOrderId, route.params?.invoiceNumber, route.params?.invoiceLineQtys]);
+  }, [saleOrderId, route.params?.invoiceNumber, route.params?.invoiceLineQtys, fromLocalInvoices]);
 
   useEffect(() => {
     loadInvoice();
   }, [loadInvoice]);
 
-  useEffect(() => {
-    if (!saleOrderId) return;
-    if (!fromProceedPayment || !promptSignatures) return;
+  const signaturesComplete = useCallback(() => {
     const hasCust =
-      (customerSignatureDataUrl && String(customerSignatureDataUrl).trim() !== '') ||
-      (localCustomerSig && String(localCustomerSig).trim() !== '');
+      isUsableSignatureBlob(customerSignatureDataUrl) || isUsableSignatureBlob(localCustomerSig);
     const hasDrv =
-      (driverSignatureDataUrl && String(driverSignatureDataUrl).trim() !== '') ||
-      (localDriverSig && String(localDriverSig).trim() !== '');
-    if (hasCust && hasDrv) return;
-    setShowSignatureCaptureModal(true);
+      isUsableSignatureBlob(driverSignatureDataUrl) || isUsableSignatureBlob(localDriverSig);
+    return hasCust && hasDrv;
+  }, [customerSignatureDataUrl, driverSignatureDataUrl, localCustomerSig, localDriverSig]);
+
+  const readCaptureSignature = useCallback((ref) => {
+    const attempt = (triesLeft) => {
+      const pad = ref?.current;
+      if (pad && typeof pad.readSignature === 'function') {
+        try {
+          pad.readSignature();
+        } catch (e) {
+          console.warn('[InvoiceScreen] readSignature', e?.message ?? e);
+        }
+        return;
+      }
+      if (triesLeft > 0) {
+        setTimeout(() => attempt(triesLeft - 1), 90);
+      } else {
+        Alert.alert(
+          'Signature pad loading',
+          'Wait a moment for the signature area to appear, then tap Save again.'
+        );
+      }
+    };
+    attempt(10);
+  }, []);
+
+  useEffect(() => {
+    if (!saleOrderId || !fromProceedPayment || !promptSignatures) return;
+    if (loading || !order) return;
+    if (signaturesComplete()) return;
+    const task = InteractionManager.runAfterInteractions(() => {
+      setShowSignatureCaptureModal(true);
+    });
+    return () => task.cancel();
   }, [
     saleOrderId,
     fromProceedPayment,
     promptSignatures,
+    loading,
+    order,
+    signaturesComplete,
     localCustomerSig,
     localDriverSig,
     customerSignatureDataUrl,
@@ -1989,8 +2041,9 @@ export default function InvoiceScreen({ route, navigation }) {
       saleOrderId,
       creditProofRequired: routeCreditProofRequired === true,
       orderName: routeOrderName,
+      customerLabel: safeDisplay(resolveInvoiceCustomerDisplayName(order, partyInfo, appLanguage)) || routeOrderName,
     });
-  }, [navigation, saleOrderId, routeCreditProofRequired, routeOrderName]);
+  }, [navigation, saleOrderId, routeCreditProofRequired, routeOrderName, order, partyInfo, appLanguage]);
 
   const backendSoInvoice =
     order?.invoice_number && String(order.invoice_number).trim()
@@ -2000,6 +2053,20 @@ export default function InvoiceScreen({ route, navigation }) {
 
   const buildInvoicePrintHtml = useCallback(async () => {
     if (!order) return null;
+    let partyForPrint = partyInfo;
+    if (!partyInfoReadyForPrint(partyForPrint)) {
+      const cachedParty = getInvoiceScreenUiCache(Number(saleOrderId))?.partyInfo;
+      if (partyInfoReadyForPrint(cachedParty)) {
+        partyForPrint = cachedParty;
+      } else if (partyInfoLoadRef.current) {
+        partyForPrint = (await partyInfoLoadRef.current) || {};
+      } else {
+        partyForPrint = await fetchInvoicePartyInfo(order);
+        setPartyInfo(partyForPrint);
+        const prevCache = getInvoiceScreenUiCache(Number(saleOrderId)) || {};
+        setInvoiceScreenUiCache(Number(saleOrderId), { ...prevCache, partyInfo: partyForPrint });
+      }
+    }
     const recomputeTotalsFromLines =
       previewBeforePayment ||
       (Array.isArray(invoiceLineQtys) && invoiceLineQtys.length > 0);
@@ -2044,7 +2111,7 @@ export default function InvoiceScreen({ route, navigation }) {
       effectiveInvoiceNumber,
       supplierTin,
       purchaserTin,
-      partyInfo,
+      partyForPrint,
       { ...printSessionOpts, omitLogoBlock: true }
     );
     const htmlForSystem = buildInvoiceHtml(
@@ -2061,7 +2128,7 @@ export default function InvoiceScreen({ route, navigation }) {
       effectiveInvoiceNumber,
       supplierTin,
       purchaserTin,
-      partyInfo,
+      partyForPrint,
       printSessionOpts
     );
     return { htmlForSystem, htmlForThermal, logoB64ForNative };
@@ -2084,20 +2151,17 @@ export default function InvoiceScreen({ route, navigation }) {
     supplierTin,
     purchaserTin,
     partyInfo,
+    saleOrderId,
     loadInvoiceLogoDataUriForPrint,
     effectiveInvoiceNumber,
   ]);
 
   const handlePrint = useCallback(async () => {
     if (!order) return;
-    if (openPaymentProofAfterPrint && promptSignatures) {
-      const hasCust = localCustomerSig && String(localCustomerSig).trim() !== '';
-      const hasDrv = localDriverSig && String(localDriverSig).trim() !== '';
-      if (!hasCust || !hasDrv) {
-        Alert.alert('Signatures needed', 'Add customer and driver signatures before printing.');
-        setShowSignatureCaptureModal(true);
-        return;
-      }
+    if (openPaymentProofAfterPrint && promptSignatures && !signaturesComplete()) {
+      Alert.alert('Signatures needed', 'Add customer and driver signatures before printing.');
+      openSignatureModalIfNeeded();
+      return;
     }
     const skipEv = route.params?.skipEvidenceModal === true;
     const wantSig = route.params?.promptSignatures === true;
@@ -2173,17 +2237,18 @@ export default function InvoiceScreen({ route, navigation }) {
     goToPaymentProofScreen,
     fromProceedPayment,
     invoiceLineQtys,
+    signaturesComplete,
+    openSignatureModalIfNeeded,
+    promptSignatures,
   ]);
 
   /** System print / preview dialog only (no navigation, no Bluetooth thermal). */
   const handlePreviewPrintInvoice = useCallback(async () => {
     if (!order) return;
     if (openPaymentProofAfterPrint && promptSignatures) {
-      const hasCust = localCustomerSig && String(localCustomerSig).trim() !== '';
-      const hasDrv = localDriverSig && String(localDriverSig).trim() !== '';
-      if (!hasCust || !hasDrv) {
+      if (!signaturesComplete()) {
         Alert.alert('Signatures needed', 'Add customer and driver signatures before preview.');
-        setShowSignatureCaptureModal(true);
+        openSignatureModalIfNeeded();
         return;
       }
     }
@@ -2210,6 +2275,8 @@ export default function InvoiceScreen({ route, navigation }) {
     promptSignatures,
     localCustomerSig,
     localDriverSig,
+    signaturesComplete,
+    openSignatureModalIfNeeded,
   ]);
 
   const goToHome = useCallback(async () => {
@@ -2328,6 +2395,10 @@ export default function InvoiceScreen({ route, navigation }) {
   const hasLineBasedTotals = (invoiceVisibleLines?.length || 0) > 0;
 
   const displaySubtotal = useMemo(() => {
+    if (fromLocalInvoices && routeSubtotalParam != null) {
+      const n = Number(routeSubtotalParam);
+      if (Number.isFinite(n)) return n;
+    }
     if ((previewBeforePayment || fromProceedPayment) && routeSubtotalParam != null) {
       const n = Number(routeSubtotalParam);
       if (Number.isFinite(n)) return n;
@@ -2338,6 +2409,7 @@ export default function InvoiceScreen({ route, navigation }) {
       ? order.amount_untaxed
       : computedSubtotal;
   }, [
+    fromLocalInvoices,
     previewBeforePayment,
     fromProceedPayment,
     routeSubtotalParam,
@@ -2347,6 +2419,10 @@ export default function InvoiceScreen({ route, navigation }) {
   ]);
 
   const displayTax = useMemo(() => {
+    if (fromLocalInvoices && routeTaxParam != null) {
+      const n = Number(routeTaxParam);
+      if (Number.isFinite(n)) return n;
+    }
     if ((previewBeforePayment || fromProceedPayment) && routeTaxParam != null) {
       const n = Number(routeTaxParam);
       if (Number.isFinite(n)) return n;
@@ -2356,6 +2432,7 @@ export default function InvoiceScreen({ route, navigation }) {
       ? order.amount_tax
       : computedTax;
   }, [
+    fromLocalInvoices,
     previewBeforePayment,
     fromProceedPayment,
     routeTaxParam,
@@ -2365,6 +2442,10 @@ export default function InvoiceScreen({ route, navigation }) {
   ]);
 
   const displayTotal = useMemo(() => {
+    if (fromLocalInvoices && routeTotalParam != null) {
+      const n = Number(routeTotalParam);
+      if (Number.isFinite(n)) return n;
+    }
     if ((previewBeforePayment || fromProceedPayment) && routeTotalParam != null) {
       const n = Number(routeTotalParam);
       if (Number.isFinite(n)) return n;
@@ -2372,6 +2453,7 @@ export default function InvoiceScreen({ route, navigation }) {
     if (hasLineBasedTotals) return displaySubtotal + displayTax;
     return order?.amount_total ?? routeTotalParam ?? (displaySubtotal + displayTax);
   }, [
+    fromLocalInvoices,
     previewBeforePayment,
     fromProceedPayment,
     routeTotalParam,
@@ -2490,11 +2572,9 @@ export default function InvoiceScreen({ route, navigation }) {
       return;
     }
     if (openPaymentProofAfterPrint && promptSignatures) {
-      const hasCust = localCustomerSig && String(localCustomerSig).trim() !== '';
-      const hasDrv = localDriverSig && String(localDriverSig).trim() !== '';
-      if (!hasCust || !hasDrv) {
+      if (!signaturesComplete()) {
         Alert.alert('Signatures needed', 'Add customer and driver signatures first.');
-        setShowSignatureCaptureModal(true);
+        openSignatureModalIfNeeded();
         return;
       }
     }
@@ -2503,13 +2583,9 @@ export default function InvoiceScreen({ route, navigation }) {
       return;
     }
     if (skipEvidenceModal) {
-      if (promptSignatures) {
-        const hasCust = localCustomerSig && String(localCustomerSig).trim() !== '';
-        const hasDrv = localDriverSig && String(localDriverSig).trim() !== '';
-        if (!hasCust || !hasDrv) {
-          setShowSignatureCaptureModal(true);
-          return;
-        }
+      if (promptSignatures && !signaturesComplete()) {
+        openSignatureModalIfNeeded();
+        return;
       }
       void goToHome();
       return;
@@ -2525,6 +2601,8 @@ export default function InvoiceScreen({ route, navigation }) {
     promptSignatures,
     goToPaymentProofScreen,
     goToHome,
+    signaturesComplete,
+    openSignatureModalIfNeeded,
   ]);
 
   const paymentLabel = (() => {
@@ -2568,21 +2646,243 @@ export default function InvoiceScreen({ route, navigation }) {
     return `Empty collected: ${parts.join(' • ')}`;
   }, [routeEmptyCylinderEntries]);
 
+  const openSignatureModalIfNeeded = useCallback(() => {
+    if (!signaturesComplete()) {
+      setShowSignatureCaptureModal(true);
+    }
+  }, [signaturesComplete]);
+
+  const renderSignatureCaptureModal = () => (
+    <Modal
+      visible={showSignatureCaptureModal}
+      animationType="slide"
+      transparent
+      statusBarTranslucent
+      presentationStyle="overFullScreen"
+      onRequestClose={() => {
+        if (blockSignatureModalDismiss) {
+          Alert.alert(
+            'Signatures needed',
+            'Add both signatures, then tap Save signatures. Use the tabs to switch between customer and driver.'
+          );
+          return;
+        }
+        setShowSignatureCaptureModal(false);
+      }}
+    >
+      <View style={styles.sigCapOverlay}>
+        <View style={[styles.sigCapCard, { backgroundColor: colors.surface }]}>
+          <View style={styles.sigCapHero}>
+            <View style={styles.sigCapHeroIconWrap}>
+              <Ionicons name="create-outline" size={32} color={colors.primary} />
+            </View>
+            <Text style={styles.sigCapHeroTitle}>{t('invoice.signToConfirmDelivery', 'Sign to confirm delivery')}</Text>
+            <Text style={styles.sigCapHeroSubtitle}>
+              {blockSignatureModalDismiss
+                ? 'Add customer and driver signatures, then tap Save signatures.'
+                : 'Add signatures if you can. You can close when they are optional.'}
+            </Text>
+          </View>
+
+          <View style={styles.sigCapTabs}>
+            <TouchableOpacity
+              style={[styles.sigCapTab, signatureCaptureStep === 'customer' && styles.sigCapTabActive]}
+              onPress={() => setSignatureCaptureStep('customer')}
+              activeOpacity={0.85}
+            >
+              <Text
+                style={[
+                  styles.sigCapTabText,
+                  signatureCaptureStep === 'customer' && styles.sigCapTabTextActive,
+                ]}
+              >
+                Customer signature
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.sigCapTab, signatureCaptureStep === 'driver' && styles.sigCapTabActive]}
+              onPress={() => setSignatureCaptureStep('driver')}
+              activeOpacity={0.85}
+            >
+              <Text
+                style={[
+                  styles.sigCapTabText,
+                  signatureCaptureStep === 'driver' && styles.sigCapTabTextActive,
+                ]}
+              >
+                Driver signature
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.sigCapSection}>
+            <View style={styles.sigCapCanvasWrapStack}>
+              <View
+                style={[
+                  styles.sigCapCanvasLayer,
+                  {
+                    opacity: signatureCaptureStep === 'customer' ? 1 : 0,
+                    zIndex: signatureCaptureStep === 'customer' ? 2 : 0,
+                  },
+                ]}
+                pointerEvents={signatureCaptureStep === 'customer' ? 'auto' : 'none'}
+              >
+                <SignatureCanvas
+                  key={`${signatureModalSession}-customer`}
+                  ref={captureCustomerRef}
+                  dataURL={
+                    captureCustomerSig && String(captureCustomerSig).trim() !== ''
+                      ? captureCustomerSig
+                      : ''
+                  }
+                  onOK={(dataUrl) => {
+                    setCaptureCustomerSig(dataUrl);
+                    setCaptureCustomerSaved(true);
+                    setSignatureCaptureStep('driver');
+                  }}
+                  onEmpty={() => {
+                    Alert.alert('Signature', 'Sign in the box, then tap Save customer.');
+                  }}
+                  descriptionText=""
+                  clearText=""
+                  confirmText=""
+                  penColor="#000000"
+                  backgroundColor="rgba(255,255,255,1)"
+                  style={styles.sigCapCanvasLarge}
+                  autoClear={false}
+                  webStyle={`.m-signature-pad--footer { display: none !important; } body,html,.m-signature-pad { height: 100% !important; }`}
+                />
+              </View>
+              <View
+                style={[
+                  styles.sigCapCanvasLayer,
+                  {
+                    opacity: signatureCaptureStep === 'driver' ? 1 : 0,
+                    zIndex: signatureCaptureStep === 'driver' ? 2 : 0,
+                  },
+                ]}
+                pointerEvents={signatureCaptureStep === 'driver' ? 'auto' : 'none'}
+              >
+                <SignatureCanvas
+                  key={`${signatureModalSession}-driver`}
+                  ref={captureDriverRef}
+                  dataURL={
+                    captureDriverSig && String(captureDriverSig).trim() !== '' ? captureDriverSig : ''
+                  }
+                  onOK={(dataUrl) => {
+                    setCaptureDriverSig(dataUrl);
+                    setCaptureDriverSaved(true);
+                  }}
+                  onEmpty={() => {
+                    Alert.alert('Signature', 'Sign in the box, then tap Save driver.');
+                  }}
+                  descriptionText=""
+                  clearText=""
+                  confirmText=""
+                  penColor="#000000"
+                  backgroundColor="rgba(255,255,255,1)"
+                  style={styles.sigCapCanvasLarge}
+                  autoClear={false}
+                  webStyle={`.m-signature-pad--footer { display: none !important; } body,html,.m-signature-pad { height: 100% !important; }`}
+                />
+              </View>
+            </View>
+
+            {signatureCaptureStep === 'customer' ? (
+              <View style={styles.sigCapBtnRow}>
+                <TouchableOpacity
+                  style={styles.sigCapBtn}
+                  onPress={() => {
+                    captureCustomerRef.current?.clearSignature();
+                    setCaptureCustomerSig(null);
+                    setCaptureCustomerSaved(false);
+                  }}
+                >
+                  <Text style={styles.sigCapBtnText}>{t('invoice.clear', 'Clear')}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    styles.sigCapBtn,
+                    captureCustomerSaved ? styles.sigCapBtnSaved : styles.sigCapBtnPrimary,
+                  ]}
+                  onPress={() => readCaptureSignature(captureCustomerRef)}
+                >
+                  <Text style={captureCustomerSaved ? styles.sigCapBtnTextSaved : styles.sigCapBtnTextLight}>
+                    {captureCustomerSaved ? 'Saved' : 'Save customer'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <View style={styles.sigCapBtnRow}>
+                <TouchableOpacity
+                  style={styles.sigCapBtn}
+                  onPress={() => {
+                    captureDriverRef.current?.clearSignature();
+                    setCaptureDriverSig(null);
+                    setCaptureDriverSaved(false);
+                  }}
+                >
+                  <Text style={styles.sigCapBtnText}>{t('invoice.clear', 'Clear')}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    styles.sigCapBtn,
+                    captureDriverSaved ? styles.sigCapBtnSaved : styles.sigCapBtnPrimary,
+                  ]}
+                  onPress={() => readCaptureSignature(captureDriverRef)}
+                >
+                  <Text style={captureDriverSaved ? styles.sigCapBtnTextSaved : styles.sigCapBtnTextLight}>
+                    {captureDriverSaved ? 'Saved' : 'Save driver'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+
+          <TouchableOpacity
+            style={[
+              styles.sigCapDoneBtn,
+              (!captureCustomerSaved || !captureDriverSaved) && styles.sigCapDoneBtnDisabled,
+            ]}
+            onPress={() => {
+              const custOk =
+                isUsableSignatureBlob(captureCustomerSig) && captureCustomerSaved;
+              const drvOk = isUsableSignatureBlob(captureDriverSig) && captureDriverSaved;
+              if (!custOk || !drvOk) {
+                Alert.alert(
+                  'Signatures',
+                  'Use Save customer and Save driver on each tab, then tap Continue.'
+                );
+                return;
+              }
+              void persistCapturedSignatures(captureCustomerSig, captureDriverSig);
+            }}
+            activeOpacity={0.88}
+            disabled={!captureCustomerSaved || !captureDriverSaved}
+          >
+            <Ionicons name="checkmark-done-outline" size={22} color="#fff" />
+            <Text style={styles.evidenceSaveBtnText}>{t('invoice.continue', 'Continue')}</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </Modal>
+  );
+
   if (loading && !order) {
     return (
-      <View style={styles.center}>
-        <ActivityIndicator size="large" color={colors.primary} />
-      </View>
+      <>
+        <View style={[styles.center, { flex: 1, backgroundColor: colors.background }]}>
+          <ActivityIndicator size="large" color={colors.primary} />
+        </View>
+        {renderSignatureCaptureModal()}
+      </>
     );
   }
 
-  const invoiceDate = resolveInvoiceDateSource(order).toLocaleDateString('en-LK', {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-  });
+  const invoiceDate = formatPrintedInvoiceDate(resolveInvoiceDateSource(order));
 
   return (
+    <>
     <ScrollView
       style={styles.container}
       contentContainerStyle={styles.content}
@@ -2971,27 +3271,19 @@ export default function InvoiceScreen({ route, navigation }) {
               navigateToProceedPayment();
               return;
             }
-            if (openPaymentProofAfterPrint && promptSignatures) {
-              const hasCust = localCustomerSig && String(localCustomerSig).trim() !== '';
-              const hasDrv = localDriverSig && String(localDriverSig).trim() !== '';
-              if (!hasCust || !hasDrv) {
-                Alert.alert('Signatures needed', 'Add customer and driver signatures first.');
-                setShowSignatureCaptureModal(true);
-                return;
-              }
+            if (openPaymentProofAfterPrint && promptSignatures && !signaturesComplete()) {
+              Alert.alert('Signatures needed', 'Add customer and driver signatures first.');
+              openSignatureModalIfNeeded();
+              return;
             }
             if (openPaymentProofAfterPrint) {
               void goToPaymentProofScreen();
               return;
             }
             if (skipEvidenceModal) {
-              if (promptSignatures) {
-                const hasCust = localCustomerSig && String(localCustomerSig).trim() !== '';
-                const hasDrv = localDriverSig && String(localDriverSig).trim() !== '';
-                if (!hasCust || !hasDrv) {
-                  setShowSignatureCaptureModal(true);
-                  return;
-                }
+              if (promptSignatures && !signaturesComplete()) {
+                openSignatureModalIfNeeded();
+                return;
               }
               void goToHome();
               return;
@@ -3009,7 +3301,7 @@ export default function InvoiceScreen({ route, navigation }) {
       )}
 
       {/* Printing / preview overlay - full screen until system dialog is shown */}
-      {(printing || previewing) && (
+      {(printing || previewing) && !showSignatureCaptureModal && (
         <View style={styles.printOverlay} pointerEvents="box-only">
           <ActivityIndicator size="large" color="#fff" />
           <Text style={styles.printOverlayText}>
@@ -3073,219 +3365,6 @@ export default function InvoiceScreen({ route, navigation }) {
                 </Text>
               </TouchableOpacity>
             </View>
-          </View>
-        </View>
-      </Modal>
-
-      <Modal
-        visible={showSignatureCaptureModal}
-        animationType="slide"
-        transparent
-        onRequestClose={() => {
-          if (blockSignatureModalDismiss) {
-            Alert.alert(
-              'Signatures needed',
-              'Add both signatures, then tap Save signatures. Use the tabs to switch between customer and driver.'
-            );
-            return;
-          }
-          setShowSignatureCaptureModal(false);
-        }}
-      >
-        <View style={styles.sigCapOverlay}>
-          <View style={[styles.sigCapCard, { backgroundColor: colors.surface }]}>
-            <View style={styles.sigCapHero}>
-              <View style={styles.sigCapHeroIconWrap}>
-                <Ionicons name="create-outline" size={32} color={colors.primary} />
-              </View>
-              <Text style={styles.sigCapHeroTitle}>{t('invoice.signToConfirmDelivery', 'Sign to confirm delivery')}</Text>
-              <Text style={styles.sigCapHeroSubtitle}>
-                {blockSignatureModalDismiss
-                  ? 'Add customer and driver signatures, then tap Save signatures.'
-                  : 'Add signatures if you can. You can close when they are optional.'}
-              </Text>
-            </View>
-
-            <View style={styles.sigCapTabs}>
-              <TouchableOpacity
-                style={[styles.sigCapTab, signatureCaptureStep === 'customer' && styles.sigCapTabActive]}
-                onPress={() => setSignatureCaptureStep('customer')}
-                activeOpacity={0.85}
-              >
-                <Text
-                  style={[
-                    styles.sigCapTabText,
-                    signatureCaptureStep === 'customer' && styles.sigCapTabTextActive,
-                  ]}
-                >
-                  Customer signature
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.sigCapTab, signatureCaptureStep === 'driver' && styles.sigCapTabActive]}
-                onPress={() => setSignatureCaptureStep('driver')}
-                activeOpacity={0.85}
-              >
-                <Text
-                  style={[
-                    styles.sigCapTabText,
-                    signatureCaptureStep === 'driver' && styles.sigCapTabTextActive,
-                  ]}
-                >
-                  Driver signature
-                </Text>
-              </TouchableOpacity>
-            </View>
-
-            <View style={styles.sigCapSection}>
-              <View style={styles.sigCapCanvasWrapStack}>
-                <View
-                  style={[
-                    styles.sigCapCanvasLayer,
-                    {
-                      opacity: signatureCaptureStep === 'customer' ? 1 : 0,
-                      zIndex: signatureCaptureStep === 'customer' ? 2 : 0,
-                    },
-                  ]}
-                  pointerEvents={signatureCaptureStep === 'customer' ? 'auto' : 'none'}
-                >
-                  <SignatureCanvas
-                    key={`${signatureModalSession}-customer`}
-                    ref={captureCustomerRef}
-                    dataURL={
-                      captureCustomerSig && String(captureCustomerSig).trim() !== ''
-                        ? captureCustomerSig
-                        : ''
-                    }
-                    onOK={(dataUrl) => {
-                      setCaptureCustomerSig(dataUrl);
-                      setCaptureCustomerSaved(true);
-                      setSignatureCaptureStep('driver');
-                    }}
-                    onEmpty={() => {
-                      Alert.alert('Signature', 'Sign in the box, then tap Save customer.');
-                    }}
-                    descriptionText=""
-                    clearText=""
-                    confirmText=""
-                    penColor="#000000"
-                    backgroundColor="rgba(255,255,255,1)"
-                    style={styles.sigCapCanvasLarge}
-                    autoClear={false}
-                    webStyle={`.m-signature-pad--footer { display: none !important; }`}
-                  />
-                </View>
-                <View
-                  style={[
-                    styles.sigCapCanvasLayer,
-                    {
-                      opacity: signatureCaptureStep === 'driver' ? 1 : 0,
-                      zIndex: signatureCaptureStep === 'driver' ? 2 : 0,
-                    },
-                  ]}
-                  pointerEvents={signatureCaptureStep === 'driver' ? 'auto' : 'none'}
-                >
-                  <SignatureCanvas
-                    key={`${signatureModalSession}-driver`}
-                    ref={captureDriverRef}
-                    dataURL={
-                      captureDriverSig && String(captureDriverSig).trim() !== '' ? captureDriverSig : ''
-                    }
-                    onOK={(dataUrl) => {
-                      setCaptureDriverSig(dataUrl);
-                      setCaptureDriverSaved(true);
-                    }}
-                    onEmpty={() => {
-                      Alert.alert('Signature', 'Sign in the box, then tap Save driver.');
-                    }}
-                    descriptionText=""
-                    clearText=""
-                    confirmText=""
-                    penColor="#000000"
-                    backgroundColor="rgba(255,255,255,1)"
-                    style={styles.sigCapCanvasLarge}
-                    autoClear={false}
-                    webStyle={`.m-signature-pad--footer { display: none !important; }`}
-                  />
-                </View>
-              </View>
-
-              {signatureCaptureStep === 'customer' ? (
-                <View style={styles.sigCapBtnRow}>
-                  <TouchableOpacity
-                    style={styles.sigCapBtn}
-                    onPress={() => {
-                      captureCustomerRef.current?.clearSignature();
-                      setCaptureCustomerSig(null);
-                      setCaptureCustomerSaved(false);
-                    }}
-                  >
-                    <Text style={styles.sigCapBtnText}>{t('invoice.clear', 'Clear')}</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[
-                      styles.sigCapBtn,
-                      captureCustomerSaved ? styles.sigCapBtnSaved : styles.sigCapBtnPrimary
-                    ]}
-                    onPress={() => captureCustomerRef.current?.readSignature()}
-                  >
-                    <Text style={captureCustomerSaved ? styles.sigCapBtnTextSaved : styles.sigCapBtnTextLight}>
-                      {captureCustomerSaved ? 'Saved' : 'Save customer'}
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-              ) : (
-                <View style={styles.sigCapBtnRow}>
-                  <TouchableOpacity
-                    style={styles.sigCapBtn}
-                    onPress={() => {
-                      captureDriverRef.current?.clearSignature();
-                      setCaptureDriverSig(null);
-                      setCaptureDriverSaved(false);
-                    }}
-                  >
-                    <Text style={styles.sigCapBtnText}>{t('invoice.clear', 'Clear')}</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[
-                      styles.sigCapBtn,
-                      captureDriverSaved ? styles.sigCapBtnSaved : styles.sigCapBtnPrimary
-                    ]}
-                    onPress={() => captureDriverRef.current?.readSignature()}
-                  >
-                    <Text style={captureDriverSaved ? styles.sigCapBtnTextSaved : styles.sigCapBtnTextLight}>
-                      {captureDriverSaved ? 'Saved' : 'Save driver'}
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-              )}
-            </View>
-
-            <TouchableOpacity
-              style={[
-                styles.sigCapDoneBtn,
-                (!captureCustomerSaved || !captureDriverSaved) && styles.sigCapDoneBtnDisabled,
-              ]}
-              onPress={() => {
-                const custOk =
-                  captureCustomerSig && String(captureCustomerSig).trim() !== '' && captureCustomerSaved;
-                const drvOk =
-                  captureDriverSig && String(captureDriverSig).trim() !== '' && captureDriverSaved;
-                if (!custOk || !drvOk) {
-                  Alert.alert(
-                    'Signatures',
-                    'Use Save customer and Save driver on each tab, then tap Continue.'
-                  );
-                  return;
-                }
-                void persistCapturedSignatures(captureCustomerSig, captureDriverSig);
-              }}
-              activeOpacity={0.88}
-              disabled={!captureCustomerSaved || !captureDriverSaved}
-            >
-              <Ionicons name="checkmark-done-outline" size={22} color="#fff" />
-              <Text style={styles.evidenceSaveBtnText}>{t('invoice.continue', 'Continue')}</Text>
-            </TouchableOpacity>
           </View>
         </View>
       </Modal>
@@ -3465,5 +3544,7 @@ export default function InvoiceScreen({ route, navigation }) {
       </View>
 
     </ScrollView>
+    {renderSignatureCaptureModal()}
+    </>
   );
 }

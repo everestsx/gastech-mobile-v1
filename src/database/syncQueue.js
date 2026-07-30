@@ -75,6 +75,26 @@ export async function getPendingCount() {
   return row?.c ?? 0;
 }
 
+/** Held rows wait for payment/complete — not actionable until released in sync.service. */
+export function isSyncQueuePayloadHeld(payload) {
+  const p = payload && typeof payload === 'object' ? payload : {};
+  return p.holdUntilPayment === true || p.holdUntilComplete === true;
+}
+
+/** Pending queue rows that can actually upload now (excludes held delivery/inventory/payment). */
+export async function getActionablePendingCount() {
+  const db = await getDb();
+  const rows = await db.getAllAsync(
+    'SELECT payload FROM sync_queue WHERE COALESCE(is_uploaded, 0) = 0 AND synced_at IS NULL'
+  );
+  let count = 0;
+  for (const row of rows || []) {
+    const payload = safeParseJson(row.payload, {});
+    if (!isSyncQueuePayloadHeld(payload)) count += 1;
+  }
+  return count;
+}
+
 /** Age in ms of the oldest pending queue row (0 when queue empty). */
 export async function getOldestPendingQueueAgeMs() {
   const db = await getDb();
@@ -255,7 +275,24 @@ export async function updateQueueItemPayload(id, payload, options = {}) {
       ? payloadObj
       : JSON.stringify(payloadObj ?? {}, (_k, v) => (typeof v === 'bigint' ? v.toString() : v));
   await db.runAsync('UPDATE sync_queue SET payload = ? WHERE id = ?', [payloadStr, num(id)]);
-  wakePendingUploadAfterQueueChange();
+  if (options.suppressWake !== true) {
+    wakePendingUploadAfterQueueChange();
+  }
+}
+
+/** Actionable pending rows for one sale order (excludes held until payment/complete). */
+export async function getActionablePendingCountForSaleOrder(saleOrderId) {
+  const soId = Number(saleOrderId);
+  if (!Number.isFinite(soId) || soId <= 0) return 0;
+  const rows = await getPending();
+  let count = 0;
+  for (const row of rows || []) {
+    const payload = row.payload || {};
+    const rowSo = Number(payload.saleOrderId ?? payload.sale_order_id);
+    if (rowSo !== soId) continue;
+    if (!isSyncQueuePayloadHeld(payload)) count += 1;
+  }
+  return count;
 }
 
 /** Delete pending queue items for a sale order so a cancelled order does not keep old work queued. */
@@ -281,6 +318,28 @@ export async function deletePendingItemsBySaleOrderId(saleOrderId, actionTypes =
   return idsToDelete.length;
 }
 
+/** Synced payment timestamps for many sale orders (avoids N+1 queue scans on invoice lists). */
+export async function getPaymentSyncedAtMapBySaleOrderIds(saleOrderIds) {
+  if (!Array.isArray(saleOrderIds) || saleOrderIds.length === 0) return {};
+  const wanted = new Set(
+    saleOrderIds.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0)
+  );
+  if (wanted.size === 0) return {};
+  const db = await getDb();
+  const rows = await db.getAllAsync(
+    `SELECT payload, synced_at FROM sync_queue WHERE action_type = ? AND (COALESCE(is_uploaded, 0) = 1 OR synced_at IS NOT NULL)`,
+    [ACTION_PAYMENT]
+  );
+  const out = {};
+  for (const row of rows || []) {
+    const p = safeParseJson(row.payload, {});
+    const id = Number(p.saleOrderId ?? p.sale_order_id);
+    if (!Number.isFinite(id) || !wanted.has(id) || !row.synced_at) continue;
+    out[id] = row.synced_at;
+  }
+  return out;
+}
+
 /** Get synced_at for payment queue item by sale order id. Returns null if not synced or no payment queued. */
 export async function getPaymentSyncedAtForSaleOrder(saleOrderId) {
   if (saleOrderId == null) return null;
@@ -296,6 +355,32 @@ export async function getPaymentSyncedAtForSaleOrder(saleOrderId) {
     if (id != null && Number(id) === soId) return row.synced_at;
   }
   return null;
+}
+
+/**
+ * Synced payment queue rows whose sale-order chatter (payment / gas / empty notes) was not posted yet.
+ * Used after fast-drain or early mark-synced paths so text messages are not lost while photos still upload.
+ */
+export async function getSyncedPaymentItemsMissingCheckoutChatter() {
+  const db = await getDb();
+  const rows = await db.getAllAsync(
+    `SELECT id, payload FROM sync_queue
+     WHERE action_type = ?
+       AND (COALESCE(is_uploaded, 0) = 1 OR synced_at IS NOT NULL)
+     ORDER BY id DESC`,
+    [ACTION_PAYMENT]
+  );
+  const bySo = new Map();
+  for (const row of rows || []) {
+    const p = safeParseJson(row.payload, {});
+    if (p._paymentProofChatterPosted === true) continue;
+    const soId = Number(p.saleOrderId ?? p.sale_order_id);
+    if (!Number.isFinite(soId) || soId <= 0) continue;
+    if (!bySo.has(soId)) {
+      bySo.set(soId, { id: row.id, payload: p, saleOrderId: soId });
+    }
+  }
+  return Array.from(bySo.values());
 }
 
 /** Latest payment payload by sale order id from both pending and synced queue items. */

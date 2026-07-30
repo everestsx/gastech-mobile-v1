@@ -125,3 +125,22 @@ export async function getProductImageUriMap() {
   });
   return map;
 }
+
+/** Load images only for products on the current order (faster order details open). */
+export async function getProductImageUriMapForIds(productIds = []) {
+  const ids = [...new Set((productIds || []).map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0))];
+  if (ids.length === 0) return {};
+  const db = await getDb();
+  const placeholders = ids.map(() => '?').join(',');
+  const rows = await db.getAllAsync(
+    `SELECT id, image_1920 FROM products WHERE id IN (${placeholders}) AND image_1920 IS NOT NULL AND TRIM(image_1920) <> ''`,
+    ids
+  );
+  const map = {};
+  (rows || []).forEach((r) => {
+    if (r.id == null) return;
+    const uri = imageBase64ToDataUri(r.image_1920);
+    if (uri) map[r.id] = uri;
+  });
+  return map;
+}

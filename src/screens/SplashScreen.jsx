@@ -60,7 +60,7 @@ export default function SplashScreenComponent({ navigation }) {
         await Promise.race([
           getDb(),
           new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('DB init timeout (web?)')), 5000)
+            setTimeout(() => reject(new Error('DB init timeout (web?)')), 2500)
           ),
         ]);
       } catch (_) {
