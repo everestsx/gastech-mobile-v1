@@ -27,6 +27,7 @@ import * as syncQueueDb from '../database/syncQueue.js';
 import { buildCheckoutHeldSaleOrderIds } from '../utils/emptyCollectionLocal.js';
 import { getDb } from '../database/db.js';
 import { recordDriverLogout } from './driverLoginHistory.service';
+import { normalizeSmsEnabled, shouldWriteInvoiceSmsFlag } from './smsPreference.service';
 export let isLoggingOut = false;
 export const setIsLoggingOut = (value) => {
   isLoggingOut = value;
@@ -1969,8 +1970,25 @@ async function executePaymentInvoiceStep(soId, paymentPayload, initialTarget = {
     getSaleOrderInvoiceIds,
     firstInvoiceId,
     postInvoice,
+    setInvoiceSmsEnabled,
     getInvoiceState,
   } = await import('./invoice.service.js');
+
+  /**
+   * The back office sends the customer SMS when the invoice is confirmed, so the driver's
+   * choice has to be on the record before action_post. Never let it block invoicing: a back
+   * office without the field yet (or any write failure) falls through to a normal post.
+   */
+  const postInvoiceWithSmsFlag = async (invoiceId) => {
+    if (shouldWriteInvoiceSmsFlag()) {
+      try {
+        await setInvoiceSmsEnabled(invoiceId, normalizeSmsEnabled(paymentPayload?.smsEnabled));
+      } catch (err) {
+        logWarn(`sms_enabled write for invoice ${invoiceId} (SO ${soNum})`, err);
+      }
+    }
+    return postInvoice(invoiceId);
+  };
 
   const prep = await prepareSaleOrderForInvoicing(soNum, paymentPayload);
   if (!prep.ok) {
@@ -2024,7 +2042,7 @@ async function executePaymentInvoiceStep(soId, paymentPayload, initialTarget = {
   }
 
   if (resId != null && !posted) {
-    await postInvoice(resId);
+    await postInvoiceWithSmsFlag(resId);
     if (updates.length > 0) {
       const afterPost = await verifySaleOrderDeliveredAndInvoicedQty(updates, {
         checkDelivered: true,
@@ -2077,7 +2095,7 @@ async function executePaymentInvoiceStep(soId, paymentPayload, initialTarget = {
     }
   }
 
-  await postInvoice(resId);
+  await postInvoiceWithSmsFlag(resId);
   if (updates.length > 0) {
     const finalCheck = await verifySaleOrderDeliveredAndInvoicedQty(updates, {
       checkDelivered: true,

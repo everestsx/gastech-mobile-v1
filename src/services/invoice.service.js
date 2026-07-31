@@ -11,6 +11,13 @@ export const assignJournal = (invoiceId, journalId) =>
 export const postInvoice = (invoiceId) =>
   callOdooArgs("account.move", "action_post", [[Number(invoiceId)]]);
 
+/**
+ * Driver's customer-SMS choice for this invoice. The back office sends the delivery SMS on
+ * confirmation, so this must be written before action_post to have any effect.
+ */
+export const setInvoiceSmsEnabled = (invoiceId, enabled) =>
+  callOdooArgs("account.move", "write", [[Number(invoiceId)], { sms_enabled: enabled === true }]);
+
 /* ---------------- Invoice creation wizard (after delivery validation) ---------------- */
 
 /** Step 1 — Create advance payment wizard (with context). Same as Postman: create with context active_model/active_ids. Returns wizard id (e.g. 679). */

@@ -42,6 +42,7 @@ import { resolveInvoiceCustomerDisplayName, odooLocalizedText } from '../utils/c
 import { lineSubtotalAtQuantity, lineTaxAtQuantity } from '../utils/orderLineTax.js';
 import { setCheckoutResumePhase, clearCheckoutResume, getCheckoutResumeEntry } from '../services/checkoutResume.service';
 import * as syncQueueDb from '../database/syncQueue.js';
+import { DEFAULT_SMS_ENABLED, normalizeSmsEnabled } from '../services/smsPreference.service';
 import {
   mergeInvoiceLinesWithCatalog,
   resolveInvoiceLineUnitPrice,
@@ -1009,6 +1010,7 @@ export default function InvoiceScreen({ route, navigation }) {
     emptyCylinderEntries: routeEmptyCylinderEntries,
     fromLocalInvoices: routeFromLocalInvoices,
     readOnlyView: routeReadOnlyView,
+    smsEnabled: routeSmsEnabled,
   } = route.params ?? {};
 
   const fromLocalInvoices = routeFromLocalInvoices === true;
@@ -1113,6 +1115,22 @@ export default function InvoiceScreen({ route, navigation }) {
   });
   const [printing, setPrinting] = useState(false);
   const [previewing, setPreviewing] = useState(false);
+  /**
+   * Invoice Method choice, captured in a modal right after signatures.
+   * SMS and Print are independent; "None" simply means neither is checked.
+   * Printing itself stays available on this screen whatever is chosen — Print is the
+   * driver's stated intent, and only the SMS part reaches Odoo.
+   */
+  const [showInvoiceMethodModal, setShowInvoiceMethodModal] = useState(false);
+  const [invoiceMethodSms, setInvoiceMethodSms] = useState(
+    routeSmsEnabled == null ? DEFAULT_SMS_ENABLED : normalizeSmsEnabled(routeSmsEnabled)
+  );
+  const [invoiceMethodPrint, setInvoiceMethodPrint] = useState(false);
+  /** Confirm stays disabled until the driver picks an option — "None" must be deliberate. */
+  const [invoiceMethodTouched, setInvoiceMethodTouched] = useState(false);
+  const [invoiceMethodConfirmed, setInvoiceMethodConfirmed] = useState(false);
+  /** Read-only status shown on the invoice screen; the modal is the only way to change it. */
+  const smsEnabled = invoiceMethodSms;
   const [printResult, setPrintResult] = useState(null);
   const [printError, setPrintError] = useState(null);
   const [localPaymentSplit, setLocalPaymentSplit] = useState(null);
@@ -1255,6 +1273,83 @@ export default function InvoiceScreen({ route, navigation }) {
           borderRadius: borderRadius.sm,
         },
         paymentText: { fontSize: 13, fontWeight: '600', color: colors.text },
+        /** Faded: this row reports the Invoice Method choice, it does not accept input. */
+        smsToggleRow: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: spacing.sm,
+          backgroundColor: colors.surface,
+          borderWidth: 1,
+          borderColor: colors.border,
+          borderRadius: borderRadius.lg,
+          paddingVertical: 12,
+          paddingHorizontal: spacing.md,
+          marginBottom: spacing.md,
+          opacity: 0.6,
+        },
+        smsToggleTextWrap: { flex: 1 },
+        smsToggleLabel: { fontSize: 15, fontWeight: '700', color: colors.text },
+        /** Static switch: fixed size so it can never be squeezed out by the flex:1 label. */
+        smsTrack: {
+          width: 46,
+          height: 28,
+          borderRadius: 14,
+          backgroundColor: colors.textSecondary,
+          padding: 3,
+          flexShrink: 0,
+          justifyContent: 'center',
+          alignItems: 'flex-start',
+        },
+        smsTrackOn: { backgroundColor: colors.primary, alignItems: 'flex-end' },
+        smsThumb: {
+          width: 22,
+          height: 22,
+          borderRadius: 11,
+          backgroundColor: '#fff',
+        },
+        smsThumbOn: { backgroundColor: '#fff' },
+        invMethodOption: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: spacing.sm + 2,
+          borderWidth: 1,
+          borderColor: colors.border,
+          borderRadius: borderRadius.lg,
+          paddingVertical: 14,
+          paddingHorizontal: spacing.md,
+          marginBottom: spacing.sm,
+          backgroundColor: colors.background,
+        },
+        invMethodOptionOn: {
+          borderColor: colors.primary,
+          backgroundColor: (colors.primary || '#6366f1') + '12',
+        },
+        invMethodTextWrap: { flex: 1 },
+        invMethodLabel: { fontSize: 16, fontWeight: '800', color: colors.text },
+        invMethodHint: { fontSize: 12, color: colors.textSecondary, marginTop: 2, lineHeight: 16 },
+        /** Own style: sigCapBtn carries flex:1 for its row container and collapses in this column card. */
+        invMethodConfirmBtn: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 8,
+          minHeight: 52,
+          paddingVertical: 14,
+          paddingHorizontal: spacing.md,
+          borderRadius: borderRadius.md,
+          backgroundColor: colors.primary,
+          marginTop: spacing.sm,
+        },
+        invMethodConfirmBtnDisabled: { backgroundColor: colors.border },
+        invMethodConfirmText: { fontSize: 16, fontWeight: '800', color: '#fff' },
+        invMethodConfirmTextDisabled: { color: colors.textSecondary },
+        invMethodFooterHint: {
+          fontSize: 12,
+          color: colors.textSecondary,
+          textAlign: 'center',
+          marginTop: spacing.sm,
+          lineHeight: 16,
+        },
         printBtn: {
           flexDirection: 'row',
           alignItems: 'center',
@@ -1949,6 +2044,33 @@ export default function InvoiceScreen({ route, navigation }) {
     driverSignatureDataUrl,
   ]);
 
+  /**
+   * Invoice Method comes straight after signing.
+   * Keyed on signatures being present rather than on the save handler, so it also appears
+   * when the driver steps back and walks the flow again — signatures are already stored
+   * then, so the signature modal never reopens and a save-time hook would never fire.
+   */
+  useEffect(() => {
+    if (!openPaymentProofAfterPrint) return;
+    if (loading || !order) return;
+    if (invoiceMethodConfirmed || showInvoiceMethodModal) return;
+    if (showSignatureCaptureModal) return;
+    if (promptSignatures && !signaturesComplete()) return;
+    const task = InteractionManager.runAfterInteractions(() => {
+      setShowInvoiceMethodModal(true);
+    });
+    return () => task.cancel();
+  }, [
+    openPaymentProofAfterPrint,
+    loading,
+    order,
+    invoiceMethodConfirmed,
+    showInvoiceMethodModal,
+    showSignatureCaptureModal,
+    promptSignatures,
+    signaturesComplete,
+  ]);
+
   useLayoutEffect(() => {
     if (!showSignatureCaptureModal) {
       signatureModalEnteredRef.current = false;
@@ -2061,6 +2183,21 @@ export default function InvoiceScreen({ route, navigation }) {
       } catch (e) {
         console.warn('[InvoiceScreen] setCheckoutResumePhase', e?.message ?? e);
       }
+      /** Persist the driver's SMS choice onto the payment queue row that sync confirms on Odoo. */
+      try {
+        const soId = Number(saleOrderId);
+        if (Number.isFinite(soId) && soId > 0) {
+          const pendingPayment = await syncQueueDb.getPendingPaymentItemBySaleOrderId(soId);
+          if (pendingPayment?.id != null) {
+            await syncQueueDb.updateQueueItemPayload(pendingPayment.id, {
+              ...(pendingPayment.payload || {}),
+              smsEnabled,
+            });
+          }
+        }
+      } catch (e) {
+        console.warn('[InvoiceScreen] persist smsEnabled', e?.message ?? e);
+      }
     }
     navigation.replace('PaymentProof', {
       saleOrderId,
@@ -2068,7 +2205,7 @@ export default function InvoiceScreen({ route, navigation }) {
       orderName: routeOrderName,
       customerLabel: safeDisplay(resolveInvoiceCustomerDisplayName(order, partyInfo, appLanguage)) || routeOrderName,
     });
-  }, [navigation, saleOrderId, routeCreditProofRequired, routeOrderName, order, partyInfo, appLanguage]);
+  }, [navigation, saleOrderId, smsEnabled, routeCreditProofRequired, routeOrderName, order, partyInfo, appLanguage]);
 
   const backendSoInvoice =
     order?.invoice_number && String(order.invoice_number).trim()
@@ -2662,6 +2799,141 @@ export default function InvoiceScreen({ route, navigation }) {
     }
   }, [signaturesComplete]);
 
+  /**
+   * Invoice Method — how the customer receives this invoice.
+   * SMS and Print are independent checkboxes; "None" is checked when neither is,
+   * and tapping it clears both.
+   */
+  const renderInvoiceMethodModal = () => {
+    const noneSelected = !invoiceMethodSms && !invoiceMethodPrint;
+    const options = [
+      {
+        key: 'sms',
+        checked: invoiceMethodSms,
+        icon: 'chatbubble-ellipses-outline',
+        label: t('invoice.invoiceMethodSms', 'SMS'),
+        hint: t('invoice.invoiceMethodSmsHint', 'Text the customer a delivery confirmation.'),
+        onPress: () => {
+          setInvoiceMethodTouched(true);
+          setInvoiceMethodSms((v) => !v);
+        },
+      },
+      {
+        key: 'print',
+        checked: invoiceMethodPrint,
+        icon: 'print-outline',
+        label: t('invoice.invoiceMethodPrint', 'Print'),
+        hint: t('invoice.invoiceMethodPrintHint', 'Print the invoice on this screen.'),
+        onPress: () => {
+          setInvoiceMethodTouched(true);
+          setInvoiceMethodPrint((v) => !v);
+        },
+      },
+      {
+        key: 'none',
+        checked: noneSelected,
+        icon: 'close-circle-outline',
+        label: t('invoice.invoiceMethodNone', 'None'),
+        hint: t('invoice.invoiceMethodNoneHint', 'No SMS and no print.'),
+        onPress: () => {
+          setInvoiceMethodTouched(true);
+          setInvoiceMethodSms(false);
+          setInvoiceMethodPrint(false);
+        },
+      },
+    ];
+
+    return (
+      <Modal
+        visible={showInvoiceMethodModal}
+        animationType="slide"
+        transparent
+        statusBarTranslucent
+        presentationStyle="overFullScreen"
+        /** Android back must not skip the choice; tapping None then Confirm is the way out. */
+        onRequestClose={() => {
+          if (!invoiceMethodTouched) return;
+          setInvoiceMethodConfirmed(true);
+          setShowInvoiceMethodModal(false);
+        }}
+      >
+        <View style={styles.sigCapOverlay}>
+          <View style={[styles.sigCapCard, { backgroundColor: colors.surface }]}>
+            <View style={styles.sigCapHero}>
+              <View style={styles.sigCapHeroIconWrap}>
+                <Ionicons name="receipt-outline" size={32} color={colors.primary} />
+              </View>
+              <Text style={styles.sigCapHeroTitle}>{t('invoice.invoiceMethodTitle', 'Invoice Method')}</Text>
+              <Text style={styles.sigCapHeroSubtitle}>
+                {t(
+                  'invoice.invoiceMethodSubtitle',
+                  'Choose how the customer gets this invoice. You can pick both SMS and Print.'
+                )}
+              </Text>
+            </View>
+
+            {options.map((opt) => (
+              <TouchableOpacity
+                key={opt.key}
+                style={[styles.invMethodOption, opt.checked && styles.invMethodOptionOn]}
+                onPress={opt.onPress}
+                activeOpacity={0.85}
+              >
+                <Ionicons
+                  name={opt.checked ? 'checkbox' : 'square-outline'}
+                  size={24}
+                  color={opt.checked ? colors.primary : colors.textSecondary}
+                />
+                <View style={styles.invMethodTextWrap}>
+                  <Text style={styles.invMethodLabel}>{opt.label}</Text>
+                  <Text style={styles.invMethodHint}>{opt.hint}</Text>
+                </View>
+                <Ionicons
+                  name={opt.icon}
+                  size={22}
+                  color={opt.checked ? colors.primary : colors.textSecondary}
+                />
+              </TouchableOpacity>
+            ))}
+
+            <TouchableOpacity
+              style={[
+                styles.invMethodConfirmBtn,
+                !invoiceMethodTouched && styles.invMethodConfirmBtnDisabled,
+              ]}
+              onPress={() => {
+                if (!invoiceMethodTouched) return;
+                setInvoiceMethodConfirmed(true);
+                setShowInvoiceMethodModal(false);
+              }}
+              disabled={!invoiceMethodTouched}
+              activeOpacity={0.85}
+            >
+              <Ionicons
+                name="checkmark-circle"
+                size={22}
+                color={invoiceMethodTouched ? '#fff' : colors.textSecondary}
+              />
+              <Text
+                style={[
+                  styles.invMethodConfirmText,
+                  !invoiceMethodTouched && styles.invMethodConfirmTextDisabled,
+                ]}
+              >
+                {t('invoice.invoiceMethodConfirm', 'Confirm')}
+              </Text>
+            </TouchableOpacity>
+            {!invoiceMethodTouched ? (
+              <Text style={styles.invMethodFooterHint}>
+                {t('invoice.invoiceMethodSelectToContinue', 'Select an option to continue.')}
+              </Text>
+            ) : null}
+          </View>
+        </View>
+      </Modal>
+    );
+  };
+
   const renderSignatureCaptureModal = () => (
     <Modal
       visible={showSignatureCaptureModal}
@@ -3234,6 +3506,30 @@ export default function InvoiceScreen({ route, navigation }) {
         </Text>
       ) : null}
 
+      {/* Customer SMS toggle - checkout flow only; does not affect printing */}
+      {printResult == null && openPaymentProofAfterPrint && (
+        <View style={styles.smsToggleRow}>
+          <Ionicons
+            name={smsEnabled ? 'chatbubble-ellipses' : 'chatbubble-ellipses-outline'}
+            size={22}
+            color={smsEnabled ? colors.primary : colors.textSecondary}
+          />
+          <View style={styles.smsToggleTextWrap}>
+            <Text style={styles.smsToggleLabel}>
+              {t('invoice.smsToggleLabel', 'Send SMS to customer')}
+            </Text>
+          </View>
+          {/*
+            Drawn rather than a <Switch>: this only reports the Invoice Method choice, and a
+            disabled/non-interactive Switch renders inconsistently across platforms. Plain
+            Views give the same look everywhere and cannot take input.
+          */}
+          <View style={[styles.smsTrack, smsEnabled && styles.smsTrackOn]}>
+            <View style={[styles.smsThumb, smsEnabled && styles.smsThumbOn]} />
+          </View>
+        </View>
+      )}
+
       {/* Print invoice button - hidden after print so modal offers Re-print */}
       {printResult == null && (
         <TouchableOpacity
@@ -3555,6 +3851,7 @@ export default function InvoiceScreen({ route, navigation }) {
 
     </ScrollView>
     {renderSignatureCaptureModal()}
+    {renderInvoiceMethodModal()}
     </>
   );
 }
