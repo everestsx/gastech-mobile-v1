@@ -370,17 +370,21 @@ export async function getSyncedPaymentItemsMissingCheckoutChatter() {
      ORDER BY id DESC`,
     [ACTION_PAYMENT]
   );
-  const bySo = new Map();
+  const latestBySo = new Map();
   for (const row of rows || []) {
     const p = safeParseJson(row.payload, {});
-    if (p._paymentProofChatterPosted === true) continue;
     const soId = Number(p.saleOrderId ?? p.sale_order_id);
     if (!Number.isFinite(soId) || soId <= 0) continue;
-    if (!bySo.has(soId)) {
-      bySo.set(soId, { id: row.id, payload: p, saleOrderId: soId });
+    if (!latestBySo.has(soId)) {
+      latestBySo.set(soId, { id: row.id, payload: p, saleOrderId: soId });
     }
   }
-  return Array.from(bySo.values());
+  const out = [];
+  for (const row of latestBySo.values()) {
+    if (row?.payload?._paymentProofChatterPosted === true) continue;
+    out.push(row);
+  }
+  return out;
 }
 
 /** Latest payment payload by sale order id from both pending and synced queue items. */

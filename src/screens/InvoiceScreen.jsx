@@ -310,14 +310,15 @@ function buildInvoiceHtml(
     /</g,
     '&lt;'
   );
+  const customerNameDisplay = customerName === '—' ? '' : customerName;
   const streetPart = safeDisplay(order?.street || order?.partner_street || order?.partner_address);
   const cityPart = safeDisplay(partyInfo?.customerCity || order?.city);
   const phonePart = safeDisplay(partyInfo?.customerPhone || order?.partner_phone);
   const customerAddress = [safeDisplay(partyInfo?.customerStreet || streetPart), cityPart]
     .filter((s) => s !== '—')
     .join(', ')
-    .replace(/</g, '&lt;') || '—';
-  const customerPhone = (phonePart !== '—' ? phonePart : '—').replace(/</g, '&lt;');
+    .replace(/</g, '&lt;') || '';
+  const customerPhone = (phonePart !== '—' ? phonePart : '').replace(/</g, '&lt;');
   const supplierTinResolved = partyInfo?.supplierTin || supplierTin;
   const purchaserTinResolved = partyInfo?.customerTin || purchaserTin;
   const supplierTinSafe = (supplierTinResolved != null && String(supplierTinResolved).trim()) ? String(supplierTinResolved).trim().replace(/</g, '&lt;') : '';
@@ -618,8 +619,8 @@ function buildInvoiceHtml(
       <div class="field"><span class="label">Telephone No:</span> ${supplierPhone}</div>
     </div>
     <div class="col">
-      <div class="field"><span class="label">Purchaser's TIN:</span> ${hasPurchaserTin ? purchaserTinSafe : '—'}</div>
-      <div class="field"><span class="label">Purchaser's Name:</span> ${customerName}</div>
+      <div class="field"><span class="label">Purchaser's TIN:</span> ${hasPurchaserTin ? purchaserTinSafe : ''}</div>
+      <div class="field"><span class="label">Purchaser's Name:</span> ${customerNameDisplay}</div>
       <div class="field"><span class="label">Address:</span> ${customerAddressMultiline}</div>
       <div class="field"><span class="label">Telephone No:</span> ${customerPhone}</div>
     </div>
@@ -628,7 +629,7 @@ function buildInvoiceHtml(
 
   <div class="top-row">
     <div class="info-cell">Date of Delivery: ${date}</div>
-    <div class="info-cell">Place of Supply: ${cityPart !== '—' ? cityPart.replace(/</g, '&lt;') : '—'}</div>
+    <div class="info-cell">Place of Supply: ${cityPart !== '—' ? cityPart.replace(/</g, '&lt;') : ''}</div>
   </div>
 
   <table>
@@ -759,11 +760,12 @@ function buildInvoicePlainText(
   const driverNamePlain = safeDisplay(printOptions.salesRepName || '—');
   const vehicleNoPlain = safeDisplay(printOptions.vehicleNumber || '—');
   const customerName = safeDisplay(resolveInvoiceCustomerDisplayName(order, partyInfo, appLanguage));
+  const customerNameDisplay = customerName === '—' ? '' : customerName;
   const streetPart = safeDisplay(order?.street || order?.partner_street || order?.partner_address);
   const cityPart = safeDisplay(partyInfo?.customerCity || order?.city);
   const phonePart = safeDisplay(partyInfo?.customerPhone || order?.partner_phone);
   const custStreet = safeDisplay(partyInfo?.customerStreet || streetPart);
-  const customerPhone = phonePart !== '—' ? phonePart : '—';
+  const customerPhone = phonePart !== '—' ? phonePart : '';
   const supplierTinResolved = partyInfo?.supplierTin || supplierTin;
   const purchaserTinResolved = partyInfo?.customerTin || purchaserTin;
   const supplierTinSafe =
@@ -817,11 +819,11 @@ function buildInvoicePlainText(
     lineLR('Telephone No.', supplierPhone, w),
     lineLR('Date of Delivery', isoDate, w),
     dashLine(),
-    lineLR('Customer Name', customerName, w),
+    lineLR('Customer Name', customerNameDisplay, w),
     purchaserTinSafe ? lineLR('Customer TIN', purchaserTinSafe, w) : null,
-    ...wrapPlainLines(`Address: ${[custStreet, cityPart].filter((s) => s && s !== '—').join(', ') || '—'}`, w),
+    ...wrapPlainLines(`Address: ${[custStreet, cityPart].filter((s) => s && s !== '—').join(', ') || ''}`, w),
     lineLR('Telephone No.', customerPhone, w),
-    lineLR('Place of Supply', cityPart !== '—' ? cityPart : '—', w),
+    lineLR('Place of Supply', cityPart !== '—' ? cityPart : '', w),
     dashLine(),
     // 48-column table header (matches invoice structure better).
     'No Description                  Qty   Unit      Total',

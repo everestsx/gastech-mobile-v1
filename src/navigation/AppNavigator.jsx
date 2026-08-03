@@ -325,6 +325,8 @@ export default function AppNavigator() {
             includeAttachments: true,
             queuePasses: 4,
             aggressive: true,
+          skipPaymentTypeRefresh: true,
+          chainRetry: false,
           });
         }
       } catch (_) {
@@ -343,6 +345,8 @@ export default function AppNavigator() {
           includeAttachments: true,
           queuePasses: passes,
           aggressive: true,
+          skipPaymentTypeRefresh: true,
+          chainRetry: false,
         });
         const stillPending = await hasPendingUploadWork();
         const stillIndicators = hasDashboardUploadQueueWork();
@@ -352,6 +356,8 @@ export default function AppNavigator() {
             includeAttachments: true,
             queuePasses: 4,
             aggressive: true,
+            skipPaymentTypeRefresh: true,
+            chainRetry: false,
           });
           if (!(await hasPendingUploadWork()) && !hasDashboardUploadQueueWork()) return;
         }
@@ -375,7 +381,7 @@ export default function AppNavigator() {
           clearInterval(syncIntervalRef.current);
           syncIntervalRef.current = null;
         }
-        wakePendingUploadSyncNow({ queuePasses: 24, includeAttachments: true });
+        wakePendingUploadSyncNow({ queuePasses: 24, includeAttachments: true, chainRetry: false });
         void runFastPending();
       }
       appStateRef.current = nextState;

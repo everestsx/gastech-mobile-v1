@@ -1,4 +1,5 @@
 import { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN, ROOT_FOLDER_ID } from '@env';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 /**
  * Google Drive payment proof upload service.
@@ -34,6 +35,14 @@ let _cachedToken = null;
 let _tokenExpiresAt = 0;
 /** Map of "parentId::folderName" → folderId to avoid duplicate Drive API calls */
 const _folderCache = new Map();
+let _folderCacheLoaded = false;
+let _folderCacheLoadPromise = null;
+let _folderCacheSaveTimer = null;
+
+const DRIVE_FOLDER_CACHE_KEY = '@gastech_drive_folder_cache_v1';
+const DRIVE_TIMEOUT_SHORT_MS = 25_000;
+const DRIVE_TIMEOUT_UPLOAD_MS = 120_000;
+const DRIVE_MAX_RETRIES = 3;
 
 const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -88,6 +97,98 @@ function buildDriveFolderNames(date = new Date()) {
   return { yearFolderName, monthFolderName, dayFolderName, dateStr };
 }
 
+function shouldRetryStatus(status) {
+  return status === 403 || status === 429 || (status >= 500 && status <= 599);
+}
+
+function toBackoffMs(attempt) {
+  if (attempt <= 0) return 1_000;
+  if (attempt === 1) return 2_000;
+  return 4_000;
+}
+
+async function sleep(ms) {
+  if (!ms || ms <= 0) return;
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = DRIVE_TIMEOUT_SHORT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (err) {
+    if (err?.name === 'AbortError') {
+      throw new Error(`Drive request timed out after ${timeoutMs}ms`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchWithRetry(url, options = {}, { timeoutMs = DRIVE_TIMEOUT_SHORT_MS, maxRetries = DRIVE_MAX_RETRIES } = {}) {
+  let lastErr = null;
+  for (let attempt = 0; attempt < maxRetries; attempt += 1) {
+    try {
+      const res = await fetchWithTimeout(url, options, timeoutMs);
+      if (res.ok) return res;
+      if (!shouldRetryStatus(res.status) || attempt === maxRetries - 1) return res;
+      const body = await res.text().catch(() => '');
+      lastErr = new Error(`Drive HTTP ${res.status}${body ? `: ${body}` : ''}`);
+    } catch (err) {
+      lastErr = err;
+      if (attempt === maxRetries - 1) throw err;
+    }
+    await sleep(toBackoffMs(attempt));
+  }
+  if (lastErr) throw lastErr;
+  throw new Error('Drive request failed');
+}
+
+async function ensureFolderCacheLoaded() {
+  if (_folderCacheLoaded) return;
+  if (_folderCacheLoadPromise) {
+    await _folderCacheLoadPromise;
+    return;
+  }
+  _folderCacheLoadPromise = (async () => {
+    try {
+      const raw = await AsyncStorage.getItem(DRIVE_FOLDER_CACHE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+          for (const [k, v] of Object.entries(parsed)) {
+            if (typeof k === 'string' && typeof v === 'string' && k && v) {
+              _folderCache.set(k, v);
+            }
+          }
+        }
+      }
+    } catch (_) {
+      // Ignore cache hydration failures.
+    } finally {
+      _folderCacheLoaded = true;
+      _folderCacheLoadPromise = null;
+    }
+  })();
+  await _folderCacheLoadPromise;
+}
+
+function schedulePersistFolderCache() {
+  if (_folderCacheSaveTimer) clearTimeout(_folderCacheSaveTimer);
+  _folderCacheSaveTimer = setTimeout(() => {
+    _folderCacheSaveTimer = null;
+    const obj = {};
+    for (const [k, v] of _folderCache.entries()) {
+      obj[k] = v;
+    }
+    AsyncStorage.setItem(DRIVE_FOLDER_CACHE_KEY, JSON.stringify(obj)).catch(() => {
+      // Ignore cache save failures.
+    });
+  }, 400);
+}
+
 // ─────────────────────────────────────────────────────────────
 // OAuth 2.0 — token refresh
 // ─────────────────────────────────────────────────────────────
@@ -98,7 +199,7 @@ async function getAccessToken() {
     return _cachedToken;
   }
 
-  const res = await fetch('https://oauth2.googleapis.com/token', {
+  const res = await fetchWithTimeout('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: [
@@ -107,7 +208,7 @@ async function getAccessToken() {
       `refresh_token=${encodeURIComponent(GOOGLE_REFRESH_TOKEN)}`,
       'grant_type=refresh_token',
     ].join('&'),
-  });
+  }, DRIVE_TIMEOUT_SHORT_MS);
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
@@ -129,9 +230,10 @@ async function getAccessToken() {
 async function findFolder(name, parentId, token) {
   const safeN = escapeDriveQueryLiteral(name);
   const q = `mimeType='application/vnd.google-apps.folder' and name='${safeN}' and '${parentId}' in parents and trashed=false`;
-  const res = await fetch(
+  const res = await fetchWithRetry(
     `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id)&spaces=drive`,
-    { headers: { Authorization: `Bearer ${token}` } }
+    { headers: { Authorization: `Bearer ${token}` } },
+    { timeoutMs: DRIVE_TIMEOUT_SHORT_MS, maxRetries: DRIVE_MAX_RETRIES }
   );
   if (!res.ok) return null;
   const data = await res.json();
@@ -139,18 +241,22 @@ async function findFolder(name, parentId, token) {
 }
 
 async function createFolder(name, parentId, token) {
-  const res = await fetch('https://www.googleapis.com/drive/v3/files', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
+  const res = await fetchWithRetry(
+    'https://www.googleapis.com/drive/v3/files',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        name,
+        mimeType: 'application/vnd.google-apps.folder',
+        parents: [parentId],
+      }),
     },
-    body: JSON.stringify({
-      name,
-      mimeType: 'application/vnd.google-apps.folder',
-      parents: [parentId],
-    }),
-  });
+    { timeoutMs: DRIVE_TIMEOUT_SHORT_MS, maxRetries: DRIVE_MAX_RETRIES }
+  );
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     throw new Error(`Drive createFolder failed (${res.status}): ${text}`);
@@ -162,11 +268,13 @@ async function createFolder(name, parentId, token) {
 
 /** Find existing folder or create it; results are cached in-memory. */
 async function getOrCreateFolder(name, parentId, token) {
+  await ensureFolderCacheLoaded();
   const key = `${parentId}::${name}`;
   if (_folderCache.has(key)) return _folderCache.get(key);
   const existing = await findFolder(name, parentId, token);
   const id = existing ?? (await createFolder(name, parentId, token));
   _folderCache.set(key, id);
+  schedulePersistFolderCache();
   return id;
 }
 
@@ -190,7 +298,7 @@ async function uploadBase64File(base64Data, mimeType, fileName, parentFolderId, 
     `--${boundary}--`,
   ].join('');
 
-  const res = await fetch(
+  const res = await fetchWithRetry(
     'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name',
     {
       method: 'POST',
@@ -199,7 +307,8 @@ async function uploadBase64File(base64Data, mimeType, fileName, parentFolderId, 
         'Content-Type': `multipart/related; boundary=${boundary}`,
       },
       body,
-    }
+    },
+    { timeoutMs: DRIVE_TIMEOUT_UPLOAD_MS, maxRetries: DRIVE_MAX_RETRIES }
   );
 
   if (!res.ok) {

@@ -725,6 +725,23 @@ async function runMigrations(db) {
     }
     await db.runAsync('PRAGMA user_version = 30');
   }
+
+  // Migration 31: offline_attachments retry cooldown support (next_retry_at)
+  if (current < 31) {
+    try {
+      const info = await db.getAllAsync('PRAGMA table_info(offline_attachments)');
+      const names = new Set((info || []).map((c) => c.name));
+      if (!names.has('next_retry_at')) {
+        await db.runAsync('ALTER TABLE offline_attachments ADD COLUMN next_retry_at TEXT');
+      }
+      await db.runAsync(
+        'CREATE INDEX IF NOT EXISTS idx_offline_attachments_next_retry ON offline_attachments(next_retry_at)'
+      );
+    } catch (e) {
+      console.warn('[Migration] offline_attachments next_retry_at:', e);
+    }
+    await db.runAsync('PRAGMA user_version = 31');
+  }
 }
 
 /**

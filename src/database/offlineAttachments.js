@@ -11,6 +11,11 @@ export const SYNC_STATUS_SYNCED = 'synced';
 export const SYNC_STATUS_FAILED = 'failed';
 
 export const MAX_RETRIES = 5;
+const RETRY_COOLDOWN_MS = 60 * 1000;
+
+function isoAfter(ms) {
+  return new Date(Date.now() + Math.max(0, Number(ms) || 0)).toISOString();
+}
 
 /**
  * Insert a pending attachment (photo saved to device; will be uploaded on sync).
@@ -45,12 +50,14 @@ export async function insert(row) {
  */
 export async function getPendingBySaleOrderId(saleOrderId) {
   const db = await getDb();
+  const nowIso = iso();
   const rows = await db.getAllAsync(
-    `SELECT id, sale_order_id, local_file_path, file_name, mime_type, sync_status, retry_count
+    `SELECT id, sale_order_id, local_file_path, file_name, mime_type, sync_status, retry_count, next_retry_at
      FROM offline_attachments
      WHERE sale_order_id = ? AND sync_status = ? AND retry_count < ?
+       AND (next_retry_at IS NULL OR next_retry_at <= ?)
      ORDER BY id ASC`,
-    [num(saleOrderId), SYNC_STATUS_PENDING, MAX_RETRIES]
+    [num(saleOrderId), SYNC_STATUS_PENDING, MAX_RETRIES, nowIso]
   );
   return (rows || []).map((r) => ({
     id: r.id,
@@ -60,6 +67,7 @@ export async function getPendingBySaleOrderId(saleOrderId) {
     mime_type: r.mime_type,
     sync_status: r.sync_status,
     retry_count: r.retry_count,
+    next_retry_at: r.next_retry_at ?? null,
   }));
 }
 
@@ -98,13 +106,15 @@ export async function getSaleOrderIdsWithPendingAttachmentUploads() {
 
 export async function getAllPending(limit = 50) {
   const db = await getDb();
+  const nowIso = iso();
   const rows = await db.getAllAsync(
-    `SELECT id, sale_order_id, local_file_path, file_name, mime_type, sync_status, retry_count
+    `SELECT id, sale_order_id, local_file_path, file_name, mime_type, sync_status, retry_count, next_retry_at
      FROM offline_attachments
      WHERE sync_status = ? AND retry_count < ?
+       AND (next_retry_at IS NULL OR next_retry_at <= ?)
      ORDER BY created_at ASC
      LIMIT ?`,
-    [SYNC_STATUS_PENDING, MAX_RETRIES, limit]
+    [SYNC_STATUS_PENDING, MAX_RETRIES, nowIso, limit]
   );
   return (rows || []).map((r) => ({
     id: r.id,
@@ -114,6 +124,7 @@ export async function getAllPending(limit = 50) {
     mime_type: r.mime_type,
     sync_status: r.sync_status,
     retry_count: r.retry_count,
+    next_retry_at: r.next_retry_at ?? null,
   }));
 }
 
@@ -124,7 +135,9 @@ export async function markSynced(id) {
   const db = await getDb();
   const now = iso();
   await db.runAsync(
-    `UPDATE offline_attachments SET sync_status = ?, synced_at = ?, last_error = NULL WHERE id = ?`,
+    `UPDATE offline_attachments
+     SET sync_status = ?, synced_at = ?, last_error = NULL, next_retry_at = NULL
+     WHERE id = ?`,
     [SYNC_STATUS_SYNCED, now, num(id)]
   );
 }
@@ -135,7 +148,9 @@ export async function markSynced(id) {
 export async function markFailed(id, lastError) {
   const db = await getDb();
   await db.runAsync(
-    `UPDATE offline_attachments SET sync_status = ?, last_error = ? WHERE id = ?`,
+    `UPDATE offline_attachments
+     SET sync_status = ?, last_error = ?, next_retry_at = NULL
+     WHERE id = ?`,
     [SYNC_STATUS_FAILED, empty(lastError), num(id)]
   );
 }
@@ -145,9 +160,12 @@ export async function markFailed(id, lastError) {
  */
 export async function incrementRetry(id, lastError = '') {
   const db = await getDb();
+  const nextRetryAt = isoAfter(RETRY_COOLDOWN_MS);
   await db.runAsync(
-    `UPDATE offline_attachments SET retry_count = retry_count + 1, last_error = ? WHERE id = ?`,
-    [empty(lastError), num(id)]
+    `UPDATE offline_attachments
+     SET retry_count = retry_count + 1, last_error = ?, next_retry_at = ?
+     WHERE id = ?`,
+    [empty(lastError), nextRetryAt, num(id)]
   );
   const row = await db.getFirstAsync(
     'SELECT retry_count FROM offline_attachments WHERE id = ?',
@@ -155,7 +173,9 @@ export async function incrementRetry(id, lastError = '') {
   );
   if (row && row.retry_count >= MAX_RETRIES) {
     await db.runAsync(
-      `UPDATE offline_attachments SET sync_status = ? WHERE id = ?`,
+      `UPDATE offline_attachments
+       SET sync_status = ?, next_retry_at = NULL
+       WHERE id = ?`,
       [SYNC_STATUS_FAILED, num(id)]
     );
   }

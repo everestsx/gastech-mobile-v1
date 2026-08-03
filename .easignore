@@ -1,0 +1,54 @@
+# EAS Build upload ignore rules.
+# This file overrides the default .gitignore-based upload filter.
+# Keep most ignores, but DO upload `.env` for cloud APK builds.
+
+# dependencies
+node_modules/
+
+# Expo
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+
+# Native build outputs
+.kotlin/
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/**/*.iml
+android/.idea/
+android/captures/
+
+# Metro / debug
+.metro-health-check*
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# local env files (except .env)
+.env*.local
+
+# typescript
+*.tsbuildinfo
+
+# local IDE/project files
+.idea/
+
+# local DB snapshots
+.localdb/
+gastech.db
+*.db-shm
+*.db-wal
+
+# Playwright test outputs
+playwright-report/
+test-results/
+/tests/.auth/
+
+# Test env credentials
+.env.test
+
+# Explicitly include runtime env for EAS cloud bundle
+!.env

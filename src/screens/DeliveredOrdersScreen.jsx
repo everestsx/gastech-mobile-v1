@@ -7,6 +7,7 @@ import {
   ScrollView,
   TouchableOpacity,
   StyleSheet,
+  ActivityIndicator,
   Platform,
   TextInput,
   Modal,
@@ -212,6 +213,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchField, setSearchField] = useState('customer');
   const [showFieldDropdown, setShowFieldDropdown] = useState(false);
+  const [listLoading, setListLoading] = useState(() => !lastDeliveredOrdersSnapshot?.orders?.length);
 
   useEffect(
     () =>
@@ -340,6 +342,11 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
           paddingTop: insets.top,
         },
         center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+        loadingOverlay: {
+          ...StyleSheet.absoluteFillObject,
+          alignItems: 'center',
+          justifyContent: 'center',
+        },
         header: {
           flexDirection: 'row',
           alignItems: 'center',
@@ -520,6 +527,7 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
   );
 
   const loadOrders = useCallback(async () => {
+    setListLoading(true);
     try {
       const user = await getUserSession();
       const vehicleId = user?.isAdmin === false ? user.vehicleId : null;
@@ -719,6 +727,8 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
       });
     } catch (err) {
       console.error('Delivered Orders Error:', err);
+    } finally {
+      setListLoading(false);
     }
   }, [selectedDate, syncDateField, customerId]);
 
@@ -1057,6 +1067,11 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
           />
         )}
       />
+      {listLoading ? (
+        <View pointerEvents="none" style={styles.loadingOverlay}>
+          <ActivityIndicator size="large" color={colors.primary} />
+        </View>
+      ) : null}
     </View>
     </KeyboardAvoidingView>
   );

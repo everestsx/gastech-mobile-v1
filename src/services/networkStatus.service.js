@@ -16,7 +16,7 @@ export const NetworkQuality = {
 
 let lastQuality = NetworkQuality.OFFLINE;
 let lastFlushAt = 0;
-const STABLE_FLUSH_COOLDOWN_MS = 0;
+const STABLE_FLUSH_COOLDOWN_MS = 8000;
 
 function classify(state) {
   if (!state) return NetworkQuality.OFFLINE;
@@ -82,7 +82,7 @@ async function flushQueueOnStableConnection() {
         : await m.hasActionablePendingUploadWork();
     if (!shouldRun) return;
     lastFlushAt = now;
-    m.wakePendingUploadSyncNow({ queuePasses: 24, includeAttachments: true });
+    m.wakePendingUploadSyncNow({ queuePasses: 8, includeAttachments: true, chainRetry: false });
   } catch (_) {
     /* non-fatal */
   }

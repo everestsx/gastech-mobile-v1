@@ -94,6 +94,7 @@ export default function SaleOrderListScreen({ route, navigation }) {
   const [cancelReasonsLoading, setCancelReasonsLoading] = useState(false);
   const [cancelError, setCancelError] = useState(null);
   const [canceling, setCanceling] = useState(false);
+  const [listLoading, setListLoading] = useState(() => !lastSaleOrdersListSnapshot?.orders?.length);
   const { syncCompleteTimestamp } = useSync();
   const [uiDeliveredTick, setUiDeliveredTick] = useState(0);
 
@@ -141,6 +142,11 @@ export default function SaleOrderListScreen({ route, navigation }) {
           paddingTop: insets.top,
         },
         center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+        loadingOverlay: {
+          ...StyleSheet.absoluteFillObject,
+          alignItems: 'center',
+          justifyContent: 'center',
+        },
         header: {
           flexDirection: 'row',
           alignItems: 'center',
@@ -455,6 +461,7 @@ export default function SaleOrderListScreen({ route, navigation }) {
   );
 
   const loadOrders = useCallback(async () => {
+    setListLoading(true);
     try {
       const user = await getUserSession();
       const vehicleId = user?.isAdmin === false ? user.vehicleId : null;
@@ -557,6 +564,8 @@ export default function SaleOrderListScreen({ route, navigation }) {
       console.error('Sale Order Error:', err);
       setOrders([]);
       setCheckoutResumeMap({});
+    } finally {
+      setListLoading(false);
     }
   }, [customerId, selectedDate, syncDateField]);
 
@@ -867,6 +876,11 @@ export default function SaleOrderListScreen({ route, navigation }) {
           />
         )}
       />
+      {listLoading ? (
+        <View pointerEvents="none" style={styles.loadingOverlay}>
+          <ActivityIndicator size="large" color={colors.primary} />
+        </View>
+      ) : null}
 
       <Modal
         visible={showCancelConfirmModal}

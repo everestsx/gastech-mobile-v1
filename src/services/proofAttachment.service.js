@@ -8,7 +8,7 @@
  *
  * Flow: URI → base64 at sync time → API 1 (create) → API 2 (message_post with attachment_ids).
  */
-import { callOdooArgs, callOdooArgsKwargs } from './index.service';
+import { callOdoo, callOdooArgs, callOdooArgsKwargs } from './index.service';
 
 const MIMETYPES = {
   jpg: 'image/jpeg',
@@ -66,6 +66,16 @@ function normalizeDriveLinks(proofDriveLinks) {
     .map((link) => link.trim());
 }
 
+function extractDriveFileId(url) {
+  const s = String(url || '').trim();
+  if (!s) return null;
+  const m1 = s.match(/drive\.google\.com\/file\/d\/([^/?#]+)/i);
+  if (m1?.[1]) return m1[1].trim();
+  const m2 = s.match(/[?&]id=([^&#]+)/i);
+  if (m2?.[1]) return m2[1].trim();
+  return null;
+}
+
 function appendDriveProofLinkLines(lines, validDriveLinks, heading) {
   if (!validDriveLinks.length) return;
   lines.push(heading);
@@ -106,6 +116,44 @@ export function buildPaymentProofDriveLinksAddendumBody(proofDriveLinks = []) {
   const lines = [];
   appendDriveProofLinkLines(lines, validDriveLinks, 'Payment proof photo(s) — Google Drive:');
   return linesToOdooHtmlBody(lines);
+}
+
+/**
+ * Best-effort server-side idempotency check:
+ * if recent sale.order chatter already contains all given Drive links (or file ids),
+ * caller should skip posting duplicate addendum.
+ */
+export async function saleOrderHasDriveLinksInRecentChatter(saleOrderId, proofDriveLinks = []) {
+  const resId = typeof saleOrderId === 'number' ? saleOrderId : parseInt(saleOrderId, 10);
+  if (Number.isNaN(resId)) return false;
+  const links = normalizeDriveLinks(proofDriveLinks);
+  if (!links.length) return false;
+  try {
+    const rows = await callOdoo(
+      'mail.message',
+      'search_read',
+      [[['model', '=', 'sale.order'], ['res_id', '=', resId], ['message_type', '=', 'comment']]],
+      { fields: ['id', 'body'], order: 'id desc', limit: 40 }
+    );
+    const bodyText = (Array.isArray(rows) ? rows : [])
+      .map((r) => String(r?.body || ''))
+      .join('\n')
+      .toLowerCase();
+    if (!bodyText) return false;
+
+    return links.every((link) => {
+      const linkLower = String(link).toLowerCase();
+      if (bodyText.includes(linkLower)) return true;
+      const fileId = extractDriveFileId(linkLower);
+      if (!fileId) return false;
+      return (
+        bodyText.includes(`/file/d/${fileId}`) ||
+        bodyText.includes(`id=${fileId}`)
+      );
+    });
+  } catch (_) {
+    return false;
+  }
 }
 
 function stripDataUrlPrefixOnly(s) {
