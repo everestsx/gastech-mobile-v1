@@ -5,6 +5,8 @@ import { getDb } from './db.js';
 import { empty, iso } from './dbHelpers.js';
 
 export const CACHE_KEY_CANCEL_REASONS = 'cancellation_reasons';
+/** Supplier block for the invoice header (res.company + its partner address) — enables offline printing. */
+export const CACHE_KEY_COMPANY_PARTY = 'company_party_info';
 
 function safeParse(s) {
   if (!s) return null;

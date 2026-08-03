@@ -34,12 +34,17 @@ export async function upsertPartners(rows) {
         odooTextOrNull(r.city) ?? '',
         odooTextOrNull(r.name_tamil) ?? '',
         odooTextOrNull(r.name_sinhala) ?? '',
+        // Invoice header fields (Purchaser's TIN / Address) — kept locally for offline printing.
+        odooTextOrNull(r.vat) ?? '',
+        odooTextOrNull(r.street) ?? '',
+        odooTextOrNull(r.street2) ?? '',
+        odooTextOrNull(r.zip) ?? '',
         iso(),
       ];
       const params = coerceSqliteBindArray(rawParams);
       try {
         await tx.runAsync(
-          `INSERT OR REPLACE INTO partners (id, name, phone, city, name_tamil, name_sinhala, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT OR REPLACE INTO partners (id, name, phone, city, name_tamil, name_sinhala, vat, street, street2, zip, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           params
         );
       } catch (e) {
@@ -63,6 +68,73 @@ export async function getAllPartners() {
     name_sinhala: row.name_sinhala ?? null,
   }));
 }
+/**
+ * Non-destructive refresh of the invoice header fields for one partner.
+ * Unlike upsertPartners (INSERT OR REPLACE), this only touches the columns passed in and only
+ * when the new value is non-empty, so it can never blank out data fetched by a previous sync.
+ * No-op when the partner has no local row yet.
+ * @param {number|string} partnerId
+ * @param {{vat?:string|null, street?:string|null, street2?:string|null, city?:string|null, phone?:string|null}} fields
+ */
+export async function updatePartnerInvoiceFields(partnerId, fields) {
+  const id = Number(partnerId);
+  if (!Number.isFinite(id) || id <= 0) return;
+  const allowed = ['vat', 'street', 'street2', 'city', 'phone'];
+  const sets = [];
+  const params = [];
+  for (const col of allowed) {
+    const val = odooTextOrNull(fields?.[col]);
+    if (val == null) continue;
+    sets.push(`${col} = ?`);
+    params.push(val);
+  }
+  if (sets.length === 0) return;
+  params.push(id);
+  const db = await getDb();
+  try {
+    await db.runAsync(
+      `UPDATE partners SET ${sets.join(', ')} WHERE id = ?`,
+      coerceSqliteBindArray(params)
+    );
+  } catch (e) {
+    console.warn(`${LOG} updatePartnerInvoiceFields id=${id} failed`, e?.message ?? e);
+  }
+}
+
+/**
+ * Invoice header fields for one partner (Purchaser block) from local DB — used when printing offline.
+ * Returns null when the partner is not cached locally.
+ * @param {number|string} partnerId
+ */
+export async function getPartnerInvoiceFields(partnerId) {
+  const id = Number(partnerId);
+  if (!Number.isFinite(id) || id <= 0) return null;
+  const db = await getDb();
+  try {
+    const row = await db.getFirstAsync(
+      `SELECT id, name, phone, city, vat, street, street2, name_tamil, name_sinhala
+       FROM partners WHERE id = ? LIMIT 1`,
+      [id]
+    );
+    if (!row) return null;
+    return {
+      id: row.id,
+      name: row.name || null,
+      phone: row.phone || null,
+      city: row.city || null,
+      vat: row.vat || null,
+      street: row.street || null,
+      street2: row.street2 || null,
+      name_tamil: row.name_tamil ?? null,
+      name_sinhala: row.name_sinhala ?? null,
+    };
+  } catch (e) {
+    // Older DB without the migration-31 columns must not break invoice printing.
+    console.warn(`${LOG} getPartnerInvoiceFields id=${id} failed`, e?.message ?? e);
+    return null;
+  }
+}
+
 /**
  * Fetches unique customers (partners) assigned to a specific vehicle
  * based on the sale orders existing in the local database.

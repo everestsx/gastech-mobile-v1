@@ -725,6 +725,30 @@ async function runMigrations(db) {
     }
     await db.runAsync('PRAGMA user_version = 30');
   }
+
+  // Migration 31: Partner tax/address fields for offline invoice header (Purchaser's TIN + Address).
+  // street/street2/zip were already fetched from Odoo but discarded on write; vat was never fetched.
+  if (current < 31) {
+    try {
+      const info = await db.getAllAsync('PRAGMA table_info(partners)');
+      const names = new Set((info || []).map((c) => c.name));
+      if (!names.has('vat')) {
+        await db.runAsync('ALTER TABLE partners ADD COLUMN vat TEXT');
+      }
+      if (!names.has('street')) {
+        await db.runAsync('ALTER TABLE partners ADD COLUMN street TEXT');
+      }
+      if (!names.has('street2')) {
+        await db.runAsync('ALTER TABLE partners ADD COLUMN street2 TEXT');
+      }
+      if (!names.has('zip')) {
+        await db.runAsync('ALTER TABLE partners ADD COLUMN zip TEXT');
+      }
+    } catch (e) {
+      console.warn('[Migration] partners vat/street/street2/zip:', e);
+    }
+    await db.runAsync('PRAGMA user_version = 31');
+  }
 }
 
 /**

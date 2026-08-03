@@ -1384,6 +1384,12 @@ export default function DashboardScreen({ navigation }) {
     setPreCheckSummaryModalVisible(false);
     const u = await getUserSession();
     await setPreCheckDone(true, u?.loggedInAt);
+    // Make sure the supplier block for the invoice header is cached locally before the driver
+    // leaves. Fire-and-forget and internally guarded, so pre-check completion never waits on it
+    // and never fails because of it.
+    import('../services/company.service')
+      .then(({ ensureCompanyPartyInfoCached }) => ensureCompanyPartyInfoCached())
+      .catch(() => {});
   }, [setPreCheckDone]);
 
   const needsPreCheckGate = !preCheckDone && !preCheckSummaryModalVisible;

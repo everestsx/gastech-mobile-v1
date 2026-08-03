@@ -10,6 +10,9 @@ const PARTNER_FIELDS = [
   "city",
   "zip",
   "ref",
+  // Tax ID (res.partner.vat) — required for the "Purchaser's TIN" line on the printed invoice.
+  // Stored locally so the invoice header can be built offline.
+  "vat",
   "name_tamil",
   "name_sinhala",
 ];

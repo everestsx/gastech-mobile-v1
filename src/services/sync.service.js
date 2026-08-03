@@ -5654,6 +5654,15 @@ async function runSyncInternal() {
 
     log('db', 'partners');
     await partnersDb.upsertPartners(customers || []);
+    // Supplier block for the invoice header (res.company). Best-effort and non-blocking:
+    // refreshCompanyPartyInfoCache never throws, so a failure here cannot affect the sync result.
+    try {
+      const { refreshCompanyPartyInfoCache } = await import('./company.service.js');
+      const ok = await refreshCompanyPartyInfoCache();
+      log('db', `company party info ${ok ? 'cached' : 'unchanged'}`);
+    } catch (e) {
+      logWarn('cache company party info', e);
+    }
     log('db', 'sale_orders');
     await saleOrdersDb.upsertSaleOrders(orders || [], { preserveLocalForSaleOrderIds: preserveLocalSaleOrderIds });
 
