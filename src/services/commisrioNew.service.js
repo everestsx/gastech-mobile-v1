@@ -63,7 +63,11 @@ export async function getDeliverySummaryByEmployeeByDate({ dateFrom, dateTo, emp
     'total_qty',
   ];
   try {
-    const rows = await callOdooJson2('daily.delivery.summary', 'search_read', { domain, fields });
+    const rows = await callOdooJson2('daily.delivery.summary', 'search_read', {
+      domain,
+      fields,
+      limit: 400,
+    });
     return Array.isArray(rows) ? rows : [];
   } catch (e) {
     console.warn('[Commission New] delivery summary failed', e?.message || e);
@@ -89,7 +93,11 @@ export async function getCommissionByEmployeeByDate({ dateFrom, dateTo, employee
     'total_commission',
   ];
   try {
-    const rows = await callOdooJson2('delivery.commission', 'search_read', { domain, fields });
+    const rows = await callOdooJson2('delivery.commission', 'search_read', {
+      domain,
+      fields,
+      limit: 400,
+    });
     return Array.isArray(rows) ? rows : [];
   } catch (e) {
     console.warn('[Commission New] commission rows failed', e?.message || e);

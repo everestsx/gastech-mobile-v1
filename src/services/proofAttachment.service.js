@@ -76,6 +76,42 @@ function extractDriveFileId(url) {
   return null;
 }
 
+function normalizeChatterBodyForFingerprint(body) {
+  return String(body || '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+async function hasRecentSaleOrderCommentNeedle(resId, needle) {
+  const term = String(needle || '').trim();
+  if (!term) return false;
+  try {
+    const rows = await callOdoo(
+      'mail.message',
+      'search_read',
+      [
+        [
+          ['model', '=', 'sale.order'],
+          ['res_id', '=', resId],
+          ['message_type', '=', 'comment'],
+          ['body', 'ilike', term],
+        ],
+      ],
+      { fields: ['id'], order: 'id desc', limit: 1 }
+    );
+    return Array.isArray(rows) && rows.length > 0;
+  } catch (_) {
+    return false;
+  }
+}
+
 function appendDriveProofLinkLines(lines, validDriveLinks, heading) {
   if (!validDriveLinks.length) return;
   lines.push(heading);
@@ -110,11 +146,13 @@ export function buildDeliveryEvidenceDriveLinksBody(proofDriveLinks = []) {
 }
 
 /** Addendum when payment chatter posted without Drive links — same heading as full payment proof. */
-export function buildPaymentProofDriveLinksAddendumBody(proofDriveLinks = []) {
+export function buildPaymentProofDriveLinksAddendumBody(proofDriveLinks = [], options = {}) {
   const validDriveLinks = normalizeDriveLinks(proofDriveLinks);
   if (!validDriveLinks.length) return null;
   const lines = [];
   appendDriveProofLinkLines(lines, validDriveLinks, 'Payment proof photo(s) — Google Drive:');
+  const marker = String(options?.dedupeMarker || '').trim();
+  if (marker) lines.push(`Ref: ${escapeHtml(marker)}`);
   return linesToOdooHtmlBody(lines);
 }
 
@@ -128,32 +166,70 @@ export async function saleOrderHasDriveLinksInRecentChatter(saleOrderId, proofDr
   if (Number.isNaN(resId)) return false;
   const links = normalizeDriveLinks(proofDriveLinks);
   if (!links.length) return false;
-  try {
-    const rows = await callOdoo(
-      'mail.message',
-      'search_read',
-      [[['model', '=', 'sale.order'], ['res_id', '=', resId], ['message_type', '=', 'comment']]],
-      { fields: ['id', 'body'], order: 'id desc', limit: 40 }
-    );
-    const bodyText = (Array.isArray(rows) ? rows : [])
-      .map((r) => String(r?.body || ''))
-      .join('\n')
-      .toLowerCase();
-    if (!bodyText) return false;
+  const checks = [];
+  for (const link of links) {
+    const fileId = extractDriveFileId(link);
+    if (fileId) {
+      checks.push(String(fileId));
+      continue;
+    }
+    const compact = String(link || '').trim();
+    if (compact) checks.push(compact.slice(0, 120));
+  }
+  if (!checks.length) return false;
+  for (const term of checks) {
+    const exists = await hasRecentSaleOrderCommentNeedle(resId, term);
+    if (!exists) return false;
+  }
+  return true;
+}
 
-    return links.every((link) => {
-      const linkLower = String(link).toLowerCase();
-      if (bodyText.includes(linkLower)) return true;
-      const fileId = extractDriveFileId(linkLower);
-      if (!fileId) return false;
-      return (
-        bodyText.includes(`/file/d/${fileId}`) ||
-        bodyText.includes(`id=${fileId}`)
-      );
-    });
-  } catch (_) {
+/**
+ * Best-effort marker check for idempotent chatter posting.
+ * When matchAny=true, returns true if any marker is present in recent chatter.
+ */
+export async function saleOrderHasRecentChatterMarkers(saleOrderId, markerNeedles = [], options = {}) {
+  const resId = typeof saleOrderId === 'number' ? saleOrderId : parseInt(saleOrderId, 10);
+  if (Number.isNaN(resId)) return false;
+  const needles = (Array.isArray(markerNeedles) ? markerNeedles : [markerNeedles])
+    .map((x) => String(x || '').trim().toLowerCase())
+    .filter(Boolean);
+  if (!needles.length) return false;
+  const matchAny = options?.matchAny === true;
+  if (matchAny) {
+    for (const needle of needles) {
+      if (await hasRecentSaleOrderCommentNeedle(resId, needle)) return true;
+    }
     return false;
   }
+  for (const needle of needles) {
+    if (!(await hasRecentSaleOrderCommentNeedle(resId, needle))) return false;
+  }
+  return true;
+}
+
+/**
+ * Best-effort idempotency check for non-attachment chatter.
+ * Returns true when an equivalent body text is already present in recent sale.order comments.
+ */
+export async function saleOrderHasRecentChatterBody(saleOrderId, body) {
+  const resId = typeof saleOrderId === 'number' ? saleOrderId : parseInt(saleOrderId, 10);
+  if (Number.isNaN(resId)) return false;
+  const normalized = normalizeChatterBodyForFingerprint(body);
+  const compact = String(body || '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const candidates = [compact, normalized]
+    .map((s) => String(s || '').trim())
+    .filter((s) => s.length >= 12)
+    .map((s) => (s.length > 140 ? s.slice(0, 140) : s));
+  if (!candidates.length) return false;
+  for (const term of candidates) {
+    if (await hasRecentSaleOrderCommentNeedle(resId, term)) return true;
+  }
+  return false;
 }
 
 function stripDataUrlPrefixOnly(s) {

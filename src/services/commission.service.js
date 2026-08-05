@@ -1,5 +1,8 @@
 import { callOdooJson2 } from './index.service';
 
+const COMMISSION_ACHIEVEMENT_CACHE_MS = 30 * 60 * 1000;
+const commissionAchievementCache = new Map();
+
 /**
  * Get commission achievement rates by product for a specific team
  * Uses the new JSON 2 API endpoint: /json/2/sale.commission.plan.achievement/search_read
@@ -8,14 +11,21 @@ import { callOdooJson2 } from './index.service';
  */
 export const getCommissionAchievementByTeam = async (teamName) => {
   try {
+    const key = String(teamName || '').trim();
+    const cached = commissionAchievementCache.get(key);
+    if (cached && Date.now() - Number(cached.at || 0) < COMMISSION_ACHIEVEMENT_CACHE_MS) {
+      return Array.isArray(cached.rows) ? cached.rows : [];
+    }
     const result = await callOdooJson2(
       "sale.commission.plan.achievement",
       "search_read",
       {
         domain: [["plan_id.team_id.name", "=", teamName]],
-        fields: ["type", "product_id", "product_categ_id", "rate"]
+        fields: ["type", "product_id", "product_categ_id", "rate"],
+        limit: 500,
       }
     );
+    commissionAchievementCache.set(key, { at: Date.now(), rows: Array.isArray(result) ? result : [] });
     return result || [];
   } catch (error) {
     const isNetworkError =

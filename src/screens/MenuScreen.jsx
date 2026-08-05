@@ -24,6 +24,7 @@ import {
   setIsLoggingOut,
 } from '../services/sync.service';
 import CustomAlert from '../components/CustomAlert';
+import RichNotification from '../components/RichNotification';
 import { usePrinterConnection } from '../context/PrinterConnectionContext';
 import { useSync } from '../context/SyncContext';
 import { useFocusEffect } from '@react-navigation/native';
@@ -33,9 +34,9 @@ export default function MenuScreen({ navigation }) {
   const { t } = useTranslation();
   const { colors } = useTheme();
   const { clearPrinter } = usePrinterConnection();
-  const { isSyncing } = useSync();
+  const { setHideSyncIndicator } = useSync();
   const [syncing, setSyncing] = useState(false);
-  const syncActive = syncing || isSyncing;
+  const syncActive = syncing;
   const [checkingAppUpdate, setCheckingAppUpdate] = useState(false);
   const [lastSync, setLastSync] = useState(null);
   const [user, setUser] = useState(null);
@@ -45,6 +46,7 @@ export default function MenuScreen({ navigation }) {
     message: '',
     buttons: []
   });
+  const [notification, setNotification] = useState({ visible: false, title: '', message: '', type: 'info' });
   const showAlert = (title, message, buttons = []) => {
     setAlertConfig({ visible: true, title, message, buttons });
   };
@@ -74,17 +76,21 @@ export default function MenuScreen({ navigation }) {
     if (syncActive) return;
     setSyncing(true);
     try {
-      const result = await runSync();
+      setHideSyncIndicator(true);
+      const result = await runSync({ mode: 'master_data', trackIndicator: false });
       await refreshLastSync();
-      // if (result.error) {
-      //   showAlert('Sync failed', result.error);
-      // } else {
-      //   showAlert(
-      //     'Sync complete',
-      //     `Customers: ${result.customers}, Orders: ${result.orders}`
-      //   );
-      // }
+      if (result?.error) {
+        showAlert(t('menu.syncFailed', 'Sync failed'), result.error);
+      } else {
+        setNotification({
+          visible: true,
+          title: t('menu.syncDone', 'Sync complete'),
+          message: t('menu.backofficeSyncSuccess', 'Backoffice data synchronized successfully.'),
+          type: 'success',
+        });
+      }
     } finally {
+      setHideSyncIndicator(false);
       setSyncing(false);
     }
   };
@@ -266,11 +272,19 @@ export default function MenuScreen({ navigation }) {
   const profileInitial = (profileTitle || 'V').trim().charAt(0).toUpperCase();
 
   return (
-    <ScrollView
-      style={[styles.container, { backgroundColor: colors.background }]}
-      contentContainerStyle={styles.content}
-      showsVerticalScrollIndicator={false}
-    >
+    <View style={styles.screen}>
+      <RichNotification
+        visible={notification.visible}
+        title={notification.title}
+        message={notification.message}
+        type={notification.type}
+        onHide={() => setNotification((prev) => ({ ...prev, visible: false }))}
+      />
+      <ScrollView
+        style={[styles.container, { backgroundColor: colors.background }]}
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+      >
       {/* Profile section - tap to open Settings */}
       <TouchableOpacity
         style={[styles.profileCard, { backgroundColor: colors.surface, borderColor: colors.border }]}
@@ -407,6 +421,18 @@ export default function MenuScreen({ navigation }) {
 
       <TouchableOpacity
         style={[styles.menuItem, { backgroundColor: colors.surface, borderColor: colors.border }]}
+        onPress={() => navigation.navigate('DataUsage')}
+        activeOpacity={0.8}
+      >
+        <Ionicons name="stats-chart-outline" size={24} color={colors.primary} />
+        <Text style={[styles.menuItemText, { color: colors.text }]}>
+          {t('menu.dataUsage', 'Data Usage')}
+        </Text>
+        <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={[styles.menuItem, { backgroundColor: colors.surface, borderColor: colors.border }]}
         onPress={handleCheckAppUpdate}
         activeOpacity={0.8}
         disabled={checkingAppUpdate}
@@ -469,19 +495,20 @@ export default function MenuScreen({ navigation }) {
         <Ionicons name="log-out-outline" size={22} color={colors.error} />
         <Text style={[styles.logoutText, { color: colors.error }]}>{t("menu.logOut", "Log out")}</Text>
       </TouchableOpacity>
-      <CustomAlert
-          visible={alertConfig.visible}
-          title={alertConfig.title}
-          message={alertConfig.message}
-          buttons={alertConfig.buttons}
-          onClose={hideAlert}
-      />
-    </ScrollView>
-
+        <CustomAlert
+            visible={alertConfig.visible}
+            title={alertConfig.title}
+            message={alertConfig.message}
+            buttons={alertConfig.buttons}
+            onClose={hideAlert}
+        />
+      </ScrollView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  screen: { flex: 1 },
   container: { flex: 1 },
   content: { padding: spacing.lg, paddingTop: spacing.xl + spacing.lg },
   profileCard: {

@@ -16,7 +16,8 @@ export const NetworkQuality = {
 
 let lastQuality = NetworkQuality.OFFLINE;
 let lastFlushAt = 0;
-const STABLE_FLUSH_COOLDOWN_MS = 8000;
+let hasObservedNetworkState = false;
+const STABLE_FLUSH_COOLDOWN_MS = 2000;
 
 function classify(state) {
   if (!state) return NetworkQuality.OFFLINE;
@@ -55,6 +56,7 @@ export function getLastNetworkQuality() {
 
 /** Background queue upload + dashboard upload spinner — only when not fully offline. */
 export function isUploadSyncNetworkAvailable() {
+  if (!hasObservedNetworkState) return true;
   return lastQuality !== NetworkQuality.OFFLINE;
 }
 
@@ -98,6 +100,7 @@ export function subscribeNetworkStatus(listener) {
   const onState = (state) => {
     const quality = classify(state);
     const prev = lastQuality;
+    hasObservedNetworkState = true;
     lastQuality = quality;
     listener({
       quality,

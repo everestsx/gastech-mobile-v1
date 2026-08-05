@@ -26,7 +26,7 @@ import { useSync } from '../context/SyncContext';
 import { usePrinterConnection } from '../context/PrinterConnectionContext';
 import { spacing, borderRadius } from '../constants/theme';
 import { INVOICE_LOGO_PNG_BASE64 } from '../constants/invoiceLogoBase64';
-import { getSaleOrderDetailsFromDB, getUserSession, runSync } from '../services/sync.service';
+import { flushPendingUploadsNow, getSaleOrderDetailsFromDB, getUserSession } from '../services/sync.service';
 import { getOrAssignInvoiceNumber } from '../utils/invoiceNumber';
 import { getInvoiceScreenUiCache, setInvoiceScreenUiCache } from '../utils/invoiceScreenUiCache';
 import { getProductDisplayName, sortInvoiceLinesByGasKgAsc } from '../utils/productDisplay';
@@ -146,6 +146,14 @@ function safeDisplay(val) {
   if (val === undefined || val === null || val === false) return '—';
   const s = String(val).trim();
   return s === '' || s.toLowerCase() === 'false' ? '—' : s;
+}
+
+/** Invoice print fields: always render "-" for empty/false/missing values. */
+function normalizeInvoicePrintField(value) {
+  if (value === undefined || value === null || value === false) return '-';
+  const s = String(value).trim();
+  if (!s || s.toLowerCase() === 'false' || s === '—') return '-';
+  return s;
 }
 
 /** MM/DD/YYYY with zero-padded month and day (e.g. 07/25/2026) — invoice & delivery on screen and print. */
@@ -310,24 +318,22 @@ function buildInvoiceHtml(
     /</g,
     '&lt;'
   );
-  const customerNameDisplay = customerName === '—' ? '' : customerName;
+  const customerNameDisplay = normalizeInvoicePrintField(customerName).replace(/</g, '&lt;');
   const streetPart = safeDisplay(order?.street || order?.partner_street || order?.partner_address);
   const cityPart = safeDisplay(partyInfo?.customerCity || order?.city);
   const phonePart = safeDisplay(partyInfo?.customerPhone || order?.partner_phone);
-  const customerAddress = [safeDisplay(partyInfo?.customerStreet || streetPart), cityPart]
-    .filter((s) => s !== '—')
+  const customerAddress = [normalizeInvoicePrintField(partyInfo?.customerStreet || streetPart), normalizeInvoicePrintField(cityPart)]
+    .filter((s) => s !== '-')
     .join(', ')
-    .replace(/</g, '&lt;') || '';
-  const customerPhone = (phonePart !== '—' ? phonePart : '').replace(/</g, '&lt;');
+    .replace(/</g, '&lt;') || '-';
+  const customerPhone = normalizeInvoicePrintField(phonePart).replace(/</g, '&lt;');
   const supplierTinResolved = partyInfo?.supplierTin || supplierTin;
   const purchaserTinResolved = partyInfo?.customerTin || purchaserTin;
-  const supplierTinSafe = (supplierTinResolved != null && String(supplierTinResolved).trim()) ? String(supplierTinResolved).trim().replace(/</g, '&lt;') : '';
-  const purchaserTinSafe = (purchaserTinResolved != null && String(purchaserTinResolved).trim()) ? String(purchaserTinResolved).trim().replace(/</g, '&lt;') : '';
-  const hasSupplierTin = supplierTinSafe !== '';
-  const hasPurchaserTin = purchaserTinSafe !== '';
-  const supplierName = safeDisplay(partyInfo?.supplierName || 'GasTech').replace(/</g, '&lt;');
-  const supplierPhone = safeDisplay(partyInfo?.supplierPhone || '—').replace(/</g, '&lt;');
-  const supplierAddress = safeDisplay(partyInfo?.supplierAddress || '—').replace(/</g, '&lt;');
+  const supplierTinSafe = normalizeInvoicePrintField(supplierTinResolved).replace(/</g, '&lt;');
+  const purchaserTinSafe = normalizeInvoicePrintField(purchaserTinResolved).replace(/</g, '&lt;');
+  const supplierName = normalizeInvoicePrintField(partyInfo?.supplierName || 'GasTech').replace(/</g, '&lt;');
+  const supplierPhone = normalizeInvoicePrintField(partyInfo?.supplierPhone || '—').replace(/</g, '&lt;');
+  const supplierAddress = normalizeInvoicePrintField(partyInfo?.supplierAddress || '—').replace(/</g, '&lt;');
   const supplierAddressMultiline = supplierAddress
     .split(',')
     .map((s) => s.trim())
@@ -613,13 +619,13 @@ function buildInvoiceHtml(
   <div class="info-box">
   <div class="two-col">
     <div class="col">
-      <div class="field"><span class="label">Supplier's TIN:</span> ${hasSupplierTin ? supplierTinSafe : '—'}</div>
+      <div class="field"><span class="label">Supplier's TIN:</span> ${supplierTinSafe}</div>
       <div class="field"><span class="label">Supplier's Name:</span> ${supplierName}</div>
       <div class="field"><span class="label">Address:</span> ${supplierAddressMultiline}</div>
       <div class="field"><span class="label">Telephone No:</span> ${supplierPhone}</div>
     </div>
     <div class="col">
-      <div class="field"><span class="label">Purchaser's TIN:</span> ${hasPurchaserTin ? purchaserTinSafe : ''}</div>
+      <div class="field"><span class="label">Purchaser's TIN:</span> ${purchaserTinSafe}</div>
       <div class="field"><span class="label">Purchaser's Name:</span> ${customerNameDisplay}</div>
       <div class="field"><span class="label">Address:</span> ${customerAddressMultiline}</div>
       <div class="field"><span class="label">Telephone No:</span> ${customerPhone}</div>
@@ -629,7 +635,7 @@ function buildInvoiceHtml(
 
   <div class="top-row">
     <div class="info-cell">Date of Delivery: ${date}</div>
-    <div class="info-cell">Place of Supply: ${cityPart !== '—' ? cityPart.replace(/</g, '&lt;') : ''}</div>
+    <div class="info-cell">Place of Supply: ${normalizeInvoicePrintField(cityPart).replace(/</g, '&lt;')}</div>
   </div>
 
   <table>
@@ -760,25 +766,19 @@ function buildInvoicePlainText(
   const driverNamePlain = safeDisplay(printOptions.salesRepName || '—');
   const vehicleNoPlain = safeDisplay(printOptions.vehicleNumber || '—');
   const customerName = safeDisplay(resolveInvoiceCustomerDisplayName(order, partyInfo, appLanguage));
-  const customerNameDisplay = customerName === '—' ? '' : customerName;
+  const customerNameDisplay = normalizeInvoicePrintField(customerName);
   const streetPart = safeDisplay(order?.street || order?.partner_street || order?.partner_address);
   const cityPart = safeDisplay(partyInfo?.customerCity || order?.city);
   const phonePart = safeDisplay(partyInfo?.customerPhone || order?.partner_phone);
   const custStreet = safeDisplay(partyInfo?.customerStreet || streetPart);
-  const customerPhone = phonePart !== '—' ? phonePart : '';
+  const customerPhone = normalizeInvoicePrintField(phonePart);
   const supplierTinResolved = partyInfo?.supplierTin || supplierTin;
   const purchaserTinResolved = partyInfo?.customerTin || purchaserTin;
-  const supplierTinSafe =
-    supplierTinResolved != null && String(supplierTinResolved).trim()
-      ? String(supplierTinResolved).trim()
-      : '';
-  const purchaserTinSafe =
-    purchaserTinResolved != null && String(purchaserTinResolved).trim()
-      ? String(purchaserTinResolved).trim()
-      : '';
-  const supplierName = safeDisplay(partyInfo?.supplierName || 'GasTech');
-  const supplierPhone = safeDisplay(partyInfo?.supplierPhone || '—');
-  const supplierAddress = safeDisplay(partyInfo?.supplierAddress || '—');
+  const supplierTinSafe = normalizeInvoicePrintField(supplierTinResolved);
+  const purchaserTinSafe = normalizeInvoicePrintField(purchaserTinResolved);
+  const supplierName = normalizeInvoicePrintField(partyInfo?.supplierName || 'GasTech');
+  const supplierPhone = normalizeInvoicePrintField(partyInfo?.supplierPhone || '—');
+  const supplierAddress = normalizeInvoicePrintField(partyInfo?.supplierAddress || '—');
   const invNo =
     (invoiceNumber && String(invoiceNumber).trim()) ||
     (order?.invoice_number && String(order.invoice_number).trim()) ||
@@ -814,16 +814,16 @@ function buildInvoicePlainText(
     lineLR('Vehicle no.', vehicleNoPlain, w),
     dashLine(),
     lineLR('Supplier Name', supplierName, w),
-    supplierTinSafe ? lineLR('Supplier TIN', supplierTinSafe, w) : null,
+    lineLR('Supplier TIN', supplierTinSafe, w),
     ...wrapPlainLines(`Address: ${supplierAddress}`, w),
     lineLR('Telephone No.', supplierPhone, w),
     lineLR('Date of Delivery', isoDate, w),
     dashLine(),
     lineLR('Customer Name', customerNameDisplay, w),
-    purchaserTinSafe ? lineLR('Customer TIN', purchaserTinSafe, w) : null,
-    ...wrapPlainLines(`Address: ${[custStreet, cityPart].filter((s) => s && s !== '—').join(', ') || ''}`, w),
+    lineLR('Customer TIN', purchaserTinSafe, w),
+    ...wrapPlainLines(`Address: ${[normalizeInvoicePrintField(custStreet), normalizeInvoicePrintField(cityPart)].filter((s) => s && s !== '-').join(', ') || '-'}`, w),
     lineLR('Telephone No.', customerPhone, w),
-    lineLR('Place of Supply', cityPart !== '—' ? cityPart : '', w),
+    lineLR('Place of Supply', normalizeInvoicePrintField(cityPart), w),
     dashLine(),
     // 48-column table header (matches invoice structure better).
     'No Description                  Qty   Unit      Total',
@@ -2056,19 +2056,40 @@ export default function InvoiceScreen({ route, navigation }) {
   const buildInvoicePrintHtml = useCallback(async () => {
     if (!order) return null;
     let partyForPrint = partyInfo;
-    if (!partyInfoReadyForPrint(partyForPrint)) {
-      const cachedParty = getInvoiceScreenUiCache(Number(saleOrderId))?.partyInfo;
-      if (partyInfoReadyForPrint(cachedParty)) {
-        partyForPrint = cachedParty;
-      } else if (partyInfoLoadRef.current) {
-        partyForPrint = (await partyInfoLoadRef.current) || {};
-      } else {
-        partyForPrint = await fetchInvoicePartyInfo(order);
-        setPartyInfo(partyForPrint);
-        const prevCache = getInvoiceScreenUiCache(Number(saleOrderId)) || {};
-        setInvoiceScreenUiCache(Number(saleOrderId), { ...prevCache, partyInfo: partyForPrint });
+    const syncPartyIntoState = (nextParty) => {
+      const normalized = nextParty && typeof nextParty === 'object' ? nextParty : {};
+      setPartyInfo(normalized);
+      const prevCache = getInvoiceScreenUiCache(Number(saleOrderId)) || {};
+      setInvoiceScreenUiCache(Number(saleOrderId), { ...prevCache, partyInfo: normalized });
+      return normalized;
+    };
+    const ensurePartyInfoReadyForPrint = async () => {
+      let candidate = partyForPrint;
+      const waitsMs = [0, 180, 450, 900];
+      for (const waitMs of waitsMs) {
+        if (partyInfoReadyForPrint(candidate)) break;
+        if (waitMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, waitMs));
+        }
+        const cachedParty = getInvoiceScreenUiCache(Number(saleOrderId))?.partyInfo;
+        if (partyInfoReadyForPrint(cachedParty)) {
+          candidate = cachedParty;
+          break;
+        }
+        if (partyInfoLoadRef.current) {
+          candidate = (await partyInfoLoadRef.current) || candidate || {};
+          if (partyInfoReadyForPrint(candidate)) break;
+        }
+        const fetched = await fetchInvoicePartyInfo(order);
+        candidate = syncPartyIntoState(fetched);
       }
-    }
+      if (!partyInfoReadyForPrint(candidate)) {
+        const fetchedFinal = await fetchInvoicePartyInfo(order);
+        candidate = syncPartyIntoState(fetchedFinal);
+      }
+      return candidate && typeof candidate === 'object' ? candidate : {};
+    };
+    partyForPrint = await ensurePartyInfoReadyForPrint();
     const recomputeTotalsFromLines =
       previewBeforePayment ||
       (Array.isArray(invoiceLineQtys) && invoiceLineQtys.length > 0);
@@ -2319,7 +2340,13 @@ export default function InvoiceScreen({ route, navigation }) {
     }
 
     if (deliveryPhotos.length === 0) {
-      runSync().catch((e) => console.warn('[InvoiceScreen] sync after evidence skip', e?.message ?? e));
+      flushPendingUploadsNow({
+        includeAttachments: true,
+        aggressive: true,
+        queuePasses: 4,
+        skipPaymentTypeRefresh: true,
+        chainRetry: false,
+      }).catch((e) => console.warn('[InvoiceScreen] sync after evidence skip', e?.message ?? e));
       goNextAfterEvidence();
       return;
     }
@@ -2356,7 +2383,13 @@ export default function InvoiceScreen({ route, navigation }) {
 
       setShowEvidenceModal(false);
       setDeliveryPhotos([]);
-      runSync().catch((e) => console.warn('[InvoiceScreen] sync after evidence save', e?.message ?? e));
+      flushPendingUploadsNow({
+        includeAttachments: true,
+        aggressive: true,
+        queuePasses: 4,
+        skipPaymentTypeRefresh: true,
+        chainRetry: false,
+      }).catch((e) => console.warn('[InvoiceScreen] sync after evidence save', e?.message ?? e));
       goNextAfterEvidence();
     } catch (err) {
       console.error('[InvoiceScreen] save evidence failed', err);
@@ -3382,7 +3415,13 @@ export default function InvoiceScreen({ route, navigation }) {
           }
           setShowEvidenceModal(false);
           setDeliveryPhotos([]);
-          runSync().catch((e) => console.warn('[InvoiceScreen] sync after evidence close', e?.message ?? e));
+          flushPendingUploadsNow({
+            includeAttachments: true,
+            aggressive: true,
+            queuePasses: 4,
+            skipPaymentTypeRefresh: true,
+            chainRetry: false,
+          }).catch((e) => console.warn('[InvoiceScreen] sync after evidence close', e?.message ?? e));
           if (previewBeforePayment) {
             navigation.navigate('ProceedPayment', {
               saleOrderId,
@@ -3503,7 +3542,13 @@ export default function InvoiceScreen({ route, navigation }) {
                 onPress={() => {
                   setShowEvidenceModal(false);
                   setDeliveryPhotos([]);
-                  runSync().catch((e) => console.warn('[InvoiceScreen] sync after evidence skip', e?.message ?? e));
+                  flushPendingUploadsNow({
+                    includeAttachments: true,
+                    aggressive: true,
+                    queuePasses: 4,
+                    skipPaymentTypeRefresh: true,
+                    chainRetry: false,
+                  }).catch((e) => console.warn('[InvoiceScreen] sync after evidence skip', e?.message ?? e));
                   if (previewBeforePayment) {
                     navigation.navigate('ProceedPayment', {
                       saleOrderId,

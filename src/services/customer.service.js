@@ -10,6 +10,7 @@ const PARTNER_FIELDS = [
   "city",
   "zip",
   "ref",
+  "vat",
   "name_tamil",
   "name_sinhala",
 ];

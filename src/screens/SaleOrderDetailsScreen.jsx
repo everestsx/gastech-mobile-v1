@@ -700,6 +700,82 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
       throw new Error('Failed to update vehicle inventory');
     }
   }, [order, lines, productIdToAvailable, productIdToOnHand]);
+
+  /**
+   * Rare recovery path for newly created back-office orders:
+   * if local delivery rows are missing, fetch/confirm once from Odoo and hydrate SQLite,
+   * so Proceed to payment does not fail with "No delivery order found".
+   */
+  const ensureLocalDeliveryRowsForOrder = useCallback(async (saleOrderId) => {
+    const soId = Number(saleOrderId);
+    if (!Number.isFinite(soId) || soId <= 0) return [];
+    let pickings = await stockPickingsDb.getStockPickingsBySaleId(soId);
+    if (Array.isArray(pickings) && pickings.length > 0) return pickings;
+
+    try {
+      const {
+        getPickingBySaleOrder,
+        getStockMovesByPickingId,
+        getStockMoveLinesByMoveIds,
+        actionAssignPicking,
+      } = await import('../services/delivery.service.js');
+      const { callOdooArgs } = await import('../services/index.service.js');
+
+      let livePickings = (await getPickingBySaleOrder(soId).catch(() => [])) || [];
+      if (!livePickings.length) {
+        // Order may still be draft/sent; confirm once to generate delivery picking.
+        await callOdooArgs('sale.order', 'action_confirm', [[soId]]).catch(() => null);
+        livePickings = (await getPickingBySaleOrder(soId).catch(() => [])) || [];
+      }
+      if (!livePickings.length) return [];
+
+      // Best effort reserve on open pickings so move lines are materialized.
+      for (const pk of livePickings) {
+        const pid = Number(pk?.id);
+        const st = String(pk?.state || '').toLowerCase();
+        if (!Number.isFinite(pid) || pid <= 0) continue;
+        if (st !== 'done' && st !== 'cancel') {
+          await actionAssignPicking(pid).catch(() => null);
+        }
+      }
+
+      await stockPickingsDb.upsertStockPickings(
+        livePickings.map((pk) => ({
+          ...pk,
+          sale_id: [soId, null],
+        }))
+      );
+
+      const allMoves = [];
+      for (const pk of livePickings) {
+        const pid = Number(pk?.id);
+        if (!Number.isFinite(pid) || pid <= 0) continue;
+        const moves = (await getStockMovesByPickingId(pid).catch(() => [])) || [];
+        for (const mv of moves) {
+          allMoves.push({
+            ...mv,
+            picking_id: pid,
+          });
+        }
+      }
+      if (allMoves.length > 0) {
+        await stockMovesDb.upsertStockMoves(allMoves);
+        const moveIds = [...new Set(allMoves.map((m) => Number(m?.id)).filter((id) => Number.isFinite(id) && id > 0))];
+        if (moveIds.length > 0) {
+          const moveLines = (await getStockMoveLinesByMoveIds(moveIds).catch(() => [])) || [];
+          if (moveLines.length > 0) {
+            await stockMoveLinesDb.upsertStockMoveLines(moveLines);
+          }
+        }
+      }
+
+      pickings = await stockPickingsDb.getStockPickingsBySaleId(soId);
+      return Array.isArray(pickings) ? pickings : [];
+    } catch (_) {
+      return [];
+    }
+  }, []);
+
   const enrichDetailsInBackground = useCallback(
     async (data, mappedLines, deliveryDone) => {
       const productIds = mappedLines
@@ -1023,9 +1099,12 @@ const validateQuantities = useCallback(() => {
       const demandEdit = options.demandEdit === true;
       if (!order?.id) throw new Error('No order');
 
-      const pickings = await stockPickingsDb.getStockPickingsBySaleId(order.id);
+      let pickings = await stockPickingsDb.getStockPickingsBySaleId(order.id);
       if (!pickings?.length) {
-        throw new Error('No delivery order found for this sale order. Confirm the order first.');
+        pickings = await ensureLocalDeliveryRowsForOrder(order.id);
+      }
+      if (!pickings?.length) {
+        throw new Error('No delivery order found for this sale order yet. Please tap Sync and try again.');
       }
       const openPickings = pickings.filter((p) => String(p.state || '').toLowerCase() !== 'done');
       /**
@@ -1269,7 +1348,7 @@ const validateQuantities = useCallback(() => {
 
       return payload;
     },
-    [order?.id, lines]
+    [order?.id, lines, ensureLocalDeliveryRowsForOrder]
   );
 const getStockWarning = useCallback((lineId) => {
   const line = lines.find(l => l.id === lineId);

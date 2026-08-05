@@ -120,8 +120,41 @@ export function usePreCheckData({ todayOrders, todayOrderLines, stockCards, empt
       });
     }
 
-    return rows
-      .filter((r) => isPreCheckRow(r.label, r.productId, r.isGas, r.isAccessory, r.isExtra))
+    const consolidated = new Map();
+    const makeGroupKey = (r) => {
+      if (r.isGas && r.kg != null && Number.isFinite(Number(r.kg))) {
+        return `gas:${Number(r.kg).toFixed(1)}`;
+      }
+      if (r.productId != null && Number.isFinite(Number(r.productId))) {
+        return `product:${Number(r.productId)}`;
+      }
+      return `label:${String(r.label || '').toLowerCase()}`;
+    };
+    for (const r of rows) {
+      if (!isPreCheckRow(r.label, r.productId, r.isGas, r.isAccessory, r.isExtra)) continue;
+      const key = makeGroupKey(r);
+      const prev = consolidated.get(key);
+      if (!prev) {
+        consolidated.set(key, { ...r });
+        continue;
+      }
+      const onHand = (Number(prev.onHand) || 0) + (Number(r.onHand) || 0);
+      // Demand can be duplicated across multiple stock card rows for the same gas size.
+      // Keep the max demand to avoid double-counting while still preserving shortages.
+      const totalOrdered = Math.max(Number(prev.totalOrdered) || 0, Number(r.totalOrdered) || 0);
+      consolidated.set(key, {
+        ...prev,
+        onHand,
+        totalOrdered,
+        shortfall: Math.max(0, totalOrdered - onHand),
+        insufficient: onHand < totalOrdered,
+        isGas: prev.isGas || r.isGas,
+        isAccessory: prev.isAccessory || r.isAccessory,
+        isExtra: prev.isExtra || r.isExtra,
+      });
+    }
+
+    return Array.from(consolidated.values())
       .filter((r) => r.onHand > 0 || r.totalOrdered > 0)
       .sort((a, b) => {
         if (a.sortRank !== b.sortRank) return a.sortRank - b.sortRank;

@@ -6,9 +6,11 @@ import { useTranslation } from 'react-i18next';
 import { colors, spacing, borderRadius } from '../constants/theme';
 import { runSync, getLastSyncTime, getUserSession, logout, getSyncIntervalMinutes } from '../services/sync.service';
 import RichNotification from './RichNotification';
+import { useSync } from '../context/SyncContext';
 
 export default function DrawerContent({ navigation }) {
   const { t } = useTranslation();
+  const { setHideSyncIndicator } = useSync();
   const [syncing, setSyncing] = useState(false);
   const [lastSync, setLastSync] = useState(null);
   const [user, setUser] = useState(null);
@@ -35,7 +37,8 @@ export default function DrawerContent({ navigation }) {
   const handleSync = async () => {
     setSyncing(true);
     try {
-      const result = await runSync();
+      setHideSyncIndicator(true);
+      const result = await runSync({ mode: 'master_data', trackIndicator: false });
       await refreshLastSync();
       if (result.error) {
         setNotification({
@@ -48,14 +51,12 @@ export default function DrawerContent({ navigation }) {
         setNotification({
           visible: true,
           title: t('drawer.syncDone', 'Sync done'),
-          message: t('drawer.syncDoneMessage', '{{customers}} customers · {{orders}} orders', {
-            customers: result.customers,
-            orders: result.orders,
-          }),
+          message: t('drawer.backofficeSyncSuccess', 'Backoffice data synchronized successfully.'),
           type: 'success',
         });
       }
     } finally {
+      setHideSyncIndicator(false);
       setSyncing(false);
     }
   };

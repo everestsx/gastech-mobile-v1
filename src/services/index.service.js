@@ -1,5 +1,6 @@
 // services/index.service.js
 import { ODOO_URL, ODOO_DB, ODOO_API_KEY, UID } from '@env';
+import { trackNetworkUsage, usageBytes } from './dataUsage.service';
 
 const REQUEST_TIMEOUT_MS = 35000;
 
@@ -83,6 +84,16 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = REQUEST_TIMEOUT_M
   }
 }
 
+function estimateResponseBytes(response, rawText) {
+  try {
+    const cl = Number(response?.headers?.get?.('content-length'));
+    if (Number.isFinite(cl) && cl > 0) return cl;
+  } catch (_) {
+    /* fallback below */
+  }
+  return usageBytes(rawText);
+}
+
 export const callOdoo = async (model, method, domain = [], options = {}) => {
   const { url, db, uid, apiKey } = getOdooConfig();
   const args = USE_SESSION
@@ -100,12 +111,13 @@ export const callOdoo = async (model, method, domain = [], options = {}) => {
     id: Date.now(),
   };
 
+  const requestBody = JSON.stringify(payload);
   let response;
   try {
     response = await fetchWithTimeout(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: requestBody,
       credentials: USE_SESSION ? 'include' : 'omit',
     });
   } catch (networkErr) {
@@ -119,7 +131,13 @@ export const callOdoo = async (model, method, domain = [], options = {}) => {
     );
   }
 
-  const json = await response.json();
+  const rawText = await response.text();
+  trackNetworkUsage(usageBytes(requestBody), estimateResponseBytes(response, rawText), {
+    kind: 'odoo_jsonrpc',
+    model,
+    method,
+  });
+  const json = rawText ? JSON.parse(rawText) : {};
   // console.log(`[Odoo Response] ${model}.${method}:`, JSON.stringify(json, null, 2));
   if (json.error) {
     const msg = json.error.data?.message || json.error.message || 'Odoo error';
@@ -138,16 +156,23 @@ export const callOdooJson2 = async (model, method, params = {}) => {
   const baseUrl = url.replace(/\/jsonrpc\/?$/i, "").replace(/\/$/, "");
   const path = `${baseUrl}/json/2/${model}/${method}`;
 
+  const requestBody = JSON.stringify(params);
   const response = await fetchWithTimeout(path, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`,
     },
-    body: JSON.stringify(params),
+    body: requestBody,
   });
 
-  const json = await response.json();
+  const rawText = await response.text();
+  trackNetworkUsage(usageBytes(requestBody), estimateResponseBytes(response, rawText), {
+    kind: 'odoo_json2',
+    model,
+    method,
+  });
+  const json = rawText ? JSON.parse(rawText) : {};
   if (json.error) {
     const msg = json.error.data?.message || json.error.message || "Odoo JSON 2 error";
     throw new Error(msg);
@@ -166,16 +191,22 @@ export const postOdooRoute = async (path, body = {}) => {
   const baseUrl = url.replace(/\/jsonrpc\/?$/i, "").replace(/\/$/, "");
   const fullUrl = `${baseUrl}${path.startsWith('/') ? path : `/${path}`}`;
 
+  const requestBody = JSON.stringify(body);
   const response = await fetchWithTimeout(fullUrl, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`,
     },
-    body: JSON.stringify(body),
+    body: requestBody,
   });
 
-  const json = await response.json();
+  const rawText = await response.text();
+  trackNetworkUsage(usageBytes(requestBody), estimateResponseBytes(response, rawText), {
+    kind: 'odoo_route',
+    path,
+  });
+  const json = rawText ? JSON.parse(rawText) : {};
   if (json?.error) {
     const msg = json.error.data?.message || json.error.message || "Odoo route error";
     throw new Error(msg);
@@ -204,12 +235,13 @@ export const callOdooArgs = async (model, method, positionalArgs) => {
     id: Date.now(),
   };
 
+  const requestBody = JSON.stringify(payload);
   let response;
   try {
     response = await fetchWithTimeout(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: requestBody,
       credentials: USE_SESSION ? 'include' : 'omit',
     });
   } catch (networkErr) {
@@ -223,7 +255,13 @@ export const callOdooArgs = async (model, method, positionalArgs) => {
     );
   }
 
-  const json = await response.json();
+  const rawText = await response.text();
+  trackNetworkUsage(usageBytes(requestBody), estimateResponseBytes(response, rawText), {
+    kind: 'odoo_jsonrpc_args',
+    model,
+    method,
+  });
+  const json = rawText ? JSON.parse(rawText) : {};
   // console.log(`[Odoo Response] ${model}.${method}:`, JSON.stringify(json, null, 2));
   if (json.error) {
     const msg = json.error.data?.message || json.error.message || 'Odoo error';
@@ -251,12 +289,13 @@ export const callOdooArgsKwargs = async (model, method, positionalArgs, kwargs =
     id: Date.now(),
   };
 
+  const requestBody = JSON.stringify(payload);
   let response;
   try {
     response = await fetchWithTimeout(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: requestBody,
       credentials: USE_SESSION ? 'include' : 'omit',
     });
   } catch (networkErr) {
@@ -270,7 +309,13 @@ export const callOdooArgsKwargs = async (model, method, positionalArgs, kwargs =
     );
   }
 
-  const json = await response.json();
+  const rawText = await response.text();
+  trackNetworkUsage(usageBytes(requestBody), estimateResponseBytes(response, rawText), {
+    kind: 'odoo_jsonrpc_kwargs',
+    model,
+    method,
+  });
+  const json = rawText ? JSON.parse(rawText) : {};
   // console.log(`[Odoo Response] ${model}.${method}:`, JSON.stringify(json, null, 2));
   if (json.error) {
     const msg = json.error.data?.message || json.error.message || 'Odoo error';

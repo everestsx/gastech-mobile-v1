@@ -1,5 +1,6 @@
 import { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN, ROOT_FOLDER_ID } from '@env';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { trackNetworkUsage, usageBytes } from './dataUsage.service';
 
 /**
  * Google Drive payment proof upload service.
@@ -297,6 +298,7 @@ async function uploadBase64File(base64Data, mimeType, fileName, parentFolderId, 
     `${base64Data}\r\n`,
     `--${boundary}--`,
   ].join('');
+  const bodyBytes = usageBytes(body);
 
   const res = await fetchWithRetry(
     'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name',
@@ -313,9 +315,12 @@ async function uploadBase64File(base64Data, mimeType, fileName, parentFolderId, 
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
+    trackNetworkUsage(bodyBytes, usageBytes(text), { kind: 'drive_upload', fileName });
     throw new Error(`Drive file upload failed (${res.status}): ${text}`);
   }
-  const data = await res.json();
+  const rawText = await res.text();
+  trackNetworkUsage(bodyBytes, usageBytes(rawText), { kind: 'drive_upload', fileName });
+  const data = rawText ? JSON.parse(rawText) : {};
   return data.id ?? null;
 }
 

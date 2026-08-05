@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -52,6 +52,7 @@ import {
   setDashboardIndicatorsListener,
   isCheckoutUploadActive,
   KEY_PRECHECK_DONE,
+  runSync,
 } from '../services/sync.service';
 import * as localPaymentsDb from '../database/localPayments.js';
 import * as localInvoicesDb from '../database/localInvoices.js';
@@ -87,10 +88,12 @@ import { usePreCheckData } from '../hooks/usePreCheckData';
 import NetworkStatusPill from '../components/NetworkStatusPill';
 import { subscribeNetworkStatus, NetworkQuality } from '../services/networkStatus.service';
 import { useSync } from '../context/SyncContext';
+import { preloadInvoicePartyInfoForOrders, getPreCheckPartyDetailsForOrders } from '../utils/invoicePartyInfo';
+
 
 const ORANGE_UPLOAD_SINCE_KEY = '@gastech_orange_upload_pending_since';
 const ORANGE_UPLOAD_REMINDER_MS = 10 * 60 * 1000;
-import { odooImageToUri, getDrivingEmployees, getPortersEmployees } from '../services/employee.service';
+import { odooImageToUri } from '../services/employee.service';
 import { updateDriverLoginRoute } from '../services/driverLoginHistory.service';
 import {
   mergePickingStateBySaleIdFromRows,
@@ -105,11 +108,16 @@ import {
 } from '../services/checkoutResume.service';
 
 let lastDashboardSnapshot = null;
+const COMMISSION_REFRESH_COOLDOWN_MS = 15 * 60 * 1000;
 
 function hasValidEmployeeImage(imageBase64) {
   if (imageBase64 == null) return false;
   const s = String(imageBase64).trim();
   return !!s && s.toLowerCase() !== 'false' && s.toLowerCase() !== 'null';
+}
+
+function waitMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
 }
 
 // const SHOPS_TARGET = 60;
@@ -202,7 +210,7 @@ function getGasImageByProductName(productName) {
 export default function DashboardScreen({ navigation }) {
   const { t } = useTranslation();
   const insets = useSafeAreaInsets();
-  const { syncCompleteTimestamp, isSyncing, syncResult, syncErrorMessage } = useSync();
+  const { syncCompleteTimestamp, isSyncing, syncResult, syncErrorMessage, setHideSyncIndicator } = useSync();
   const {
     colors,
     isDark,
@@ -215,6 +223,21 @@ export default function DashboardScreen({ navigation }) {
   const showCreateSalesOrder = dashboardConfig.showCreateSalesOrder && userShowCreate;
   const showReturnOrder = dashboardConfig.showReturnOrder && userShowReturn;
   const [orders, setOrders] = useState(() => lastDashboardSnapshot?.orders ?? []);
+  const [preCheckPartyWarmupRunning, setPreCheckPartyWarmupRunning] = useState(false);
+  const [preCheckTodayOrdersLoading, setPreCheckTodayOrdersLoading] = useState(false);
+  const [preCheckStockLoading, setPreCheckStockLoading] = useState(false);
+  const [preCheckTodayOrdersCount, setPreCheckTodayOrdersCount] = useState(null);
+  const [preCheckPartyStatus, setPreCheckPartyStatus] = useState({
+    running: false,
+    supplierReady: false,
+    customerReady: false,
+    customerCachedCount: 0,
+    supplierDetails: null,
+    customerDetails: [],
+    totalCustomerPartners: 0,
+    error: null,
+    checkedAt: null,
+  });
   const [user, setUser] = useState(() => lastDashboardSnapshot?.user ?? null);
   const [routes, setRoutes] = useState(() => lastDashboardSnapshot?.routes ?? []);
   const [lineTotalsByOrder, setLineTotalsByOrder] = useState(() => lastDashboardSnapshot?.lineTotalsByOrder ?? {});
@@ -224,6 +247,7 @@ export default function DashboardScreen({ navigation }) {
     () => !isDashboardInitialLoadMemoryDone() && !(lastDashboardSnapshot?.orders?.length > 0)
   );
   const [syncing, setSyncing] = useState(false);
+  const [startDaySyncing, setStartDaySyncing] = useState(false);
   const [lastSyncTime, setLastSyncTime] = useState(null);
   const [syncLog, setSyncLog] = useState([]);
   const [selectedChartDate, setSelectedChartDate] = useState(() => formatLocalYyyyMmDd(new Date()));
@@ -240,9 +264,11 @@ export default function DashboardScreen({ navigation }) {
   const [pendingCheckoutOrderIds, setPendingCheckoutOrderIds] = useState(() => new Set());
   const [paymentSplitsByOrderId, setPaymentSplitsByOrderId] = useState({});
   // Commission state
-  const [commissionPlan, setCommissionPlan] = useState(null);
+  const [commissionPlan, setCommissionPlan] = useState(() => lastDashboardSnapshot?.commissionPlan ?? null);
   const [commissionLoading, setCommissionLoading] = useState(false);
-  const [employeeCommissionCards, setEmployeeCommissionCards] = useState([]);
+  const [employeeCommissionCards, setEmployeeCommissionCards] = useState(
+    () => lastDashboardSnapshot?.employeeCommissionCards ?? []
+  );
   const [commissionRangePreset, setCommissionRangePreset] = useState('today');
   const [commissionDateRange, setCommissionDateRange] = useState(() => getTodayDateRange());
   const [commissionRangeModalVisible, setCommissionRangeModalVisible] = useState(false);
@@ -336,6 +362,7 @@ export default function DashboardScreen({ navigation }) {
   const dashboardSessionKeyRef = useRef(null);
   const routeSyncSentRef = useRef(new Set());
   const lastSyncNotificationRef = React.useRef(null);
+  const preCheckPartyWarmupRunRef = useRef(0);
   /** Latched while orange pending upload counter > 0 and a flush is running; cleared when counter hits 0. */
   const [networkQuality, setNetworkQuality] = useState(NetworkQuality.OFFLINE);
 
@@ -399,6 +426,26 @@ export default function DashboardScreen({ navigation }) {
     })();
   }, [sessionKey]);
 
+  // Prevent cross-lorry pre-check bleed: reset/cancel pre-check state on session switch.
+  useEffect(() => {
+    preCheckPartyWarmupRunRef.current += 1;
+    setPreCheckSummaryModalVisible(false);
+    setPreCheckPartyWarmupRunning(false);
+    setPreCheckTodayOrdersLoading(false);
+    setPreCheckTodayOrdersCount(null);
+    setPreCheckPartyStatus({
+      running: false,
+      supplierReady: false,
+      customerReady: false,
+      customerCachedCount: 0,
+      supplierDetails: null,
+      customerDetails: [],
+      totalCustomerPartners: 0,
+      error: null,
+      checkedAt: null,
+    });
+  }, [sessionKey]);
+
   /** Fresh login: do not keep dashboard hidden while background sync runs. */
   useEffect(() => {
     if (!user?.pendingInitialSync) return;
@@ -458,8 +505,23 @@ export default function DashboardScreen({ navigation }) {
       orderSyncStats,
       stockCards,
       emptyStockByKg,
+      commissionPlan,
+      employeeCommissionCards,
+      commissionFetchKey: lastDashboardSnapshot?.commissionFetchKey || '',
+      commissionFetchedAt: lastDashboardSnapshot?.commissionFetchedAt || 0,
     };
-  }, [orders, user, routes, lineTotalsByOrder, todayOrderLines, orderSyncStats, stockCards, emptyStockByKg]);
+  }, [
+    orders,
+    user,
+    routes,
+    lineTotalsByOrder,
+    todayOrderLines,
+    orderSyncStats,
+    stockCards,
+    emptyStockByKg,
+    commissionPlan,
+    employeeCommissionCards,
+  ]);
 
   const toggleCollectionCard = useCallback((key) => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
@@ -488,56 +550,8 @@ export default function DashboardScreen({ navigation }) {
       ]);
       let user = userData || null;
       setUser(user);
-      // Do not block dashboard data load on employee image API calls.
-      // Hydrate missing crew images in background so first screen paints fast.
-      if (user) {
-        void (async () => {
-          try {
-            let nextUser = user;
-            if (Array.isArray(nextUser.selectedPorters) && nextUser.selectedPorters.length > 0) {
-              const needImages = nextUser.selectedPorters.some((p) => !p?.imageBase64);
-              if (needImages) {
-                const withImages = await getPortersEmployees();
-                if (Array.isArray(withImages) && withImages.length) {
-                  const byId = new Map(withImages.map((p) => [Number(p.id), p]));
-                  nextUser = {
-                    ...nextUser,
-                    selectedPorters: nextUser.selectedPorters.map((p) => {
-                      const full = byId.get(Number(p?.id));
-                      if (!full) return p;
-                      return {
-                        ...p,
-                        imageBase64: p.imageBase64 || full.imageBase64,
-                        phone: (p.phone && String(p.phone).trim()) ? p.phone : (full.phone || ''),
-                      };
-                    }),
-                  };
-                }
-              }
-            }
-            if (!hasValidEmployeeImage(nextUser?.driverImageBase64) && nextUser?.driverId != null) {
-              let employees = await getDrivingEmployees();
-              let matchedDriver = (employees || []).find((e) => Number(e?.id) === Number(nextUser.driverId));
-              // Defensive fallback: some DBs may have driver mis-assigned to another department.
-              if (!matchedDriver?.imageBase64) {
-                employees = await getPortersEmployees();
-                matchedDriver = (employees || []).find((e) => Number(e?.id) === Number(nextUser.driverId));
-              }
-              if (matchedDriver?.imageBase64) {
-                nextUser = { ...nextUser, driverImageBase64: matchedDriver.imageBase64 };
-              }
-            }
-            if (nextUser !== user) {
-              try {
-                await saveUserSession(nextUser);
-              } catch (_) {}
-              setUser((prev) => (prev ? { ...prev, ...nextUser } : nextUser));
-            }
-          } catch (e) {
-            console.warn('[Dashboard] employee media hydrate failed', e?.message ?? e);
-          }
-        })();
-      }
+      // Avoid heavy image hydration calls here (can fetch huge base64 payloads repeatedly).
+      // Session already carries driver/porter image data when available from login flow.
       setRoutes(Array.isArray(routesData) ? routesData : []);
       const vehicleId = user?.isAdmin === false ? user.vehicleId : null;
       let data = [];
@@ -791,40 +805,59 @@ export default function DashboardScreen({ navigation }) {
   }, [formatLocalDate, getOrderDateForSyncMode]);
 
 
-  const loadCommissionData = useCallback(async () => {
+  const loadCommissionData = useCallback(async (options = {}) => {
     if (!user) return;
+    const force = options?.force === true;
+    const { dateFrom, dateTo } = commissionDateRange;
+    const rawIds = [
+      user?.driverId != null ? Number(user.driverId) : null,
+      ...((Array.isArray(user?.selectedPorters) ? user.selectedPorters : [])
+        .map((p) => Number(p?.id))
+        .filter((id) => Number.isFinite(id))),
+    ];
+    const employeeIds = [...new Set(rawIds.filter((id) => Number.isFinite(id)).map((id) => Number(id)))];
+    const commissionFetchKey = [
+      String(user?.licensePlate || ''),
+      String(dateFrom || ''),
+      String(dateTo || ''),
+      employeeIds.join(','),
+    ].join('|');
+    const cachedAt = Number(lastDashboardSnapshot?.commissionFetchedAt || 0);
+    const cachedFresh = Date.now() - cachedAt < COMMISSION_REFRESH_COOLDOWN_MS;
+    const sameKey = String(lastDashboardSnapshot?.commissionFetchKey || '') === commissionFetchKey;
+    if (!force && cachedFresh && sameKey) {
+      if (lastDashboardSnapshot?.commissionPlan != null) {
+        setCommissionPlan(lastDashboardSnapshot.commissionPlan);
+      }
+      if (Array.isArray(lastDashboardSnapshot?.employeeCommissionCards)) {
+        setEmployeeCommissionCards(lastDashboardSnapshot.employeeCommissionCards);
+      }
+      return;
+    }
 
     setCommissionLoading(true);
     try {
       const [plan, deliveryRows, commissionRows] = await Promise.all([
         user?.licensePlate ? getActiveCommissionPlan(user.licensePlate) : Promise.resolve(null),
         (async () => {
-          const { dateFrom, dateTo } = commissionDateRange;
-          const raw = [
-            user?.driverId != null ? Number(user.driverId) : null,
-            ...((Array.isArray(user?.selectedPorters) ? user.selectedPorters : [])
-              .map((p) => Number(p?.id))
-              .filter((id) => Number.isFinite(id))),
-          ];
-          const employeeIds = [...new Set(raw.filter((id) => Number.isFinite(id)).map((id) => Number(id)))];
           if (employeeIds.length === 0) return [];
           return getDeliverySummaryByEmployeeByDate({ dateFrom, dateTo, employeeIds });
         })(),
         (async () => {
-          const { dateFrom, dateTo } = commissionDateRange;
-          const raw = [
-            user?.driverId != null ? Number(user.driverId) : null,
-            ...((Array.isArray(user?.selectedPorters) ? user.selectedPorters : [])
-              .map((p) => Number(p?.id))
-              .filter((id) => Number.isFinite(id))),
-          ];
-          const employeeIds = [...new Set(raw.filter((id) => Number.isFinite(id)).map((id) => Number(id)))];
           if (employeeIds.length === 0) return [];
           return getCommissionByEmployeeByDate({ dateFrom, dateTo, employeeIds });
         })(),
       ]);
       setCommissionPlan(plan);
-      setEmployeeCommissionCards(mergeCommissionRowsByEmployee(deliveryRows, commissionRows));
+      const mergedCards = mergeCommissionRowsByEmployee(deliveryRows, commissionRows);
+      setEmployeeCommissionCards(mergedCards);
+      lastDashboardSnapshot = {
+        ...(lastDashboardSnapshot || {}),
+        commissionPlan: plan,
+        employeeCommissionCards: mergedCards,
+        commissionFetchKey,
+        commissionFetchedAt: Date.now(),
+      };
     } catch (_) {
       setCommissionPlan(null);
       setEmployeeCommissionCards([]);
@@ -1046,19 +1079,37 @@ export default function DashboardScreen({ navigation }) {
     setRefreshing(false);
   };
 
-  const onSync = async () => {
-    if (syncing || isSyncing) return;
-    setSyncing(true);
+  const onSync = async (options = {}) => {
+    const isStartDayMode = options?.mode === 'start_day';
+    if (isStartDayMode) {
+      if (startDaySyncing) return;
+    } else {
+      if (syncing || startDaySyncing) return;
+      if (isSyncing) return;
+    }
+    if (isStartDayMode) setStartDaySyncing(true);
+    else setSyncing(true);
     setLastSyncResult(null);
     try {
-      const result = await runSync();
+      const syncMode = options?.mode === 'start_day' ? 'start_day' : 'full';
+      if (isStartDayMode) {
+        setHideSyncIndicator(true);
+      }
+      const result = await runSync({ mode: syncMode, trackIndicator: false });
       setLastSyncResult(result);
       await loadData();
       await loadSyncStatus();
+      return result;
     } catch (err) {
       setLastSyncResult({ error: err?.message || 'Sync failed' });
+      return { error: err?.message || 'Sync failed' };
     } finally {
-      setSyncing(false);
+      if (isStartDayMode) {
+        setHideSyncIndicator(false);
+        setStartDaySyncing(false);
+      } else {
+        setSyncing(false);
+      }
     }
   };
 
@@ -1378,7 +1429,172 @@ export default function DashboardScreen({ navigation }) {
 
   const openPreCheckSummary = useCallback(() => {
     setPreCheckSummaryModalVisible(true);
-  }, []);
+    setPreCheckTodayOrdersLoading(true);
+    setPreCheckStockLoading(true);
+    setPreCheckTodayOrdersCount(null);
+    const sessionKeyAtOpen = sessionKey;
+    const runId = Date.now();
+    preCheckPartyWarmupRunRef.current = runId;
+    setPreCheckPartyWarmupRunning(true);
+    setPreCheckPartyStatus({
+      running: true,
+      supplierReady: false,
+      customerReady: false,
+      customerCachedCount: 0,
+      supplierDetails: null,
+      customerDetails: [],
+      totalCustomerPartners: 0,
+      error: null,
+      checkedAt: Date.now(),
+    });
+    const runSequentialPreCheckWarmup = async (cycle = 0) => {
+      if (preCheckPartyWarmupRunRef.current !== runId || sessionKeyAtOpen !== sessionKey) return;
+      try {
+        // Step 1: Supplier/company details first (mandatory).
+        let supplierReadySeed = false;
+        for (let i = 0; i < 6 && !supplierReadySeed; i += 1) {
+          if (preCheckPartyWarmupRunRef.current !== runId || sessionKeyAtOpen !== sessionKey) return;
+          const supplierSeed = await preloadInvoicePartyInfoForOrders([], {
+            retryDelaysMs: [0, 300, 700],
+          });
+          supplierReadySeed = supplierSeed?.companyCached === true;
+          if (!supplierReadySeed) await waitMs(500 + i * 250);
+        }
+        if (!supplierReadySeed) throw new Error('Supplier details not ready yet');
+
+        // Step 2: Start-day backend pull + SQLite refresh.
+        // Important: runSync de-duplicates concurrent calls globally. The first await may resolve
+        // an older in-flight sync (possibly started before vehicle switch). Run a second start_day
+        // pass immediately after to guarantee one fresh sync on the current session vehicle.
+        await runSync({ mode: 'start_day', trackIndicator: false }).catch(() => null);
+        const startDayResult = await runSync({ mode: 'start_day', trackIndicator: false }).catch((e) => ({
+          error: e?.message || 'start day sync failed',
+        }));
+        await loadData({ showLoading: false }).catch(() => null);
+
+        // Step 3: Re-read latest today's orders from local DB after start-day sync.
+        if (preCheckPartyWarmupRunRef.current !== runId || sessionKeyAtOpen !== sessionKey) return;
+        const session = await getUserSession();
+        const vehicleId = session?.isAdmin === false ? Number(session?.vehicleId) : null;
+        if (session?.isAdmin === false && (!Number.isFinite(vehicleId) || vehicleId <= 0)) {
+          throw new Error('Pre-check vehicle session not ready');
+        }
+        const latestOrders = (await getCachedOrders(vehicleId).catch(() => [])) || [];
+        const localToday = formatLocalDate(new Date());
+        const latestTodayOrders = (latestOrders || []).filter((o) =>
+          getOrderDateForSyncMode(o).startsWith(localToday)
+        );
+
+        const todayOrderCount = (latestTodayOrders || []).length;
+        if (preCheckPartyWarmupRunRef.current !== runId || sessionKeyAtOpen !== sessionKey) return;
+        setPreCheckTodayOrdersCount(todayOrderCount);
+        setPreCheckTodayOrdersLoading(false);
+        setPreCheckStockLoading(false);
+
+        // Step 4: Customer details for those orders (mandatory retry-until-ready).
+        let noOrderConfirmHits = 0;
+        const startDayHadError = !!startDayResult?.error;
+        let finalState = null;
+        for (let attempt = 0; attempt < 10; attempt += 1) {
+          if (preCheckPartyWarmupRunRef.current !== runId || sessionKeyAtOpen !== sessionKey) return;
+          const latestOrdersLoop = (await getCachedOrders(vehicleId).catch(() => [])) || [];
+          const latestTodayOrdersLoop = (latestOrdersLoop || []).filter((o) =>
+            getOrderDateForSyncMode(o).startsWith(localToday)
+          );
+
+          const totalTodayCustomers = new Set(
+            (latestTodayOrdersLoop || [])
+              .map((o) => {
+                const raw = Array.isArray(o?.partner_id) ? o.partner_id[0] : o?.partner_id;
+                const id = Number(raw);
+                return Number.isFinite(id) && id > 0 ? id : null;
+              })
+              .filter(Boolean)
+          ).size;
+
+          const result = await preloadInvoicePartyInfoForOrders(latestTodayOrdersLoop, {
+            retryDelaysMs: [0, 300, 700, 1200],
+          });
+          const customerCount = Number(result?.customerCachedCount) || 0;
+          const customerFailedCount = Number(result?.customerFailedCount) || 0;
+          const details = await getPreCheckPartyDetailsForOrders(latestTodayOrdersLoop, 12).catch(() => ({
+            supplier: null,
+            customers: [],
+            totalCustomerPartners: totalTodayCustomers,
+          }));
+          const customerDetailRows = Array.isArray(details?.customers) ? details.customers : [];
+          const customerReadyRows = customerDetailRows.filter((row) => row?.ready === true);
+          const totalCustomerPartners = Math.max(
+            totalTodayCustomers,
+            Number(details?.totalCustomerPartners) || 0
+          );
+          const hasTodayOrders = latestTodayOrdersLoop.length > 0;
+          const supplierReady = details?.supplier?.ready === true;
+          if (!hasTodayOrders && totalCustomerPartners === 0) {
+            noOrderConfirmHits += 1;
+          } else {
+            noOrderConfirmHits = 0;
+          }
+          const noOrdersConfirmed =
+            !startDayHadError && !hasTodayOrders && totalCustomerPartners === 0 && noOrderConfirmHits >= 2;
+          const customerReady = noOrdersConfirmed
+            ? true
+            : customerFailedCount === 0 && (customerCount > 0 || customerReadyRows.length > 0);
+          finalState = {
+            running: !(supplierReady && customerReady),
+            supplierReady,
+            customerReady,
+            customerCachedCount: customerCount,
+            supplierDetails: details?.supplier || null,
+            customerDetails: customerReadyRows,
+            totalCustomerPartners,
+            error: null,
+            checkedAt: Date.now(),
+          };
+          setPreCheckPartyStatus(finalState);
+          if (supplierReady && customerReady) break;
+          await waitMs(600 + attempt * 300);
+        }
+        if (preCheckPartyWarmupRunRef.current !== runId || sessionKeyAtOpen !== sessionKey) return;
+        if (!finalState?.supplierReady || !finalState?.customerReady) {
+          setPreCheckPartyStatus((prev) => ({ ...prev, running: true, error: null }));
+          setTimeout(() => {
+            if (preCheckPartyWarmupRunRef.current === runId && sessionKeyAtOpen === sessionKey) {
+              void runSequentialPreCheckWarmup(cycle + 1);
+            }
+          }, Math.min(5000, 1200 + cycle * 250));
+          return;
+        }
+        setPreCheckPartyWarmupRunning(false);
+      } catch (e) {
+        console.warn('[PreCheck] sequential warmup pending', e?.message ?? e);
+        if (preCheckPartyWarmupRunRef.current !== runId || sessionKeyAtOpen !== sessionKey) return;
+        setPreCheckTodayOrdersLoading(true);
+        setPreCheckStockLoading(true);
+        setPreCheckPartyStatus((prev) => ({
+          ...prev,
+          running: true,
+          error: null,
+          checkedAt: Date.now(),
+        }));
+        setTimeout(() => {
+          if (preCheckPartyWarmupRunRef.current === runId && sessionKeyAtOpen === sessionKey) {
+            void runSequentialPreCheckWarmup(cycle + 1);
+          }
+        }, Math.min(5000, 1400 + cycle * 300));
+      }
+    };
+    void runSequentialPreCheckWarmup();
+  }, [startDaySyncing, formatLocalDate, getOrderDateForSyncMode, sessionKey, loadData]);
+
+  useEffect(() => {
+    if (preCheckSummaryModalVisible) return;
+    preCheckPartyWarmupRunRef.current += 1;
+    setPreCheckPartyWarmupRunning(false);
+    setPreCheckTodayOrdersLoading(false);
+    setPreCheckStockLoading(false);
+    setPreCheckTodayOrdersCount(null);
+  }, [preCheckSummaryModalVisible]);
 
   const confirmPreCheckSummary = useCallback(async () => {
     setPreCheckSummaryModalVisible(false);
@@ -1387,7 +1603,8 @@ export default function DashboardScreen({ navigation }) {
   }, [setPreCheckDone]);
 
   const needsPreCheckGate = !preCheckDone && !preCheckSummaryModalVisible;
-  const preCheckSyncInProgress = syncing || isSyncing || (initialLoadGateActive && loading);
+  const preCheckSyncInProgress =
+    syncing || startDaySyncing || isSyncing || preCheckPartyWarmupRunning || (initialLoadGateActive && loading);
   const shopsPct = totalShopsToday > 0 ? Math.min(100, Math.round((shopsCompleted / totalShopsToday) * 100)) : 0;
   const totalGasDelivered = useMemo(() => {
     const orderById = {};
@@ -2866,14 +3083,19 @@ export default function DashboardScreen({ navigation }) {
         routeName={routeName}
         todayDateStr={todayDateStr}
         syncInProgress={preCheckSyncInProgress}
-        activeOrdersToday={activeOrdersToday}
+        activeOrdersToday={
+          preCheckSummaryModalVisible ? Number(preCheckTodayOrdersCount || 0) : activeOrdersToday
+        }
+        todayOrdersLoading={preCheckTodayOrdersLoading}
+        stockLoading={preCheckStockLoading}
         hasShortfall={preCheckHasShortfall}
-        stockRows={preCheckStockRows}
+        stockRows={preCheckStockLoading ? [] : preCheckStockRows}
         emptyRows={preCheckEmptyRows}
         totalEmptyCollected={preCheckTotalEmptyCollected}
         totalOnHand={preCheckTotalOnHand}
         totalOrdered={preCheckTotalOrderedGas}
         formatQty={formatPreCheckQty}
+        partyCheckStatus={preCheckPartyStatus}
         onConfirm={() => void confirmPreCheckSummary()}
       />
 

@@ -65,13 +65,14 @@ function resolveDateValue(dateFrom) {
  * @param {string} dateFrom - Optional ISO date string (e.g., "2024-03-13") to filter orders from this date onward
  * @param {'creation_date'|'delivery_date'} syncDateField - Filter and sort field selector from sync settings
  */
-export const getAllSaleOrders = async (dateFrom, syncDateField = 'creation_date') => {
+export const getAllSaleOrders = async (dateFrom, syncDateField = 'creation_date', maxRows = 500) => {
   const dateField = resolveDateField(syncDateField);
   const dateValue = resolveDateValue(dateFrom);
   const domain = dateValue ? [[dateField, '>=', dateValue]] : [];
+  const safeLimit = Math.min(1000, Math.max(50, Number(maxRows) || 500));
   const opts = {
     order: `${dateField} desc, id desc`,
-    limit: 500,
+    limit: safeLimit,
   };
   try {
     return await callOdoo("sale.order", "search_read", [domain], {
@@ -222,16 +223,17 @@ export async function isSaleOrderCancelledOnOdoo(saleOrderId) {
  * @param {string} dateFrom - Optional ISO date string (e.g., "2024-03-13") to filter orders from this date onward
  * @param {'creation_date'|'delivery_date'} syncDateField - Filter and sort field selector from sync settings
  */
-export const getSaleOrdersByVehicle = async (vehicleId, dateFrom, syncDateField = 'creation_date') => {
+export const getSaleOrdersByVehicle = async (vehicleId, dateFrom, syncDateField = 'creation_date', maxRows = 500) => {
   const dateField = resolveDateField(syncDateField);
   const dateValue = resolveDateValue(dateFrom);
   const domain = [['vehicle_id', '=', vehicleId]];
   if (dateValue) {
     domain.push([dateField, '>=', dateValue]);
   }
+  const safeLimit = Math.min(1000, Math.max(50, Number(maxRows) || 500));
   const opts = {
     order: `${dateField} desc, id desc`,
-    limit: 500,
+    limit: safeLimit,
   };
   try {
     return await callOdoo("sale.order", "search_read", [domain], {

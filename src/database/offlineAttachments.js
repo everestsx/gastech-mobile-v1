@@ -12,9 +12,16 @@ export const SYNC_STATUS_FAILED = 'failed';
 
 export const MAX_RETRIES = 5;
 const RETRY_COOLDOWN_MS = 60 * 1000;
+const RETRY_COOLDOWN_MAX_MS = 30 * 60 * 1000;
 
 function isoAfter(ms) {
   return new Date(Date.now() + Math.max(0, Number(ms) || 0)).toISOString();
+}
+
+function retryCooldownMsForAttempt(attemptNo) {
+  const n = Math.max(1, Number(attemptNo) || 1);
+  const backoff = RETRY_COOLDOWN_MS * Math.pow(2, Math.max(0, n - 1));
+  return Math.min(RETRY_COOLDOWN_MAX_MS, backoff);
 }
 
 /**
@@ -160,7 +167,13 @@ export async function markFailed(id, lastError) {
  */
 export async function incrementRetry(id, lastError = '') {
   const db = await getDb();
-  const nextRetryAt = isoAfter(RETRY_COOLDOWN_MS);
+  const current = await db.getFirstAsync(
+    'SELECT retry_count FROM offline_attachments WHERE id = ?',
+    [num(id)]
+  );
+  const currentRetry = Number(current?.retry_count) || 0;
+  const nextRetryCount = currentRetry + 1;
+  const nextRetryAt = isoAfter(retryCooldownMsForAttempt(nextRetryCount));
   await db.runAsync(
     `UPDATE offline_attachments
      SET retry_count = retry_count + 1, last_error = ?, next_retry_at = ?

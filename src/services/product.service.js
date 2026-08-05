@@ -1,10 +1,10 @@
 /**
- * Fetch products from Odoo product.product (including image_1920).
- * Used to display product names and product images on sale order cards/details.
+ * Fetch products from Odoo product.product.
+ * Keep sync payload lean by excluding image_1920 from routine sync pulls.
  */
 import { callOdoo } from './index.service';
 
-const PRODUCT_FIELDS = ['id', 'name', 'list_price', 'qty_available', 'type', 'image_1920'];
+const PRODUCT_FIELDS = ['id', 'name', 'list_price', 'qty_available', 'type'];
 const PRODUCT_LIMIT = 500;
 
 /**

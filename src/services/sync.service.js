@@ -28,6 +28,11 @@ import { buildCheckoutHeldSaleOrderIds } from '../utils/emptyCollectionLocal.js'
 import { getDb } from '../database/db.js';
 import { recordDriverLogout } from './driverLoginHistory.service';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
+import {
+  createUsageSession,
+  finishUsageSession,
+  DATA_USAGE_SESSION_TYPES,
+} from './dataUsage.service';
 export let isLoggingOut = false;
 export const setIsLoggingOut = (value) => {
   isLoggingOut = value;
@@ -100,13 +105,20 @@ const DELIVERED_SOL_SETTLE_FAST_MS = 0;
 const INVOICE_ODOO_SETTLE_MS = 700;
 const INVOICE_ODOO_SETTLE_FAST_MS = 0;
 const DRIVE_UPLOAD_CONCURRENCY = 2;
-const DRIVE_IMAGE_MAX_WIDTH = 1600;
-const DRIVE_IMAGE_JPEG_COMPRESS = 0.7;
+const DRIVE_IMAGE_MAX_WIDTH = 1280;
+const DRIVE_IMAGE_JPEG_COMPRESS = 0.55;
+const LIGHT_SYNC_MAX_ORDERS = 250;
+const ENABLE_SYNC_INVOICE_PDF_CHATTER_ATTACHMENT = false;
+const ENABLE_CHECKOUT_DRIVE_PREFETCH = false;
 
 let _standaloneAttachmentWorkerPromise = null;
 const _deferredCheckoutExtrasInFlight = new Set();
 let _secondaryChatterCatchupPromise = null;
 const _paymentProofDriveAddendumInFlight = new Set();
+const _paymentProofDriveAddendumRecentBySo = new Map();
+const DRIVE_ADDENDUM_RECENT_TTL_MS = 10 * 60 * 1000;
+const _secondaryChatterRecentBySo = new Map();
+const SECONDARY_CHATTER_RECENT_TTL_MS = 10 * 60 * 1000;
 
 function deliveredSolSettleMs() {
   if (_checkoutUploadPriority) return 0;
@@ -168,6 +180,118 @@ function normalizeDriveLinksForPayload(links = []) {
   return out;
 }
 
+function paymentProofDriveLinksFingerprint(links = []) {
+  return normalizeDriveLinksForPayload(links)
+    .map((link) => String(link).trim().toLowerCase())
+    .sort()
+    .join('|');
+}
+
+function buildDriveAddendumMarker(soId, fingerprint) {
+  const soNum = Number(soId);
+  const fp = String(fingerprint || '').trim();
+  if (!Number.isFinite(soNum) || soNum <= 0 || !fp) return '';
+  const shortFp = fp.replace(/[^a-z0-9]/gi, '').slice(0, 20).toUpperCase();
+  if (!shortFp) return '';
+  return `GTDRIVE-SO${soNum}-${shortFp}`;
+}
+
+function rememberRecentDriveAddendumFingerprint(soId, fingerprint) {
+  const soNum = Number(soId);
+  const fp = String(fingerprint || '').trim();
+  if (!Number.isFinite(soNum) || soNum <= 0 || !fp) return;
+  _paymentProofDriveAddendumRecentBySo.set(soNum, { fingerprint: fp, at: Date.now() });
+}
+
+function hasRecentDriveAddendumFingerprint(soId, fingerprint) {
+  const soNum = Number(soId);
+  const fp = String(fingerprint || '').trim();
+  if (!Number.isFinite(soNum) || soNum <= 0 || !fp) return false;
+  const rec = _paymentProofDriveAddendumRecentBySo.get(soNum);
+  if (!rec) return false;
+  if (Date.now() - Number(rec.at || 0) > DRIVE_ADDENDUM_RECENT_TTL_MS) {
+    _paymentProofDriveAddendumRecentBySo.delete(soNum);
+    return false;
+  }
+  return String(rec.fingerprint || '') === fp;
+}
+
+function normalizeChatterBodyForFingerprint(body) {
+  return String(body || '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+function makeSecondaryChatterFingerprint(kind, body) {
+  const bodyFp = normalizeChatterBodyForFingerprint(body);
+  if (!bodyFp) return '';
+  return `${String(kind || 'generic')}:${bodyFp}`;
+}
+
+function markerNeedlesForSecondaryChatter(kind) {
+  const k = String(kind || '').toLowerCase();
+  if (k === 'gas_delivered') {
+    return ['gas delivered count updated from mobile appy...'];
+  }
+  if (k === 'empty_cylinder') {
+    return [
+      'empty cylinders — mobile delivery',
+      'empty cylinder count updated',
+      'empty cylinder delivered quantity updated',
+    ];
+  }
+  return [];
+}
+
+function rememberRecentSecondaryChatter(soId, fingerprint) {
+  const soNum = Number(soId);
+  const fp = String(fingerprint || '').trim();
+  if (!Number.isFinite(soNum) || soNum <= 0 || !fp) return;
+  _secondaryChatterRecentBySo.set(soNum, { fingerprint: fp, at: Date.now() });
+}
+
+function hasRecentSecondaryChatter(soId, fingerprint) {
+  const soNum = Number(soId);
+  const fp = String(fingerprint || '').trim();
+  if (!Number.isFinite(soNum) || soNum <= 0 || !fp) return false;
+  const rec = _secondaryChatterRecentBySo.get(soNum);
+  if (!rec) return false;
+  if (Date.now() - Number(rec.at || 0) > SECONDARY_CHATTER_RECENT_TTL_MS) {
+    _secondaryChatterRecentBySo.delete(soNum);
+    return false;
+  }
+  return String(rec.fingerprint || '') === fp;
+}
+
+async function shouldSkipDuplicateSecondaryChatter(soId, kind, body) {
+  const fingerprint = makeSecondaryChatterFingerprint(kind, body);
+  if (!fingerprint) return { skip: true, fingerprint: '' };
+  if (hasRecentSecondaryChatter(soId, fingerprint)) {
+    return { skip: true, fingerprint };
+  }
+  try {
+    const { saleOrderHasRecentChatterMarkers } = await import('./proofAttachment.service.js');
+    const markers = markerNeedlesForSecondaryChatter(kind);
+    if (markers.length > 0) {
+      const markerExists = await saleOrderHasRecentChatterMarkers(soId, markers, { matchAny: true });
+      if (markerExists) {
+        rememberRecentSecondaryChatter(soId, fingerprint);
+        return { skip: true, fingerprint };
+      }
+    }
+  } catch (_) {
+    // best-effort check only
+  }
+  return { skip: false, fingerprint };
+}
+
 function getPostedPaymentProofDriveLinks(payload = {}) {
   return normalizeDriveLinksForPayload(
     payload?._paymentProofDriveLinksPosted || payload?._paymentProofPostedDriveLinks || []
@@ -179,7 +303,13 @@ function getNewPaymentProofDriveLinks(payload = {}, candidateLinks = []) {
   return normalizeDriveLinksForPayload(candidateLinks).filter((l) => !posted.has(l));
 }
 
-async function updatePaymentProofDrivePayloadState(queueItemId, soId, payload = {}, appendedLinks = []) {
+async function updatePaymentProofDrivePayloadState(
+  queueItemId,
+  soId,
+  payload = {},
+  appendedLinks = [],
+  extraPayloadPatch = {}
+) {
   const offlineAttachmentsDb = await import('../database/offlineAttachments.js');
   const pending = await offlineAttachmentsDb.getPendingBySaleOrderId(soId).catch(() => []);
   const hasPending = (pending || []).length > 0;
@@ -191,6 +321,7 @@ async function updatePaymentProofDrivePayloadState(queueItemId, soId, payload = 
     ...payload,
     _paymentProofDriveLinksPosted: nextLinks,
     _paymentProofDrivePosted: !hasPending,
+    ...(extraPayloadPatch && typeof extraPayloadPatch === 'object' ? extraPayloadPatch : {}),
   };
   if (queueItemId != null) {
     await syncQueueDb.updateQueueItemPayload(
@@ -251,6 +382,21 @@ async function postPaymentProofDriveAddendumIfNeeded({
     );
     return { posted: false, payload: nextPayload };
   }
+  const addendumFingerprint = paymentProofDriveLinksFingerprint(newLinks);
+  if (
+    addendumFingerprint &&
+    (String(effectivePayload?._paymentProofDriveLastAddendumFingerprint || '') === addendumFingerprint ||
+      hasRecentDriveAddendumFingerprint(soNum, addendumFingerprint))
+  ) {
+    const nextPayload = await updatePaymentProofDrivePayloadState(
+      effectiveQueueItemId,
+      soNum,
+      effectivePayload,
+      newLinks,
+      { _paymentProofDriveLastAddendumFingerprint: addendumFingerprint }
+    );
+    return { posted: false, payload: nextPayload, postedLinks: newLinks };
+  }
   if (_paymentProofDriveAddendumInFlight.has(soNum)) {
     return { posted: false, payload: effectivePayload };
   }
@@ -260,18 +406,38 @@ async function postPaymentProofDriveAddendumIfNeeded({
       buildPaymentProofDriveLinksAddendumBody,
       postPaymentProofToChatterWithAttachmentIds,
       saleOrderHasDriveLinksInRecentChatter,
+      saleOrderHasRecentChatterMarkers,
     } = await import('./proofAttachment.service.js');
+    const markerToken = buildDriveAddendumMarker(soNum, addendumFingerprint);
+    if (markerToken) {
+      const hasMarker = await saleOrderHasRecentChatterMarkers(soNum, [markerToken], { matchAny: true });
+      if (hasMarker) {
+        const nextPayload = await updatePaymentProofDrivePayloadState(
+          effectiveQueueItemId,
+          soNum,
+          effectivePayload,
+          newLinks,
+          { _paymentProofDriveLastAddendumFingerprint: addendumFingerprint }
+        );
+        rememberRecentDriveAddendumFingerprint(soNum, addendumFingerprint);
+        return { posted: false, payload: nextPayload, postedLinks: newLinks };
+      }
+    }
     const alreadyPostedOnServer = await saleOrderHasDriveLinksInRecentChatter(soNum, newLinks);
     if (alreadyPostedOnServer) {
       const nextPayload = await updatePaymentProofDrivePayloadState(
         effectiveQueueItemId,
         soNum,
         effectivePayload,
-        newLinks
+        newLinks,
+        { _paymentProofDriveLastAddendumFingerprint: addendumFingerprint }
       );
+      rememberRecentDriveAddendumFingerprint(soNum, addendumFingerprint);
       return { posted: false, payload: nextPayload, postedLinks: newLinks };
     }
-    const body = buildPaymentProofDriveLinksAddendumBody(newLinks);
+    const body = buildPaymentProofDriveLinksAddendumBody(newLinks, {
+      dedupeMarker: markerToken || '',
+    });
     if (body) {
       await postPaymentProofToChatterWithAttachmentIds(soNum, { body, attachmentIds: [] });
     }
@@ -279,8 +445,10 @@ async function postPaymentProofDriveAddendumIfNeeded({
       effectiveQueueItemId,
       soNum,
       effectivePayload,
-      newLinks
+      newLinks,
+      { _paymentProofDriveLastAddendumFingerprint: addendumFingerprint }
     );
+    rememberRecentDriveAddendumFingerprint(soNum, addendumFingerprint);
     return { posted: true, payload: nextPayload, postedLinks: newLinks };
   } finally {
     _paymentProofDriveAddendumInFlight.delete(soNum);
@@ -314,6 +482,7 @@ function runPendingUploadFlush(options = {}) {
     queuePasses: options.queuePasses ?? (options.checkoutMode || prioritySoId != null ? 4 : 12),
     aggressive: options.immediate === true || options.aggressive === true,
     prioritySaleOrderId: options.prioritySaleOrderId,
+    skipPaymentTypeRefresh: options.skipPaymentTypeRefresh === true,
     chainRetry: options.chainRetry,
     checkoutMode: options.checkoutMode === true || prioritySoId != null,
   })
@@ -424,7 +593,11 @@ async function postDeferredCheckoutExtrasForSaleOrder(soIdRaw) {
     if (!p._paymentProofGasChatterPosted) {
       const gasBody = await buildGasDeliveredCountChatterBody(soId, p).catch(() => null);
       if (gasBody) {
-        await postPaymentProofToChatterWithAttachmentIds(soId, { body: gasBody, attachmentIds: [] });
+        const gasDedupe = await shouldSkipDuplicateSecondaryChatter(soId, 'gas_delivered', gasBody);
+        if (!gasDedupe.skip) {
+          await postPaymentProofToChatterWithAttachmentIds(soId, { body: gasBody, attachmentIds: [] });
+          rememberRecentSecondaryChatter(soId, gasDedupe.fingerprint);
+        }
         p._paymentProofGasChatterPosted = true;
         p = await updatePaymentProofDrivePayloadState(entry?.queueId, soId, p, []);
         log('queue', `deferred gas delivered count SO ${soId}`);
@@ -435,7 +608,11 @@ async function postDeferredCheckoutExtrasForSaleOrder(soIdRaw) {
     if (!p._paymentProofEmptyCylinderChatterPosted) {
       const emptyNote = resolveEmptyCylinderChatterNote(p, { linesToOdooHtmlBody, buildEmptyCylinderChatterBody });
       if (emptyNote) {
-        await postPaymentProofToChatterWithAttachmentIds(soId, { body: emptyNote, attachmentIds: [] });
+        const emptyDedupe = await shouldSkipDuplicateSecondaryChatter(soId, 'empty_cylinder', emptyNote);
+        if (!emptyDedupe.skip) {
+          await postPaymentProofToChatterWithAttachmentIds(soId, { body: emptyNote, attachmentIds: [] });
+          rememberRecentSecondaryChatter(soId, emptyDedupe.fingerprint);
+        }
         p._paymentProofEmptyCylinderChatterPosted = true;
         p = await updatePaymentProofDrivePayloadState(entry?.queueId, soId, p, []);
         log('queue', `deferred empty cylinder note SO ${soId}`);
@@ -562,6 +739,10 @@ export async function uploadCompletedOrderNow(saleOrderId, options = {}) {
   if (!canRunBackgroundUploadSync()) {
     return { pendingCount: null, skippedOffline: true };
   }
+  const usageSessionId = createUsageSession(DATA_USAGE_SESSION_TYPES.ORDER_SYNC, {
+    saleOrderId: soId,
+    source: 'uploadCompletedOrderNow',
+  });
   _checkoutUploadPriority = true;
   try {
     log('queue', `checkout upload start SO ${soId}`);
@@ -571,7 +752,7 @@ export async function uploadCompletedOrderNow(saleOrderId, options = {}) {
     for (let attempt = 0; attempt < maxImmediateAttempts; attempt++) {
       await processSyncQueue({
         fastDrain: true,
-        maxPasses: 1,
+        maxPasses: attempt === 0 ? 3 : 2,
         prioritySaleOrderId: soId,
         checkoutSingleShot: true,
       });
@@ -587,10 +768,11 @@ export async function uploadCompletedOrderNow(saleOrderId, options = {}) {
       schedulePendingUploadSync({
         immediate: true,
         aggressive: true,
-        queuePasses: 4,
+        queuePasses: 5,
         includeAttachments,
         prioritySaleOrderId: soId,
         checkoutMode: true,
+        skipPaymentTypeRefresh: true,
         chainRetry: false,
       });
     } else {
@@ -604,6 +786,10 @@ export async function uploadCompletedOrderNow(saleOrderId, options = {}) {
     }
     return { pendingCount };
   } finally {
+    await finishUsageSession(usageSessionId, {
+      success: true,
+      title: `Order #${soId} sync`,
+    }).catch(() => null);
     _checkoutDrivePrefetch.delete(soId);
     _checkoutUploadPriority = false;
   }
@@ -2415,6 +2601,8 @@ async function logInvoiceQtyMismatchAudit(soId, paymentPayload, phase, mismatche
  */
 async function executePaymentInvoiceStep(soId, paymentPayload, initialTarget = {}, options = {}) {
   const soNum = Number(soId);
+  const allowQtyRepair = options?.allowQtyRepair !== false;
+  const fastCheckoutMode = _checkoutUploadPriority || options?.fastCheckoutMode === true;
   const {
     verifySaleOrderDeliveredAndInvoicedQty,
     unlinkDraftCustomerInvoice,
@@ -2435,15 +2623,44 @@ async function executePaymentInvoiceStep(soId, paymentPayload, initialTarget = {
   }
   const updates = prep.updates || [];
 
+  const tryRepairAndRecheckInvoiceQty = async ({ checkDelivered = true } = {}) => {
+    if (!allowQtyRepair || !updates.length) return { ok: false };
+    try {
+      const heal = await attemptDeliveredQtyHealForSaleOrder(soNum, paymentPayload, {
+        maxRounds: 3,
+      });
+      if (!heal?.ok) return { ok: false };
+      const repairedPrep = await prepareSaleOrderForInvoicing(soNum, paymentPayload, {
+        deliveryJustSynced: true,
+      });
+      const repairedUpdates = repairedPrep?.updates || updates;
+      if (!repairedUpdates.length) return { ok: false };
+      const repairedCheck = await verifySaleOrderDeliveredAndInvoicedQty(repairedUpdates, {
+        checkDelivered,
+        checkInvoiced: true,
+      });
+      return { ok: repairedCheck?.ok === true, reason: repairedCheck?.reason || null };
+    } catch (_) {
+      return { ok: false };
+    }
+  };
+
   let resId = initialTarget.resId != null ? Number(initialTarget.resId) : null;
   let posted = initialTarget.invoiceAlreadyPosted === true;
 
   if (posted && resId != null && updates.length > 0) {
+    if (fastCheckoutMode) {
+      return { ok: true, resId, posted: true };
+    }
     const postedCheck = await verifySaleOrderDeliveredAndInvoicedQty(updates, {
       checkDelivered: true,
       checkInvoiced: true,
     });
     if (!postedCheck.ok) {
+      const repaired = await tryRepairAndRecheckInvoiceQty({ checkDelivered: true });
+      if (repaired.ok) {
+        return { ok: true, resId, posted: true };
+      }
       await logInvoiceQtyMismatchAudit(soNum, paymentPayload, 'post_invoice_mismatch', postedCheck.mismatches, {
         invoiceId: resId,
       });
@@ -2464,7 +2681,7 @@ async function executePaymentInvoiceStep(soId, paymentPayload, initialTarget = {
       posted = true;
       return executePaymentInvoiceStep(soId, paymentPayload, { resId, invoiceAlreadyPosted: true });
     }
-    if (updates.length > 0) {
+    if (!fastCheckoutMode && updates.length > 0) {
       const draftCheck = await verifySaleOrderDeliveredAndInvoicedQty(updates, {
         checkDelivered: false,
         checkInvoiced: true,
@@ -2484,10 +2701,14 @@ async function executePaymentInvoiceStep(soId, paymentPayload, initialTarget = {
     await postInvoice(resId);
     if (updates.length > 0) {
       const afterPost = await verifySaleOrderDeliveredAndInvoicedQty(updates, {
-        checkDelivered: true,
+        checkDelivered: !fastCheckoutMode,
         checkInvoiced: true,
       });
       if (!afterPost.ok) {
+        const repaired = await tryRepairAndRecheckInvoiceQty({ checkDelivered: true });
+        if (repaired.ok) {
+          return { ok: true, resId, posted: true };
+        }
         await logInvoiceQtyMismatchAudit(soNum, paymentPayload, 'post_invoice_mismatch', afterPost.mismatches, {
           invoiceId: resId,
         });
@@ -2514,7 +2735,7 @@ async function executePaymentInvoiceStep(soId, paymentPayload, initialTarget = {
     return { ok: false, blocked: true, reason: 'no invoice id from wizard' };
   }
 
-  if (updates.length > 0) {
+  if (!fastCheckoutMode && updates.length > 0) {
     const draftCheck = await verifySaleOrderDeliveredAndInvoicedQty(updates, {
       checkDelivered: false,
       checkInvoiced: true,
@@ -2537,10 +2758,14 @@ async function executePaymentInvoiceStep(soId, paymentPayload, initialTarget = {
   await postInvoice(resId);
   if (updates.length > 0) {
     const finalCheck = await verifySaleOrderDeliveredAndInvoicedQty(updates, {
-      checkDelivered: true,
+      checkDelivered: !fastCheckoutMode,
       checkInvoiced: true,
     });
     if (!finalCheck.ok) {
+      const repaired = await tryRepairAndRecheckInvoiceQty({ checkDelivered: true });
+      if (repaired.ok) {
+        return { ok: true, resId, posted: true };
+      }
       await logInvoiceQtyMismatchAudit(soNum, paymentPayload, 'post_invoice_mismatch', finalCheck.mismatches, {
         invoiceId: resId,
       });
@@ -2700,9 +2925,17 @@ async function verifyCashChequePaymentsRegisteredOnOdoo(soId, payments) {
   return { ok: true };
 }
 
+function checkoutPipelineFlagsReady(payload = {}) {
+  const pipe = payload?._syncPipeline || {};
+  const hasInvoice = pipe.invoicePosted === true;
+  const hasPayments = pipe.paymentsRegistered === true;
+  return hasInvoice && hasPayments;
+}
+
 /** Chatter only after delivery + invoice (+ payment when required) are confirmed on Odoo. */
 async function paymentPipelineReadyForChatter(soId, paymentPayload, options = {}) {
   if (options.pipelinePreVerified === true) return true;
+  if (_checkoutUploadPriority && checkoutPipelineFlagsReady(paymentPayload || {})) return true;
   const check = await verifyOdooSaleOrderCompletionBeforePaymentMarkSynced(soId, paymentPayload);
   if (!check.ok) {
     log('queue', `payment SO ${soId}: defer chatter — ${check.reason}`);
@@ -2758,7 +2991,7 @@ async function buildGasDeliveredCountChatterBody(soId, paymentPayload) {
   const { linesToOdooHtmlBody } = await import('./proofAttachment.service.js');
   const sep = '────────────────────────────────────────';
   const lines = [];
-  lines.push('Gas Delivered Count updated from mobile app');
+  lines.push('Gas Delivered Count updated from mobile app new');
   lines.push(sep);
   for (const [label, qty] of qtyByProductLabel.entries()) {
     lines.push(`${label}: ${formatQty(qty)}`);
@@ -2998,7 +3231,7 @@ async function postSaleOrderCheckoutChatterMessages({
   const skipInvoicePdfOnFastCheckout = _checkoutUploadPriority || _queueSyncFastDrainActive;
   const deferDriveOnMainPath = pendingCount > 0 && !driveRecoveryMode;
   const driveDeferredNote = deferDriveOnMainPath
-    ? '<br/><br/>Payment proof photo upload queued in background. Drive link(s) will be posted automatically.'
+    ? '<br/><br/>Payment proof will be posted automatically.'
     : '';
 
   if (pendingCount > 0 && !deferDriveOnMainPath) {
@@ -3027,6 +3260,7 @@ async function postSaleOrderCheckoutChatterMessages({
   }
 
   if (
+    ENABLE_SYNC_INVOICE_PDF_CHATTER_ATTACHMENT &&
     !skipInvoicePdfOnFastCheckout &&
     Number.isFinite(invoiceId) &&
     invoiceId > 0 &&
@@ -3118,7 +3352,11 @@ async function postSaleOrderCheckoutChatterMessages({
 
     const deferSecondaryChatter = _checkoutUploadPriority || _queueSyncFastDrainActive;
     if (!deferSecondaryChatter && gasDeliveredCountBody && !p._paymentProofGasChatterPosted) {
-      await postPaymentProofToChatterWithAttachmentIds(soId, { body: gasDeliveredCountBody, attachmentIds: [] });
+      const gasDedupe = await shouldSkipDuplicateSecondaryChatter(soId, 'gas_delivered', gasDeliveredCountBody);
+      if (!gasDedupe.skip) {
+        await postPaymentProofToChatterWithAttachmentIds(soId, { body: gasDeliveredCountBody, attachmentIds: [] });
+        rememberRecentSecondaryChatter(soId, gasDedupe.fingerprint);
+      }
       p._paymentProofGasChatterPosted = true;
       p = await updatePaymentProofDrivePayloadState(queueItemId, soId, p, []);
       log('queue', `message_post Gas Delivered Count SO ${soId}`);
@@ -3128,7 +3366,11 @@ async function postSaleOrderCheckoutChatterMessages({
       const { buildEmptyCylinderChatterBody, linesToOdooHtmlBody } = await import('./proofAttachment.service.js');
       const emptyCylinderNote = resolveEmptyCylinderChatterNote(p, { buildEmptyCylinderChatterBody, linesToOdooHtmlBody });
       if (emptyCylinderNote && !p._paymentProofEmptyCylinderChatterPosted) {
-        await postPaymentProofToChatterWithAttachmentIds(soId, { body: emptyCylinderNote, attachmentIds: [] });
+        const emptyDedupe = await shouldSkipDuplicateSecondaryChatter(soId, 'empty_cylinder', emptyCylinderNote);
+        if (!emptyDedupe.skip) {
+          await postPaymentProofToChatterWithAttachmentIds(soId, { body: emptyCylinderNote, attachmentIds: [] });
+          rememberRecentSecondaryChatter(soId, emptyDedupe.fingerprint);
+        }
         p._paymentProofEmptyCylinderChatterPosted = true;
         p = await updatePaymentProofDrivePayloadState(queueItemId, soId, p, []);
         log('queue', `empty cylinder note message_post SO ${soId}`);
@@ -3178,8 +3420,9 @@ async function processSyncedPaymentsMissingCheckoutChatter(tryAttachPrintedInvoi
 /** Mark payment queue row synced only when Odoo pipeline is complete (idempotent retries safe). */
 async function markPaymentQueueItemSyncedWhenBackendComplete(item, soId, paymentPayload, options = {}) {
   const payload = paymentPayload || item?.payload || {};
+  const fastCheckoutReady = _checkoutUploadPriority && checkoutPipelineFlagsReady(payload);
 
-  if (options.pipelinePreVerified !== true) {
+  if (options.pipelinePreVerified !== true && !fastCheckoutReady) {
     let check = await verifyOdooSaleOrderCompletionBeforePaymentMarkSynced(soId, payload);
     if (!check.ok) {
       log('queue', `payment id=${item?.id} SO ${soId} kept pending — ${check.reason}`);
@@ -3304,8 +3547,11 @@ async function processSyncQueue(options = {}) {
   const checkoutSingleShot = options.checkoutSingleShot === true;
   _queueSyncFastDrainActive = fastDrain;
   const retryPassDelayMs = fastDrain || checkoutSingleShot ? 0 : QUEUE_SYNC_RETRY_PASS_DELAY_MS;
+  const checkoutPassLimit = Number.isFinite(Number(options.maxPasses))
+    ? Math.min(Math.max(Number(options.maxPasses), 1), 4)
+    : 1;
   const passLimit = checkoutSingleShot
-    ? 1
+    ? checkoutPassLimit
     : Number.isFinite(Number(options.maxPasses))
       ? Math.min(Math.max(Number(options.maxPasses), 1), QUEUE_SYNC_MAX_PASSES)
       : QUEUE_SYNC_MAX_PASSES;
@@ -4838,13 +5084,53 @@ async function processSyncQueue(options = {}) {
                 'queue',
                 `payment SO ${soId}: delivery still pending — invoice blocked until qty sync succeeds`
               );
+              const releasedPayload = mergeQueuePayloadForAuthoritativeQty(
+                p,
+                latestDelivery.payload || {}
+              );
+              try {
+                await processOneDeliveryQueueItem(
+                  {
+                    ...latestDelivery,
+                    payload: { ...releasedPayload, holdUntilPayment: false },
+                  },
+                  { queuePass: pass }
+                );
+                deliverySyncedSoIdsThisPass.add(soId);
+                recoveredDelivery = true;
+                log('queue', `payment SO ${soId}: recovered pending delivery row id=${latestDelivery.id}`);
+              } catch (recoverErr) {
+                logWarn('queue delivery (recover before invoice)', recoverErr);
+                try {
+                  const heal = await attemptDeliveredQtyHealForSaleOrder(soId, releasedPayload, {
+                    maxRounds: _queueSyncFastDrainActive ? 2 : 4,
+                  });
+                  if (heal.ok) {
+                    await verifyAllSaleOrderPickingsAreTerminal(soId);
+                    const healUpdates = await verifyDeliveryQtyBoundOnOdoo(
+                      soId,
+                      await collectAuthoritativeDeliveredUpdates(soId, releasedPayload),
+                      releasedPayload
+                    );
+                    if (payloadHasPositiveDeliveredQty(releasedPayload) && healUpdates.length === 0) {
+                      throw new Error(`Delivery heal incomplete for SO ${soId}: no SOL rows bound`);
+                    }
+                    await syncQueueDb.markSynced(Number(latestDelivery.id));
+                    deliverySyncedSoIdsThisPass.add(soId);
+                    recoveredDelivery = true;
+                    log('queue', `payment SO ${soId}: healed and released pending delivery id=${latestDelivery.id}`);
+                  }
+                } catch (healErr) {
+                  logWarn('queue delivery (recover-heal before invoice)', healErr);
+                }
+              }
             }
             const pendingAfterRepair = await syncQueueDb.getPending();
             const stillDelivery = (pendingAfterRepair || []).filter(blocksPaymentUntilSynced);
-            if (!recoveredDelivery || stillDelivery.length > 0) {
+            if (stillDelivery.length > 0) {
               log(
                 'queue',
-                `payment id=${item.id} SO ${soId} delayed: waiting for delivery sync (${stillDelivery.length} pending)`
+                `payment id=${item.id} SO ${soId} delayed: waiting for delivery sync (${stillDelivery.length} pending, recovered=${recoveredDelivery ? 'yes' : 'no'})`
               );
               continue;
             }
@@ -4857,7 +5143,9 @@ async function processSyncQueue(options = {}) {
 
           if (!skipPaymentCreation) {
             try {
-              startCheckoutDriveProofPrefetch(soId, p, orderName);
+              if (ENABLE_CHECKOUT_DRIVE_PREFETCH) {
+                startCheckoutDriveProofPrefetch(soId, p, orderName);
+              }
               const orderInfo = await getSaleOrderForPayment(saleOrderId);
               if (!orderInfo) {
                 logWarn('queue payment', new Error('Sale order not found — will retry on next sync'));
@@ -4914,6 +5202,11 @@ async function processSyncQueue(options = {}) {
               const onlyCredit = payments.length > 0 && payments.every((pm) => pm.type === 'credit');
               if (onlyCredit && resId != null) {
                 log('queue', `payment SO ${saleOrderId}: credit only (invoice already posted) — chatter after invoice confirm`);
+                pipelinePreVerified = true;
+              }
+
+              if (!payments.length && resId != null) {
+                await updatePaymentQueuePipeline(item.id, p, { invoicePosted: true, paymentsRegistered: true });
                 pipelinePreVerified = true;
               }
 
@@ -5745,10 +6038,89 @@ async function syncVehicleInventoryForRecord(v, warehouseMaps, sessionUser) {
   };
 }
 
+let _startDayBackgroundRefreshPromise = null;
+
+function runStartDayBackgroundRefreshInBackground(sessionUser, vehicleId) {
+  const vId = Number(vehicleId);
+  if (!Number.isFinite(vId) || vId <= 0) return;
+  if (_startDayBackgroundRefreshPromise) return;
+  _startDayBackgroundRefreshPromise = (async () => {
+    try {
+      const [journals, routes] = await Promise.all([
+        getJournals().catch((e) => {
+          logWarn('start_day bg fetch journals', e);
+          return [];
+        }),
+        getRoutes().catch((e) => {
+          logWarn('start_day bg fetch routes', e);
+          return [];
+        }),
+      ]);
+      await journalsDb.upsertJournals(journals || []);
+      await routesDb.upsertRoutes(routes || []);
+
+      const vehicle = await getVehicleRecordForInventorySync(vId, sessionUser).catch((e) => {
+        logWarn('start_day bg fetch vehicle', e);
+        return null;
+      });
+      if (!vehicle) return;
+      await vehiclesDb.upsertVehicles([vehicle]);
+
+      const stockWarehouses = await getStockWarehouses().catch((e) => {
+        logWarn('start_day bg fetch stock warehouses', e);
+        return [];
+      });
+      const warehouseByNameKey = new Map();
+      const warehouseByCodeKey = new Map();
+      for (const wh of stockWarehouses || []) {
+        const nameKey = normalizeWarehouseKey(wh?.name);
+        const codeKey = normalizeWarehouseKey(wh?.code);
+        if (nameKey && !warehouseByNameKey.has(nameKey)) warehouseByNameKey.set(nameKey, wh);
+        if (codeKey && !warehouseByCodeKey.has(codeKey)) warehouseByCodeKey.set(codeKey, wh);
+      }
+      const refresh = await syncVehicleInventoryForRecord(
+        vehicle,
+        { warehouseByNameKey, warehouseByCodeKey },
+        sessionUser
+      );
+      if (refresh?.warehouse) {
+        await vehicleWarehousesDb.upsertVehicleWarehouses([refresh.warehouse]);
+      }
+      if (refresh?.persisted) {
+        notifyLocalInventoryChanged();
+      }
+    } catch (e) {
+      logWarn('start_day background refresh', e);
+    }
+  })().finally(() => {
+    _startDayBackgroundRefreshPromise = null;
+  });
+}
+
 // ---------- Sync: pull from Odoo and store in SQLite ----------
 
-async function runSyncInternal() {
-  syncActivityStart();
+async function runSyncInternal(options = {}) {
+  const requestedMode = String(options?.mode || 'full');
+  const mode =
+    requestedMode === 'start_day' || requestedMode === 'master_data' ? requestedMode : 'full';
+  const isStartDayMode = mode === 'start_day';
+  const isMasterDataMode = mode === 'master_data';
+  const isLightPullMode = isStartDayMode || isMasterDataMode;
+  const includeHeavyOrderStateSync = !isLightPullMode;
+  const trackIndicator = options?.trackIndicator === true;
+  const usageSessionId =
+    isMasterDataMode || isStartDayMode
+      ? createUsageSession(
+          isStartDayMode
+            ? DATA_USAGE_SESSION_TYPES.PRECHECK_SYNC
+            : DATA_USAGE_SESSION_TYPES.MASTER_SYNC,
+          {
+            mode,
+            source: 'runSyncInternal',
+          }
+        )
+      : null;
+  if (trackIndicator) syncActivityStart();
   log('start', new Date().toISOString());
   const result = { customers: 0, orders: 0, orderLines: 0, pickings: 0, moves: 0, moveLines: 0, journals: 0, routes: 0, vehicles: 0, vehicleWarehouses: 0, vehicleInventories: 0, error: null };
   const syncAt = new Date().toISOString();
@@ -5765,16 +6137,29 @@ async function runSyncInternal() {
       return { error: 'No active session' };
     }
 
-    try {
-      const { refreshCancellationReasonsCache } = await import('./saleOrder.service.js');
-      await refreshCancellationReasonsCache();
-    } catch (_) {
-      /* non-fatal */
+    if (isLightPullMode) {
+      void (async () => {
+        try {
+          const { refreshCancellationReasonsCache } = await import('./saleOrder.service.js');
+          await refreshCancellationReasonsCache();
+        } catch (_) {
+          /* non-fatal */
+        }
+      })();
+    } else {
+      try {
+        const { refreshCancellationReasonsCache } = await import('./saleOrder.service.js');
+        await refreshCancellationReasonsCache();
+      } catch (_) {
+        /* non-fatal */
+      }
     }
 
-    const uploadPending = await hasActionablePendingUploadWork().catch(() => false);
-    await processSyncQueue({ fastDrain: true, maxPasses: uploadPending ? 2 : 1 });
-    void processStandaloneOfflineAttachmentsInBackground();
+    if (!isLightPullMode) {
+      const uploadPending = await hasActionablePendingUploadWork().catch(() => false);
+      await processSyncQueue({ fastDrain: true, maxPasses: uploadPending ? 2 : 1 });
+      void processStandaloneOfflineAttachmentsInBackground();
+    }
 
     const user = await getUserSession();
     // Vehicle-scoped sync: when user has vehicleId and is not admin, sync only that vehicle's data.
@@ -5785,6 +6170,18 @@ async function runSyncInternal() {
       getCutoffDateForSync(),
       getSyncDateFieldSetting(),
     ]);
+    const localNow = new Date();
+    const localToday = `${localNow.getFullYear()}-${String(localNow.getMonth() + 1).padStart(2, '0')}-${String(
+      localNow.getDate()
+    ).padStart(2, '0')}`;
+    const syncDateFrom = isLightPullMode ? localToday : dateFromFilter;
+  const orderFetchLimit = isLightPullMode ? LIGHT_SYNC_MAX_ORDERS : 500;
+    const orderDateForMode = (order) => {
+      const deliveryDate = order?.commitment_date ?? order?.delivery_date;
+      const orderDate = order?.date_order;
+      const raw = syncDateField === 'delivery_date' ? deliveryDate || orderDate : orderDate || deliveryDate;
+      return raw == null ? '' : String(raw);
+    };
     const syncDateFieldLabel = syncDateField === 'delivery_date' ? 'commitment_date' : 'date_order';
     if (dateFromFilter) {
       log('sync', `using date filter: ${dateFromFilter} field=${syncDateFieldLabel}`);
@@ -5797,13 +6194,31 @@ async function runSyncInternal() {
 
     if (vehicleId != null) {
       log('fetch', `orders for vehicle ${vehicleId} only`);
-      orders = await getSaleOrdersByVehicle(vehicleId, dateFromFilter, syncDateField).catch((e) => {
+    orders = await getSaleOrdersByVehicle(vehicleId, syncDateFrom, syncDateField, orderFetchLimit).catch((e) => {
         orderFetchFailed = true;
         orderFetchError = e?.message || String(e || 'Order sync failed');
         logWarn('fetch orders by vehicle', e);
         return [];
       });
-      const partnerIds = [...new Set((orders || []).map((o) => (Array.isArray(o.partner_id) ? o.partner_id[0] : o.partner_id)).filter(Boolean))];
+      const partnerSourceOrders =
+        isLightPullMode
+        ? (orders || []).filter((o) => {
+            const state = String(o?.state || '').toLowerCase();
+            const invState = String(o?.invoice_status || '').toLowerCase();
+            return (
+              orderDateForMode(o).startsWith(localToday) &&
+              state !== 'cancel' &&
+              !(state === 'done' && invState === 'invoiced')
+            );
+          })
+          : orders || [];
+      const partnerIds = [
+        ...new Set(
+          partnerSourceOrders
+            .map((o) => (Array.isArray(o.partner_id) ? o.partner_id[0] : o.partner_id))
+            .filter(Boolean)
+        ),
+      ];
       log('fetch', `partners for vehicle (${partnerIds.length} ids)`);
       customers = await getPartnersByIds(partnerIds).catch((e) => {
         logWarn('fetch partners by ids', e);
@@ -5816,7 +6231,7 @@ async function runSyncInternal() {
           logWarn('fetch customers', e);
           return [];
         }),
-        getAllSaleOrders(dateFromFilter, syncDateField).catch((e) => {
+        getAllSaleOrders(syncDateFrom, syncDateField, orderFetchLimit).catch((e) => {
           orderFetchFailed = true;
           orderFetchError = e?.message || String(e || 'Order sync failed');
           logWarn('fetch orders', e);
@@ -5865,7 +6280,7 @@ async function runSyncInternal() {
 
     // Remove stale local orders only when order fetch is healthy and non-empty.
     // This prevents accidental local wipe if backend temporarily returns empty/error.
-    if (!orderFetchFailed && fetchedOrderIds.length > 0) {
+    if (!isLightPullMode && !orderFetchFailed && fetchedOrderIds.length > 0) {
       await saleOrdersDb.pruneSaleOrdersForVehicle(vehicleId, fetchedOrderIds, {
         preserveLocalForSaleOrderIds: preserveLocalSaleOrderIds,
       });
@@ -5877,10 +6292,36 @@ async function runSyncInternal() {
     await partnersDb.upsertPartners(customers || []);
     log('db', 'sale_orders');
     await saleOrdersDb.upsertSaleOrders(orders || [], { preserveLocalForSaleOrderIds: preserveLocalSaleOrderIds });
+    void import('../utils/invoicePartyInfo.js')
+      .then(({ cacheInvoicePartyInfoFromSyncRows }) =>
+        cacheInvoicePartyInfoFromSyncRows({
+          orders: orders || [],
+          customers: customers || [],
+          fetchCompanyIfMissing: true,
+        })
+      )
+      .catch(() => {});
 
-    await refreshPaymentTypesFromOdoo(orders || [], { skipOrderIds: paymentRefreshSkipIds });
+    if (includeHeavyOrderStateSync) {
+      await refreshPaymentTypesFromOdoo(orders || [], { skipOrderIds: paymentRefreshSkipIds });
+    }
 
+    const lineSourceOrders =
+      isMasterDataMode
+        ? (orders || []).filter((o) => {
+            const state = String(o?.state || '').toLowerCase();
+            const invState = String(o?.invoice_status || '').toLowerCase();
+            return (
+              orderDateForMode(o).startsWith(localToday) &&
+              state !== 'cancel' &&
+              !(state === 'done' && invState === 'invoiced')
+            );
+          })
+        : isLightPullMode
+          ? (orders || []).filter((o) => orderDateForMode(o).startsWith(localToday))
+          : orders || [];
     const orderIds = (orders || []).map((o) => o.id);
+    const lineSourceOrderIds = lineSourceOrders.map((o) => o.id);
     let allLines = [];
     let allPickings = [];
     let allMoves = [];
@@ -5889,9 +6330,9 @@ async function runSyncInternal() {
 
     const { callOdoo } = await import('./index.service');
 
-    if (orderIds.length > 0) {
+    if (lineSourceOrderIds.length > 0) {
       const lineIds = [];
-      (orders || []).forEach((o) => {
+      lineSourceOrders.forEach((o) => {
         (o.order_line || []).forEach((entry) => {
           const id = Array.isArray(entry) ? entry[0] : entry;
           if (id != null) lineIds.push(id);
@@ -5927,51 +6368,53 @@ async function runSyncInternal() {
         log('fetch', `orderLines=${result.orderLines}`);
       }
 
-      log('fetch', 'stock.picking');
-      allPickings = await callOdoo(
-        'stock.picking',
-        'search_read',
-        [[['sale_id', 'in', orderIds]]],
-        { fields: ['id', 'name', 'sale_id', 'state', 'move_ids', 'backorder_ids'], limit: 500 }
-      ) || [];
-      result.pickings = allPickings.length;
-      log('fetch', `pickings=${result.pickings}`);
-
-      const pickingIds = (allPickings || []).map((p) => Number(p?.id)).filter((id) => Number.isFinite(id));
-      const pickBatchSize = 40;
-      for (let i = 0; i < pickingIds.length; i += pickBatchSize) {
-        const batch = pickingIds.slice(i, i + pickBatchSize);
-        if (!batch.length) continue;
-        const batchMoves = await callOdoo(
-          'stock.move',
+      if (includeHeavyOrderStateSync && orderIds.length > 0) {
+        log('fetch', 'stock.picking');
+        allPickings = await callOdoo(
+          'stock.picking',
           'search_read',
-          [[['picking_id', 'in', batch]]],
-          { fields: ['id', 'picking_id', 'product_uom_qty', 'product_id', 'state'], limit: 5000 }
-        );
-        (batchMoves || []).forEach((m) => {
-          const pickingId = Array.isArray(m.picking_id) ? Number(m.picking_id[0]) : Number(m.picking_id);
-          allMoves.push({ ...m, picking_id: Number.isFinite(pickingId) ? pickingId : m.picking_id });
-          const pid = Array.isArray(m.product_id) ? m.product_id[0] : m.product_id;
-          if (pid) productIds.add(pid);
-        });
-      }
+          [[['sale_id', 'in', orderIds]]],
+          { fields: ['id', 'name', 'sale_id', 'state', 'move_ids', 'backorder_ids'], limit: 500 }
+        ) || [];
+        result.pickings = allPickings.length;
+        log('fetch', `pickings=${result.pickings}`);
 
-      const moveIds = (allMoves || []).map((m) => Number(m?.id)).filter((id) => Number.isFinite(id));
-      const moveBatchSize = 200;
-      for (let i = 0; i < moveIds.length; i += moveBatchSize) {
-        const batch = moveIds.slice(i, i + moveBatchSize);
-        if (!batch.length) continue;
-        const batchMoveLines = await callOdoo(
-          'stock.move.line',
-          'search_read',
-          [[['move_id', 'in', batch]]],
-          { fields: ['id', 'move_id', 'qty_done'], limit: 5000 }
-        );
-        (batchMoveLines || []).forEach((ml) => allMoveLines.push(ml));
+        const pickingIds = (allPickings || []).map((p) => Number(p?.id)).filter((id) => Number.isFinite(id));
+        const pickBatchSize = 40;
+        for (let i = 0; i < pickingIds.length; i += pickBatchSize) {
+          const batch = pickingIds.slice(i, i + pickBatchSize);
+          if (!batch.length) continue;
+          const batchMoves = await callOdoo(
+            'stock.move',
+            'search_read',
+            [[['picking_id', 'in', batch]]],
+            { fields: ['id', 'picking_id', 'product_uom_qty', 'product_id', 'state'], limit: 5000 }
+          );
+          (batchMoves || []).forEach((m) => {
+            const pickingId = Array.isArray(m.picking_id) ? Number(m.picking_id[0]) : Number(m.picking_id);
+            allMoves.push({ ...m, picking_id: Number.isFinite(pickingId) ? pickingId : m.picking_id });
+            const pid = Array.isArray(m.product_id) ? m.product_id[0] : m.product_id;
+            if (pid) productIds.add(pid);
+          });
+        }
+
+        const moveIds = (allMoves || []).map((m) => Number(m?.id)).filter((id) => Number.isFinite(id));
+        const moveBatchSize = 200;
+        for (let i = 0; i < moveIds.length; i += moveBatchSize) {
+          const batch = moveIds.slice(i, i + moveBatchSize);
+          if (!batch.length) continue;
+          const batchMoveLines = await callOdoo(
+            'stock.move.line',
+            'search_read',
+            [[['move_id', 'in', batch]]],
+            { fields: ['id', 'move_id', 'qty_done'], limit: 5000 }
+          );
+          (batchMoveLines || []).forEach((ml) => allMoveLines.push(ml));
+        }
+        result.moves = allMoves.length;
+        result.moveLines = allMoveLines.length;
+        log('fetch', `moves=${result.moves} moveLines=${result.moveLines}`);
       }
-      result.moves = allMoves.length;
-      result.moveLines = allMoveLines.length;
-      log('fetch', `moves=${result.moves} moveLines=${result.moveLines}`);
     }
 
     log('db', 'sale_order_lines');
@@ -5993,12 +6436,14 @@ async function runSyncInternal() {
         log('fetch', `product.product (targeted by ids: ${ids.length})`);
         products = await getProductsByIds(ids);
       }
-      if (!products?.length) {
+      if (!products?.length && includeHeavyOrderStateSync) {
         log('fetch', 'product.product (full catalog fallback)');
         products = await getAllProducts();
       }
       try {
-        const mandatoryEmpty = await getMandatoryEmptyCylinderProducts([2.4, 5, 12.5, 37.5]);
+        const mandatoryEmpty = includeHeavyOrderStateSync
+          ? await getMandatoryEmptyCylinderProducts([2.4, 5, 12.5, 37.5])
+          : [];
         if (mandatoryEmpty?.length) {
           const byId = new Map();
           for (const p of products || []) {
@@ -6028,119 +6473,125 @@ async function runSyncInternal() {
     }
 
     // When vehicle-scoped: fetch only journals + routes + single vehicle. Otherwise full list.
-    log('fetch', vehicleId != null ? 'journals + routes + current vehicle' : 'journals + routes + vehicles');
-    let vehiclesList;
-    if (vehicleId != null) {
-      const [journals, routes, singleVehicle] = await Promise.all([
-        getJournals().catch((e) => {
-          logWarn('fetch journals', e);
-          return [];
-        }),
-        getRoutes().catch((e) => {
-          logWarn('fetch routes', e);
-          return [];
-        }),
-        getVehicleRecordForInventorySync(vehicleId, user).catch((e) => {
-          logWarn('fetch vehicle by id', e);
-          return null;
-        }),
-      ]);
-      result.journals = (journals || []).length;
-      result.routes = (routes || []).length;
-      vehiclesList = singleVehicle ? [singleVehicle] : [];
-      result.vehicles = vehiclesList.length;
-      log('db', 'journals + routes + vehicles');
-      await journalsDb.upsertJournals(journals || []);
-      await routesDb.upsertRoutes(routes || []);
-      await vehiclesDb.upsertVehicles(vehiclesList);
+    if (isLightPullMode) {
+      void runStartDayBackgroundRefreshInBackground(user, vehicleId);
     } else {
-      const [journals, routes, vehicles] = await Promise.all([
-        getJournals().catch((e) => {
-          logWarn('fetch journals', e);
-          return [];
-        }),
-        getRoutes().catch((e) => {
-          logWarn('fetch routes', e);
-          return [];
-        }),
-        getVehicles().catch((e) => {
-          logWarn('fetch vehicles', e);
-          return [];
-        }),
-      ]);
-      result.journals = (journals || []).length;
-      result.routes = (routes || []).length;
-      result.vehicles = (vehicles || []).length;
-      vehiclesList = vehicles || [];
-      log('db', 'journals + routes + vehicles');
-      await journalsDb.upsertJournals(journals || []);
-      await routesDb.upsertRoutes(routes || []);
-      await vehiclesDb.upsertVehicles(vehiclesList);
-    }
-
-    const allVehicleWarehouses = [];
-    const allVehicleInventories = [];
-    const vehiclesToFetchInventory = vehiclesList;
-    const stockWarehouses = await getStockWarehouses().catch((e) => {
-      logWarn('fetch stock warehouses', e);
-      return [];
-    });
-    const warehouseByNameKey = new Map();
-    const warehouseByCodeKey = new Map();
-    for (const wh of stockWarehouses || []) {
-      const nameKey = normalizeWarehouseKey(wh?.name);
-      const codeKey = normalizeWarehouseKey(wh?.code);
-      if (nameKey && !warehouseByNameKey.has(nameKey)) warehouseByNameKey.set(nameKey, wh);
-      if (codeKey && !warehouseByCodeKey.has(codeKey)) warehouseByCodeKey.set(codeKey, wh);
-    }
-    const warehouseMaps = { warehouseByNameKey, warehouseByCodeKey };
-    let sessionVehicleInventoryPersisted = false;
-    for (const v of vehiclesToFetchInventory) {
-      const vId = v?.id != null ? Number(v.id) : null;
-      if (vId == null) continue;
-      try {
-        const { warehouse, inventories, persisted } = await syncVehicleInventoryForRecord(v, warehouseMaps, user);
-        if (warehouse) allVehicleWarehouses.push(warehouse);
-        if (inventories?.length) allVehicleInventories.push(...inventories);
-        if (persisted && vehicleId != null && vId === Number(vehicleId)) {
-          sessionVehicleInventoryPersisted = true;
-          notifyLocalInventoryChanged();
-        }
-      } catch (e) {
-        logWarn(`vehicle ${vId} warehouse/inventory`, e);
+      log('fetch', vehicleId != null ? 'journals + routes + current vehicle' : 'journals + routes + vehicles');
+      let vehiclesList;
+      if (vehicleId != null) {
+        const [journals, routes, singleVehicle] = await Promise.all([
+          getJournals().catch((e) => {
+            logWarn('fetch journals', e);
+            return [];
+          }),
+          getRoutes().catch((e) => {
+            logWarn('fetch routes', e);
+            return [];
+          }),
+          getVehicleRecordForInventorySync(vehicleId, user).catch((e) => {
+            logWarn('fetch vehicle by id', e);
+            return null;
+          }),
+        ]);
+        result.journals = (journals || []).length;
+        result.routes = (routes || []).length;
+        vehiclesList = singleVehicle ? [singleVehicle] : [];
+        result.vehicles = vehiclesList.length;
+        log('db', 'journals + routes + vehicles');
+        await journalsDb.upsertJournals(journals || []);
+        await routesDb.upsertRoutes(routes || []);
+        await vehiclesDb.upsertVehicles(vehiclesList);
+      } else {
+        const [journals, routes, vehicles] = await Promise.all([
+          getJournals().catch((e) => {
+            logWarn('fetch journals', e);
+            return [];
+          }),
+          getRoutes().catch((e) => {
+            logWarn('fetch routes', e);
+            return [];
+          }),
+          getVehicles().catch((e) => {
+            logWarn('fetch vehicles', e);
+            return [];
+          }),
+        ]);
+        result.journals = (journals || []).length;
+        result.routes = (routes || []).length;
+        result.vehicles = (vehicles || []).length;
+        vehiclesList = vehicles || [];
+        log('db', 'journals + routes + vehicles');
+        await journalsDb.upsertJournals(journals || []);
+        await routesDb.upsertRoutes(routes || []);
+        await vehiclesDb.upsertVehicles(vehiclesList);
       }
-    }
-    if (vehicleId != null && !sessionVehicleInventoryPersisted) {
-      try {
-        const sessionVehicle = await getVehicleRecordForInventorySync(vehicleId, user);
-        if (sessionVehicle) {
-          log('sync', `vehicle inventory retry for session vehicle ${vehicleId}`);
-          const retry = await syncVehicleInventoryForRecord(sessionVehicle, warehouseMaps, user);
-          if (retry.warehouse) allVehicleWarehouses.push(retry.warehouse);
-          if (retry.inventories?.length) allVehicleInventories.push(...retry.inventories);
-          if (retry.persisted) {
+
+      const allVehicleWarehouses = [];
+      const allVehicleInventories = [];
+      const vehiclesToFetchInventory = vehiclesList;
+      const stockWarehouses = await getStockWarehouses().catch((e) => {
+        logWarn('fetch stock warehouses', e);
+        return [];
+      });
+      const warehouseByNameKey = new Map();
+      const warehouseByCodeKey = new Map();
+      for (const wh of stockWarehouses || []) {
+        const nameKey = normalizeWarehouseKey(wh?.name);
+        const codeKey = normalizeWarehouseKey(wh?.code);
+        if (nameKey && !warehouseByNameKey.has(nameKey)) warehouseByNameKey.set(nameKey, wh);
+        if (codeKey && !warehouseByCodeKey.has(codeKey)) warehouseByCodeKey.set(codeKey, wh);
+      }
+      const warehouseMaps = { warehouseByNameKey, warehouseByCodeKey };
+      let sessionVehicleInventoryPersisted = false;
+      for (const v of vehiclesToFetchInventory) {
+        const vId = v?.id != null ? Number(v.id) : null;
+        if (vId == null) continue;
+        try {
+          const { warehouse, inventories, persisted } = await syncVehicleInventoryForRecord(v, warehouseMaps, user);
+          if (warehouse) allVehicleWarehouses.push(warehouse);
+          if (inventories?.length) allVehicleInventories.push(...inventories);
+          if (persisted && vehicleId != null && vId === Number(vehicleId)) {
             sessionVehicleInventoryPersisted = true;
             notifyLocalInventoryChanged();
           }
+        } catch (e) {
+          logWarn(`vehicle ${vId} warehouse/inventory`, e);
         }
-      } catch (retryErr) {
-        logWarn(`vehicle inventory retry session ${vehicleId}`, retryErr);
       }
+      if (vehicleId != null && !sessionVehicleInventoryPersisted) {
+        try {
+          const sessionVehicle = await getVehicleRecordForInventorySync(vehicleId, user);
+          if (sessionVehicle) {
+            log('sync', `vehicle inventory retry for session vehicle ${vehicleId}`);
+            const retry = await syncVehicleInventoryForRecord(sessionVehicle, warehouseMaps, user);
+            if (retry.warehouse) allVehicleWarehouses.push(retry.warehouse);
+            if (retry.inventories?.length) allVehicleInventories.push(...retry.inventories);
+            if (retry.persisted) {
+              sessionVehicleInventoryPersisted = true;
+              notifyLocalInventoryChanged();
+            }
+          }
+        } catch (retryErr) {
+          logWarn(`vehicle inventory retry session ${vehicleId}`, retryErr);
+        }
+      }
+      result.vehicleWarehouses = allVehicleWarehouses.length;
+      result.vehicleInventories = allVehicleInventories.length;
+      if (allVehicleWarehouses.length > 0) {
+        log('db', 'vehicle_warehouses');
+        await vehicleWarehousesDb.upsertVehicleWarehouses(allVehicleWarehouses);
+      }
+      if (allVehicleInventories.length > 0) log('db', 'vehicle_inventories');
     }
-    result.vehicleWarehouses = allVehicleWarehouses.length;
-    result.vehicleInventories = allVehicleInventories.length;
-    if (allVehicleWarehouses.length > 0) {
-      log('db', 'vehicle_warehouses');
-      await vehicleWarehousesDb.upsertVehicleWarehouses(allVehicleWarehouses);
-    }
-    if (allVehicleInventories.length > 0) log('db', 'vehicle_inventories');
     /** Second pass: retry queue after data pull (unblocks payment/delivery that depended on server state). */
-    try {
-      const uploadStillPending = await hasActionablePendingUploadWork().catch(() => false);
-      await processSyncQueue({ fastDrain: true, maxPasses: uploadStillPending ? 2 : 1 });
-      void processStandaloneOfflineAttachmentsInBackground();
-    } catch (e) {
-      logWarn('sync second queue pass', e);
+    if (!isLightPullMode) {
+      try {
+        const uploadStillPending = await hasActionablePendingUploadWork().catch(() => false);
+        await processSyncQueue({ fastDrain: true, maxPasses: uploadStillPending ? 2 : 1 });
+        void processStandaloneOfflineAttachmentsInBackground();
+      } catch (e) {
+        logWarn('sync second queue pass', e);
+      }
     }
     try {
       const { pruneExpiredLocalDeliveryHistory: pruneRetention } = await import(
@@ -6196,7 +6647,14 @@ async function runSyncInternal() {
     }
     return result;
   } finally {
-    syncActivityEnd();
+    if (usageSessionId) {
+      await finishUsageSession(usageSessionId, {
+        success: !result?.error,
+        title: isStartDayMode ? 'Pre-check sync' : 'Master data sync',
+        error: result?.error || null,
+      }).catch(() => null);
+    }
+    if (trackIndicator) syncActivityEnd();
   }
 }
 
@@ -6205,12 +6663,12 @@ async function runSyncInternal() {
  * Prevents overlapping sync runs (from app-state, login, and screen triggers)
  * that can cause transient empty reads while writes are still in progress.
  */
-export async function runSync() {
+export async function runSync(options = {}) {
   if (_runSyncPromise) {
     log('skip', 'already running; awaiting in-flight sync');
     return _runSyncPromise;
   }
-  _runSyncPromise = runSyncInternal();
+  _runSyncPromise = runSyncInternal(options);
   try {
     return await _runSyncPromise;
   } finally {
@@ -6246,7 +6704,32 @@ export async function flushPendingUploadsNow(options = {}) {
     }
     return syncQueueDb.getPendingCount();
   };
+  let usagePendingStart = null;
+  try {
+    usagePendingStart = await countPending();
+  } catch (_) {
+    usagePendingStart = null;
+  }
+  let pendingPaymentStart = 0;
+  try {
+    pendingPaymentStart = await countPendingPaymentUploads();
+  } catch (_) {
+    pendingPaymentStart = 0;
+  }
   const trackSpinner = hasDashboardUploadQueueWork() || _checkoutUploadPriority;
+  const usageSessionId =
+    checkoutMode ||
+    prioritySoId != null ||
+    pendingPaymentStart > 0
+      ? createUsageSession(DATA_USAGE_SESSION_TYPES.ORDER_SYNC, {
+          saleOrderId: prioritySoId,
+          pendingAtStart: Number(usagePendingStart) || 0,
+          pendingPaymentAtStart: pendingPaymentStart,
+          trigger: String(options?.usageSource || 'background_flush'),
+          source: 'flushPendingUploadsNow',
+        })
+      : null;
+  let usagePendingEnd = null;
   if (trackSpinner) syncActivityStart();
   try {
     let lastPending = -1;
@@ -6317,6 +6800,7 @@ export async function flushPendingUploadsNow(options = {}) {
   try {
     void processSyncedPaymentsMissingSecondaryChatterInBackground();
     const pendingCount = await countPending();
+    usagePendingEnd = pendingCount;
     const indicators = hasDashboardUploadIndicators();
     if (pendingCount === 0 && !indicators && _syncCompleteListener) {
       try {
@@ -6327,8 +6811,21 @@ export async function flushPendingUploadsNow(options = {}) {
     }
     return { pendingCount };
   } catch (_) {
+    usagePendingEnd = null;
     return { pendingCount: null };
   } finally {
+    if (usageSessionId) {
+      await finishUsageSession(usageSessionId, {
+        success: true,
+        title:
+          prioritySoId != null
+            ? `Order #${prioritySoId} upload flush`
+            : Number(usagePendingStart) > 1
+              ? 'Offline orders upload sync'
+              : 'Order upload flush',
+        pendingAtEnd: usagePendingEnd,
+      }).catch(() => null);
+    }
     if (trackSpinner) syncActivityEnd();
     if (aggressive && options?.chainRetry !== false && !checkoutMode) {
       try {

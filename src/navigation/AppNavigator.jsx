@@ -28,6 +28,7 @@ import PlaceholderScreen from '../screens/PlaceholderScreen';
 import MyCommissionScreen from '../screens/MyCommissionScreen';
 import VehicleStockScreen from '../screens/VehicleStockScreen';
 import SyncHistoryScreen from '../screens/SyncHistoryScreen';
+import DataUsageScreen from '../screens/DataUsageScreen';
 import LocalInvoicesScreen from '../screens/LocalInvoicesScreen';
 import CancelOrdersScreen from '../screens/CancelOrdersScreen';
 import InvoicedCustomersScreen from '../screens/InvoicedCustomersScreen';
@@ -226,6 +227,11 @@ function MainStackScreen() {
         name="SyncHistory"
         component={SyncHistoryScreen}
         options={{ ...headerScreenOptions, title: t('navigation.syncHistory', 'Sync History') }}
+      />
+      <MainStack.Screen
+        name="DataUsage"
+        component={DataUsageScreen}
+        options={{ ...headerScreenOptions, title: t('navigation.dataUsage', 'Data Usage') }}
       />
       <MainStack.Screen
         name="LocalInvoices"
