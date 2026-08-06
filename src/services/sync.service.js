@@ -1103,6 +1103,8 @@ async function getAsyncStorage() {
 }
 /** In-flight sync runner; concurrent callers await the same promise. */
 let _runSyncPromise = null;
+/** Options coalesced while a sync is in flight (drained as a follow-up pull). */
+let _runSyncQueuedOptions = null;
 
 function sanitizeUserSessionForStorage(user) {
   const src = user && typeof user === 'object' ? user : {};
@@ -1304,7 +1306,8 @@ export async function getCachedOrders(vehicleId = null) {
   try {
     const storage = await getAsyncStorage();
     const syncDateField = await storage.getItem(KEYS.SYNC_DATE_FIELD);
-    const sortField = syncDateField === 'delivery_date' ? 'commitment_date' : 'date_order';
+    // Default matches ThemeContext + getSyncDateFieldSetting (`delivery_date`).
+    const sortField = syncDateField === 'creation_date' ? 'date_order' : 'commitment_date';
     const rows = await saleOrdersDb.getAllSaleOrders(vehicleId, sortField);
     // Keep cancelled orders hidden across the app by default.
     return (rows || []).filter((o) => String(o?.state || '').toLowerCase() !== 'cancel');
@@ -1319,7 +1322,7 @@ export async function getCachedCancelledOrders(vehicleId = null) {
   try {
     const storage = await getAsyncStorage();
     const syncDateField = await storage.getItem(KEYS.SYNC_DATE_FIELD);
-    const sortField = syncDateField === 'delivery_date' ? 'commitment_date' : 'date_order';
+    const sortField = syncDateField === 'creation_date' ? 'date_order' : 'commitment_date';
     return await saleOrdersDb.getCancelledSaleOrders(vehicleId, sortField);
   } catch (e) {
     console.warn('getCachedCancelledOrders', e);
@@ -4022,6 +4025,36 @@ async function processSyncQueue(options = {}) {
 
         for (const block of blocks) {
           let pickingId = block.pickingId;
+          const hadSyntheticPicking =
+            pickingId != null && Number.isFinite(Number(pickingId)) && Number(pickingId) <= 0;
+          // Offline synthetic scaffolds use negative ids — remap to live Odoo picking by sale order.
+          if (
+            (pickingId == null || Number(pickingId) <= 0) &&
+            saleOrderId != null
+          ) {
+            let pickings = await getPickingBySaleOrder(saleOrderId).catch(() => []);
+            if (!pickings?.length) {
+              try {
+                await confirmSaleOrder(saleOrderId);
+              } catch (_) {
+                /* may already be confirmed */
+              }
+              pickings = await getPickingBySaleOrder(saleOrderId).catch(() => []);
+            }
+            const open = (pickings || []).find((pk) => {
+              const st = String(pk?.state || '').toLowerCase();
+              return pk?.id != null && st !== 'done' && st !== 'cancel';
+            });
+            const first = open || (Array.isArray(pickings) ? pickings[0] : null);
+            pickingId = first?.id ?? null;
+            if (pickingId != null) {
+              block.pickingId = Number(pickingId);
+              log(
+                'queue',
+                `delivery remapped local/missing picking → ${pickingId} for SO ${saleOrderId}`
+              );
+            }
+          }
           if (pickingId == null && saleOrderId != null) {
             const pickings = await getPickingBySaleOrder(saleOrderId);
             const first = Array.isArray(pickings) ? pickings[0] : null;
@@ -4048,9 +4081,57 @@ async function processSyncQueue(options = {}) {
           }
           targetPickingIds.add(Number(pickingId));
 
-          const moveUpdates = demandEdit ? block.moveUpdates || [] : [];
-          const moveLineUpdates = block.moveLineUpdates || [];
-          const deliveryLines = Array.isArray(block.deliveryLines) ? [...block.deliveryLines] : [];
+          let moveUpdates = demandEdit ? block.moveUpdates || [] : [];
+          let moveLineUpdates = block.moveLineUpdates || [];
+          let deliveryLines = Array.isArray(block.deliveryLines) ? [...block.deliveryLines] : [];
+
+          // Synthetic local move/move-line ids are invalid on Odoo — rebuild by product on the real picking.
+          const hasSyntheticMoveRefs =
+            hadSyntheticPicking ||
+            deliveryLines.some((l) => Number(l?.moveId ?? l?.move_id) <= 0) ||
+            moveLineUpdates.some((u) => Number(u?.moveLineId) <= 0 || Number(u?.moveId) <= 0) ||
+            moveUpdates.some((u) => Number(u?.moveId) <= 0);
+          if (hasSyntheticMoveRefs && Number(pickingId) > 0) {
+            const liveMoves = await getStockMovesByPickingId(Number(pickingId)).catch(() => []);
+            const moveByProduct = new Map();
+            for (const mv of liveMoves || []) {
+              const pid = Number(Array.isArray(mv?.product_id) ? mv.product_id[0] : mv?.product_id);
+              const mid = Number(mv?.id);
+              if (!Number.isFinite(pid) || !Number.isFinite(mid) || mid <= 0) continue;
+              moveByProduct.set(pid, mid);
+            }
+            const qtyByProduct = new Map();
+            for (const line of deliveryLines) {
+              const pid = Number(line?.productId ?? line?.product_id);
+              const q = coerceDeliveredQty(line?.qty_done);
+              if (!Number.isFinite(pid) || !Number.isFinite(q)) continue;
+              qtyByProduct.set(pid, (qtyByProduct.get(pid) || 0) + q);
+            }
+            deliveryLines = [];
+            for (const [pid, qty] of qtyByProduct.entries()) {
+              const mid = moveByProduct.get(pid);
+              if (mid == null) continue;
+              deliveryLines.push({ moveId: mid, productId: pid, qty_done: qty });
+            }
+            moveLineUpdates = [];
+            if (demandEdit) {
+              moveUpdates = (moveUpdates || [])
+                .map((u) => {
+                  const pid = Number(u?.productId ?? u?.product_id);
+                  const mid = moveByProduct.get(pid);
+                  if (!Number.isFinite(mid) || mid <= 0) return null;
+                  return { ...u, moveId: mid };
+                })
+                .filter(Boolean);
+            }
+            block.deliveryLines = deliveryLines;
+            block.moveLineUpdates = moveLineUpdates;
+            block.moveUpdates = moveUpdates;
+            log(
+              'queue',
+              `delivery rebuilt ${deliveryLines.length} lines on real picking ${pickingId} for SO ${saleOrderId}`
+            );
+          }
 
           try {
             const stateRows = await getPickingState(pickingId);
@@ -5822,9 +5903,11 @@ async function getSyncDateFieldSetting() {
   try {
     const storage = await getAsyncStorage();
     const raw = await storage.getItem(KEYS.SYNC_DATE_FIELD);
-    return raw === 'delivery_date' ? 'delivery_date' : 'creation_date';
+    // Align with ThemeContext default (`delivery_date`) so UI day filters and Odoo pull use the same field.
+    if (raw === 'creation_date') return 'creation_date';
+    return 'delivery_date';
   } catch (_) {
-    return 'creation_date';
+    return 'delivery_date';
   }
 }
 
@@ -6129,12 +6212,12 @@ async function runSyncInternal(options = {}) {
   try {
     if (isLoggingOut) {
       log('stop', 'logout in progress');
-      return { error: 'Logout in progress' };
+      return { error: 'Logout in progress', syncedVehicleId: null };
     }
     const session = await getUserSession();
     if (!session) {
       log('stop', 'no active session');
-      return { error: 'No active session' };
+      return { error: 'No active session', syncedVehicleId: null };
     }
 
     if (isLightPullMode) {
@@ -6164,6 +6247,7 @@ async function runSyncInternal(options = {}) {
     const user = await getUserSession();
     // Vehicle-scoped sync: when user has vehicleId and is not admin, sync only that vehicle's data.
     const vehicleId = (user?.vehicleId != null && user?.isAdmin !== true) ? user.vehicleId : null;
+    result.syncedVehicleId = vehicleId != null ? Number(vehicleId) : null;
 
     // Get sync period + selected date field (creation or delivery date)
     const [dateFromFilter, syncDateField] = await Promise.all([
@@ -6181,6 +6265,11 @@ async function runSyncInternal(options = {}) {
       const orderDate = order?.date_order;
       const raw = syncDateField === 'delivery_date' ? deliveryDate || orderDate : orderDate || deliveryDate;
       return raw == null ? '' : String(raw);
+    };
+    const isOpenAssignedOrder = (order) => {
+      const state = String(order?.state || '').toLowerCase();
+      const invState = String(order?.invoice_status || '').toLowerCase();
+      return state !== 'cancel' && invState !== 'invoiced';
     };
     const syncDateFieldLabel = syncDateField === 'delivery_date' ? 'commitment_date' : 'date_order';
     if (dateFromFilter) {
@@ -6203,13 +6292,9 @@ async function runSyncInternal(options = {}) {
       const partnerSourceOrders =
         isLightPullMode
         ? (orders || []).filter((o) => {
-            const state = String(o?.state || '').toLowerCase();
-            const invState = String(o?.invoice_status || '').toLowerCase();
-            return (
-              orderDateForMode(o).startsWith(localToday) &&
-              state !== 'cancel' &&
-              !(state === 'done' && invState === 'invoiced')
-            );
+            // Always keep partners for still-open assigned work (may lack commitment_date / not "today").
+            if (isOpenAssignedOrder(o)) return true;
+            return orderDateForMode(o).startsWith(localToday);
           })
           : orders || [];
       const partnerIds = [
@@ -6308,17 +6393,9 @@ async function runSyncInternal(options = {}) {
 
     const lineSourceOrders =
       isMasterDataMode
-        ? (orders || []).filter((o) => {
-            const state = String(o?.state || '').toLowerCase();
-            const invState = String(o?.invoice_status || '').toLowerCase();
-            return (
-              orderDateForMode(o).startsWith(localToday) &&
-              state !== 'cancel' &&
-              !(state === 'done' && invState === 'invoiced')
-            );
-          })
+        ? (orders || []).filter((o) => isOpenAssignedOrder(o) || orderDateForMode(o).startsWith(localToday))
         : isLightPullMode
-          ? (orders || []).filter((o) => orderDateForMode(o).startsWith(localToday))
+          ? (orders || []).filter((o) => isOpenAssignedOrder(o) || orderDateForMode(o).startsWith(localToday))
           : orders || [];
     const orderIds = (orders || []).map((o) => o.id);
     const lineSourceOrderIds = lineSourceOrders.map((o) => o.id);
@@ -6368,12 +6445,15 @@ async function runSyncInternal(options = {}) {
         log('fetch', `orderLines=${result.orderLines}`);
       }
 
-      if (includeHeavyOrderStateSync && orderIds.length > 0) {
-        log('fetch', 'stock.picking');
+      // Delivery rows are required for offline Save / Proceed. Light sync used to skip this
+      // and left newly pulled SOs editable only while online (ensureLocalDeliveryRowsForOrder).
+      const pickingSourceOrderIds = includeHeavyOrderStateSync ? orderIds : lineSourceOrderIds;
+      if (pickingSourceOrderIds.length > 0) {
+        log('fetch', `stock.picking (${pickingSourceOrderIds.length} SOs, light=${isLightPullMode})`);
         allPickings = await callOdoo(
           'stock.picking',
           'search_read',
-          [[['sale_id', 'in', orderIds]]],
+          [[['sale_id', 'in', pickingSourceOrderIds]]],
           { fields: ['id', 'name', 'sale_id', 'state', 'move_ids', 'backorder_ids'], limit: 500 }
         ) || [];
         result.pickings = allPickings.length;
@@ -6423,6 +6503,21 @@ async function runSyncInternal(options = {}) {
     });
     log('db', 'stock_pickings');
     await stockPickingsDb.upsertStockPickings(allPickings, { preserveLocalStateForSaleOrderIds: pendingSaleOrderIds });
+    // Drop offline synthetic scaffolds once real Odoo pickings are present for those SOs.
+    const realPickingSaleIds = [
+      ...new Set(
+        (allPickings || [])
+          .map((p) => {
+            const sid = Array.isArray(p?.sale_id) ? p.sale_id[0] : p?.sale_id;
+            const pid = Number(p?.id);
+            return Number.isFinite(pid) && pid > 0 ? Number(sid) : null;
+          })
+          .filter((id) => Number.isFinite(id) && id > 0)
+      ),
+    ];
+    if (realPickingSaleIds.length > 0) {
+      await stockPickingsDb.deleteSyntheticPickingsForSaleOrderIds(realPickingSaleIds).catch(() => 0);
+    }
     log('db', 'stock_moves');
     await stockMovesDb.upsertStockMoves(allMoves);
     log('db', 'stock_move_lines');
@@ -6662,13 +6757,98 @@ async function runSyncInternal(options = {}) {
  * Public sync entrypoint with concurrency guard.
  * Prevents overlapping sync runs (from app-state, login, and screen triggers)
  * that can cause transient empty reads while writes are still in progress.
+ *
+ * Concurrent callers coalesce into one follow-up pull when needed (fuller mode,
+ * prior failure, or session vehicle changed mid-flight) instead of silently
+ * adopting a stale in-flight result.
  */
+function syncModeRank(mode) {
+  const m = String(mode || 'full');
+  if (m === 'full') return 3;
+  if (m === 'start_day') return 2;
+  if (m === 'master_data') return 1;
+  return 0;
+}
+
+function mergeQueuedSyncOptions(current, incoming = {}) {
+  const incomingMode = incoming?.mode || 'full';
+  if (!current) {
+    return {
+      mode: incomingMode,
+      trackIndicator: incoming?.trackIndicator === true,
+    };
+  }
+  const nextRank = syncModeRank(incomingMode);
+  const curRank = syncModeRank(current.mode);
+  return {
+    // Prefer the fuller pull; full ⊇ start_day ⊇ master_data for order completeness.
+    mode: nextRank > curRank ? incomingMode : current.mode || 'full',
+    trackIndicator: current.trackIndicator === true || incoming?.trackIndicator === true,
+  };
+}
+
+async function getSessionVehicleIdForSyncGuard() {
+  try {
+    const session = await getUserSession();
+    if (!session || session.isAdmin === true) return null;
+    const n = Number(session.vehicleId);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  } catch (_) {
+    return null;
+  }
+}
+
 export async function runSync(options = {}) {
   if (_runSyncPromise) {
-    log('skip', 'already running; awaiting in-flight sync');
+    _runSyncQueuedOptions = mergeQueuedSyncOptions(_runSyncQueuedOptions, options);
+    log('skip', `already running; queued follow-up mode=${_runSyncQueuedOptions?.mode || 'full'}`);
     return _runSyncPromise;
   }
-  _runSyncPromise = runSyncInternal(options);
+
+  _runSyncPromise = (async () => {
+    let opts = {
+      mode: options?.mode || 'full',
+      trackIndicator: options?.trackIndicator === true,
+    };
+    let result = await runSyncInternal(opts);
+    let guard = 0;
+    while (_runSyncQueuedOptions && guard < 3) {
+      guard += 1;
+      const queued = _runSyncQueuedOptions;
+      _runSyncQueuedOptions = null;
+      const sessionVehicleId = await getSessionVehicleIdForSyncGuard();
+      const syncedVehicleId =
+        result?.syncedVehicleId != null && Number.isFinite(Number(result.syncedVehicleId))
+          ? Number(result.syncedVehicleId)
+          : null;
+      const vehicleChanged =
+        sessionVehicleId != null &&
+        syncedVehicleId != null &&
+        sessionVehicleId !== syncedVehicleId;
+      const qRank = syncModeRank(queued.mode);
+      const rRank = syncModeRank(opts.mode);
+      const needsFollowUp = !!result?.error || qRank > rRank || vehicleChanged;
+      if (!needsFollowUp) {
+        log('skip', `drop redundant queued mode=${queued.mode} after ${opts.mode}`);
+        continue;
+      }
+      opts = {
+        mode: vehicleChanged
+          ? queued.mode || opts.mode || 'full'
+          : qRank > rRank
+            ? queued.mode || 'full'
+            : opts.mode || 'full',
+        trackIndicator: queued.trackIndicator === true,
+      };
+      log(
+        'start',
+        `queued follow-up sync mode=${opts.mode}${vehicleChanged ? ` vehicle ${syncedVehicleId}→${sessionVehicleId}` : ''}`
+      );
+      result = await runSyncInternal(opts);
+    }
+    return result;
+  })();
+
   try {
     return await _runSyncPromise;
   } finally {

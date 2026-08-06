@@ -66,7 +66,11 @@ export async function upsertStockPickings(rows, options = {}) {
 export async function getStockPickingsBySaleId(saleOrderId) {
   const db = await getDb();
   const rows = await db.getAllAsync(
-    'SELECT * FROM stock_pickings WHERE sale_id = ? ORDER BY id LIMIT 20',
+    // Prefer real Odoo ids (>0) over offline synthetic scaffolding (<0).
+    `SELECT * FROM stock_pickings
+     WHERE sale_id = ?
+     ORDER BY CASE WHEN id > 0 THEN 0 ELSE 1 END, id
+     LIMIT 20`,
     [saleOrderId]
   );
   return (rows || []).map((row) => ({
@@ -76,6 +80,41 @@ export async function getStockPickingsBySaleId(saleOrderId) {
     move_ids: safeParseJson(row.move_ids, []),
     backorder_ids: safeParseJson(row.backorder_ids, []),
   }));
+}
+
+/** Remove offline-only synthetic picking trees once real Odoo pickings exist for the SO. */
+export async function deleteSyntheticPickingsForSaleOrderIds(saleOrderIds = []) {
+  const ids = [
+    ...new Set(
+      (saleOrderIds || [])
+        .map((id) => Number(id))
+        .filter((id) => Number.isFinite(id) && id > 0)
+    ),
+  ];
+  if (!ids.length) return 0;
+  const db = await getDb();
+  const ph = ids.map(() => '?').join(',');
+  const synthPickings = await db.getAllAsync(
+    `SELECT id FROM stock_pickings WHERE sale_id IN (${ph}) AND id < 0`,
+    ids
+  );
+  const pickingIds = (synthPickings || [])
+    .map((r) => Number(r?.id))
+    .filter((id) => Number.isFinite(id) && id < 0);
+  if (!pickingIds.length) return 0;
+  const pph = pickingIds.map(() => '?').join(',');
+  const moves = await db.getAllAsync(`SELECT id FROM stock_moves WHERE picking_id IN (${pph})`, pickingIds);
+  const moveIds = (moves || []).map((r) => Number(r?.id)).filter((id) => Number.isFinite(id));
+  await db.withTransactionAsync(async (tx) => {
+    if (moveIds.length > 0) {
+      const mph = moveIds.map(() => '?').join(',');
+      await tx.runAsync(`DELETE FROM stock_move_lines WHERE move_id IN (${mph})`, moveIds);
+      await tx.runAsync(`DELETE FROM stock_moves WHERE id IN (${mph})`, moveIds);
+    }
+    await tx.runAsync(`DELETE FROM stock_pickings WHERE id IN (${pph})`, pickingIds);
+  });
+  logQuery('deleteSyntheticPickingsForSaleOrderIds', `removed ${pickingIds.length} for ${ids.length} SO(s)`);
+  return pickingIds.length;
 }
 
 export async function getStockPickingsBySaleIds(saleOrderIds) {

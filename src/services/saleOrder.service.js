@@ -61,6 +61,63 @@ function resolveDateValue(dateFrom) {
 }
 
 /**
+ * Odoo excludes False/null on `commitment_date >= X`. When syncing by delivery date,
+ * also include orders with empty commitment_date whose date_order falls in the window.
+ */
+function buildDateWindowDomain(syncDateField, dateValue) {
+  if (!dateValue) return [];
+  if (syncDateField === 'delivery_date') {
+    return [
+      '|',
+      ['commitment_date', '>=', dateValue],
+      '&',
+      ['commitment_date', '=', false],
+      ['date_order', '>=', dateValue],
+    ];
+  }
+  return [['date_order', '>=', dateValue]];
+}
+
+/** Still-open assigned work — must sync even when commitment_date is empty or outside the history window. */
+function buildOpenAssignedDomain(vehicleId = null) {
+  const domain = [
+    ['state', '!=', 'cancel'],
+    ['invoice_status', '!=', 'invoiced'],
+  ];
+  if (vehicleId != null) {
+    domain.unshift(['vehicle_id', '=', vehicleId]);
+  }
+  return domain;
+}
+
+function mergeSaleOrdersById(...lists) {
+  const byId = new Map();
+  for (const list of lists) {
+    for (const row of list || []) {
+      const id = Number(row?.id);
+      if (!Number.isFinite(id) || id <= 0) continue;
+      byId.set(id, row);
+    }
+  }
+  return Array.from(byId.values());
+}
+
+async function searchReadSaleOrders(domain, opts) {
+  try {
+    return await callOdoo('sale.order', 'search_read', [domain], {
+      ...opts,
+      fields: SALE_ORDER_FIELDS_WITH_PAYMENT,
+    });
+  } catch (e) {
+    if (!isUnknownFieldOdooError(e)) throw e;
+    return await callOdoo('sale.order', 'search_read', [domain], {
+      ...opts,
+      fields: SALE_ORDER_FIELDS,
+    });
+  }
+}
+
+/**
  * Get ALL sale orders (with invoice_status for list display)
  * @param {string} dateFrom - Optional ISO date string (e.g., "2024-03-13") to filter orders from this date onward
  * @param {'creation_date'|'delivery_date'} syncDateField - Filter and sort field selector from sync settings
@@ -68,24 +125,23 @@ function resolveDateValue(dateFrom) {
 export const getAllSaleOrders = async (dateFrom, syncDateField = 'creation_date', maxRows = 500) => {
   const dateField = resolveDateField(syncDateField);
   const dateValue = resolveDateValue(dateFrom);
-  const domain = dateValue ? [[dateField, '>=', dateValue]] : [];
   const safeLimit = Math.min(1000, Math.max(50, Number(maxRows) || 500));
   const opts = {
     order: `${dateField} desc, id desc`,
     limit: safeLimit,
   };
-  try {
-    return await callOdoo("sale.order", "search_read", [domain], {
-      ...opts,
-      fields: SALE_ORDER_FIELDS_WITH_PAYMENT,
-    });
-  } catch (e) {
-    if (!isUnknownFieldOdooError(e)) throw e;
-    return await callOdoo("sale.order", "search_read", [domain], {
-      ...opts,
-      fields: SALE_ORDER_FIELDS,
-    });
+
+  // No cutoff: single pull is enough.
+  if (!dateValue) {
+    return searchReadSaleOrders([], opts);
   }
+
+  // Dual pull: date window (null-safe for delivery date) + all still-open assigned orders.
+  const [windowOrders, openOrders] = await Promise.all([
+    searchReadSaleOrders(buildDateWindowDomain(syncDateField, dateValue), opts),
+    searchReadSaleOrders(buildOpenAssignedDomain(null), opts),
+  ]);
+  return mergeSaleOrdersById(windowOrders, openOrders);
 };
 
 function normalizeReasonSelection(selection) {
@@ -219,6 +275,11 @@ export async function isSaleOrderCancelledOnOdoo(saleOrderId) {
 }
 /**
  * Get sale orders for a specific vehicle only (for vehicle-scoped sync).
+ *
+ * Uses a dual pull so vehicles never lose assigned work:
+ * 1) Date-window history (delivery-date mode treats empty commitment_date via date_order)
+ * 2) All still-open / non-invoiced orders for this vehicle (matches back-office "assigned")
+ *
  * @param {number} vehicleId - The vehicle ID to filter by
  * @param {string} dateFrom - Optional ISO date string (e.g., "2024-03-13") to filter orders from this date onward
  * @param {'creation_date'|'delivery_date'} syncDateField - Filter and sort field selector from sync settings
@@ -226,27 +287,22 @@ export async function isSaleOrderCancelledOnOdoo(saleOrderId) {
 export const getSaleOrdersByVehicle = async (vehicleId, dateFrom, syncDateField = 'creation_date', maxRows = 500) => {
   const dateField = resolveDateField(syncDateField);
   const dateValue = resolveDateValue(dateFrom);
-  const domain = [['vehicle_id', '=', vehicleId]];
-  if (dateValue) {
-    domain.push([dateField, '>=', dateValue]);
-  }
   const safeLimit = Math.min(1000, Math.max(50, Number(maxRows) || 500));
   const opts = {
     order: `${dateField} desc, id desc`,
     limit: safeLimit,
   };
-  try {
-    return await callOdoo("sale.order", "search_read", [domain], {
-      ...opts,
-      fields: SALE_ORDER_FIELDS_WITH_PAYMENT,
-    });
-  } catch (e) {
-    if (!isUnknownFieldOdooError(e)) throw e;
-    return await callOdoo("sale.order", "search_read", [domain], {
-      ...opts,
-      fields: SALE_ORDER_FIELDS,
-    });
+
+  if (!dateValue) {
+    return searchReadSaleOrders([['vehicle_id', '=', vehicleId]], opts);
   }
+
+  const historyDomain = [['vehicle_id', '=', vehicleId], ...buildDateWindowDomain(syncDateField, dateValue)];
+  const [historyOrders, openOrders] = await Promise.all([
+    searchReadSaleOrders(historyDomain, opts),
+    searchReadSaleOrders(buildOpenAssignedDomain(vehicleId), opts),
+  ]);
+  return mergeSaleOrdersById(historyOrders, openOrders);
 };
 
 /**

@@ -474,11 +474,24 @@ export default function SaleOrderListScreen({ route, navigation }) {
       setCheckoutResumeMap(resumeMap && typeof resumeMap === 'object' ? resumeMap : {});
       const all = Array.isArray(data) ? data : [];
       const dateStr = formatDate(selectedDate);
+      const todayStr = formatDate(new Date());
       let list = all.filter((o) => {
         const selectedDateValue = syncDateField === 'delivery_date'
           ? (o.commitment_date || o.date_order)
           : (o.date_order || o.commitment_date);
-        return String(selectedDateValue || '').startsWith(dateStr);
+        if (String(selectedDateValue || '').startsWith(dateStr)) return true;
+        // Delivery-date mode: still-open assigned rows with no commitment_date must remain
+        // visible on today (Odoo often leaves commitment_date empty for assigned routes).
+        if (
+          syncDateField === 'delivery_date' &&
+          dateStr === todayStr &&
+          !o.commitment_date &&
+          String(o?.state || '').toLowerCase() !== 'cancel' &&
+          String(o?.invoice_status || '').toLowerCase() !== 'invoiced'
+        ) {
+          return true;
+        }
+        return false;
       });
       if (customerId != null) {
         list = list.filter((o) => o.partner_id?.[0] === customerId);

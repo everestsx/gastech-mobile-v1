@@ -702,15 +702,22 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
   }, [order, lines, productIdToAvailable, productIdToOnHand]);
 
   /**
-   * Rare recovery path for newly created back-office orders:
-   * if local delivery rows are missing, fetch/confirm once from Odoo and hydrate SQLite,
-   * so Proceed to payment does not fail with "No delivery order found".
+   * Ensure local delivery/picking rows exist for Save / Proceed.
+   * 1) Prefer already-synced SQLite pickings
+   * 2) If online: fetch/confirm from Odoo and hydrate SQLite
+   * 3) If still missing (offline / Odoo lag): materialize synthetic local scaffold from SO lines
    */
   const ensureLocalDeliveryRowsForOrder = useCallback(async (saleOrderId) => {
     const soId = Number(saleOrderId);
     if (!Number.isFinite(soId) || soId <= 0) return [];
     let pickings = await stockPickingsDb.getStockPickingsBySaleId(soId);
-    if (Array.isArray(pickings) && pickings.length > 0) return pickings;
+    if (Array.isArray(pickings) && pickings.length > 0) {
+      const { getStockMovesByPickingId } = await import('../database/stockMoves.js');
+      for (const pk of pickings) {
+        const moves = await getStockMovesByPickingId(pk.id).catch(() => []);
+        if (Array.isArray(moves) && moves.length > 0) return pickings;
+      }
+    }
 
     try {
       const {
@@ -718,6 +725,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
         getStockMovesByPickingId,
         getStockMoveLinesByMoveIds,
         actionAssignPicking,
+        materializeLocalDeliveryScaffoldForSaleOrder,
       } = await import('../services/delivery.service.js');
       const { callOdooArgs } = await import('../services/index.service.js');
 
@@ -727,52 +735,63 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
         await callOdooArgs('sale.order', 'action_confirm', [[soId]]).catch(() => null);
         livePickings = (await getPickingBySaleOrder(soId).catch(() => [])) || [];
       }
-      if (!livePickings.length) return [];
-
-      // Best effort reserve on open pickings so move lines are materialized.
-      for (const pk of livePickings) {
-        const pid = Number(pk?.id);
-        const st = String(pk?.state || '').toLowerCase();
-        if (!Number.isFinite(pid) || pid <= 0) continue;
-        if (st !== 'done' && st !== 'cancel') {
-          await actionAssignPicking(pid).catch(() => null);
-        }
-      }
-
-      await stockPickingsDb.upsertStockPickings(
-        livePickings.map((pk) => ({
-          ...pk,
-          sale_id: [soId, null],
-        }))
-      );
-
-      const allMoves = [];
-      for (const pk of livePickings) {
-        const pid = Number(pk?.id);
-        if (!Number.isFinite(pid) || pid <= 0) continue;
-        const moves = (await getStockMovesByPickingId(pid).catch(() => [])) || [];
-        for (const mv of moves) {
-          allMoves.push({
-            ...mv,
-            picking_id: pid,
-          });
-        }
-      }
-      if (allMoves.length > 0) {
-        await stockMovesDb.upsertStockMoves(allMoves);
-        const moveIds = [...new Set(allMoves.map((m) => Number(m?.id)).filter((id) => Number.isFinite(id) && id > 0))];
-        if (moveIds.length > 0) {
-          const moveLines = (await getStockMoveLinesByMoveIds(moveIds).catch(() => [])) || [];
-          if (moveLines.length > 0) {
-            await stockMoveLinesDb.upsertStockMoveLines(moveLines);
+      if (livePickings.length) {
+        // Best effort reserve on open pickings so move lines are materialized.
+        for (const pk of livePickings) {
+          const pid = Number(pk?.id);
+          const st = String(pk?.state || '').toLowerCase();
+          if (!Number.isFinite(pid) || pid <= 0) continue;
+          if (st !== 'done' && st !== 'cancel') {
+            await actionAssignPicking(pid).catch(() => null);
           }
         }
+
+        await stockPickingsDb.upsertStockPickings(
+          livePickings.map((pk) => ({
+            ...pk,
+            sale_id: [soId, null],
+          }))
+        );
+
+        const allMoves = [];
+        for (const pk of livePickings) {
+          const pid = Number(pk?.id);
+          if (!Number.isFinite(pid) || pid <= 0) continue;
+          const moves = (await getStockMovesByPickingId(pid).catch(() => [])) || [];
+          for (const mv of moves) {
+            allMoves.push({
+              ...mv,
+              picking_id: pid,
+            });
+          }
+        }
+        if (allMoves.length > 0) {
+          await stockMovesDb.upsertStockMoves(allMoves);
+          const moveIds = [...new Set(allMoves.map((m) => Number(m?.id)).filter((id) => Number.isFinite(id) && id > 0))];
+          if (moveIds.length > 0) {
+            const moveLines = (await getStockMoveLinesByMoveIds(moveIds).catch(() => [])) || [];
+            if (moveLines.length > 0) {
+              await stockMoveLinesDb.upsertStockMoveLines(moveLines);
+            }
+          }
+        }
+
+        await stockPickingsDb.deleteSyntheticPickingsForSaleOrderIds([soId]).catch(() => 0);
+        pickings = await stockPickingsDb.getStockPickingsBySaleId(soId);
+        if (Array.isArray(pickings) && pickings.length > 0) return pickings;
       }
 
-      pickings = await stockPickingsDb.getStockPickingsBySaleId(soId);
-      return Array.isArray(pickings) ? pickings : [];
+      // Offline / no Odoo picking yet — scaffold from local SO lines so the driver can continue.
+      return (await materializeLocalDeliveryScaffoldForSaleOrder(soId).catch(() => [])) || [];
     } catch (_) {
-      return [];
+      try {
+        const { materializeLocalDeliveryScaffoldForSaleOrder } = await import(
+          '../services/delivery.service.js'
+        );
+        return (await materializeLocalDeliveryScaffoldForSaleOrder(soId).catch(() => [])) || [];
+      } catch {
+        return [];
+      }
     }
   }, []);
 
@@ -1255,7 +1274,7 @@ const validateQuantities = useCallback(() => {
 
           if (demandEdit && newVal !== currentMoveDemand) {
             await stockMovesDb.updateStockMoveQtyLocal(moveId, newVal);
-            moveUpdates.push({ moveId, product_uom_qty: newVal });
+            moveUpdates.push({ moveId, productId, product_uom_qty: newVal });
           }
 
           if (!demandEdit) {

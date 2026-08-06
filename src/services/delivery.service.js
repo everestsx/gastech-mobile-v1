@@ -551,3 +551,74 @@ export async function fetchOdooDeliveredQtySnapshot(pickingBlocks = [], delivere
 
   return { byMove, bySoLine, readAt: new Date().toISOString() };
 }
+
+/**
+ * Offline-first scaffolding when Odoo delivery/picking rows were never pulled locally.
+ * Creates synthetic stock_picking + stock_moves (+ empty move lines) from sale.order.lines
+ * so Save / Proceed can work without network. Upload remaps synthetic ids via sale_id.
+ *
+ * @returns {Promise<Array>} local picking rows (synthetic or existing)
+ */
+export async function materializeLocalDeliveryScaffoldForSaleOrder(saleOrderId) {
+  const soId = Number(saleOrderId);
+  if (!Number.isFinite(soId) || soId <= 0) return [];
+
+  const stockPickingsDb = await import('../database/stockPickings.js');
+  const stockMovesDb = await import('../database/stockMoves.js');
+  const stockMoveLinesDb = await import('../database/stockMoveLines.js');
+  const saleOrderLinesDb = await import('../database/saleOrderLines.js');
+
+  let pickings = await stockPickingsDb.getStockPickingsBySaleId(soId);
+  if (Array.isArray(pickings) && pickings.length > 0) {
+    // Ensure at least one picking has moves; otherwise rebuild scaffold under existing picking.
+    for (const pk of pickings) {
+      const moves = await stockMovesDb.getStockMovesByPickingId(pk.id).catch(() => []);
+      if (Array.isArray(moves) && moves.length > 0) return pickings;
+    }
+  }
+
+  const lines = (await saleOrderLinesDb.getSaleOrderLinesByOrderIds([soId]).catch(() => [])) || [];
+  const usableLines = lines.filter((l) => {
+    const pid = Array.isArray(l.product_id) ? Number(l.product_id[0]) : Number(l.product_id);
+    return Number.isFinite(pid) && pid > 0;
+  });
+  if (!usableLines.length) return [];
+
+  // Stable negative ids scoped to SO — never collide with real Odoo ids (>0).
+  const pickingId = -(1_000_000_000 + soId);
+  const moveIds = [];
+  const moveRows = usableLines.map((l, idx) => {
+    const productId = Array.isArray(l.product_id) ? Number(l.product_id[0]) : Number(l.product_id);
+    const productName = Array.isArray(l.product_id) ? l.product_id[1] : l.name || '';
+    const moveId = -(2_000_000_000 + soId * 100 + idx);
+    moveIds.push(moveId);
+    return {
+      id: moveId,
+      picking_id: pickingId,
+      product_id: [productId, productName || ''],
+      product_uom_qty: Number(l.product_uom_qty) || 0,
+      state: 'assigned',
+    };
+  });
+  const moveLineRows = moveIds.map((moveId, idx) => ({
+    id: -(3_000_000_000 + soId * 100 + idx),
+    move_id: moveId,
+    qty_done: 0,
+  }));
+
+  await stockPickingsDb.upsertStockPickings([
+    {
+      id: pickingId,
+      name: `OFFLINE/${soId}`,
+      sale_id: [soId, null],
+      state: 'assigned',
+      move_ids: moveIds,
+      backorder_ids: [],
+    },
+  ]);
+  await stockMovesDb.upsertStockMoves(moveRows);
+  await stockMoveLinesDb.upsertStockMoveLines(moveLineRows);
+
+  pickings = await stockPickingsDb.getStockPickingsBySaleId(soId);
+  return Array.isArray(pickings) ? pickings : [];
+}
