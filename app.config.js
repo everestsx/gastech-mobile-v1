@@ -15,10 +15,10 @@ const SHARED_PERMISSIONS = [
 
 const APP_VARIANTS = {
   production: {
-    name: "GasTechMobileStage",
-    slug: "GasTechMobileStage",
-    updatesUrl: "https://u.expo.dev/2f94bcdc-e805-4cfb-a4d1-b9e15c833662",
-    projectId: "2f94bcdc-e805-4cfb-a4d1-b9e15c833662",
+    name: "GasTechMobile",
+    slug: "GasTechMobile",
+    updatesUrl: "https://u.expo.dev/af65ddf8-bf52-4856-9eff-cd08773a7bab",
+    projectId: "af65ddf8-bf52-4856-9eff-cd08773a7bab",
   },
   stage: {
     name: "GasTechMobileStage",
