@@ -1,4 +1,4 @@
-import { callOdoo, callOdooArgs, callOdooArgsKwargs } from "./index.service";
+import { callOdoo, callOdooArgs, callOdooArgsKwargs, callOdooJson2 } from "./index.service";
 
 /** Legacy: direct create invoice action (use wizard flow for full control) */
 export const createInvoice = (saleOrderId) =>
@@ -10,6 +10,20 @@ export const assignJournal = (invoiceId, journalId) =>
 /** Step 3 — Post the invoice. Same as Postman: account.move action_post [[res_id]]. */
 export const postInvoice = (invoiceId) =>
   callOdooArgs("account.move", "action_post", [[Number(invoiceId)]]);
+
+/**
+ * Driver's customer-SMS choice for this invoice.
+ * Same as Postman: POST /json/2/account.move/write with { ids, vals: { send_invoice_sms } }.
+ * The back office sends the SMS on confirmation, so this must land before action_post.
+ *
+ * Sends a real JSON boolean, never the string "false" — Python treats any non-empty string
+ * as truthy, so a stringified "false" would switch the SMS on instead of off.
+ */
+export const setInvoiceSmsEnabled = (invoiceId, enabled) =>
+  callOdooJson2("account.move", "write", {
+    ids: [Number(invoiceId)],
+    vals: { send_invoice_sms: enabled === true },
+  });
 
 /* ---------------- Invoice creation wizard (after delivery validation) ---------------- */
 

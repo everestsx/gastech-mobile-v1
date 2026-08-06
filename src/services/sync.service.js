@@ -27,6 +27,7 @@ import * as syncQueueDb from '../database/syncQueue.js';
 import { buildCheckoutHeldSaleOrderIds } from '../utils/emptyCollectionLocal.js';
 import { getDb } from '../database/db.js';
 import { recordDriverLogout } from './driverLoginHistory.service';
+import { normalizeSmsEnabled, shouldWriteInvoiceSmsFlag } from './smsPreference.service';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import {
   createUsageSession,
@@ -2615,8 +2616,25 @@ async function executePaymentInvoiceStep(soId, paymentPayload, initialTarget = {
     getSaleOrderInvoiceIds,
     firstInvoiceId,
     postInvoice,
+    setInvoiceSmsEnabled,
     getInvoiceState,
   } = await import('./invoice.service.js');
+
+  /**
+   * The back office sends the customer SMS when the invoice is confirmed, so the driver's
+   * choice has to be on the record before action_post. Never let it block invoicing: any
+   * write failure is logged and the invoice posts as normal.
+   */
+  const postInvoiceWithSmsFlag = async (invoiceId) => {
+    if (shouldWriteInvoiceSmsFlag()) {
+      try {
+        await setInvoiceSmsEnabled(invoiceId, normalizeSmsEnabled(paymentPayload?.smsEnabled));
+      } catch (err) {
+        logWarn(`send_invoice_sms write for invoice ${invoiceId} (SO ${soNum})`, err);
+      }
+    }
+    return postInvoice(invoiceId);
+  };
 
   const prep = await prepareSaleOrderForInvoicing(soNum, paymentPayload, {
     deliveryJustSynced: options.deliveryJustSynced === true,
@@ -2701,7 +2719,7 @@ async function executePaymentInvoiceStep(soId, paymentPayload, initialTarget = {
   }
 
   if (resId != null && !posted) {
-    await postInvoice(resId);
+    await postInvoiceWithSmsFlag(resId);
     if (updates.length > 0) {
       const afterPost = await verifySaleOrderDeliveredAndInvoicedQty(updates, {
         checkDelivered: !fastCheckoutMode,
@@ -2758,7 +2776,7 @@ async function executePaymentInvoiceStep(soId, paymentPayload, initialTarget = {
     }
   }
 
-  await postInvoice(resId);
+  await postInvoiceWithSmsFlag(resId);
   if (updates.length > 0) {
     const finalCheck = await verifySaleOrderDeliveredAndInvoicedQty(updates, {
       checkDelivered: !fastCheckoutMode,

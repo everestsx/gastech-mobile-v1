@@ -1,5 +1,5 @@
 ﻿{
-  "version": "1.0.9",
+  "version": "1.2.0",
   "language": "si",
   "translation": {
     "bluetoothprinter": {
@@ -174,6 +174,17 @@
       "welcomeToMyApp": "අපගේ ඇප් එකට සාදරයෙන් පිළිගනිමු"
     },
     "invoice": {
+      "smsToggleLabel": "පාරිභෝගිකයාට SMS යවන්න",
+      "invoiceMethodTitle": "ඉන්වොයිස් ක්‍රමය",
+      "invoiceMethodSubtitle": "පාරිභෝගිකයාට ඉන්වොයිස් ලැබෙන ආකාරය තෝරන්න. SMS සහ ප්‍රින්ට් දෙකම තෝරාගත හැක.",
+      "invoiceMethodSms": "SMS",
+      "invoiceMethodSmsHint": "පාරිභෝගිකයාට බෙදාහැරීමේ තහවුරු කිරීමක් යවන්න.",
+      "invoiceMethodPrint": "ප්‍රින්ට්",
+      "invoiceMethodPrintHint": "මෙම තිරයේදී ඉන්වොයිස් ප්‍රින්ට් කරන්න.",
+      "invoiceMethodNone": "කිසිවක් නැත",
+      "invoiceMethodNoneHint": "SMS නැත, ප්‍රින්ට් නැත.",
+      "invoiceMethodConfirm": "තහවුරු කරන්න",
+      "invoiceMethodSelectToContinue": "ඉදිරියට යාමට විකල්පයක් තෝරන්න.",
       "addBothSignaturesThenTapSaveSignaturesUse": "අත්සන් දෙකම එකතු කරන්න, ඉන්පසු 'අත්සන් සේව් කරන්න' ටැප් කරන්න. පාරිභෝගිකයා සහ රියදුරු අතර මාරු වීමට ටැබ් භාවිතා කරන්න.",
       "addCustomerAndDriverSignaturesBeforePrinting": "ප්‍රින්ට් කිරීමට පෙර පාරිභෝගික සහ රියදුරු අත්සන් එකතු කරන්න.",
       "addCustomerAndDriverSignaturesFirst": "පළමුව පාරිභෝගික සහ රියදුරු අත්සන් එකතු කරන්න.",

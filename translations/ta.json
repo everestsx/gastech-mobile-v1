@@ -1,5 +1,5 @@
 {
-  "version": "1.0.9",
+  "version": "1.2.0",
   "language": "ta",
   "translation": {
     "bluetoothprinter": {
@@ -62,6 +62,17 @@
       "SalesOrders": "🛒 விற்பனை ஆர்டர்கள்"
     },
     "invoice": {
+      "smsToggleLabel": "வாடிக்கையாளருக்கு SMS அனுப்பவும்",
+      "invoiceMethodTitle": "விலைப்பட்டியல் முறை",
+      "invoiceMethodSubtitle": "வாடிக்கையாளர் இந்த விலைப்பட்டியலை எப்படிப் பெறுவார் எனத் தேர்ந்தெடுக்கவும். SMS மற்றும் அச்சிடு இரண்டையும் தேர்வு செய்யலாம்.",
+      "invoiceMethodSms": "SMS",
+      "invoiceMethodSmsHint": "வாடிக்கையாளருக்கு டெலிவரி உறுதிப்படுத்தல் அனுப்பவும்.",
+      "invoiceMethodPrint": "அச்சிடு",
+      "invoiceMethodPrintHint": "இந்தத் திரையில் விலைப்பட்டியலை அச்சிடவும்.",
+      "invoiceMethodNone": "எதுவும் இல்லை",
+      "invoiceMethodNoneHint": "SMS இல்லை, அச்சிடுவதும் இல்லை.",
+      "invoiceMethodConfirm": "உறுதிப்படுத்து",
+      "invoiceMethodSelectToContinue": "தொடர ஒரு விருப்பத்தைத் தேர்ந்தெடுக்கவும்.",
       "0ScaleIndex": "0 && scaleIndex",
       "noLineItems": "பொருட்கள் இல்லை",
       "gasTech": "GasTech",
