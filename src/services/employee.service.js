@@ -2,7 +2,13 @@
 import { callOdoo, callOdooJson2 } from "./index.service";
 
 /** Fields safe for portal-style users; do not include `barcode` (requires HR Officer in many DBs). */
-const EMPLOYEE_READ_FIELDS = ["id", "name", "image_1920", "mobile_phone", "work_phone"];
+/**
+ * Avatars render at most 96dp (ProfileModal), so image_512 is already generous even on
+ * a 3x screen. image_1920 was ~400KB–2MB of base64 per person once encoded, which blew
+ * past Android's ~2MB CursorWindow row limit when the driver plus porters were stored
+ * together — that made the whole session unreadable, not just the photo.
+ */
+const EMPLOYEE_READ_FIELDS = ["id", "name", "image_512", "mobile_phone", "work_phone"];
 const EMPLOYEE_READ_FIELDS_LIGHT = ["id", "name", "mobile_phone", "work_phone"];
 
 const CONTEXT = { lang: "en_US" };
@@ -124,7 +130,12 @@ export function normalizeEmployee(row, enteredDriverCode = "") {
     id: row.id,
     name: row.name || "",
     barcode: entered,
-    imageBase64: row.image_1920 != null && row.image_1920 !== false ? String(row.image_1920) : null,
+    imageBase64:
+      row.image_512 != null && row.image_512 !== false
+        ? String(row.image_512)
+        : row.image_1920 != null && row.image_1920 !== false
+          ? String(row.image_1920)
+          : null,
     phone: pickEmployeePhone(row),
   };
 }

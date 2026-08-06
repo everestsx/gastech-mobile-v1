@@ -282,41 +282,144 @@ async function getOrCreateFolder(name, parentId, token) {
 // Drive file upload  (multipart/related with base64 media part)
 // ─────────────────────────────────────────────────────────────
 
-async function uploadBase64File(base64Data, mimeType, fileName, parentFolderId, token) {
-  const metadata = JSON.stringify({ name: fileName, parents: [parentFolderId] });
-  const boundary = `gtpayproof_${Date.now()}`;
+/** Byte size of a local file, or null when it cannot be determined. */
+async function getLocalFileSize(fileUri) {
+  try {
+    const FileSystem = await import('expo-file-system');
+    const file = new FileSystem.File(fileUri);
+    const size = Number(file?.size);
+    return Number.isFinite(size) && size > 0 ? size : null;
+  } catch (_) {
+    return null;
+  }
+}
 
-  // RFC 2045 multipart/related — Google Drive v3 upload accepts base64 content-transfer-encoding
-  const body = [
-    `--${boundary}\r\n`,
-    'Content-Type: application/json; charset=UTF-8\r\n\r\n',
-    `${metadata}\r\n`,
-    `--${boundary}\r\n`,
-    `Content-Type: ${mimeType}\r\n`,
-    'Content-Transfer-Encoding: base64\r\n\r\n',
-    `${base64Data}\r\n`,
-    `--${boundary}--`,
-  ].join('');
+/**
+ * Open a resumable upload session and return its URI.
+ * Google keeps a session URI valid for about a week, so the same URI is reused by
+ * every retry below instead of restarting the upload from scratch.
+ */
+async function startResumableSession(mimeType, fileName, parentFolderId, token, fileSize) {
+  const metadata = JSON.stringify({ name: fileName, parents: [parentFolderId] });
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    'Content-Type': 'application/json; charset=UTF-8',
+    'X-Upload-Content-Type': mimeType,
+  };
+  if (fileSize) headers['X-Upload-Content-Length'] = String(fileSize);
 
   const res = await fetchWithRetry(
-    'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name',
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': `multipart/related; boundary=${boundary}`,
-      },
-      body,
-    },
-    { timeoutMs: DRIVE_TIMEOUT_UPLOAD_MS, maxRetries: DRIVE_MAX_RETRIES }
+    'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,name',
+    { method: 'POST', headers, body: metadata },
+    { timeoutMs: DRIVE_TIMEOUT_SHORT_MS, maxRetries: DRIVE_MAX_RETRIES }
   );
-
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    throw new Error(`Drive file upload failed (${res.status}): ${text}`);
+    throw new Error(`Drive resumable session failed (${res.status}): ${text}`);
   }
-  const data = await res.json();
-  return data.id ?? null;
+  const sessionUri = res.headers?.get?.('location') || res.headers?.get?.('Location');
+  if (!sessionUri) throw new Error('Drive resumable session returned no Location header');
+  return sessionUri;
+}
+
+/**
+ * Ask Drive how much of the file already landed.
+ * Returns { done, fileId, received } — `done` when Drive reports the upload complete.
+ */
+async function queryResumableStatus(sessionUri, fileSize) {
+  const res = await fetchWithRetry(
+    sessionUri,
+    {
+      method: 'PUT',
+      headers: { 'Content-Range': `bytes */${fileSize || '*'}` },
+    },
+    { timeoutMs: DRIVE_TIMEOUT_SHORT_MS, maxRetries: 1 }
+  );
+  if (res.ok) {
+    const data = await res.json().catch(() => ({}));
+    return { done: true, fileId: data?.id ?? null, received: fileSize || 0 };
+  }
+  if (res.status === 308) {
+    const range = res.headers?.get?.('range') || res.headers?.get?.('Range') || '';
+    const match = /bytes=0-(\d+)/i.exec(range);
+    return { done: false, fileId: null, received: match ? Number(match[1]) + 1 : 0 };
+  }
+  const text = await res.text().catch(() => '');
+  throw new Error(`Drive resumable status failed (${res.status}): ${text}`);
+}
+
+/**
+ * Stream the file straight from disk into a resumable session.
+ *
+ * uploadAsync sends raw bytes, which avoids the base64 round trip the multipart
+ * upload needed (~33% more bytes on the wire plus several full-size copies of the
+ * image in the JS heap). It has no abort option, so the wait is bounded by a race —
+ * on timeout we fall through to the status query, which tells us whether the bytes
+ * actually arrived before deciding to resend.
+ */
+async function putFileToSession(sessionUri, fileUri, mimeType, fileSize) {
+  const FileSystemLegacy = await import('expo-file-system/legacy');
+  const headers = { 'Content-Type': mimeType };
+  if (fileSize) headers['Content-Range'] = `bytes 0-${fileSize - 1}/${fileSize}`;
+
+  let timer = null;
+  const timeout = new Promise((_resolve, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`Drive upload timed out after ${DRIVE_TIMEOUT_UPLOAD_MS}ms`)),
+      DRIVE_TIMEOUT_UPLOAD_MS
+    );
+  });
+  const uploadPromise = FileSystemLegacy.uploadAsync(sessionUri, fileUri, {
+    httpMethod: 'PUT',
+    uploadType: FileSystemLegacy.FileSystemUploadType.BINARY_CONTENT,
+    headers,
+  });
+  // When the timeout wins the race this promise still settles later; swallow its
+  // rejection so it never surfaces as an unhandled rejection.
+  uploadPromise.catch(() => {});
+  try {
+    const result = await Promise.race([uploadPromise, timeout]);
+    const status = Number(result?.status ?? 0);
+    if (status >= 200 && status < 300) {
+      try {
+        const data = JSON.parse(result?.body || '{}');
+        return data?.id ?? null;
+      } catch (_) {
+        return null;
+      }
+    }
+    throw new Error(`Drive upload failed (${status}): ${String(result?.body || '').slice(0, 200)}`);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function uploadFileResumable(fileUri, mimeType, fileName, parentFolderId, token) {
+  const fileSize = await getLocalFileSize(fileUri);
+  const sessionUri = await startResumableSession(mimeType, fileName, parentFolderId, token, fileSize);
+
+  let lastErr = null;
+  for (let attempt = 0; attempt < DRIVE_MAX_RETRIES; attempt += 1) {
+    try {
+      const fileId = await putFileToSession(sessionUri, fileUri, mimeType, fileSize);
+      if (fileId) return fileId;
+      // 2xx without a parsable id — confirm through the session before giving up.
+      const status = await queryResumableStatus(sessionUri, fileSize);
+      if (status.done) return status.fileId;
+      lastErr = new Error('Drive upload returned no file id');
+    } catch (err) {
+      lastErr = err;
+      // The bytes may have landed even though we stopped waiting; only resend if not.
+      try {
+        const status = await queryResumableStatus(sessionUri, fileSize);
+        if (status.done) return status.fileId;
+      } catch (_) {
+        /* fall through to retry */
+      }
+    }
+    if (attempt < DRIVE_MAX_RETRIES - 1) await sleep(toBackoffMs(attempt));
+  }
+  throw lastErr || new Error('Drive upload failed');
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -337,7 +440,7 @@ async function uploadBase64File(base64Data, mimeType, fileName, parentFolderId, 
  *
  * Note: only **new** uploads after this update use this layout. Older files stay in previous folders.
  *
- * @param {string} base64Data  Normalized base64 string (no data-URL prefix)
+ * @param {string} fileUri     Local file URI/path of the image to upload (streamed from disk)
  * @param {string} mimeType    'image/jpeg' | 'image/png'
  * @param {object} meta
  * @param {string} [meta.orderName]    Sale order name, e.g. "S00042"
@@ -348,14 +451,14 @@ async function uploadBase64File(base64Data, mimeType, fileName, parentFolderId, 
  * @param {number} [meta.photoIndex]   1-based index when multiple photos per order
  * @returns {Promise<string|null>} Google Drive file ID, or null on any failure
  */
-export async function uploadPaymentProofToDrive(base64Data, mimeType, meta = {}) {
+export async function uploadPaymentProofToDrive(fileUri, mimeType, meta = {}) {
   if (!isConfigured()) {
     console.warn('[GoogleDrive] Credentials not configured — skipping Drive upload. See src/services/googleDrive.service.js for setup instructions.');
     return null;
   }
 
-  if (!base64Data || base64Data.length < 50) {
-    console.warn('[GoogleDrive] base64 data too short — skipping upload');
+  if (!fileUri || typeof fileUri !== 'string') {
+    console.warn('[GoogleDrive] no file URI supplied — skipping upload');
     return null;
   }
 
@@ -389,7 +492,7 @@ export async function uploadPaymentProofToDrive(base64Data, mimeType, meta = {})
     const idx = Number.isFinite(meta.photoIndex) && meta.photoIndex > 0 ? meta.photoIndex : 1;
     const fileName = `payment_proof_${dateStr}_${idx}.${ext}`;
 
-    const fileId = await uploadBase64File(base64Data, mimeType, fileName, saleOrderFolderId, token);
+    const fileId = await uploadFileResumable(fileUri, mimeType, fileName, saleOrderFolderId, token);
     console.log(
       `[GoogleDrive] Uploaded: ${yearFolderName}/${monthFolderName}/${dayFolderName}/${saleOrderFolderName}/${fileName} → id:${fileId}`
     );

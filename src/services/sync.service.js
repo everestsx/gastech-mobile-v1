@@ -10,6 +10,7 @@ import { getRoutes } from './route.service';
 import { getVehicles, getVehicleById } from './vehicle.service';
 import { getStockLocationByVehicle, getStockWarehouses } from './vehicleWarehouse.service';
 import { getVehicleInventoryByLocation } from './vehicleInventory.service';
+import { isOdooNetworkError } from './index.service';
 import * as partnersDb from '../database/partners.js';
 import * as saleOrdersDb from '../database/saleOrders.js';
 import * as saleOrderLinesDb from '../database/saleOrderLines.js';
@@ -90,6 +91,13 @@ export const PENDING_QUEUE_BACKGROUND_RETRY_MS = 2500;
 
 let _pendingUploadWakeTimer = null;
 let _pendingUploadWakePromise = null;
+/**
+ * Coalesced rerun request. While a flush is in flight, further wakes merge into this
+ * single slot instead of each chaining another full flush — a backlog drain triggers
+ * wakes from enqueue, payload updates, the retry loop and network transitions, and
+ * chaining them turned one drain into dozens of redundant full passes.
+ */
+let _pendingUploadRerunOptions = null;
 /** When true, payment invoice step uses shorter Odoo settle delay (stable connection fast drain). */
 let _queueSyncFastDrainActive = false;
 /** Checkout-complete upload: zero artificial settle delays, SO-scoped queue drain. */
@@ -107,6 +115,21 @@ const DRIVE_IMAGE_JPEG_COMPRESS = 0.7;
 let _standaloneAttachmentWorkerPromise = null;
 const _deferredCheckoutExtrasInFlight = new Set();
 let _secondaryChatterCatchupPromise = null;
+let _checkoutChatterCatchupPromise = null;
+/**
+ * SO → in-flight Drive proof upload. Several paths can upload the same sale order's
+ * photos (checkout prefetch, chatter catch-up, standalone worker); without this they
+ * can each read the same pending rows before any of them marks the rows synced, and
+ * every one of them uploads — producing duplicate files in Drive.
+ */
+const _driveProofUploadInFlight = new Map();
+/**
+ * Attachment ids currently being uploaded to Drive. The per-sale-order guard above
+ * only covers uploadPaymentProofAttachmentsToDrive; processStandaloneOfflineAttachments
+ * has its own upload loop, so without this the two can upload the same photo at the
+ * same time and leave two copies in Drive under different folder names.
+ */
+const _attachmentUploadInFlight = new Set();
 const _paymentProofDriveAddendumInFlight = new Set();
 
 function deliveredSolSettleMs() {
@@ -133,27 +156,80 @@ async function mapWithConcurrencyLimit(items, limit, worker) {
   await Promise.all(workers);
 }
 
-async function buildDriveUploadBase64FromFile(filePathOrUri) {
+/**
+ * Compress a proof photo and return the local file for Drive to stream.
+ * Deliberately does not produce base64: the Drive upload sends raw bytes from disk,
+ * which avoids ~33% inflation on the wire and several full-size copies of the image
+ * in the JS heap. Falls back to the original file when compression is unavailable.
+ */
+async function buildDriveUploadSourceFromFile(filePathOrUri, fallbackMimeType = 'image/jpeg') {
   if (!filePathOrUri || typeof filePathOrUri !== 'string') return null;
   try {
     const compressed = await manipulateAsync(
       filePathOrUri,
       [{ resize: { width: DRIVE_IMAGE_MAX_WIDTH } }],
-      { compress: DRIVE_IMAGE_JPEG_COMPRESS, format: SaveFormat.JPEG, base64: true }
+      { compress: DRIVE_IMAGE_JPEG_COMPRESS, format: SaveFormat.JPEG }
     );
-    const b64 = String(compressed?.base64 || '').replace(/\s/g, '');
-    if (b64.length >= 50) return { base64: b64, mimeType: 'image/jpeg' };
+    if (compressed?.uri) {
+      /**
+       * manipulateAsync writes into the cache directory, which Android is free to
+       * evict — and the upload can run well after this returns, so the file was
+       * disappearing before it could be streamed. Copy into document storage (the
+       * same place the original proof photos live) so the URI stays valid.
+       */
+      const FileSystem = await import('expo-file-system');
+      const source = new FileSystem.File(compressed.uri);
+      if (source.exists) {
+        const fileName = `drvtmp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.jpg`;
+        const dest = new FileSystem.File(FileSystem.Paths.document, fileName);
+        source.copy(dest);
+        const info = dest.info();
+        if (info?.exists && (info.size ?? 0) > 0) {
+          try {
+            source.delete();
+          } catch (_) {
+            /* cache cleanup is best effort */
+          }
+          return { uri: dest.uri, mimeType: 'image/jpeg', isTemp: true };
+        }
+      }
+    }
   } catch (_) {
-    // Fallback to original file encoding if compression fails.
+    // Fall back to the original file when compression is unavailable.
   }
+  return { uri: filePathOrUri, mimeType: fallbackMimeType || 'image/jpeg', isTemp: false };
+}
+
+/**
+ * Orders first, photos after.
+ *
+ * Proof photos are only consulted when accounting disputes something, so they must
+ * never compete with order sync for a driver's limited connectivity. While any order
+ * row is still waiting to upload, photo work stands down; the photo worker is re-kicked
+ * on every flush and the retry loop keeps polling while attachments remain, so nothing
+ * is dropped — it just runs once the orders are through.
+ *
+ * Checkout is exempt: there the driver is waiting on a single order and the prefetch
+ * deliberately overlaps the upload with the invoice RPCs.
+ */
+async function shouldDeferPhotoUploads() {
+  if (_checkoutUploadPriority) return false;
   try {
-    const { imageFileToBase64String } = await import('./proofAttachment.service.js');
-    const FileSystem = await import('expo-file-system');
-    const normalized = await imageFileToBase64String(FileSystem, filePathOrUri);
-    if (!normalized) return null;
-    return { base64: normalized, mimeType: 'image/jpeg' };
+    return (await syncQueueDb.getActionablePendingCount()) > 0;
   } catch (_) {
-    return null;
+    return false;
+  }
+}
+
+/** Delete the compressed copy made for an upload. No-op when the original was used. */
+async function cleanupDriveUploadSource(prepared) {
+  if (!prepared?.isTemp || !prepared?.uri) return;
+  try {
+    const FileSystem = await import('expo-file-system');
+    const file = new FileSystem.File(prepared.uri);
+    if (file.exists) file.delete();
+  } catch (_) {
+    /* best effort */
   }
 }
 
@@ -297,13 +373,41 @@ function canRunBackgroundUploadSync() {
   }
 }
 
+/**
+ * Fold a wake request into an already-pending one so the single coalesced rerun is at
+ * least as wide as every request it stands in for: widest pass count, most inclusive
+ * flags. Two different priority sale orders collapse to a full drain, which covers both.
+ */
+function mergePendingUploadFlushOptions(existing, incoming = {}) {
+  if (!existing) return { ...incoming };
+  const merged = { ...existing };
+  const passesOf = (o) => Number(o?.queuePasses) || 0;
+  if (passesOf(incoming) > passesOf(existing)) merged.queuePasses = incoming.queuePasses;
+  if (incoming.immediate === true) merged.immediate = true;
+  if (incoming.aggressive === true) merged.aggressive = true;
+  if (incoming.includeAttachments !== false) merged.includeAttachments = true;
+  // Only stay opted out of the self-reschedule when every request opted out.
+  merged.chainRetry =
+    existing.chainRetry === false && incoming.chainRetry === false ? false : undefined;
+  const existingSo = existing.prioritySaleOrderId;
+  const incomingSo = incoming.prioritySaleOrderId;
+  if (existingSo == null || incomingSo == null || Number(existingSo) !== Number(incomingSo)) {
+    merged.prioritySaleOrderId = null;
+    merged.checkoutMode = false;
+  } else if (incoming.checkoutMode === true) {
+    merged.checkoutMode = true;
+  }
+  return merged;
+}
+
 function runPendingUploadFlush(options = {}) {
   if (!canRunBackgroundUploadSync()) return;
   if (_checkoutUploadPriority && options.checkoutMode !== true) {
     return;
   }
   if (_pendingUploadWakePromise) {
-    _pendingUploadWakePromise.finally(() => runPendingUploadFlush(options));
+    // Coalesce into one rerun instead of queueing another full flush per wake.
+    _pendingUploadRerunOptions = mergePendingUploadFlushOptions(_pendingUploadRerunOptions, options);
     return;
   }
   const prioritySoId =
@@ -329,6 +433,9 @@ function runPendingUploadFlush(options = {}) {
     })
     .finally(() => {
       _pendingUploadWakePromise = null;
+      const rerun = _pendingUploadRerunOptions;
+      _pendingUploadRerunOptions = null;
+      if (rerun) runPendingUploadFlush(rerun);
     });
 }
 
@@ -367,7 +474,7 @@ async function postDeferredCheckoutExtrasForSaleOrder(soIdRaw) {
     const FileSystem = await import('expo-file-system');
     let payloadDirty = false;
 
-    if (p._paymentProofDrivePosted !== true) {
+    if (p._paymentProofDrivePosted !== true && !(await shouldDeferPhotoUploads())) {
       const pendingPhotos = await offlineAttachmentsDb.getPendingBySaleOrderId(soId).catch(() => []);
       if ((pendingPhotos || []).length > 0) {
         const prefetched = await consumeCheckoutDriveProofPrefetch(soId);
@@ -507,6 +614,26 @@ async function processSyncedPaymentsMissingSecondaryChatter() {
   } catch (e) {
     logWarn('queue secondary chatter catch-up', e);
   }
+}
+
+/**
+ * Single-flight wrapper for the checkout-chatter catch-up. Callers that need the
+ * ordering guarantee (text messages before photo-only uploads) can still await it;
+ * sharing one in-flight run also stops the queue pass and the standalone worker from
+ * running this catch-up concurrently and double-posting.
+ */
+function processSyncedPaymentsMissingCheckoutChatterInBackground(tryAttachPrintedInvoicePdfToSaleOrder) {
+  if (_checkoutChatterCatchupPromise) return _checkoutChatterCatchupPromise;
+  _checkoutChatterCatchupPromise = processSyncedPaymentsMissingCheckoutChatter(
+    tryAttachPrintedInvoicePdfToSaleOrder
+  )
+    .catch((e) => {
+      logWarn('queue checkout chatter background', e);
+    })
+    .finally(() => {
+      _checkoutChatterCatchupPromise = null;
+    });
+  return _checkoutChatterCatchupPromise;
 }
 
 function processSyncedPaymentsMissingSecondaryChatterInBackground() {
@@ -882,6 +1009,165 @@ function log(step, detail = '') {
   console.log(msg);
 }
 
+// ─────────────────────────────────────────────────────────────
+// Sync benchmarking (diagnostics only — never gates behaviour)
+// Set SYNC_BENCHMARK to false to silence all of it.
+// ─────────────────────────────────────────────────────────────
+
+const SYNC_BENCHMARK = true;
+const BENCH_TAG = '[SyncBench]';
+
+/** Odoo RPCs issued so far this process, or null when unavailable. */
+function benchRpcTotal() {
+  try {
+    const { getOdooRpcCount } = require('./index.service.js');
+    return getOdooRpcCount();
+  } catch (_) {
+    return null;
+  }
+}
+
+/** Returns a function yielding the number of Odoo RPCs since this call. */
+function benchRpcSince() {
+  const base = benchRpcTotal();
+  if (base == null) return () => null;
+  return () => {
+    const now = benchRpcTotal();
+    return now == null ? null : now - base;
+  };
+}
+
+function benchLog(phase, startedAt, extra = null) {
+  if (!SYNC_BENCHMARK) return;
+  const ms = Math.max(0, Date.now() - Number(startedAt || 0));
+  let suffix = '';
+  if (extra && typeof extra === 'object') {
+    const parts = [];
+    for (const [k, v] of Object.entries(extra)) {
+      if (v == null) continue;
+      parts.push(`${k}=${v}`);
+    }
+    if (parts.length) suffix = `  ${parts.join(' ')}`;
+  }
+  console.log(`${BENCH_TAG} ${phase} ${ms}ms${suffix}`);
+}
+
+/**
+ * Drain-level accumulator. A "drain" starts the first time a flush runs with work
+ * queued and ends when the actionable queue reaches zero, so a 10-order backlog
+ * produces one summary covering the whole run rather than per-flush noise.
+ */
+const _bench = {
+  active: false,
+  startedAt: 0,
+  rpcAtStart: 0,
+  pendingAtStart: 0,
+  flushes: 0,
+  passes: 0,
+  deliveryItems: 0,
+  paymentItems: 0,
+  inventoryItems: 0,
+  deliveryMs: 0,
+  paymentMs: 0,
+  photoUploads: 0,
+  photoMs: 0,
+  orderIds: new Set(),
+};
+
+function benchDrainStart(pendingCount) {
+  if (!SYNC_BENCHMARK || _bench.active) return;
+  _bench.active = true;
+  _bench.startedAt = Date.now();
+  _bench.rpcAtStart = benchRpcTotal() ?? 0;
+  _bench.pendingAtStart = Number(pendingCount) || 0;
+  _bench.flushes = 0;
+  _bench.passes = 0;
+  _bench.deliveryItems = 0;
+  _bench.paymentItems = 0;
+  _bench.inventoryItems = 0;
+  _bench.deliveryMs = 0;
+  _bench.paymentMs = 0;
+  _bench.photoUploads = 0;
+  _bench.photoMs = 0;
+  _bench.orderIds = new Set();
+  console.log(`${BENCH_TAG} ── drain start — ${_bench.pendingAtStart} actionable queue row(s)`);
+}
+
+function benchDrainEnd() {
+  if (!SYNC_BENCHMARK || !_bench.active) return;
+  const totalMs = Date.now() - _bench.startedAt;
+  const rpcTotal = (benchRpcTotal() ?? 0) - _bench.rpcAtStart;
+  const orders = _bench.orderIds.size;
+  const perOrderMs = orders > 0 ? Math.round(totalMs / orders) : null;
+  const perOrderRpc = orders > 0 ? Math.round(rpcTotal / orders) : null;
+  const secs = (totalMs / 1000).toFixed(1);
+  console.log(
+    [
+      `${BENCH_TAG} ── drain complete ──────────────────────────`,
+      `  total            ${secs}s  (${totalMs}ms)`,
+      `  queue rows       ${_bench.pendingAtStart} at start`,
+      `  distinct orders  ${orders}`,
+      `  odoo RPCs        ${rpcTotal}`,
+      `  per order        ${perOrderMs != null ? `${perOrderMs}ms / ${perOrderRpc} RPC` : 'n/a'}`,
+      `  flushes/passes   ${_bench.flushes} / ${_bench.passes}`,
+      `  delivery items   ${_bench.deliveryItems}  (${_bench.deliveryMs}ms total)`,
+      `  payment items    ${_bench.paymentItems}  (${_bench.paymentMs}ms total)`,
+      `  inventory items  ${_bench.inventoryItems}`,
+      `  photo uploads    ${_bench.photoUploads}  (${_bench.photoMs}ms total)`,
+      `${BENCH_TAG} ────────────────────────────────────────────`,
+    ].join('\n')
+  );
+  _bench.active = false;
+}
+
+function benchNoteOrder(soId) {
+  if (!SYNC_BENCHMARK || !_bench.active) return;
+  const n = Number(soId);
+  if (Number.isFinite(n) && n > 0) _bench.orderIds.add(n);
+}
+
+/**
+ * On-demand snapshot of the offline queue. Safe to call from anywhere
+ * (dev menu, a debug button, or the console) to inspect current sync state.
+ */
+export async function logOfflineSyncStateSnapshot() {
+  try {
+    const pending = await syncQueueDb.getPending();
+    const actionable = await syncQueueDb.getActionablePendingCount();
+    const oldestMs = await syncQueueDb.getOldestPendingQueueAgeMs();
+    const byType = {};
+    let held = 0;
+    for (const row of pending || []) {
+      const t = row.action_type || 'unknown';
+      byType[t] = (byType[t] || 0) + 1;
+      if (syncQueueDb.isSyncQueuePayloadHeld(row.payload || {})) held += 1;
+    }
+    const offlineAttachmentsDb = await import('../database/offlineAttachments.js');
+    const pendingPhotos = await offlineAttachmentsDb.getAllPending().catch(() => []);
+    const lines = [
+      `${BENCH_TAG} ── offline sync state ──────────────────────`,
+      `  queue rows pending   ${(pending || []).length}  (actionable ${actionable}, held ${held})`,
+      `  by action type       ${JSON.stringify(byType)}`,
+      `  oldest pending age   ${oldestMs > 0 ? `${Math.round(oldestMs / 1000)}s` : 'n/a'}`,
+      `  photos pending       ${(pendingPhotos || []).length}`,
+      `  odoo RPCs so far     ${benchRpcTotal() ?? 'n/a'}`,
+      `${BENCH_TAG} ────────────────────────────────────────────`,
+    ];
+    console.log(lines.join('\n'));
+    return {
+      pending: (pending || []).length,
+      actionable,
+      held,
+      byType,
+      oldestMs,
+      photosPending: (pendingPhotos || []).length,
+    };
+  } catch (e) {
+    console.warn(`${BENCH_TAG} snapshot failed`, e?.message ?? e);
+    return null;
+  }
+}
+
 function logWarn(step, err) {
   console.warn(`${LOG_TAG} ${step}`, err?.message ?? err);
 }
@@ -959,12 +1245,24 @@ function extractUserSessionMedia(user) {
 export async function getUserSession() {
   try {
     const storage = await getAsyncStorage();
-    const [raw, rawMedia] = await Promise.all([
-      storage.getItem(KEYS.USER),
-      storage.getItem(KEYS.USER_MEDIA),
-    ]);
+    const raw = await storage.getItem(KEYS.USER);
     if (!raw) return null;
     const user = JSON.parse(raw);
+    /**
+     * Read profile media separately and never let it fail the session.
+     *
+     * Avatars are stored as base64 and can outgrow Android's CursorWindow row limit.
+     * When that read sat inside a Promise.all with the core session, one oversized
+     * row failed the whole call — the app lost its session and therefore its
+     * vehicleId, which silently degraded every order query to a full-table scan.
+     * Losing an avatar is cosmetic; losing the session is not.
+     */
+    let rawMedia = null;
+    try {
+      rawMedia = await storage.getItem(KEYS.USER_MEDIA);
+    } catch (mediaErr) {
+      console.warn(`${LOG_TAG} getUserSession media read skipped`, mediaErr?.message ?? mediaErr);
+    }
     if (rawMedia) {
       try {
         const media = JSON.parse(rawMedia);
@@ -998,10 +1296,38 @@ export async function getUserSession() {
   }
 }
 
+/**
+ * Android reads an AsyncStorage row through a CursorWindow capped near 2 MB, and a
+ * row larger than that cannot be read back at all. Stay well under it: drop porter
+ * avatars first, and if the driver avatar alone is still too large, skip the write
+ * entirely rather than store a row nothing can read. Returns null to mean "skip",
+ * which preserves whatever media was stored before instead of blanking it.
+ */
+const USER_MEDIA_MAX_CHARS = 1_000_000;
+
+function buildUserMediaPayload(user) {
+  const media = extractUserSessionMedia(user);
+  let payload = JSON.stringify(media);
+  if (payload.length <= USER_MEDIA_MAX_CHARS) return payload;
+
+  payload = JSON.stringify({ ...media, selectedPorters: [] });
+  if (payload.length <= USER_MEDIA_MAX_CHARS) {
+    console.warn(`${LOG_TAG} saveUserSession dropped porter avatars — media payload too large`);
+    return payload;
+  }
+  console.warn(`${LOG_TAG} saveUserSession skipped media payload — exceeds readable row size`);
+  return null;
+}
+
 export async function saveUserSession(user) {
   const storage = await getAsyncStorage();
   const safeUser = sanitizeUserSessionForStorage(user);
-  const mediaPayload = JSON.stringify(extractUserSessionMedia(user));
+  const mediaPayload = buildUserMediaPayload(user);
+  if (mediaPayload == null) {
+    // Keep the core session; leave any previously stored media untouched.
+    await storage.setItem(KEYS.USER, JSON.stringify(safeUser));
+    return;
+  }
   try {
     await storage.multiSet([
       [KEYS.USER, JSON.stringify(safeUser)],
@@ -2690,7 +3016,8 @@ async function updatePaymentQueuePipeline(itemId, payload, pipelinePatch) {
     },
   };
   try {
-    await syncQueueDb.updateQueueItemPayload(Number(itemId), merged);
+    // Progress marker written mid-run — must not wake another flush.
+    await syncQueueDb.updateQueueItemPayload(Number(itemId), merged, { suppressWake: true });
   } catch (e) {
     logWarn('queue payment pipeline persist', e);
   }
@@ -2827,8 +3154,29 @@ async function resolveDriveUploadMetadata(soId, paymentPayload = {}) {
   return { driverName, licensePlate, customerName };
 }
 
-/** Upload pending offline proof photos to Google Drive (parallel). */
-async function uploadPaymentProofAttachmentsToDrive({
+/**
+ * Upload pending offline proof photos to Google Drive (parallel), one run per sale
+ * order at a time. Concurrent callers share the in-flight run and its result rather
+ * than each starting their own upload of the same photos.
+ */
+async function uploadPaymentProofAttachmentsToDrive(args) {
+  const soNum = Number(args?.soId);
+  if (!Number.isFinite(soNum) || soNum <= 0) {
+    return uploadPaymentProofAttachmentsToDriveUnguarded(args);
+  }
+  const inFlight = _driveProofUploadInFlight.get(soNum);
+  if (inFlight) {
+    log('queue', `payment proof (SO ${soNum}): joining in-flight Drive upload`);
+    return inFlight;
+  }
+  const task = uploadPaymentProofAttachmentsToDriveUnguarded(args).finally(() => {
+    _driveProofUploadInFlight.delete(soNum);
+  });
+  _driveProofUploadInFlight.set(soNum, task);
+  return task;
+}
+
+async function uploadPaymentProofAttachmentsToDriveUnguarded({
   soId,
   orderName = '',
   paymentPayload = {},
@@ -2849,19 +3197,32 @@ async function uploadPaymentProofAttachmentsToDrive({
 
   const uploadOne = async (att, photoIndex) => {
     if (!att.local_file_path || !att.file_name) return;
-    const file = new FileSystem.File(att.local_file_path);
-    if (!file.exists) {
-      await offlineAttachmentsDb.markFailed(Number(att.id), `File missing: ${att.local_file_path}`);
+    const attId = Number(att.id);
+    /**
+     * Claim the attachment before any await. Previously the claim came after image
+     * compression, leaving a window wide enough for a second path to pass the same
+     * check and upload the same photo — two Drive files, in two differently-named
+     * folders. Check and claim must be adjacent to be atomic.
+     */
+    if (_attachmentUploadInFlight.has(attId)) {
+      log('queue', `payment proof (SO ${soId}): attachment ${attId} already uploading — skip`);
       return;
     }
-    const prepared = await buildDriveUploadBase64FromFile(att.local_file_path);
-    if (!prepared?.base64) {
-      await offlineAttachmentsDb.markFailed(Number(att.id), 'Invalid or too short base64');
-      return;
-    }
+    _attachmentUploadInFlight.add(attId);
+    let prepared = null;
     try {
+      const file = new FileSystem.File(att.local_file_path);
+      if (!file.exists) {
+        await offlineAttachmentsDb.markFailed(attId, `File missing: ${att.local_file_path}`);
+        return;
+      }
+      prepared = await buildDriveUploadSourceFromFile(att.local_file_path, att.mime_type);
+      if (!prepared?.uri) {
+        await offlineAttachmentsDb.markFailed(attId, 'Could not prepare image for upload');
+        return;
+      }
       const { uploadPaymentProofToDrive } = await import('./googleDrive.service.js');
-      const driveFileId = await uploadPaymentProofToDrive(prepared.base64, prepared.mimeType || att.mime_type || 'image/jpeg', {
+      const driveFileId = await uploadPaymentProofToDrive(prepared.uri, prepared.mimeType || att.mime_type || 'image/jpeg', {
         orderName: orderName || `SO-${soId}`,
         saleOrderId: soId,
         customerName,
@@ -2870,7 +3231,7 @@ async function uploadPaymentProofAttachmentsToDrive({
         photoIndex,
       });
       if (!driveFileId) {
-        await offlineAttachmentsDb.incrementRetry(Number(att.id), 'Drive upload failed');
+        await offlineAttachmentsDb.incrementRetry(attId, 'Drive upload failed');
         return;
       }
       const driveLink = buildGoogleDriveLink(driveFileId);
@@ -2880,11 +3241,15 @@ async function uploadPaymentProofAttachmentsToDrive({
       }
       syncedAttachmentIds.push(att.id);
     } catch (_driveErr) {
-      await offlineAttachmentsDb.incrementRetry(Number(att.id), _driveErr?.message || 'Drive upload error');
+      await offlineAttachmentsDb.incrementRetry(attId, _driveErr?.message || 'Drive upload error');
       logWarn('queue payment proof drive upload', _driveErr);
+    } finally {
+      _attachmentUploadInFlight.delete(attId);
+      await cleanupDriveUploadSource(prepared);
     }
   };
 
+  const driveStartedAt = Date.now();
   await mapWithConcurrencyLimit(attachments, DRIVE_UPLOAD_CONCURRENCY, async (att, idx) => {
     try {
       await uploadOne(att, idx + 1);
@@ -2892,6 +3257,16 @@ async function uploadPaymentProofAttachmentsToDrive({
       await offlineAttachmentsDb.incrementRetry(att.id, attErr?.message || 'Upload error');
       logWarn('queue payment proof attachment', attErr);
     }
+  });
+  if (SYNC_BENCHMARK) {
+    _bench.photoUploads += syncedAttachmentIds.length;
+    _bench.photoMs += Date.now() - driveStartedAt;
+  }
+  benchLog('drive-payment-proof', driveStartedAt, {
+    so: soId,
+    photos: attachments.length,
+    uploaded: syncedAttachmentIds.length,
+    concurrency: DRIVE_UPLOAD_CONCURRENCY,
   });
   return { proofDriveLinks, syncedAttachmentIds, pendingAttachments: attachments };
 }
@@ -3351,15 +3726,62 @@ async function processSyncQueue(options = {}) {
     let lastPending = -1;
     const alreadySyncedSaleOrderIds = new Set(await syncQueueDb.getSyncedPaymentSaleOrderIds());
     const chatterPostedInThisRun = new Set();
+
+    /**
+     * Circuit breaker for an unreachable server.
+     *
+     * Every queue item issues dozens of RPCs, so a server that is down (rather than
+     * merely rejecting something) used to burn the full cost of every item on every
+     * pass. Consecutive connectivity failures trip the breaker and end the run; the
+     * rows stay queued and are retried by the normal scheduling. Any success — or any
+     * error Odoo actually returned — resets the counter, so genuine per-item failures
+     * never trip it.
+     */
+    const NETWORK_FAILURE_ABORT_THRESHOLD = 3;
+    let consecutiveNetworkFailures = 0;
+    const networkLooksDown = () => consecutiveNetworkFailures >= NETWORK_FAILURE_ABORT_THRESHOLD;
+    const noteQueueFailure = (err) => {
+      if (isOdooNetworkError(err)) consecutiveNetworkFailures += 1;
+      else consecutiveNetworkFailures = 0;
+      if (networkLooksDown()) {
+        log('queue', `aborting run — ${consecutiveNetworkFailures} consecutive network failures`);
+      }
+      return networkLooksDown();
+    };
+    const noteQueueProgress = () => {
+      consecutiveNetworkFailures = 0;
+    };
+
     try {
-      while (Date.now() - retryStarted < QUEUE_SYNC_RETRY_WINDOW_MS && pass < passLimit) {
+      while (
+        Date.now() - retryStarted < QUEUE_SYNC_RETRY_WINDOW_MS &&
+        pass < passLimit &&
+        !networkLooksDown()
+      ) {
         pass++;
+        /**
+         * Must count held rows. A held delivery is released and applied by the
+         * held-delivery flush inside the payment loop below — skipping the pass
+         * because "nothing is actionable" strands that row forever, leaving
+         * qty_delivered unwritten and the order stuck on "Nothing to Invoice".
+         */
         const pendingAtStart =
           prioritySoId != null
             ? await syncQueueDb.getActionablePendingCountForSaleOrder(prioritySoId)
             : await syncQueueDb.getPendingCount();
         if (pendingAtStart === 0) break;
 
+        const passStartedAt = Date.now();
+        const passRpcs = benchRpcSince();
+        if (SYNC_BENCHMARK) {
+          // Started here rather than in flushPendingUploadsNow so the checkout path
+          // (uploadCompletedOrderNow calls this directly) is measured too.
+          if (!_bench.active) {
+            benchDrainStart(pendingAtStart);
+            void logOfflineSyncStateSnapshot();
+          }
+          _bench.passes += 1;
+        }
         try {
       const pendingSnapEarly = await syncQueueDb.getPending();
       const cancelEarly = pendingSnapEarly.filter(
@@ -3579,6 +4001,7 @@ async function processSyncQueue(options = {}) {
           try {
             await syncQueueDb.updateQueueItemPayload(Number(item.id), p, {
               actionType: syncQueueDb.ACTION_DELIVERY,
+              suppressWake: true,
             });
           } catch (_) {
             /* non-fatal — sync still uses in-memory frozen snapshot */
@@ -4230,10 +4653,19 @@ async function processSyncQueue(options = {}) {
           log('queue', `delivery id=${item.id} SO ${p0.saleOrderId ?? p0.sale_id} held until payment — skip`);
           continue;
         }
+        const deliveryStartedAt = Date.now();
+        const deliveryRpcs = benchRpcSince();
+        benchNoteOrder(p0.saleOrderId ?? p0.sale_id);
         try {
           await processOneDeliveryQueueItem(item, { queuePass: pass });
+          noteQueueProgress();
         } catch (e) {
           logWarn('queue delivery', e);
+          // Count for the circuit breaker, but never skip the audit/heal path below:
+          // those repairs re-write qty_delivered with their own retries and are the
+          // only thing that unsticks a picking that validated while the SO-line write
+          // failed. Skipping them leaves the order permanently "Nothing to Invoice".
+          const networkDownNow = noteQueueFailure(e);
           const errMsg = String(e?.message || e).toLowerCase();
           const isQtyMismatch =
             errMsg.includes('delivered qty mismatch') ||
@@ -4304,6 +4736,20 @@ async function processSyncQueue(options = {}) {
               logWarn('queue delivery (released heal after fail)', healAfterFailErr);
             }
           }
+          // Repair above always gets its chance; only stop the run once the server
+          // has been unreachable for several consecutive attempts.
+          if (networkDownNow) break;
+        } finally {
+          if (SYNC_BENCHMARK) {
+            _bench.deliveryItems += 1;
+            _bench.deliveryMs += Date.now() - deliveryStartedAt;
+          }
+          benchLog('delivery-item', deliveryStartedAt, {
+            id: item.id,
+            so: p0.saleOrderId ?? p0.sale_id,
+            pass,
+            rpcs: deliveryRpcs(),
+          });
         }
       }
 
@@ -4320,6 +4766,8 @@ async function processSyncQueue(options = {}) {
       }
 
       for (const item of inventoryUpdate) {
+        const inventoryStartedAt = Date.now();
+        const inventoryRpcs = benchRpcSince();
         try {
           const p = item.payload || {};
           const saleOrderId = p.saleOrderId != null ? Number(p.saleOrderId) : null;
@@ -4593,7 +5041,7 @@ async function processSyncQueue(options = {}) {
                   p._odooGasDeductionComplete = true;
                   p._stockAlreadyReduced = true;
                 }
-                await syncQueueDb.updateQueueItemPayload(Number(item.id), p);
+                await syncQueueDb.updateQueueItemPayload(Number(item.id), p, { suppressWake: true });
               } catch (_) {
                 /* non-fatal */
               }
@@ -4608,6 +5056,7 @@ async function processSyncQueue(options = {}) {
 
           if (allInventoryUpdatesSynced) {
             await syncQueueDb.markSynced(Number(item.id));
+            noteQueueProgress();
             log('queue', `inventory synced id=${item.id} location=${locationId} items=${updates.length}`);
           } else {
             log(
@@ -4617,6 +5066,14 @@ async function processSyncQueue(options = {}) {
           }
         } catch (e) {
           logWarn('queue inventory_update', e);
+          if (noteQueueFailure(e)) break;
+        } finally {
+          if (SYNC_BENCHMARK) _bench.inventoryItems += 1;
+          benchLog('inventory-item', inventoryStartedAt, {
+            id: item.id,
+            pass,
+            rpcs: inventoryRpcs(),
+          });
         }
       }
 
@@ -4632,6 +5089,9 @@ async function processSyncQueue(options = {}) {
       for (const item of dedupedPayment) {
         let invoiceBlockFailedNoItemsToInvoice = false;
         let postedInvoiceId = null;
+        const paymentStartedAt = Date.now();
+        const paymentRpcs = benchRpcSince();
+        benchNoteOrder(item.payload?.saleOrderId ?? item.payload?.sale_id);
         try {
           const p = item.payload || {};
           if (p.holdUntilComplete === true) {
@@ -5193,19 +5653,44 @@ async function processSyncQueue(options = {}) {
           }
           if (await markPaymentQueueItemSyncedWhenBackendComplete(item, soId, p, { pipelinePreVerified })) {
             alreadySyncedSaleOrderIds.add(soId);
+            noteQueueProgress();
             log('queue', `payment synced id=${item.id}`);
           }
         } catch (e) {
           logWarn('queue payment', e);
+          if (noteQueueFailure(e)) break;
+        } finally {
+          if (SYNC_BENCHMARK) {
+            _bench.paymentItems += 1;
+            _bench.paymentMs += Date.now() - paymentStartedAt;
+          }
+          benchLog('payment-item', paymentStartedAt, {
+            id: item.id,
+            so: item.payload?.saleOrderId ?? item.payload?.sale_id,
+            pass,
+            rpcs: paymentRpcs(),
+          });
         }
       }
 
       if (!_checkoutUploadPriority) {
-        await processSyncedPaymentsMissingCheckoutChatter(tryAttachPrintedInvoicePdfToSaleOrder);
+        /**
+         * Must stay awaited. This posts checkout chatter, which uploads pending proof
+         * photos — running it concurrently with the standalone attachment worker lets
+         * both read the same pending rows before either marks them synced, producing
+         * duplicate files in Drive.
+         */
+        await processSyncedPaymentsMissingCheckoutChatterInBackground(tryAttachPrintedInvoicePdfToSaleOrder);
       }
       void processSyncedPaymentsMissingSecondaryChatterInBackground();
         } catch (passErr) {
           logWarn('queue pass', passErr);
+        } finally {
+          benchLog('queue-pass', passStartedAt, {
+            pass,
+            queued: pendingAtStart,
+            rpcs: passRpcs(),
+          });
         }
 
         const pendingAfter =
@@ -5231,6 +5716,10 @@ async function processSyncQueue(options = {}) {
         const left = await syncQueueDb.getPendingCount();
         log('queue', `retry window finished after ${pass} pass(es), pending=${left}`);
       }
+      if (SYNC_BENCHMARK && _bench.active) {
+        const leftActionable = await syncQueueDb.getActionablePendingCount().catch(() => null);
+        if (leftActionable === 0) benchDrainEnd();
+      }
     } finally {
       _queueSyncFastDrainActive = false;
       try {
@@ -5251,11 +5740,14 @@ async function processSyncQueue(options = {}) {
  */
 function processStandaloneOfflineAttachmentsInBackground() {
   if (_standaloneAttachmentWorkerPromise) return _standaloneAttachmentWorkerPromise;
+  const workerStartedAt = Date.now();
+  const workerRpcs = benchRpcSince();
   _standaloneAttachmentWorkerPromise = processStandaloneOfflineAttachments()
     .catch((e) => {
       logWarn('standalone evidence background', e);
     })
     .finally(() => {
+      benchLog('photo-worker', workerStartedAt, { rpcs: workerRpcs() });
       _standaloneAttachmentWorkerPromise = null;
     });
   return _standaloneAttachmentWorkerPromise;
@@ -5263,7 +5755,13 @@ function processStandaloneOfflineAttachmentsInBackground() {
 
 async function processStandaloneOfflineAttachments() {
   /** Post checkout text messages before photo-only standalone uploads. */
-  await processSyncedPaymentsMissingCheckoutChatter(null);
+  await processSyncedPaymentsMissingCheckoutChatterInBackground(null);
+
+  // Orders own the connection until the queue is clear; photos resume after.
+  if (await shouldDeferPhotoUploads()) {
+    log('queue', 'standalone evidence deferred — order queue still draining');
+    return;
+  }
 
   const offlineAttachmentsDb = await import('../database/offlineAttachments.js');
   const pendingAttachments = await offlineAttachmentsDb.getAllPending();
@@ -5355,20 +5853,29 @@ async function processStandaloneOfflineAttachments() {
 
     await mapWithConcurrencyLimit(attachments, DRIVE_UPLOAD_CONCURRENCY, async (att, index) => {
       if (!att.local_file_path || !att.file_name) return;
+      const attId = Number(att.id);
+      // Claim before any await — see the note in uploadOne. The payment-proof path
+      // uploads the same rows, and a gap between check and claim let both through.
+      if (_attachmentUploadInFlight.has(attId)) {
+        log('queue', `standalone evidence (SO ${saleOrderId}): attachment ${attId} already uploading — skip`);
+        return;
+      }
+      _attachmentUploadInFlight.add(attId);
+      let prepared = null;
       try {
         const file = new FileSystem.File(att.local_file_path);
         if (!file.exists) {
-          await offlineAttachmentsDb.markFailed(Number(att.id), `File missing: ${att.local_file_path}`);
+          await offlineAttachmentsDb.markFailed(attId, `File missing: ${att.local_file_path}`);
           return;
         }
-        const prepared = await buildDriveUploadBase64FromFile(att.local_file_path);
-        if (!prepared?.base64) {
-          await offlineAttachmentsDb.markFailed(Number(att.id), 'Invalid or too short base64');
+        prepared = await buildDriveUploadSourceFromFile(att.local_file_path, att.mime_type);
+        if (!prepared?.uri) {
+          await offlineAttachmentsDb.markFailed(attId, 'Could not prepare image for upload');
           return;
         }
         // Upload to Google Drive and capture the file ID to build a shareable link
         const { uploadPaymentProofToDrive } = await import('./googleDrive.service.js');
-        const driveFileId = await uploadPaymentProofToDrive(prepared.base64, prepared.mimeType || att.mime_type || 'image/jpeg', {
+        const driveFileId = await uploadPaymentProofToDrive(prepared.uri, prepared.mimeType || att.mime_type || 'image/jpeg', {
           orderName: `SO-${saleOrderId}`,
           saleOrderId,
           customerName,
@@ -5377,7 +5884,7 @@ async function processStandaloneOfflineAttachments() {
           photoIndex: index + 1,
         });
         if (!driveFileId) {
-          await offlineAttachmentsDb.incrementRetry(Number(att.id), 'Drive upload failed');
+          await offlineAttachmentsDb.incrementRetry(attId, 'Drive upload failed');
           return;
         }
         const driveLink = buildGoogleDriveLink(driveFileId);
@@ -5387,8 +5894,11 @@ async function processStandaloneOfflineAttachments() {
         }
         syncedAttachmentIds.push(att.id);
       } catch (attErr) {
-        await offlineAttachmentsDb.incrementRetry(att.id, attErr?.message || 'Upload error');
+        await offlineAttachmentsDb.incrementRetry(attId, attErr?.message || 'Upload error');
         logWarn('standalone evidence attachment', attErr);
+      } finally {
+        _attachmentUploadInFlight.delete(attId);
+        await cleanupDriveUploadSource(prepared);
       }
     });
 
@@ -5424,7 +5934,9 @@ async function processStandaloneOfflineAttachments() {
           ...payPayload,
           _standaloneEvidenceChatterPosted: true,
         };
-        await syncQueueDb.updateQueueItemPayload(Number(payEntry.queueId), nextPayload);
+        await syncQueueDb.updateQueueItemPayload(Number(payEntry.queueId), nextPayload, {
+          suppressWake: true,
+        });
         latestPaymentMap[saleOrderId] = {
           ...payEntry,
           payload: nextPayload,
@@ -6262,13 +6774,20 @@ export async function flushPendingUploadsNow(options = {}) {
     if (prioritySoId != null && prioritySoId > 0) {
       return syncQueueDb.getActionablePendingCountForSaleOrder(prioritySoId);
     }
+    // Held rows must count here too — see the note in processSyncQueue.
     return syncQueueDb.getPendingCount();
   };
   const trackSpinner = hasDashboardUploadQueueWork() || _checkoutUploadPriority;
   if (trackSpinner) syncActivityStart();
+  const flushStartedAt = Date.now();
+  const flushRpcs = benchRpcSince();
+  let flushPassesRun = 0;
+  // Drain start is recorded inside processSyncQueue so every entry point is covered.
+  if (SYNC_BENCHMARK) _bench.flushes += 1;
   try {
     let lastPending = -1;
     for (let pass = 0; pass < maxPasses; pass++) {
+      flushPassesRun = pass + 1;
       await processSyncQueue({
         fastDrain: aggressive || prioritySoId != null,
         maxPasses: innerQueuePasses,
@@ -6335,6 +6854,7 @@ export async function flushPendingUploadsNow(options = {}) {
   try {
     void processSyncedPaymentsMissingSecondaryChatterInBackground();
     const pendingCount = await countPending();
+    if (SYNC_BENCHMARK && pendingCount === 0) benchDrainEnd();
     const indicators = hasDashboardUploadIndicators();
     if (pendingCount === 0 && !indicators && _syncCompleteListener) {
       try {
@@ -6348,9 +6868,17 @@ export async function flushPendingUploadsNow(options = {}) {
     return { pendingCount: null };
   } finally {
     if (trackSpinner) syncActivityEnd();
+    benchLog('flush', flushStartedAt, {
+      passes: flushPassesRun,
+      maxPasses,
+      aggressive,
+      so: prioritySoId,
+      rpcs: flushRpcs(),
+    });
     if (aggressive && options?.chainRetry !== false && !checkoutMode) {
       try {
         const left = await syncQueueDb.getActionablePendingCount();
+        if (SYNC_BENCHMARK && left === 0) benchDrainEnd();
         if (left > 0) {
           schedulePendingUploadSync({
             immediate: true,

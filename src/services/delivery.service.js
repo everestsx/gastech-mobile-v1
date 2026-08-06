@@ -1,4 +1,4 @@
-import { callOdoo, callOdooArgs, callOdooArgsKwargs } from "./index.service";
+import { callOdoo, callOdooArgs, callOdooArgsKwargs, isOdooNetworkError } from "./index.service";
 import { coerceDeliveredQty } from "../utils/deliverySync.js";
 
 function dedupeMoveLineUpdatesByLineId(updates = []) {
@@ -472,6 +472,11 @@ export async function applyPickingDeliverySnapshotWithFallback(pickingId, snapsh
   try {
     return await applyPickingDeliverySnapshotAtomic(pickingId, enriched, meta);
   } catch (atomicErr) {
+    // The sequential path exists for Odoo builds that reject the atomic write. It is
+    // not a retry for connectivity problems: when the server is unreachable it issues
+    // one doomed request per move / move line (and another per createMoveLine failure),
+    // turning a single failure into dozens. Let the queue retry the whole item instead.
+    if (isOdooNetworkError(atomicErr)) throw atomicErr;
     if (__DEV__) {
       console.warn(
         `[delivery] atomic picking write failed for ${pickingId}, using sequential:`,

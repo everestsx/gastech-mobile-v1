@@ -15,16 +15,21 @@ export const ACTION_INVENTORY_UPDATE = 'inventory_update';
 /** Cancel sale order on Odoo when back online. Payload: { saleOrderId, reason, cancelledAt? } */
 export const ACTION_CANCEL_ORDER = 'order_cancel';
 
+/**
+ * Nudge the uploader after a queue change.
+ *
+ * Counts held rows too: a held delivery is released by the flush inside the payment
+ * loop, so skipping the wake when "nothing is actionable" can strand it permanently.
+ * The pass count is deliberately small — the flush self-reschedules while work
+ * remains and wakes coalesce, so a large count only made each wake more expensive.
+ */
 function wakePendingUploadAfterQueueChange() {
   Promise.all([import('../services/sync.service.js'), import('./syncQueue.js')])
     .then(async ([m, db]) => {
       const pending = await db.getPendingCount();
       if (pending <= 0) return;
-      const indicators =
-        typeof m.hasDashboardUploadIndicators === 'function' ? m.hasDashboardUploadIndicators() : false;
-      if (pending <= 0 && !indicators) return;
       if (typeof m.schedulePendingUploadSync === 'function') {
-        m.schedulePendingUploadSync({ immediate: true, aggressive: true, queuePasses: 16 });
+        m.schedulePendingUploadSync({ immediate: true, aggressive: true, queuePasses: 4 });
       }
     })
     .catch(() => {});
@@ -284,10 +289,15 @@ export async function updateQueueItemPayload(id, payload, options = {}) {
 export async function getActionablePendingCountForSaleOrder(saleOrderId) {
   const soId = Number(saleOrderId);
   if (!Number.isFinite(soId) || soId <= 0) return 0;
-  const rows = await getPending();
+  const db = await getDb();
+  // Reads payload only rather than going through getPending(), which builds a full
+  // mapped row object for every pending item just to produce a count.
+  const rows = await db.getAllAsync(
+    'SELECT payload FROM sync_queue WHERE COALESCE(is_uploaded, 0) = 0 AND synced_at IS NULL'
+  );
   let count = 0;
   for (const row of rows || []) {
-    const payload = row.payload || {};
+    const payload = safeParseJson(row.payload, {});
     const rowSo = Number(payload.saleOrderId ?? payload.sale_order_id);
     if (rowSo !== soId) continue;
     if (!isSyncQueuePayloadHeld(payload)) count += 1;
@@ -418,6 +428,61 @@ export async function getLatestPaymentPayloadMapBySaleOrderIds(saleOrderIds) {
     }
   }
   return bySaleOrderId;
+}
+
+/**
+ * Retention for completed queue rows. Rows are only ever flagged on success, so the
+ * table grew for the life of the device and every "synced" scan below grew with it.
+ *
+ * Payment rows keep a much wider window on purpose: getSyncedPaymentSaleOrderIds is
+ * the duplicate-payment guard, and the chatter / Drive catch-up paths read synced
+ * payment rows to finish outstanding follow-ups.
+ */
+const SYNC_QUEUE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const SYNC_QUEUE_PAYMENT_RETENTION_MS = 180 * 24 * 60 * 60 * 1000;
+
+/**
+ * Delete long-completed queue rows to bound the synced-row scans.
+ * Deliberately conservative: only fully uploaded rows past their retention window,
+ * and a payment row is kept until every follow-up the catch-up paths look for has
+ * been posted — otherwise pruning it would silently drop that outstanding work.
+ * Returns the number of rows removed.
+ */
+export async function pruneOldSyncedQueueRows() {
+  const db = await getDb();
+  const now = Date.now();
+  const cutoffIso = new Date(now - SYNC_QUEUE_RETENTION_MS).toISOString();
+  const paymentCutoffIso = new Date(now - SYNC_QUEUE_PAYMENT_RETENTION_MS).toISOString();
+  const rows = await db.getAllAsync(
+    `SELECT id, action_type, payload, synced_at FROM sync_queue
+     WHERE COALESCE(is_uploaded, 0) = 1
+       AND synced_at IS NOT NULL
+       AND synced_at < ?`,
+    [cutoffIso]
+  );
+  if (!rows?.length) return 0;
+
+  const idsToDelete = [];
+  for (const row of rows) {
+    if (row.action_type === ACTION_PAYMENT) {
+      if (!row.synced_at || String(row.synced_at) >= paymentCutoffIso) continue;
+      const payload = safeParseJson(row.payload, {});
+      if (payload._paymentProofChatterPosted !== true) continue;
+      if (payload._paymentProofDrivePosted !== true) continue;
+    }
+    idsToDelete.push(row.id);
+  }
+  if (!idsToDelete.length) return 0;
+
+  const CHUNK = 400;
+  let deleted = 0;
+  for (let i = 0; i < idsToDelete.length; i += CHUNK) {
+    const chunk = idsToDelete.slice(i, i + CHUNK);
+    const placeholders = chunk.map(() => '?').join(',');
+    await db.runAsync(`DELETE FROM sync_queue WHERE id IN (${placeholders})`, chunk);
+    deleted += chunk.length;
+  }
+  return deleted;
 }
 
 function safeParseJson(str, fallback) {

@@ -3,6 +3,42 @@ import { ODOO_URL, ODOO_DB, ODOO_API_KEY, UID } from '@env';
 
 const REQUEST_TIMEOUT_MS = 35000;
 
+/**
+ * Odoo round-trip counter for sync benchmarking. Every RPC helper below goes through
+ * fetchWithTimeout, so this counts all of them. Diagnostics only — never gates behaviour.
+ */
+let _odooRpcCount = 0;
+
+export function getOdooRpcCount() {
+  return _odooRpcCount;
+}
+
+export function resetOdooRpcCount() {
+  _odooRpcCount = 0;
+}
+
+/**
+ * True only when the transport could not reach the server at all.
+ *
+ * Callers use this to skip fallbacks that cannot possibly succeed while there is no
+ * connection. It deliberately does NOT include timeouts: a request that exceeded
+ * REQUEST_TIMEOUT_MS means the server is reachable but slow, and the retry / heal /
+ * sequential paths can still succeed on a later attempt. Treating a timeout as
+ * "offline" would skip those repairs and strand the queue item.
+ *
+ * Anything unrecognised is reported as NOT a network error, so existing fallback
+ * behaviour is preserved whenever there is any doubt.
+ */
+export function isOdooNetworkError(err) {
+  const msg = String(err?.message ?? err ?? '').toLowerCase();
+  if (!msg) return false;
+  return (
+    msg.includes('cannot reach server') ||
+    msg.includes('network request failed') ||
+    msg.includes('failed to fetch')
+  );
+}
+
 /** Strip BOM/CRLF, trim, remove optional wrapping quotes (common .env / Windows issues). */
 function normalizeEnvString(v) {
   if (v == null) return '';
@@ -64,6 +100,7 @@ if (__DEV__) {
 
 /** fetch with a real timeout (React Native fetch ignores timeout option). */
 async function fetchWithTimeout(url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
+  _odooRpcCount += 1;
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
   try {

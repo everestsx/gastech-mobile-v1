@@ -742,6 +742,21 @@ async function runMigrations(db) {
     }
     await db.runAsync('PRAGMA user_version = 31');
   }
+
+  // Migration 32: sync_queue lookup index.
+  // Ten helpers filter on action_type and none could use an index; the two existing
+  // indexes are on near-boolean columns, so SQLite full-scanned the table (and
+  // JSON.parsed every row) on every queue pass.
+  if (current < 32) {
+    try {
+      await db.runAsync(
+        'CREATE INDEX IF NOT EXISTS idx_sync_queue_action_pending ON sync_queue(action_type, is_uploaded, synced_at, id)'
+      );
+    } catch (e) {
+      console.warn('[Migration] sync_queue action index:', e);
+    }
+    await db.runAsync('PRAGMA user_version = 32');
+  }
 }
 
 /**

@@ -42,11 +42,9 @@ import {
   logout,
   isSessionExpired,
   flushPendingUploadsNow,
-  hasPendingUploadWork,
   hasDashboardUploadIndicators,
   hasActiveUploadWork,
   hasActionablePendingUploadWork,
-  hasDashboardUploadQueueWork,
   shouldRunPendingUploadRetryLoop,
   isCheckoutUploadActive,
   wakePendingUploadSyncNow,
@@ -341,6 +339,9 @@ export default function AppNavigator() {
         if (!(await shouldRunPendingUploadRetryLoop())) return;
         const ageMs = await syncQueueDb.getOldestPendingQueueAgeMs();
         const passes = ageMs <= PENDING_QUEUE_FAST_RETRY_WINDOW_MS ? 4 : 3;
+        // One flush per tick. Wakes coalesce inside the service now, and this loop
+        // re-arms itself while work remains, so the second back-to-back flush that
+        // used to run here only duplicated passes over the same queue.
         await flushPendingUploadsNow({
           includeAttachments: true,
           queuePasses: passes,
@@ -348,19 +349,6 @@ export default function AppNavigator() {
           skipPaymentTypeRefresh: true,
           chainRetry: false,
         });
-        const stillPending = await hasPendingUploadWork();
-        const stillIndicators = hasDashboardUploadQueueWork();
-        if (!stillPending && !stillIndicators) return;
-        if (networkQualityRef.current === NetworkQuality.GOOD && stillPending) {
-          await flushPendingUploadsNow({
-            includeAttachments: true,
-            queuePasses: 4,
-            aggressive: true,
-            skipPaymentTypeRefresh: true,
-            chainRetry: false,
-          });
-          if (!(await hasPendingUploadWork()) && !hasDashboardUploadQueueWork()) return;
-        }
       } catch (_) {
         /* ignore */
       }
@@ -446,11 +434,20 @@ export default function AppNavigator() {
       }, startupPendingDelayMs);
     })();
 
+    /**
+     * One-shot maintenance: drop long-completed queue rows so the synced-row scans
+     * stay bounded. Deferred well past startup so it never competes with the drain.
+     */
+    const queuePruneTimer = setTimeout(() => {
+      void syncQueueDb.pruneOldSyncedQueueRows().catch(() => {});
+    }, 30000);
+
     return () => {
       sub?.remove?.();
       if (syncIntervalRef.current) clearInterval(syncIntervalRef.current);
       fastPendingCancelled = true;
       if (fastPendingTimer) clearTimeout(fastPendingTimer);
+      clearTimeout(queuePruneTimer);
     };
   }, [syncInterval]);
 
