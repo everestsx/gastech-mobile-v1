@@ -53,6 +53,7 @@ import {
   isCheckoutUploadActive,
   KEY_PRECHECK_DONE,
   runSync,
+  getVehicleLocationId,
 } from '../services/sync.service';
 import * as localPaymentsDb from '../database/localPayments.js';
 import * as localInvoicesDb from '../database/localInvoices.js';
@@ -757,10 +758,15 @@ export default function DashboardScreen({ navigation }) {
           deliveredQtyByProductId[pid] = (deliveredQtyByProductId[pid] || 0) + qty;
         }
 
-        const [inventories, productNameMap] = await Promise.all([
+        const [inventoriesByVehicle, productNameMap, locationId] = await Promise.all([
           vehicleInventoriesDb.getVehicleInventoryByVehicleId(vehicleIdForStock),
           productsDb.getProductsMap(),
+          getVehicleLocationId(vehicleIdForStock).catch(() => null),
         ]);
+        let inventories = inventoriesByVehicle || [];
+        if ((!inventories || inventories.length === 0) && locationId != null) {
+          inventories = (await vehicleInventoriesDb.getVehicleInventoryByLocationId(locationId).catch(() => [])) || [];
+        }
         const nextEmptyStockByKg = {};
         for (const inv of inventories || []) {
           const pid = inv?.product_id != null ? Number(inv.product_id) : null;

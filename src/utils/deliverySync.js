@@ -40,21 +40,50 @@ function clonePickingBlock(b = {}) {
     pickingId: b.pickingId != null ? Number(b.pickingId) : b.picking_id != null ? Number(b.picking_id) : null,
     deliveryLines: (b.deliveryLines || [])
       .map((l) => {
-        const moveId = Number(l?.moveId ?? l?.move_id);
+        const moveIdRaw = Number(l?.moveId ?? l?.move_id);
         const productId = Number(l?.productId ?? l?.product_id);
         const qty_done = coerceDeliveredQty(l?.qty_done);
-        if (!Number.isFinite(moveId) || moveId <= 0 || !Number.isFinite(qty_done)) return null;
-        return { moveId, productId, qty_done };
+        if (!Number.isFinite(qty_done)) return null;
+        // Keep product→qty authority even when moveId is offline/synthetic (<=0).
+        // Sync remaps to live Odoo move ids; dropping these caused empty retry snapshots.
+        if (Number.isFinite(moveIdRaw) && moveIdRaw > 0) {
+          return {
+            moveId: moveIdRaw,
+            productId: Number.isFinite(productId) && productId > 0 ? productId : null,
+            qty_done,
+          };
+        }
+        if (Number.isFinite(productId) && productId > 0) {
+          return { moveId: null, productId, qty_done };
+        }
+        return null;
       })
       .filter(Boolean),
     moveLineUpdates: (b.moveLineUpdates || [])
       .map((u) => {
-        const moveLineId = Number(u?.moveLineId);
-        const moveId = Number(u?.moveId);
+        const moveLineIdRaw = Number(u?.moveLineId);
+        const moveIdRaw = Number(u?.moveId);
         const productId = Number(u?.productId ?? u?.product_id);
         const qty_done = coerceDeliveredQty(u?.qty_done);
-        if (!Number.isFinite(moveLineId) || moveLineId <= 0 || !Number.isFinite(qty_done)) return null;
-        return { moveLineId, moveId, productId, qty_done };
+        if (!Number.isFinite(qty_done)) return null;
+        if (Number.isFinite(moveLineIdRaw) && moveLineIdRaw > 0) {
+          return {
+            moveLineId: moveLineIdRaw,
+            moveId: Number.isFinite(moveIdRaw) && moveIdRaw > 0 ? moveIdRaw : null,
+            productId: Number.isFinite(productId) && productId > 0 ? productId : null,
+            qty_done,
+          };
+        }
+        // Product-only row — enough to rebuild move lines on sync.
+        if (Number.isFinite(productId) && productId > 0) {
+          return {
+            moveLineId: null,
+            moveId: Number.isFinite(moveIdRaw) && moveIdRaw > 0 ? moveIdRaw : null,
+            productId,
+            qty_done,
+          };
+        }
+        return null;
       })
       .filter(Boolean),
   };

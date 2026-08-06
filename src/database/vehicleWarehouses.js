@@ -10,15 +10,23 @@ export async function upsertVehicleWarehouses(rows) {
   const now = iso();
   await db.withTransactionAsync(async (tx) => {
     for (const r of rows) {
+      const locationId = r.id != null ? Number(r.id) : 0;
+      const vehicleId = numOrNull(r.vehicle_id);
+      // Keep one mapping per vehicle AND one owner per location id.
+      // Prevents vehicle switches from stealing another vehicle's warehouse row
+      // (table PK is location id) and leaving the previous vehicle with no location.
+      if (vehicleId != null) {
+        await tx.runAsync(`DELETE FROM vehicle_warehouses WHERE vehicle_id = ? AND id != ?`, [
+          vehicleId,
+          locationId,
+        ]);
+      }
+      if (locationId) {
+        await tx.runAsync(`DELETE FROM vehicle_warehouses WHERE id = ?`, [locationId]);
+      }
       await tx.runAsync(
-        `INSERT OR REPLACE INTO vehicle_warehouses (id, vehicle_id, name, complete_name, updated_at) VALUES (?, ?, ?, ?, ?)`,
-        [
-          r.id != null ? r.id : 0,
-          numOrNull(r.vehicle_id),
-          empty(r.name),
-          empty(r.complete_name),
-          now,
-        ]
+        `INSERT INTO vehicle_warehouses (id, vehicle_id, name, complete_name, updated_at) VALUES (?, ?, ?, ?, ?)`,
+        [locationId, vehicleId, empty(r.name), empty(r.complete_name), now]
       );
     }
   });

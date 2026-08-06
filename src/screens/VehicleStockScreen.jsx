@@ -15,7 +15,15 @@ import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { useSync } from '../context/SyncContext';
 import { spacing, borderRadius } from '../constants/theme';
-import { getUserSession, getCachedVehicleInventoryByLocation, getVehicleLocationId, getCachedOrders, getPickingsBySaleIdsFromDB, getOrderLinesByOrderIdsFromDB } from '../services/sync.service';
+import {
+  getUserSession,
+  getCachedVehicleInventory,
+  getCachedVehicleInventoryByLocation,
+  getVehicleLocationId,
+  getCachedOrders,
+  getPickingsBySaleIdsFromDB,
+  getOrderLinesByOrderIdsFromDB,
+} from '../services/sync.service';
 import { getGasTypeBlueColor, parseKgFromProductName } from '../utils/productDisplay';
 import { buildDefaultGasVehicleInventoryRows } from '../utils/defaultGasStock';
 import { getProductImageSource } from '../utils/gasImage';
@@ -306,10 +314,11 @@ const load = useCallback(async (forceRefresh = false) => {
     );
     const orderIds = todayOrders.map((o) => Number(o?.id)).filter((id) => Number.isFinite(id));
 
-    const [orderLines, pickings, data] = await Promise.all([
+    const [orderLines, pickings, byLocation, byVehicle] = await Promise.all([
       orderIds.length ? getOrderLinesByOrderIdsFromDB(orderIds) : Promise.resolve([]),
       orderIds.length ? getPickingsBySaleIdsFromDB(orderIds) : Promise.resolve([]),
       locationId ? getCachedVehicleInventoryByLocation(locationId) : Promise.resolve([]),
+      getCachedVehicleInventory(vId),
     ]);
 
     const deliveredOrderIds = new Set(
@@ -345,14 +354,20 @@ const load = useCallback(async (forceRefresh = false) => {
         return acc;
       }, {})
     );
-    if (locationId) {
-      console.log(`[UI Debug] Found ${data.length} items for location ${locationId}`, data);
-      setInventory(Array.isArray(data) ? data : []);
-    } else {
-      console.warn(`[UI Debug] No location_id found for vehicle ${vId}`);
-      setInventory([]);
-      setProductStatsById({});
-    }
+
+    // Prefer location rows when mapped; fall back to vehicle_id rows so stock still shows
+    // if warehouse mapping is temporarily missing after a vehicle switch.
+    const data =
+      Array.isArray(byLocation) && byLocation.length > 0
+        ? byLocation
+        : Array.isArray(byVehicle)
+          ? byVehicle
+          : [];
+    console.log(
+      `[UI Debug] Found ${data.length} items for vehicle ${vId} (location=${locationId ?? 'none'})`,
+      data
+    );
+    setInventory(data);
   } else {
     setInventory([]);
     setProductStatsById({});

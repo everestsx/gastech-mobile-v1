@@ -362,6 +362,10 @@ export async function applyPickingDeliverySnapshotAtomic(pickingId, snapshot = {
 /**
  * Legacy per-record path when atomic picking write is rejected (older/custom Odoo).
  * Mirrors the previous sync.service loops so behaviour stays stable.
+ *
+ * Critical: must NOT silently skip a failed product line. Silent skip left one product
+ * qty_done on Odoo, then sale.order.line qty_delivered only bound for that product and
+ * sync stuck forever on invoice qty guards.
  */
 export async function applyPickingDeliverySnapshotSequential(pickingId, snapshot = {}) {
   const pid = Number(pickingId);
@@ -378,6 +382,7 @@ export async function applyPickingDeliverySnapshotSequential(pickingId, snapshot
       updatedMoveIds.add(Number(u.moveId));
     }
   }
+  const lineErrors = [];
   for (const line of deliveryLines || []) {
     const moveId = line.moveId ?? line.move_id;
     const productId = line.productId ?? line.product_id;
@@ -391,16 +396,23 @@ export async function applyPickingDeliverySnapshotSequential(pickingId, snapshot
       try {
         await updateStockMoveQuantityDone(Number(moveId), qtyN);
         updatedMoveIds.add(Number(moveId));
-      } catch (_) {
-        /* keep prior skip behaviour */
-      }
-      if (__DEV__) {
-        console.warn(
-          `[delivery] createMoveLine fallback move ${moveId}:`,
-          createErr?.message || createErr
+      } catch (qtyErr) {
+        lineErrors.push(
+          qtyErr ||
+            createErr ||
+            new Error(`Failed to set qty_done for move ${moveId} product ${productId}`)
         );
+        if (__DEV__) {
+          console.warn(
+            `[delivery] sequential qty apply failed move ${moveId}:`,
+            createErr?.message || createErr
+          );
+        }
       }
     }
+  }
+  if (lineErrors.length > 0) {
+    throw lineErrors[0];
   }
   return { ok: true, mode: "sequential" };
 }
