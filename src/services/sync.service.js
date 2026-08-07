@@ -119,7 +119,8 @@ const ENABLE_CHECKOUT_DRIVE_PREFETCH = false;
 let _standaloneAttachmentWorkerPromise = null;
 const _deferredCheckoutExtrasInFlight = new Set();
 let _secondaryChatterCatchupPromise = null;
-const _paymentProofDriveAddendumInFlight = new Set();
+/** soId → in-flight addendum Promise (coalesce concurrent posts; Set early-return caused duplicate retries). */
+const _paymentProofDriveAddendumInFlight = new Map();
 const _paymentProofDriveAddendumRecentBySo = new Map();
 const DRIVE_ADDENDUM_RECENT_TTL_MS = 10 * 60 * 1000;
 const _secondaryChatterRecentBySo = new Map();
@@ -367,52 +368,101 @@ async function postPaymentProofDriveAddendumIfNeeded({
 }) {
   const soNum = Number(soId);
   if (!Number.isFinite(soNum) || soNum <= 0) return { posted: false, payload };
-  let effectiveQueueItemId = queueItemId;
-  let effectivePayload = payload || {};
-  const latest = await getLatestPaymentPayloadForSaleOrder(soNum);
-  if (latest?.payload) {
-    effectivePayload = latest.payload;
-    if (latest.queueId != null && Number.isFinite(Number(latest.queueId))) {
-      effectiveQueueItemId = Number(latest.queueId);
+
+  // Coalesce concurrent callers (deferred extras + standalone worker). Early-return used to
+  // let the loser re-upload a new Drive file id and post a second identical "Link 1" message.
+  const existingFlight = _paymentProofDriveAddendumInFlight.get(soNum);
+  if (existingFlight) {
+    try {
+      await existingFlight;
+    } catch (_) {
+      /* first flight error handled by its caller */
     }
+    const latestAfterWait = await getLatestPaymentPayloadForSaleOrder(soNum);
+    let payloadAfter = latestAfterWait?.payload || payload || {};
+    const queueAfter = latestAfterWait?.queueId ?? queueItemId;
+    // First flight owns the message_post. Never post a second addendum in the same race.
+    try {
+      const { saleOrderHasPaymentProofDriveChatter } = await import('./proofAttachment.service.js');
+      if (await saleOrderHasPaymentProofDriveChatter(soNum)) {
+        payloadAfter = await updatePaymentProofDrivePayloadState(
+          queueAfter,
+          soNum,
+          payloadAfter,
+          proofDriveLinks,
+          {
+            _paymentProofDriveLastAddendumFingerprint: paymentProofDriveLinksFingerprint(proofDriveLinks),
+          }
+        );
+      }
+    } catch (_) {
+      /* best-effort */
+    }
+    return {
+      posted: false,
+      payload: payloadAfter,
+      postedLinks: getPostedPaymentProofDriveLinks(payloadAfter),
+    };
   }
 
-  const newLinks = getNewPaymentProofDriveLinks(effectivePayload, proofDriveLinks);
-  if (!newLinks.length) {
-    const nextPayload = await updatePaymentProofDrivePayloadState(
-      effectiveQueueItemId,
-      soNum,
-      effectivePayload,
-      []
-    );
-    return { posted: false, payload: nextPayload };
-  }
-  const addendumFingerprint = paymentProofDriveLinksFingerprint(newLinks);
-  if (
-    addendumFingerprint &&
-    (String(effectivePayload?._paymentProofDriveLastAddendumFingerprint || '') === addendumFingerprint ||
-      hasRecentDriveAddendumFingerprint(soNum, addendumFingerprint))
-  ) {
-    const nextPayload = await updatePaymentProofDrivePayloadState(
-      effectiveQueueItemId,
-      soNum,
-      effectivePayload,
-      newLinks,
-      { _paymentProofDriveLastAddendumFingerprint: addendumFingerprint }
-    );
-    return { posted: false, payload: nextPayload, postedLinks: newLinks };
-  }
-  if (_paymentProofDriveAddendumInFlight.has(soNum)) {
-    return { posted: false, payload: effectivePayload };
-  }
-  _paymentProofDriveAddendumInFlight.add(soNum);
-  try {
+  const run = (async () => {
+    let effectiveQueueItemId = queueItemId;
+    let effectivePayload = payload || {};
+    const latest = await getLatestPaymentPayloadForSaleOrder(soNum);
+    if (latest?.payload) {
+      effectivePayload = latest.payload;
+      if (latest.queueId != null && Number.isFinite(Number(latest.queueId))) {
+        effectiveQueueItemId = Number(latest.queueId);
+      }
+    }
+
+    const newLinks = getNewPaymentProofDriveLinks(effectivePayload, proofDriveLinks);
+    if (!newLinks.length) {
+      const nextPayload = await updatePaymentProofDrivePayloadState(
+        effectiveQueueItemId,
+        soNum,
+        effectivePayload,
+        []
+      );
+      return { posted: false, payload: nextPayload };
+    }
+    const addendumFingerprint = paymentProofDriveLinksFingerprint(newLinks);
+    if (
+      addendumFingerprint &&
+      (String(effectivePayload?._paymentProofDriveLastAddendumFingerprint || '') === addendumFingerprint ||
+        hasRecentDriveAddendumFingerprint(soNum, addendumFingerprint))
+    ) {
+      const nextPayload = await updatePaymentProofDrivePayloadState(
+        effectiveQueueItemId,
+        soNum,
+        effectivePayload,
+        newLinks,
+        { _paymentProofDriveLastAddendumFingerprint: addendumFingerprint }
+      );
+      return { posted: false, payload: nextPayload, postedLinks: newLinks };
+    }
+
     const {
       buildPaymentProofDriveLinksAddendumBody,
       postPaymentProofToChatterWithAttachmentIds,
       saleOrderHasDriveLinksInRecentChatter,
+      saleOrderHasPaymentProofDriveChatter,
       saleOrderHasRecentChatterMarkers,
     } = await import('./proofAttachment.service.js');
+
+    // Same photo re-uploaded under a new Drive file id still produces the same chatter heading.
+    if (await saleOrderHasPaymentProofDriveChatter(soNum)) {
+      const nextPayload = await updatePaymentProofDrivePayloadState(
+        effectiveQueueItemId,
+        soNum,
+        effectivePayload,
+        newLinks,
+        { _paymentProofDriveLastAddendumFingerprint: addendumFingerprint }
+      );
+      rememberRecentDriveAddendumFingerprint(soNum, addendumFingerprint);
+      return { posted: false, payload: nextPayload, postedLinks: newLinks };
+    }
+
     const markerToken = buildDriveAddendumMarker(soNum, addendumFingerprint);
     if (markerToken) {
       const hasMarker = await saleOrderHasRecentChatterMarkers(soNum, [markerToken], { matchAny: true });
@@ -455,8 +505,15 @@ async function postPaymentProofDriveAddendumIfNeeded({
     );
     rememberRecentDriveAddendumFingerprint(soNum, addendumFingerprint);
     return { posted: true, payload: nextPayload, postedLinks: newLinks };
+  })();
+
+  _paymentProofDriveAddendumInFlight.set(soNum, run);
+  try {
+    return await run;
   } finally {
-    _paymentProofDriveAddendumInFlight.delete(soNum);
+    if (_paymentProofDriveAddendumInFlight.get(soNum) === run) {
+      _paymentProofDriveAddendumInFlight.delete(soNum);
+    }
   }
 }
 
@@ -543,42 +600,60 @@ async function postDeferredCheckoutExtrasForSaleOrder(soIdRaw) {
     if (p._paymentProofDrivePosted !== true) {
       const pendingPhotos = await offlineAttachmentsDb.getPendingBySaleOrderId(soId).catch(() => []);
       if ((pendingPhotos || []).length > 0) {
-        const prefetched = await consumeCheckoutDriveProofPrefetch(soId);
-        const uploaded =
-          prefetched?.proofDriveLinks?.length > 0
-            ? prefetched
-            : await uploadPaymentProofAttachmentsToDrive({
-                soId,
-                orderName,
-                paymentPayload: p,
-                pendingAttachments: pendingPhotos,
-              });
-        if (uploaded?.proofDriveLinks?.length > 0) {
-          const postedAddendum = await postPaymentProofDriveAddendumIfNeeded({
-            soId,
-            queueItemId: entry?.queueId,
-            payload: p,
-            proofDriveLinks: uploaded.proofDriveLinks,
-          });
-          p = postedAddendum.payload || p;
-          const pendingById = new Map((uploaded.pendingAttachments || pendingPhotos).map((a) => [Number(a.id), a]));
-          for (const id of uploaded.syncedAttachmentIds || []) {
-            await offlineAttachmentsDb.markSynced(Number(id));
-            const row = pendingById.get(Number(id));
-            if (row?.local_file_path) {
-              try {
-                const fileToDelete = new FileSystem.File(row.local_file_path);
-                if (fileToDelete.exists) fileToDelete.delete();
-              } catch (_) {}
+        let skipUploadBecauseAlreadyInChatter = false;
+        try {
+          const { saleOrderHasPaymentProofDriveChatter } = await import('./proofAttachment.service.js');
+          if (await saleOrderHasPaymentProofDriveChatter(soId)) {
+            // Another path already posted the Drive link — do not re-upload / re-post.
+            for (const att of pendingPhotos) {
+              await offlineAttachmentsDb.markSynced(Number(att.id)).catch(() => {});
             }
+            p = await updatePaymentProofDrivePayloadState(entry?.queueId, soId, p, []);
+            payloadDirty = true;
+            skipUploadBecauseAlreadyInChatter = true;
+            log('queue', `deferred Drive proof SO ${soId}: skipped — already in sale order chatter`);
           }
-          p = await updatePaymentProofDrivePayloadState(entry?.queueId, soId, p, []);
-          payloadDirty = true;
-          if (postedAddendum.posted) {
-            log(
-              'queue',
-              `deferred Drive proof SO ${soId} (${(postedAddendum.postedLinks || []).length} link(s))`
-            );
+        } catch (_) {
+          /* continue with upload */
+        }
+        if (!skipUploadBecauseAlreadyInChatter) {
+          const prefetched = await consumeCheckoutDriveProofPrefetch(soId);
+          const uploaded =
+            prefetched?.proofDriveLinks?.length > 0
+              ? prefetched
+              : await uploadPaymentProofAttachmentsToDrive({
+                  soId,
+                  orderName,
+                  paymentPayload: p,
+                  pendingAttachments: pendingPhotos,
+                });
+          if (uploaded?.proofDriveLinks?.length > 0) {
+            const postedAddendum = await postPaymentProofDriveAddendumIfNeeded({
+              soId,
+              queueItemId: entry?.queueId,
+              payload: p,
+              proofDriveLinks: uploaded.proofDriveLinks,
+            });
+            p = postedAddendum.payload || p;
+            const pendingById = new Map((uploaded.pendingAttachments || pendingPhotos).map((a) => [Number(a.id), a]));
+            for (const id of uploaded.syncedAttachmentIds || []) {
+              await offlineAttachmentsDb.markSynced(Number(id));
+              const row = pendingById.get(Number(id));
+              if (row?.local_file_path) {
+                try {
+                  const fileToDelete = new FileSystem.File(row.local_file_path);
+                  if (fileToDelete.exists) fileToDelete.delete();
+                } catch (_) {}
+              }
+            }
+            p = await updatePaymentProofDrivePayloadState(entry?.queueId, soId, p, []);
+            payloadDirty = true;
+            if (postedAddendum.posted) {
+              log(
+                'queue',
+                `deferred Drive proof SO ${soId} (${(postedAddendum.postedLinks || []).length} link(s))`
+              );
+            }
           }
         }
       }
@@ -2005,7 +2080,8 @@ async function enrichDeliveredUpdatesForSaleOrder(soId, baseUpdates, queuePayloa
 
 /**
  * Verify enriched SOL qty on Odoo — never allow markSynced when mobile has delivered qty but SO lines are empty/unbound.
- * Also requires every positive mobile line (payload / invoiceLineQtys) to be present — prevents "2 products delivered, 1 SOL bound".
+ * Also requires every positive mobile line (payload / invoiceLineQtys / requestedQty) to be present —
+ * prevents "2 products delivered, 1 SOL bound".
  */
 async function verifyDeliveryQtyBoundOnOdoo(soId, updates, queuePayload) {
   const enriched = await enrichDeliveredUpdatesForSaleOrder(soId, updates, queuePayload);
@@ -2017,10 +2093,22 @@ async function verifyDeliveryQtyBoundOnOdoo(soId, updates, queuePayload) {
       );
     }
     // Ensure we did not drop a mobile line (e.g. only 1 of 2 products in enriched set).
-    const expectedFromPayload = deliveredUpdatesFromQueuePayload(queuePayload).filter(
+    let expectedFromPayload = deliveredUpdatesFromQueuePayload(queuePayload).filter(
       (u) => roundDeliveredQty3(u.qty_delivered) > DELIVERED_QTY_VERIFY_TOL
     );
-    if (expectedFromPayload.length > 0) {
+    // If SOL lists empty but requestedQtyByProduct has positives, require those products bound via enrich.
+    if (expectedFromPayload.length === 0) {
+      const requested =
+        queuePayload?.mobileQtySnapshot?.requestedQtyByProduct || queuePayload?.requestedQtyByProduct || {};
+      const positiveRequested = Object.values(requested).some(
+        (q) => roundDeliveredQty3(q) > DELIVERED_QTY_VERIFY_TOL
+      );
+      if (positiveRequested && positive.length === 0) {
+        throw new Error(
+          `Delivery incomplete: SO ${soId} has requested delivered qty but no sale.order.line bind. Sync will retry.`
+        );
+      }
+    } else {
       const enrichedIds = new Set(positive.map((u) => Number(u.lineId)));
       const missing = expectedFromPayload.filter((u) => !enrichedIds.has(Number(u.lineId)));
       if (missing.length > 0) {
@@ -2492,48 +2580,144 @@ async function rebuildDeliveryBlocksFromRequestedQty(blocks, requestedQtyByProdu
 /** When payload lists move targets, verify Odoo stock.move / move.line qty_done matches before completing delivery. */
 async function verifyStockMoveQtyDoneMatchesPayload(blocks, options = {}) {
   const expectedByMove = new Map();
+  const expectedByProduct = new Map();
   for (const b of blocks || []) {
     for (const line of b?.deliveryLines || []) {
       const mid = Number(line?.moveId ?? line?.move_id);
+      const pid = Number(line?.productId ?? line?.product_id);
       const qty = roundDeliveredQty3(line?.qty_done);
-      if (!Number.isFinite(mid) || mid <= 0 || !Number.isFinite(qty) || qty <= 0) continue;
-      expectedByMove.set(mid, qty);
+      if (!Number.isFinite(qty) || qty < 0) continue;
+      if (Number.isFinite(mid) && mid > 0) {
+        expectedByMove.set(mid, qty);
+      }
+      if (Number.isFinite(pid) && pid > 0) {
+        expectedByProduct.set(pid, roundDeliveredQty3((expectedByProduct.get(pid) || 0) + qty));
+      }
+    }
+    for (const u of b?.moveLineUpdates || []) {
+      const mid = Number(u?.moveId);
+      const pid = Number(u?.productId ?? u?.product_id);
+      const qty = roundDeliveredQty3(u?.qty_done);
+      if (!Number.isFinite(qty) || qty < 0) continue;
+      if (Number.isFinite(mid) && mid > 0) expectedByMove.set(mid, qty);
+      if (Number.isFinite(pid) && pid > 0) {
+        // moveLineUpdates are absolute per line; prefer product totals from deliveryLines when present.
+        if (!expectedByProduct.has(pid)) expectedByProduct.set(pid, qty);
+      }
     }
   }
-  if (expectedByMove.size === 0) return;
+  if (expectedByMove.size === 0 && expectedByProduct.size === 0) return;
 
   const { getStockMoveLinesByMoveIds } = await import('./delivery.service.js');
   const { callOdoo } = await import('./index.service.js');
   const tol = options.tolerance ?? DELIVERED_QTY_VERIFY_TOL;
-  const moveIds = [...expectedByMove.keys()];
 
-  let moveRows = [];
-  try {
-    moveRows =
-      (await callOdoo('stock.move', 'read', [moveIds], {
-        fields: ['id', 'quantity_done'],
-      })) || [];
-  } catch (_) {
-    moveRows = [];
-  }
-  const moveById = new Map((Array.isArray(moveRows) ? moveRows : []).map((m) => [Number(m.id), m]));
+  if (expectedByMove.size > 0) {
+    const moveIds = [...expectedByMove.keys()];
+    let moveRows = [];
+    try {
+      moveRows =
+        (await callOdoo('stock.move', 'read', [moveIds], {
+          fields: ['id', 'quantity_done'],
+        })) || [];
+    } catch (_) {
+      moveRows = [];
+    }
+    const moveById = new Map((Array.isArray(moveRows) ? moveRows : []).map((m) => [Number(m.id), m]));
 
-  for (const [mid, expected] of expectedByMove) {
-    let actual = NaN;
-    const mv = moveById.get(mid);
-    if (mv?.quantity_done != null) actual = roundDeliveredQty3(mv.quantity_done);
-    if (!Number.isFinite(actual)) {
-      const mls = await getStockMoveLinesByMoveIds([mid]).catch(() => []);
-      actual = roundDeliveredQty3(
-        (mls || []).reduce((sum, ml) => sum + (Number(ml?.qty_done) || 0), 0)
-      );
-    }
-    if (!Number.isFinite(actual) || Math.abs(actual - expected) > tol) {
-      throw new Error(
-        `Move ${mid} qty_done mismatch: mobile ${expected}, Odoo ${actual}. Sync will retry.`
-      );
+    for (const [mid, expected] of expectedByMove) {
+      let actual = NaN;
+      const mv = moveById.get(mid);
+      if (mv?.quantity_done != null) actual = roundDeliveredQty3(mv.quantity_done);
+      if (!Number.isFinite(actual)) {
+        const mls = await getStockMoveLinesByMoveIds([mid]).catch(() => []);
+        actual = roundDeliveredQty3(
+          (mls || []).reduce((sum, ml) => sum + (Number(ml?.qty_done) || 0), 0)
+        );
+      }
+      if (!Number.isFinite(actual) || Math.abs(actual - expected) > tol) {
+        throw new Error(
+          `Move ${mid} qty_done mismatch: mobile ${expected}, Odoo ${actual}. Sync will retry.`
+        );
+      }
     }
   }
+
+  // Product-level guard: catches orphan move.lines (no move_id) that inflate picking qty
+  // while move-id verify still passes (S06821 demand-0 lines).
+  const pickingIds = [
+    ...new Set(
+      (blocks || [])
+        .map((b) => Number(b?.pickingId ?? b?.picking_id))
+        .filter((id) => Number.isFinite(id) && id > 0)
+    ),
+  ];
+  if (expectedByProduct.size > 0 && pickingIds.length > 0) {
+    let orphanRows = [];
+    try {
+      orphanRows =
+        (await callOdoo(
+          'stock.move.line',
+          'search_read',
+          [[['picking_id', 'in', pickingIds]]],
+          { fields: ['id', 'product_id', 'qty_done', 'move_id'], limit: 500 }
+        )) || [];
+    } catch (_) {
+      orphanRows = [];
+    }
+    const actualByProduct = new Map();
+    for (const ml of orphanRows || []) {
+      const pid = Number(Array.isArray(ml?.product_id) ? ml.product_id[0] : ml?.product_id);
+      const q = roundDeliveredQty3(ml?.qty_done);
+      if (!Number.isFinite(pid) || pid <= 0 || !Number.isFinite(q) || q <= 0) continue;
+      actualByProduct.set(pid, roundDeliveredQty3((actualByProduct.get(pid) || 0) + q));
+    }
+    for (const [pid, expected] of expectedByProduct) {
+      const actual = actualByProduct.get(pid) || 0;
+      if (Math.abs(actual - expected) > tol) {
+        throw new Error(
+          `Product ${pid} picking qty_done mismatch: mobile ${expected}, Odoo ${actual}. Sync will retry.`
+        );
+      }
+    }
+    // Extra Odoo products with qty_done not in mobile snapshot = inflation / orphan lines.
+    for (const [pid, actual] of actualByProduct) {
+      if (!expectedByProduct.has(pid) && actual > tol) {
+        throw new Error(
+          `Product ${pid} unexpected picking qty_done=${actual} (not in mobile snapshot). Sync will retry.`
+        );
+      }
+    }
+  }
+}
+
+/** Prefer frozen mobileQtySnapshot pickings for stock verify (never post-topUp mutated blocks alone). */
+function frozenDeliveryBlocksForVerify(payload, fallbackBlocks) {
+  const frozen = payload?.mobileQtySnapshot?.pickings;
+  if (Array.isArray(frozen) && frozen.length > 0) {
+    return frozen.map((b) => ({
+      pickingId: b.pickingId,
+      deliveryLines: b.deliveryLines || [],
+      moveLineUpdates: b.moveLineUpdates || [],
+    }));
+  }
+  // Also honor frozen requestedQtyByProduct as product authority when pickings empty.
+  const requested = payload?.mobileQtySnapshot?.requestedQtyByProduct || payload?.requestedQtyByProduct;
+  if (requested && typeof requested === 'object' && fallbackBlocks?.length) {
+    // Keep fallback move ids but replace qty from requested by product when available.
+    return (fallbackBlocks || []).map((b) => {
+      const lines = (b.deliveryLines || []).map((l) => {
+        const pid = Number(l?.productId ?? l?.product_id);
+        const req = pid > 0 ? Number(requested[pid] ?? requested[String(pid)]) : NaN;
+        if (Number.isFinite(req) && req >= 0) {
+          return { ...l, qty_done: roundDeliveredQty3(req) };
+        }
+        return l;
+      });
+      return { ...b, deliveryLines: lines };
+    });
+  }
+  return fallbackBlocks || [];
 }
 
 /** Ensure sale.order.line qty_delivered on Odoo matches mobile (throws on mismatch). */
@@ -3250,7 +3434,7 @@ async function buildGasDeliveredCountChatterBody(soId, paymentPayload) {
   const { linesToOdooHtmlBody } = await import('./proofAttachment.service.js');
   const sep = '────────────────────────────────────────';
   const lines = [];
-  lines.push('Gas Delivered Count updated from mobile app new');
+  lines.push('Gas Delivered Count updated from mobile app');
   lines.push(sep);
   for (const [label, qty] of qtyByProductLabel.entries()) {
     lines.push(`${label}: ${formatQty(qty)}`);
@@ -4002,6 +4186,7 @@ async function processSyncQueue(options = {}) {
         getPickingState,
         getStockMovesByPickingId,
         applyPickingDeliverySnapshotIdempotent,
+        scrubUnexpectedPickingMoveLines,
         updateStockMoveQuantityDone,
         createMoveLine,
         actionConfirmPicking,
@@ -4175,15 +4360,17 @@ async function processSyncQueue(options = {}) {
             return;
           }
           // Independent Odoo reads — parallel on fast path (same business checks, less wall time).
-          if (blocks.length > 0) {
+          // ALWAYS verify against frozen mobile snapshot — never post-topUp mutated blocks alone.
+          const stockVerifyBlocks = frozenDeliveryBlocksForVerify(p, blocks);
+          if (stockVerifyBlocks.length > 0) {
             if (fastCheckout) {
               await Promise.all([
                 verifyAllSaleOrderPickingsAreTerminal(saleOrderId),
-                verifyStockMoveQtyDoneMatchesPayload(blocks),
+                verifyStockMoveQtyDoneMatchesPayload(stockVerifyBlocks),
               ]);
             } else {
               await verifyAllSaleOrderPickingsAreTerminal(saleOrderId);
-              await verifyStockMoveQtyDoneMatchesPayload(blocks);
+              await verifyStockMoveQtyDoneMatchesPayload(stockVerifyBlocks);
             }
           } else {
             await verifyAllSaleOrderPickingsAreTerminal(saleOrderId);
@@ -4445,6 +4632,18 @@ async function processSyncQueue(options = {}) {
               } catch (_) {
                 /* readonly on some done transfers */
               }
+              // Never absorb remaining until Odoo matches frozen mobile qty (prevents partial SOL cases).
+              try {
+                await verifyStockMoveQtyDoneMatchesPayload(
+                  frozenDeliveryBlocksForVerify(p, [{ pickingId, deliveryLines, moveLineUpdates }])
+                );
+              } catch (doneVerifyErr) {
+                throw new Error(
+                  `Delivery picking ${pickingId} is Done but qty does not match mobile snapshot: ${String(
+                    doneVerifyErr?.message || doneVerifyErr
+                  ).slice(0, 160)}`
+                );
+              }
               for (const line of deliveryLines) {
                 const pid = Number(line?.productId ?? line?.product_id);
                 const q = coerceDeliveredQty(line?.qty_done);
@@ -4454,7 +4653,6 @@ async function processSyncQueue(options = {}) {
                 if (next <= 0.0001) requestedDeliveryRemainingByProduct.delete(pid);
                 else requestedDeliveryRemainingByProduct.set(pid, next);
               }
-              absorbRequestedQtyForProducts(snapshotByProduct.keys());
               validatedAnyPicking = true;
               continue;
             }
@@ -4466,8 +4664,14 @@ async function processSyncQueue(options = {}) {
            *
            * Critical: only top-up products that have NO deliveryLine in ANY picking block.
            * Never dump multi-picking remainder onto the first picking (that inflates qty_done).
+           * Top-up runs ONCE per deliveryTxn (persisted) — outer flush resets queuePass to 1 and
+           * used to re-top-up / stack qty on retries (S06821 GAS5 4→15).
            */
           const topUpDeliveryLinesFromRequested = async () => {
+            if (p.deliveryTopUpApplied === true || p.mobileQtySnapshot?.deliveryTopUpApplied === true) {
+              log('queue', `delivery top-up skipped — already applied for txn ${String(p.deliveryTxnId || '').slice(0, 40)}`);
+              return;
+            }
             if (Number(syncOptions.queuePass) > 1) {
               log('queue', `delivery top-up skipped on retry pass ${syncOptions.queuePass} (frozen mobile snapshot)`);
               return;
@@ -4546,35 +4750,16 @@ async function processSyncQueue(options = {}) {
                   `delivery create missing move failed for product ${productId} on picking ${pickingId}: ${String(e?.message || e).slice(0, 120)}`
                 );
                 try {
-                  const { callOdoo, callOdooArgs } = await import('./index.service.js');
-                  const picks = await callOdoo(
-                    'stock.picking',
-                    'search_read',
-                    [[['id', '=', Number(pickingId)]]],
-                    { fields: ['id', 'location_id', 'location_dest_id'], limit: 1 }
-                  );
-                  const pick = Array.isArray(picks) ? picks[0] : null;
-                  const srcLoc = Array.isArray(pick?.location_id) ? pick.location_id[0] : pick?.location_id;
-                  const dstLoc = Array.isArray(pick?.location_dest_id) ? pick.location_dest_id[0] : pick?.location_dest_id;
-                  if (srcLoc && dstLoc) {
-                    const moveLineId = await callOdooArgs('stock.move.line', 'create', [[{
-                      picking_id: Number(pickingId),
-                      product_id: Number(productId),
-                      qty_done: Number(qty),
-                      location_id: Number(srcLoc),
-                      location_dest_id: Number(dstLoc),
-                    }]]);
-                    const mlid = Number(moveLineId);
-                    if (Number.isFinite(mlid) && mlid > 0) {
-                      log('queue', `delivery direct move line fallback created id=${mlid} product=${productId} picking=${pickingId}`);
-                      return -1;
-                    }
-                  }
-                } catch (e2) {
+                  // NEVER create orphan stock.move.line without move_id.
+                  // That produced demand=0 / inflated qty_done lines (S06821-style) that
+                  // validate into Done while sale.order.line only binds linked moves.
+                  // Fail closed and retry — do not partially succeed on stock.
                   log(
                     'queue',
-                    `delivery direct move line fallback failed for product ${productId} on picking ${pickingId}: ${String(e2?.message || e2).slice(0, 120)}`
+                    `delivery refuse orphan move.line for product ${productId} on picking ${pickingId} — retry without stacking`
                   );
+                } catch (_) {
+                  /* ignore */
                 }
                 return null;
               }
@@ -4593,7 +4778,7 @@ async function processSyncQueue(options = {}) {
               if (mids.length === 0) {
                 const createdMid = await createMissingMoveForProduct(productId, missing);
                 if (createdMid === -1) {
-                  requestedDeliveryRemainingByProduct.set(productId, 0);
+                  // Orphan create disabled — treat as hard miss.
                   continue;
                 }
                 mids = createdMid != null ? [createdMid] : [];
@@ -4604,9 +4789,9 @@ async function processSyncQueue(options = {}) {
               const targetMoveId = Number(mids[mids.length - 1]);
               const existingLine = deliveryLines.find((l) => Number(l?.moveId ?? l?.move_id) === targetMoveId);
               if (existingLine) {
-                const prevDone = coerceDeliveredQty(existingLine.qty_done);
-                const targetTotal = coerceDeliveredQty((Number(prevDone) || 0) + missing);
-                if (Number.isFinite(prevDone) && Math.abs(prevDone - targetTotal) <= 0.0001) {
+                // ABSOLUTE target from remaining hole — never prev+missing (stacks on retry).
+                const targetTotal = coerceDeliveredQty(missing);
+                if (Number.isFinite(Number(existingLine.qty_done)) && Math.abs(Number(existingLine.qty_done) - targetTotal) <= 0.0001) {
                   requestedDeliveryRemainingByProduct.set(productId, 0);
                   continue;
                 }
@@ -4620,6 +4805,19 @@ async function processSyncQueue(options = {}) {
               }
               requestedDeliveryRemainingByProduct.set(productId, 0);
             }
+            // Persist once-per-txn so outer flush (queuePass resets to 1) cannot re-top-up.
+            p.deliveryTopUpApplied = true;
+            if (p.mobileQtySnapshot && typeof p.mobileQtySnapshot === 'object') {
+              p.mobileQtySnapshot = { ...p.mobileQtySnapshot, deliveryTopUpApplied: true };
+            }
+            try {
+              await syncQueueDb.updateQueueItemPayload(Number(item.id), p, {
+                actionType: syncQueueDb.ACTION_DELIVERY,
+                suppressWake: true,
+              });
+            } catch (_) {
+              /* in-memory flag still protects this process */
+            }
           };
 
           try {
@@ -4630,9 +4828,10 @@ async function processSyncQueue(options = {}) {
              * Retry passes: verify first; on mismatch absolute re-apply (idempotent) to heal partial writes.
              */
             const blockSnapshot = { moveUpdates, moveLineUpdates, deliveryLines };
+            const verifyBlocks = frozenDeliveryBlocksForVerify(p, [{ pickingId, ...blockSnapshot }]);
             if (Number(syncOptions.queuePass) > 1) {
               try {
-                await verifyStockMoveQtyDoneMatchesPayload([{ pickingId, ...blockSnapshot }]);
+                await verifyStockMoveQtyDoneMatchesPayload(verifyBlocks);
               } catch (retryVerifyErr) {
                 log(
                   'queue',
@@ -4643,7 +4842,7 @@ async function processSyncQueue(options = {}) {
                   deviceId: p.deviceId,
                 });
                 if (applyResult?.mode !== 'already_applied') {
-                  await verifyStockMoveQtyDoneMatchesPayload([{ pickingId, ...blockSnapshot }]);
+                  await verifyStockMoveQtyDoneMatchesPayload(verifyBlocks);
                 }
               }
             } else {
@@ -4652,7 +4851,7 @@ async function processSyncQueue(options = {}) {
                 deviceId: p.deviceId,
               });
               if (applyResult?.mode !== 'already_applied') {
-                await verifyStockMoveQtyDoneMatchesPayload([{ pickingId, ...blockSnapshot }]);
+                await verifyStockMoveQtyDoneMatchesPayload(verifyBlocks);
               }
               const { fetchOdooDeliveredQtySnapshot } = await import('./delivery.service.js');
               const odooAfterApply = await fetchOdooDeliveredQtySnapshot(
@@ -4727,6 +4926,35 @@ async function processSyncQueue(options = {}) {
           };
 
           try {
+            // Scrub orphan/unexpected move lines before validate so Done cannot lock inflation.
+            try {
+              const expectedByProduct = new Map();
+              const frozenBlocks = frozenDeliveryBlocksForVerify(p, [{ pickingId, deliveryLines }]);
+              for (const b of frozenBlocks) {
+                for (const line of b.deliveryLines || []) {
+                  const prodId = Number(line?.productId ?? line?.product_id);
+                  const q = coerceDeliveredQty(line?.qty_done);
+                  if (!Number.isFinite(prodId) || prodId <= 0 || !Number.isFinite(q) || q <= 0) continue;
+                  expectedByProduct.set(prodId, coerceDeliveredQty((expectedByProduct.get(prodId) || 0) + q));
+                }
+              }
+              const requested = p.mobileQtySnapshot?.requestedQtyByProduct || p.requestedQtyByProduct || {};
+              for (const [pidRaw, qtyRaw] of Object.entries(requested)) {
+                const prodId = Number(pidRaw);
+                const q = coerceDeliveredQty(qtyRaw);
+                if (!Number.isFinite(prodId) || prodId <= 0 || !Number.isFinite(q) || q <= 0) continue;
+                if (!expectedByProduct.has(prodId)) expectedByProduct.set(prodId, q);
+              }
+              const scrub = await scrubUnexpectedPickingMoveLines(pickingId, expectedByProduct);
+              if (scrub?.scrubbed > 0) {
+                log('queue', `delivery scrubbed ${scrub.scrubbed} unexpected move line(s) on picking ${pickingId}`);
+              }
+            } catch (scrubErr) {
+              log(
+                'queue',
+                `delivery scrub unexpected lines non-fatal: ${String(scrubErr?.message || scrubErr).slice(0, 100)}`
+              );
+            }
             try {
               // Reuse picking state when possible; skip redundant confirm/assign on already-ready transfers.
               // Business outcome unchanged: still validate (or treat already-done as success).
@@ -6043,6 +6271,12 @@ async function processStandaloneOfflineAttachments() {
     const pendingPaymentItem = await getPendingPaymentItemBySaleOrderId(saleOrderId);
     if (pendingPaymentItem) continue;
 
+    // Deferred checkout extras owns Drive proof for this SO — avoid parallel re-upload + duplicate chatter.
+    if (_deferredCheckoutExtrasInFlight.has(saleOrderId)) {
+      log('queue', `standalone evidence skipped SO ${saleOrderId} — deferred checkout extras in flight`);
+      continue;
+    }
+
     const payEntry = latestPaymentMap[saleOrderId];
     const payPayload = payEntry?.payload || {};
     const allAttachmentIds = attachments.map((a) => Number(a.id)).filter((id) => Number.isFinite(id));
@@ -6053,6 +6287,19 @@ async function processStandaloneOfflineAttachments() {
       continue;
     }
     if (payPayload._paymentProofChatterPosted === true && attachments.length > 0) {
+      try {
+        const { saleOrderHasPaymentProofDriveChatter } = await import('./proofAttachment.service.js');
+        if (await saleOrderHasPaymentProofDriveChatter(saleOrderId)) {
+          await markStandaloneAttachmentsSynced(attachments, allAttachmentIds);
+          if (payEntry?.queueId) {
+            await updatePaymentProofDrivePayloadState(payEntry.queueId, saleOrderId, payPayload, []);
+          }
+          log('queue', `standalone evidence skipped SO ${saleOrderId} — Drive proof already in chatter`);
+          continue;
+        }
+      } catch (_) {
+        /* continue upload path */
+      }
       log('queue', `standalone evidence (SO ${saleOrderId}): payment posted without Drive — uploading proof`);
     } else if (payPayload._paymentProofChatterPosted === true) {
       await markStandaloneAttachmentsSynced(attachments, allAttachmentIds);

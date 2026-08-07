@@ -111,10 +111,7 @@ export async function upsertSaleOrderLines(rows, options = {}) {
           price_total = num(local.price_total);
           const localQd = num(local.qty_delivered);
           const remoteQd = num(r.qty_delivered);
-          qty_delivered = Math.max(
-            Number.isFinite(localQd) ? localQd : 0,
-            Number.isFinite(remoteQd) ? remoteQd : 0
-          );
+          qty_delivered = Number.isFinite(localQd) ? localQd : remoteQd;
         }
       }
 

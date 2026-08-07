@@ -145,15 +145,34 @@ export function buildDeliveryEvidenceDriveLinksBody(proofDriveLinks = []) {
   return linesToOdooHtmlBody(lines);
 }
 
+/** Stable heading used for payment-proof Drive chatter (dedupe searches this). */
+export const PAYMENT_PROOF_DRIVE_CHATTER_HEADING = 'Payment proof photo(s) — Google Drive:';
+
 /** Addendum when payment chatter posted without Drive links — same heading as full payment proof. */
 export function buildPaymentProofDriveLinksAddendumBody(proofDriveLinks = [], options = {}) {
   const validDriveLinks = normalizeDriveLinks(proofDriveLinks);
   if (!validDriveLinks.length) return null;
   const lines = [];
-  appendDriveProofLinkLines(lines, validDriveLinks, 'Payment proof photo(s) — Google Drive:');
+  appendDriveProofLinkLines(lines, validDriveLinks, PAYMENT_PROOF_DRIVE_CHATTER_HEADING);
+  let html = linesToOdooHtmlBody(lines);
+  // Persist dedupe token in body (was previously pushed as empty string — never searchable).
   const marker = String(options?.dedupeMarker || '').trim();
-  if (marker) lines.push(`Ref: ${escapeHtml(marker)}`);
-  return linesToOdooHtmlBody(lines);
+  if (marker) {
+    html += `<!--${marker.replace(/--+/g, '-')}-->`;
+  }
+  return html;
+}
+
+/**
+ * True when sale.order chatter already has a payment-proof Google Drive message.
+ * Catches duplicate addenda when a second path re-uploaded the same photo (new Drive file id).
+ */
+export async function saleOrderHasPaymentProofDriveChatter(saleOrderId) {
+  return saleOrderHasRecentChatterMarkers(
+    saleOrderId,
+    [PAYMENT_PROOF_DRIVE_CHATTER_HEADING, 'Payment proof photo(s) — Google Drive'],
+    { matchAny: true }
+  );
 }
 
 /**
