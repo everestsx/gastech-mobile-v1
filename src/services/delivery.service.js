@@ -170,6 +170,40 @@ export const createMoveLine = (pickingId, moveId, productId, qtyDone) =>
     [{ move_id: moveId, picking_id: pickingId, product_id: productId, qty_done: Number(qtyDone) }],
   ]);
 
+/**
+ * Zero unexpected / orphan move lines on a picking that are not in the mobile product qty map.
+ * Prevents demand=0 inflation lines from surviving into Done + partial SOL bind (S06821).
+ */
+export async function scrubUnexpectedPickingMoveLines(pickingId, expectedQtyByProduct = new Map()) {
+  const pid = Number(pickingId);
+  if (!Number.isFinite(pid) || pid <= 0) return { scrubbed: 0 };
+  const rows =
+    (await callOdoo(
+      'stock.move.line',
+      'search_read',
+      [[['picking_id', '=', pid]]],
+      { fields: ['id', 'product_id', 'qty_done', 'move_id'], limit: 500 }
+    )) || [];
+  let scrubbed = 0;
+  for (const ml of rows) {
+    const productId = Number(Array.isArray(ml?.product_id) ? ml.product_id[0] : ml?.product_id);
+    const lineId = Number(ml?.id);
+    const actual = coerceDeliveredQty(ml?.qty_done);
+    if (!Number.isFinite(lineId) || lineId <= 0 || !Number.isFinite(productId) || productId <= 0) continue;
+    if (!Number.isFinite(actual) || actual <= 0.0001) continue;
+    const expected = Number(expectedQtyByProduct.get(productId));
+    if (Number.isFinite(expected) && expected > 0.0001) continue;
+    // Product not in mobile snapshot (or expected 0) but Odoo has qty_done — zero it.
+    try {
+      await updateMoveLineQty(lineId, 0);
+      scrubbed += 1;
+    } catch (_) {
+      /* readonly on some done transfers — verify will still fail closed */
+    }
+  }
+  return { scrubbed };
+}
+
 /** Create backorder confirmation wizard. pickIds = [59] -> pick_ids [[4, 59, 0]] */
 export const createBackorderConfirmation = (pickIds) =>
   callOdooArgs("stock.backorder.confirmation", "create", [
@@ -361,15 +395,17 @@ export async function applyPickingDeliverySnapshotAtomic(pickingId, snapshot = {
 
 /**
  * Legacy per-record path when atomic picking write is rejected (older/custom Odoo).
- * Mirrors the previous sync.service loops so behaviour stays stable.
  *
- * Critical: must NOT silently skip a failed product line. Silent skip left one product
- * qty_done on Odoo, then sale.order.line qty_delivered only bound for that product and
- * sync stuck forever on invoice qty guards.
+ * Critical:
+ * - Never silently skip a failed product line (partial SOL bind).
+ * - Prefer absolute SET (quantity_done / existing move.line write) over createMoveLine.
+ *   createMoveLine ADDS qty and stacked on retries (S06821 GAS5 4→15).
  */
 export async function applyPickingDeliverySnapshotSequential(pickingId, snapshot = {}) {
   const pid = Number(pickingId);
-  const { moveUpdates = [], moveLineUpdates = [], deliveryLines = [] } = snapshot;
+  // Re-enrich so retries SET existing lines instead of creating duplicates.
+  const enriched = await enrichDeliverySnapshotWithExistingMoveLines(pid, snapshot);
+  const { moveUpdates = [], moveLineUpdates = [], deliveryLines = [] } = enriched;
   for (const u of moveUpdates || []) {
     if (u?.moveId == null || u?.product_uom_qty == null) continue;
     await updateStockMoveQty(u.moveId, u.product_uom_qty);
@@ -387,19 +423,32 @@ export async function applyPickingDeliverySnapshotSequential(pickingId, snapshot
     const moveId = line.moveId ?? line.move_id;
     const productId = line.productId ?? line.product_id;
     const qtyN = coerceDeliveredQty(line.qty_done);
-    if (moveId == null || productId == null || !Number.isFinite(qtyN) || qtyN <= 0) continue;
+    if (moveId == null || productId == null || !Number.isFinite(qtyN) || qtyN < 0) continue;
     if (updatedMoveIds.has(Number(moveId))) continue;
+    // Absolute SET first — never create-add when a move already exists.
     try {
-      await createMoveLine(pid, Number(moveId), Number(productId), qtyN);
+      await updateStockMoveQuantityDone(Number(moveId), qtyN);
       updatedMoveIds.add(Number(moveId));
-    } catch (createErr) {
+      continue;
+    } catch (qtyErr) {
       try {
-        await updateStockMoveQuantityDone(Number(moveId), qtyN);
+        // Last resort: create one line only if SET failed (e.g. no move line yet).
+        // Caller must not retry-create on success path.
+        const existing = await getStockMoveLinesByMoveIds([Number(moveId)]).catch(() => []);
+        if (Array.isArray(existing) && existing.length > 0) {
+          await updateMoveLineQty(existing[0].id, qtyN);
+          for (let i = 1; i < existing.length; i++) {
+            await updateMoveLineQty(existing[i].id, 0);
+          }
+          updatedMoveIds.add(Number(moveId));
+          continue;
+        }
+        await createMoveLine(pid, Number(moveId), Number(productId), qtyN);
         updatedMoveIds.add(Number(moveId));
-      } catch (qtyErr) {
+      } catch (createErr) {
         lineErrors.push(
-          qtyErr ||
-            createErr ||
+          createErr ||
+            qtyErr ||
             new Error(`Failed to set qty_done for move ${moveId} product ${productId}`)
         );
         if (__DEV__) {
