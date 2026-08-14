@@ -33,6 +33,7 @@ import {
   splitInventoryQueueUpdates,
 } from '../utils/emptyCollectionLocal.js';
 import { setCheckoutResumeFromPayment } from '../services/checkoutResume.service';
+import { getMandatoryEmptyCylinderProducts } from '../services/product.service';
 import { buildEmptyCylinderChatterBody } from '../services/proofAttachment.service';
 import {
   canonicalKgFromName,
@@ -41,6 +42,7 @@ import {
   isGasCylinderName,
   isNewIssueName,
   labelFromKg,
+  resolveEmptyCylinderProductId,
 } from '../utils/cylinderCatalog';
 
 function qtyByLineIdMap(rows) {
@@ -91,6 +93,46 @@ function parseVehicleIdFromOrder(order) {
   const raw = Array.isArray(order.vehicle_id) ? order.vehicle_id[0] : order.vehicle_id;
   const id = Number(raw);
   return Number.isFinite(id) && id > 0 ? id : null;
+}
+
+function applyLocalEmptyProductIds(entries, productMap, inventoryRows) {
+  for (const row of entries || []) {
+    if (row.emptyProductId != null || Number(row.emptyCollectedQty) <= 0) continue;
+    const resolved = resolveEmptyCylinderProductId(productMap, inventoryRows, row.kg);
+    if (resolved != null) row.emptyProductId = Number(resolved);
+  }
+}
+
+/**
+ * Re-resolve missing empty product ids at Continue time.
+ * Load-time mapping can be stale if master-data sync finished after the screen opened,
+ * or if the lorry had no empty quant yet for that size.
+ */
+async function ensureEmptyProductIdsForPersist(entries, inventoryRows) {
+  const needsResolve = (entries || []).some(
+    (r) => Number(r.emptyCollectedQty) > 0 && r.emptyProductId == null
+  );
+  if (!needsResolve) return entries;
+  applyLocalEmptyProductIds(entries, await productsDb.getProductsMap(), inventoryRows);
+  const missingKg = [
+    ...new Set(
+      (entries || [])
+        .filter((r) => Number(r.emptyCollectedQty) > 0 && r.emptyProductId == null)
+        .map((r) => Number(r.kg))
+        .filter((kg) => Number.isFinite(kg))
+    ),
+  ];
+  if (missingKg.length === 0) return entries;
+  try {
+    const fetched = await getMandatoryEmptyCylinderProducts(missingKg);
+    if (fetched?.length) {
+      await productsDb.upsertProducts(fetched);
+      applyLocalEmptyProductIds(entries, await productsDb.getProductsMap(), inventoryRows);
+    }
+  } catch {
+    // Offline or fetch failed — unresolved sizes still surface as the existing error.
+  }
+  return entries;
 }
 
 export default function EmptyCylinderCollectionScreen({ route, navigation }) {
@@ -175,7 +217,9 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
         for (const row of inv || []) {
           const pid = row?.product_id != null ? Number(row.product_id) : null;
           if (!Number.isFinite(pid)) continue;
-          const name = productMap?.[pid] || row?.product_name || '';
+          const fromMap = productMap?.[pid] || '';
+          const fromInv = row?.product_name || '';
+          const name = isEmptyCylinderName(fromInv) ? fromInv : fromMap || fromInv;
           if (!isEmptyCylinderName(name)) continue;
           const kg = canonicalKgFromName(name);
           if (kg == null) continue;
@@ -297,6 +341,20 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
         }
 
         if (locationId != null) {
+          const inventory = await getCachedVehicleInventoryByLocation(locationId);
+          await ensureEmptyProductIdsForPersist(emptyCylinderEntries, inventory);
+          const unresolvedKg = emptyCylinderEntries
+            .filter((r) => Number(r.emptyCollectedQty) > 0 && r.emptyProductId == null)
+            .map((r) => r.kg);
+          if (unresolvedKg.length > 0) {
+            throw new Error(
+              t(
+                'emptycylindercollection.emptyProductMissingForSizes',
+                `Empty-cylinder product mapping is missing for size(s): ${unresolvedKg.join(', ')} kg. Please sync master data and try again.`
+              )
+            );
+          }
+
           const existingInventoryUpdate =
             await syncQueueDb.getPendingInventoryUpdateItemBySaleOrderId(Number(saleOrderId));
           const existingPayload = existingInventoryUpdate?.payload || {};
@@ -306,21 +364,18 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
             await revertAppliedEmptyIncrements(Number(locationId), previousEmptyIncrements);
           }
 
-          const inventory = await getCachedVehicleInventoryByLocation(locationId);
+          const inventoryAfterRevert = previousEmptyIncrements.length > 0
+            ? await getCachedVehicleInventoryByLocation(locationId)
+            : inventory;
           const byProductId = {};
           const inventoryQueueUpdates = [];
-          const unresolvedKg = [];
-          for (const item of inventory || []) {
+          for (const item of inventoryAfterRevert || []) {
             const pid = item?.product_id != null ? Number(item.product_id) : null;
             if (!Number.isFinite(pid)) continue;
             byProductId[pid] = Number(item.quantity) || 0;
           }
           for (const row of emptyCylinderEntries) {
             if (row.emptyCollectedQty <= 0) continue;
-            if (row.emptyProductId == null) {
-              unresolvedKg.push(row.kg);
-              continue;
-            }
             const current = Number(byProductId[row.emptyProductId]) || 0;
             const nextQty = Math.max(0, current + Number(row.emptyCollectedQty));
             inventoryQueueUpdates.push({
@@ -329,14 +384,6 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
               newQuantity: nextQty,
               incrementQuantity: Math.abs(Number(row.emptyCollectedQty) || 0),
             });
-          }
-          if (unresolvedKg.length > 0) {
-            throw new Error(
-              t(
-                'emptycylindercollection.emptyProductMissingForSizes',
-                `Empty-cylinder product mapping is missing for size(s): ${unresolvedKg.join(', ')} kg. Please sync master data and try again.`
-              )
-            );
           }
           if (inventoryQueueUpdates.length > 0) {
             /** Immediate lorry empty stock for dashboard (same as before stock-idempotency changes). */

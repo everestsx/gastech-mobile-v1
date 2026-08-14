@@ -62,3 +62,25 @@ export function findEmptyCylinderProductIdForKg(productIdToName, kg) {
   }
   return null;
 }
+
+/**
+ * Resolve empty-cylinder product id from vehicle inventory rows first, then the products catalog.
+ * Prefers the inventory product_name when it looks like an empty cylinder so a blank/stale
+ * products.name cannot hide a valid quant mapping.
+ */
+export function resolveEmptyCylinderProductId(productIdToName, inventoryRows, kg) {
+  const target = canonicalKg(kg);
+  if (target == null) return null;
+  for (const row of inventoryRows || []) {
+    const pid = row?.product_id != null ? Number(row.product_id) : null;
+    if (!Number.isFinite(pid)) continue;
+    const fromMap =
+      (productIdToName && (productIdToName[pid] || productIdToName[String(pid)])) || '';
+    const fromInv = row?.product_name || '';
+    const name = isEmptyCylinderName(fromInv) ? fromInv : fromMap || fromInv;
+    if (!isEmptyCylinderName(name)) continue;
+    const c = canonicalKgFromName(name);
+    if (c != null && Math.abs(c - target) < 0.051) return pid;
+  }
+  return findEmptyCylinderProductIdForKg(productIdToName, target);
+}

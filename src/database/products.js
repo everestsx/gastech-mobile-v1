@@ -42,8 +42,17 @@ export async function upsertProducts(rows) {
         : odooRel(r);
       const id = num(product.id);
       if (id === 0) continue;
+      // Preserve existing name/type/image when a later sync upserts a stub (id only, name null).
+      // INSERT OR REPLACE was wiping catalog names and breaking empty-cylinder mapping.
       await tx.runAsync(
-        `INSERT OR REPLACE INTO products (id, name, list_price, type, image_1920, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO products (id, name, list_price, type, image_1920, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           name = CASE WHEN TRIM(COALESCE(excluded.name, '')) != '' THEN excluded.name ELSE products.name END,
+           list_price = excluded.list_price,
+           type = CASE WHEN TRIM(COALESCE(excluded.type, '')) != '' THEN excluded.type ELSE products.type END,
+           image_1920 = CASE WHEN TRIM(COALESCE(excluded.image_1920, '')) != '' THEN excluded.image_1920 ELSE products.image_1920 END,
+           updated_at = excluded.updated_at`,
         [id, empty(product.name), num(product.list_price), empty(product.type), empty(product.image_1920), now]
       );
     }

@@ -7240,9 +7240,9 @@ async function runSyncInternal(options = {}) {
         products = await getAllProducts();
       }
       try {
-        const mandatoryEmpty = includeHeavyOrderStateSync
-          ? await getMandatoryEmptyCylinderProducts([2.4, 5, 12.5, 37.5])
-          : [];
+        // Always refresh empty-cylinder catalog rows (including start_day / master_data).
+        // Targeted order-line product sync never includes empties, and light sync used to skip this.
+        const mandatoryEmpty = await getMandatoryEmptyCylinderProducts([2.4, 5, 12.5, 37.5]);
         if (mandatoryEmpty?.length) {
           const byId = new Map();
           for (const p of products || []) {
@@ -7260,15 +7260,12 @@ async function runSyncInternal(options = {}) {
       if (products?.length) {
         log('db', `products (${products.length})`);
         await productsDb.upsertProducts(products);
-      } else if (ids.length > 0) {
-        await productsDb.upsertProducts(ids.map((id) => ({ id, name: null })));
       }
+      // Do not upsert { id, name: null } stubs: INSERT OR REPLACE used to wipe catalog names
+      // and break empty-cylinder mapping. Keep existing local product rows instead.
     } catch (e) {
       logWarn('fetch products', e);
-      if (productIds.size > 0) {
-        const ids = Array.from(productIds);
-        await productsDb.upsertProducts(ids.map((id) => ({ id, name: null })));
-      }
+      // Keep existing local product names; do not replace them with null stubs.
     }
 
     // When vehicle-scoped: fetch only journals + routes + single vehicle. Otherwise full list.
