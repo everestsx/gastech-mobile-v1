@@ -5,6 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useTranslation } from 'react-i18next';
 import { colors, spacing, borderRadius } from '../constants/theme';
 import { runSync, getLastSyncTime, getUserSession, logout, getSyncIntervalMinutes } from '../services/sync.service';
+import { isSqliteFullError, sqliteFullUserMessage } from '../database/sqliteMaintenance.js';
 import RichNotification from './RichNotification';
 import { useSync } from '../context/SyncContext';
 
@@ -44,7 +45,7 @@ export default function DrawerContent({ navigation }) {
         setNotification({
           visible: true,
           title: t('drawer.syncFailed', 'Sync failed'),
-          message: result.error,
+          message: isSqliteFullError(result.error) ? sqliteFullUserMessage() : result.error,
           type: 'error',
         });
       } else {

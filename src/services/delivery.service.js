@@ -115,7 +115,16 @@ export const getStockMovesByPickingId = (pickingId) =>
     "search_read",
     [[["picking_id", "=", pickingId]]],
     {
-      fields: ["id", "product_uom_qty", "product_id", "state"],
+      // quantity_done / sale_line_id required for coverage asserts + S09189 backorder reconcile
+      fields: [
+        "id",
+        "product_uom_qty",
+        "product_id",
+        "state",
+        "quantity_done",
+        "sale_line_id",
+        "picking_id",
+      ],
     }
   );
 
@@ -631,10 +640,27 @@ export async function materializeLocalDeliveryScaffoldForSaleOrder(saleOrderId) 
 
   let pickings = await stockPickingsDb.getStockPickingsBySaleId(soId);
   if (Array.isArray(pickings) && pickings.length > 0) {
-    // Ensure at least one picking has moves; otherwise rebuild scaffold under existing picking.
+    // Ensure moves cover EVERY ordered SO product — "any moves exist" caused partial delivery (S09080).
+    const linesEarly = (await saleOrderLinesDb.getSaleOrderLinesByOrderIds([soId]).catch(() => [])) || [];
+    const needed = new Set();
+    for (const l of linesEarly) {
+      const pid = Array.isArray(l.product_id) ? Number(l.product_id[0]) : Number(l.product_id);
+      const ordered = Number(l.product_uom_qty) || 0;
+      if (Number.isFinite(pid) && pid > 0 && ordered > 0.0001) needed.add(pid);
+    }
+    const have = new Set();
+    let anyMoves = false;
     for (const pk of pickings) {
       const moves = await stockMovesDb.getStockMovesByPickingId(pk.id).catch(() => []);
-      if (Array.isArray(moves) && moves.length > 0) return pickings;
+      if (!Array.isArray(moves) || moves.length === 0) continue;
+      anyMoves = true;
+      for (const mv of moves) {
+        const pid = Array.isArray(mv.product_id) ? Number(mv.product_id[0]) : Number(mv.product_id);
+        if (Number.isFinite(pid) && pid > 0) have.add(pid);
+      }
+    }
+    if (anyMoves && (needed.size === 0 || [...needed].every((pid) => have.has(pid)))) {
+      return pickings;
     }
   }
 

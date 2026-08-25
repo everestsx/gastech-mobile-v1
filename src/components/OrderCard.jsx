@@ -12,7 +12,7 @@ import {
 } from '../utils/productDisplay';
 import { formatCurrency } from '../utils/format';
 import { getLocalizedCustomerNameFromOrder } from '../utils/customerDisplayName';
-import { getOrderDisplayTotal } from '../utils/orderLineTotals';
+import { getOrderDisplayTotal, getOrderDeliveredDisplayTotal } from '../utils/orderLineTotals';
 
 /** Format date_order (ISO or date string) for display. */
 function formatOrderDate(dateOrder) {
@@ -245,8 +245,14 @@ export default function OrderCard({
 
   const baseLines = order ? resolveOrderLinesForCard(order, orderLines) : [];
   const displayOrderTotal = useMemo(
-    () => (order ? getOrderDisplayTotal(order, baseLines) : 0),
-    [order, baseLines]
+    () => {
+      if (!order) return 0;
+      if (isDelivered) {
+        return getOrderDeliveredDisplayTotal(order, baseLines, qtyDoneByProductId);
+      }
+      return getOrderDisplayTotal(order, baseLines);
+    },
+    [order, baseLines, isDelivered, qtyDoneByProductId]
   );
   const lines = useMemo(() => {
     if (!isDelivered || !qtyDoneByProductId || typeof qtyDoneByProductId !== 'object') {

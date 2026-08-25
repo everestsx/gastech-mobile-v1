@@ -6,6 +6,7 @@
 import * as SQLite from 'expo-sqlite';
 import * as FileSystem from 'expo-file-system';
 import { coerceSqliteStatementBindings } from './dbHelpers.js';
+import { isSqliteFullError, reclaimSqliteSpaceOnDb } from './sqliteMaintenance.js';
 
 const DB_NAME = 'gastech.db';
 
@@ -45,6 +46,11 @@ function getRawDb() {
   if (!rawDbPromise) {
     rawDbPromise = SQLite.openDatabaseAsync(DB_NAME).then(async (db) => {
       await runMigrations(db);
+      try {
+        await db.execAsync('PRAGMA wal_checkpoint(PASSIVE)');
+      } catch (_) {
+        /* non-fatal */
+      }
       return patchExpoSqliteBindings(db);
     });
   }
@@ -75,6 +81,11 @@ const SALE_ORDERS_COLUMNS = [
 
 async function runMigrations(db) {
   await db.execAsync('PRAGMA journal_mode = WAL');
+  try {
+    await db.execAsync('PRAGMA wal_autocheckpoint = 200');
+  } catch (_) {
+    /* older SQLite builds */
+  }
   const versionRow = await db.getFirstAsync('PRAGMA user_version');
   const current = versionRow?.user_version ?? 0;
 
@@ -747,13 +758,35 @@ async function runMigrations(db) {
 /**
  * Run one async operation with the real DB. Serializes all access to avoid "database is locked".
  */
+/** Prevents reclaim from re-entering itself when its own DELETEs also hit SQLITE_FULL. */
+let _reclaiming = false;
+
 function enqueue(fn) {
   const p = _queue.then(async () => {
     const db = await getRawDb();
-    return fn(db);
+    try {
+      return await fn(db);
+    } catch (e) {
+      if (!isSqliteFullError(e) || _reclaiming) throw e;
+      _reclaiming = true;
+      try {
+        await reclaimSqliteSpaceOnDb(db, { aggressive: true });
+      } catch (reclaimErr) {
+        console.warn('[DB] SQLITE_FULL reclaim failed', reclaimErr?.message ?? reclaimErr);
+        throw e;
+      } finally {
+        _reclaiming = false;
+      }
+      return await fn(db);
+    }
   });
   _queue = p.catch(() => { }); // keep queue moving so next op can run
   return p;
+}
+
+/** Periodic / post-sync space reclaim (WAL checkpoint, drop leftover synced JSON). */
+export async function reclaimSqliteSpace(options = {}) {
+  return enqueue((db) => reclaimSqliteSpaceOnDb(db, options));
 }
 
 /**

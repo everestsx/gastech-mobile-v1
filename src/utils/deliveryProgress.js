@@ -11,6 +11,21 @@ export function effectiveDeliveredQtyForLine(line, { isInvoiced = false } = {}) 
   return 0;
 }
 
+/**
+ * Dashboard Delivery Progress bar: delivered shops use actual delivered qty;
+ * shops still to deliver use ordered qty as pending.
+ */
+export function chartProgressQtyForLine(line, { isDone = false, isInvoiced = false } = {}) {
+  const orderedQty = Math.round(Number(line?.product_uom_qty) || 0);
+  const deliveredQty = Math.round(effectiveDeliveredQtyForLine(line, { isInvoiced }));
+  if (isDone) {
+    const q = deliveredQty > 0 ? deliveredQty : 0;
+    return { stack: q, delivered: q, pending: 0 };
+  }
+  if (orderedQty <= 0) return { stack: 0, delivered: 0, pending: 0 };
+  return { stack: orderedQty, delivered: 0, pending: orderedQty };
+}
+
 export function sumEffectiveDeliveredQtyForOrder(order, orderLines) {
   const oid = Number(order?.id);
   if (!Number.isFinite(oid)) return 0;

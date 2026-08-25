@@ -62,9 +62,12 @@ export const getSaleOrderDetails = async (saleOrderId) => {
 export const updateSaleOrderLineQty = (lineId, qty) =>
   callOdoo("sale.order.line", "write", [[lineId], { product_uom_qty: qty }]);
 
-/** Delivered qty on SO line (do not change ordered qty). May fail on some Odoo configs if field is computed — caller should catch. */
+/** Delivered qty on SO line (do not change ordered qty). */
 export const updateSaleOrderLineQtyDelivered = (lineId, qtyDelivered) =>
-  callOdoo("sale.order.line", "write", [[lineId], { qty_delivered: Number(qtyDelivered) }]);
+  callOdoo("sale.order.line", "write", [[lineId], { qty_delivered: Number(qtyDelivered) }], {
+    // Some Odoo DBs store qty_delivered from stock moves; context helps when manual write is allowed.
+    context: { skip_sms: true, tracking_disable: true },
+  });
 
 /**
  * Apply multiple sale.order.line updates in one Odoo write (single DB transaction on server).
@@ -84,7 +87,12 @@ export const applySaleOrderLineUpdatesBatch = async (saleOrderId, { ordered = []
     orderLineCommands.push([1, Number(u.lineId), { qty_delivered: Number(u.qty_delivered) }]);
   }
   if (!orderLineCommands.length) return;
-  await callOdoo("sale.order", "write", [[soId], { order_line: orderLineCommands }]);
+  await callOdoo(
+    "sale.order",
+    "write",
+    [[soId], { order_line: orderLineCommands }],
+    { context: { skip_sms: true, tracking_disable: true } }
+  );
 };
 
 /* ---------------- GET PAYMENT JOURNALS (bank and cash only, from Odoo) ---------------- */

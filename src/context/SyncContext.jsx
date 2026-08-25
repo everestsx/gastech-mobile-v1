@@ -8,6 +8,15 @@ function toFriendlySyncErrorMessage(errorMessage) {
   const msg = raw.toLowerCase();
   if (!raw) return 'Could not sync right now. We will retry automatically when you are online.';
 
+  if (
+    msg.includes('sqlite_full') ||
+    msg.includes('database or disk is full') ||
+    msg.includes('disk is full') ||
+    msg.includes('enospc')
+  ) {
+    return 'This phone is out of storage, so sync could not finish. Free some space, then tap Sync again.';
+  }
+
   const isNetworkLike =
     msg.includes('cannot reach server') ||
     msg.includes('network request failed') ||

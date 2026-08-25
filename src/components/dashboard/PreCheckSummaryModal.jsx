@@ -50,7 +50,7 @@ export default function PreCheckSummaryModal({
     setConfirmEnabled(false);
     const timer = setTimeout(() => {
       setConfirmEnabled(true);
-    }, 20000);
+    }, 40000);
     return () => clearTimeout(timer);
   }, [visible]);
 

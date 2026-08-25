@@ -29,6 +29,7 @@ import { usePrinterConnection } from '../context/PrinterConnectionContext';
 import { useSync } from '../context/SyncContext';
 import { useFocusEffect } from '@react-navigation/native';
 import { odooImageToUri } from '../services/employee.service';
+import { isSqliteFullError, sqliteFullUserMessage } from '../database/sqliteMaintenance.js';
 
 export default function MenuScreen({ navigation }) {
   const { t } = useTranslation();
@@ -80,7 +81,8 @@ export default function MenuScreen({ navigation }) {
       const result = await runSync({ mode: 'master_data', trackIndicator: false });
       await refreshLastSync();
       if (result?.error) {
-        showAlert(t('menu.syncFailed', 'Sync failed'), result.error);
+        const syncMsg = isSqliteFullError(result.error) ? sqliteFullUserMessage() : result.error;
+        showAlert(t('menu.syncFailed', 'Sync failed'), syncMsg);
       } else {
         setNotification({
           visible: true,

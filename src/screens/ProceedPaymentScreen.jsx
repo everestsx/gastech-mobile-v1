@@ -30,6 +30,7 @@ import { SRI_LANKA_BANKS } from '../constants/sriLankaBanks';
 import { formatAmount } from '../utils/format';
 import { getOrAssignInvoiceNumber } from '../utils/invoiceNumber';
 import { empty, sqliteIntegerFkOrNull, num, odooRecordId } from '../database/dbHelpers.js';
+import { isSqliteFullError, sqliteFullUserMessage } from '../database/sqliteMaintenance.js';
 
 const PAYMENT_CASH = 'cash';
 const PAYMENT_CHECK = 'cheque';
@@ -37,6 +38,9 @@ const PAYMENT_CREDIT = 'credit';
 
 function userFacingPaymentError(err) {
   const raw = String(err?.message || err || '').trim();
+  if (isSqliteFullError(raw) || isSqliteFullError(err)) {
+    return sqliteFullUserMessage();
+  }
   if (
     /runAsync|Kotlin|object Object|SQLite|sqlite|SQLITE_/i.test(raw) ||
     (raw.includes('convert') && raw.includes('type'))

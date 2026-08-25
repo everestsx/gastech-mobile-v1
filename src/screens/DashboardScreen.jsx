@@ -54,6 +54,7 @@ import {
   KEY_PRECHECK_DONE,
   runSync,
   getVehicleLocationId,
+  inspectAndRecoverSyncQueueHealthOnStartDay,
 } from '../services/sync.service';
 import * as localPaymentsDb from '../database/localPayments.js';
 import * as localInvoicesDb from '../database/localInvoices.js';
@@ -101,6 +102,7 @@ import {
   orderIsDeliveryDoneForProgress,
   orderCountsAsDeliveredForDashboard,
   effectiveDeliveredQtyForLine,
+  chartProgressQtyForLine,
 } from '../utils/deliveryProgress.js';
 import {
   getCheckoutResumeMap,
@@ -1458,21 +1460,20 @@ export default function DashboardScreen({ navigation }) {
       try {
         // Step 1: Supplier/company details first (mandatory).
         let supplierReadySeed = false;
-        for (let i = 0; i < 6 && !supplierReadySeed; i += 1) {
+        for (let i = 0; i < 3 && !supplierReadySeed; i += 1) {
           if (preCheckPartyWarmupRunRef.current !== runId || sessionKeyAtOpen !== sessionKey) return;
           const supplierSeed = await preloadInvoicePartyInfoForOrders([], {
-            retryDelaysMs: [0, 300, 700],
+            retryDelaysMs: [0, 200],
           });
           supplierReadySeed = supplierSeed?.companyCached === true;
-          if (!supplierReadySeed) await waitMs(500 + i * 250);
+          if (!supplierReadySeed) await waitMs(300);
         }
         if (!supplierReadySeed) throw new Error('Supplier details not ready yet');
 
-        // Step 2: Start-day backend pull + SQLite refresh.
-        // Important: runSync de-duplicates concurrent calls globally. The first await may resolve
-        // an older in-flight sync (possibly started before vehicle switch). Run a second start_day
-        // pass immediately after to guarantee one fresh sync on the current session vehicle.
-        await runSync({ mode: 'start_day', trackIndicator: false }).catch(() => null);
+        // Step 1b: Fast queue health (release safe holds only — no upload drain).
+        await inspectAndRecoverSyncQueueHealthOnStartDay().catch(() => null);
+
+        // Step 2: One start_day pull (second pass was doubling wait to 1+ minutes).
         const startDayResult = await runSync({ mode: 'start_day', trackIndicator: false }).catch((e) => ({
           error: e?.message || 'start day sync failed',
         }));
@@ -1497,12 +1498,15 @@ export default function DashboardScreen({ navigation }) {
         setPreCheckTodayOrdersLoading(false);
         setPreCheckStockLoading(false);
 
-        // Step 4: Customer details for those orders (mandatory retry-until-ready).
+        // Step 4: Customer party details — keep Pre-Check snappy (~10s on good network).
+        // Do not retry-until-perfect for every customer; invoice flow can fill gaps later.
         let noOrderConfirmHits = 0;
         const startDayHadError = !!startDayResult?.error;
         let finalState = null;
-        for (let attempt = 0; attempt < 10; attempt += 1) {
+        const preCheckDeadline = Date.now() + 10000;
+        for (let attempt = 0; attempt < 3; attempt += 1) {
           if (preCheckPartyWarmupRunRef.current !== runId || sessionKeyAtOpen !== sessionKey) return;
+          if (Date.now() > preCheckDeadline) break;
           const latestOrdersLoop = (await getCachedOrders(vehicleId).catch(() => [])) || [];
           const latestTodayOrdersLoop = (latestOrdersLoop || []).filter((o) =>
             getOrderDateForSyncMode(o).startsWith(localToday)
@@ -1519,11 +1523,11 @@ export default function DashboardScreen({ navigation }) {
           ).size;
 
           const result = await preloadInvoicePartyInfoForOrders(latestTodayOrdersLoop, {
-            retryDelaysMs: [0, 300, 700, 1200],
+            retryDelaysMs: [0, 250],
           });
           const customerCount = Number(result?.customerCachedCount) || 0;
           const customerFailedCount = Number(result?.customerFailedCount) || 0;
-          const details = await getPreCheckPartyDetailsForOrders(latestTodayOrdersLoop, 12).catch(() => ({
+          const details = await getPreCheckPartyDetailsForOrders(latestTodayOrdersLoop, 8).catch(() => ({
             supplier: null,
             customers: [],
             totalCustomerPartners: totalTodayCustomers,
@@ -1542,10 +1546,13 @@ export default function DashboardScreen({ navigation }) {
             noOrderConfirmHits = 0;
           }
           const noOrdersConfirmed =
-            !startDayHadError && !hasTodayOrders && totalCustomerPartners === 0 && noOrderConfirmHits >= 2;
+            !startDayHadError && !hasTodayOrders && totalCustomerPartners === 0 && noOrderConfirmHits >= 1;
+          // Good enough to drive: supplier ready + (no orders OR any customer cache progress).
           const customerReady = noOrdersConfirmed
             ? true
-            : customerFailedCount === 0 && (customerCount > 0 || customerReadyRows.length > 0);
+            : !hasTodayOrders
+              ? true
+              : customerCount > 0 || customerReadyRows.length > 0 || customerFailedCount === 0;
           finalState = {
             running: !(supplierReady && customerReady),
             supplierReady,
@@ -1559,35 +1566,58 @@ export default function DashboardScreen({ navigation }) {
           };
           setPreCheckPartyStatus(finalState);
           if (supplierReady && customerReady) break;
-          await waitMs(600 + attempt * 300);
+          await waitMs(300);
         }
         if (preCheckPartyWarmupRunRef.current !== runId || sessionKeyAtOpen !== sessionKey) return;
-        if (!finalState?.supplierReady || !finalState?.customerReady) {
-          setPreCheckPartyStatus((prev) => ({ ...prev, running: true, error: null }));
-          setTimeout(() => {
-            if (preCheckPartyWarmupRunRef.current === runId && sessionKeyAtOpen === sessionKey) {
-              void runSequentialPreCheckWarmup(cycle + 1);
-            }
-          }, Math.min(5000, 1200 + cycle * 250));
-          return;
+        // Never loop Pre-Check for minutes — finish with best-effort state so driver can work.
+        if (!finalState?.supplierReady) {
+          setPreCheckPartyStatus((prev) => ({
+            ...prev,
+            running: false,
+            supplierReady: prev?.supplierReady === true,
+            customerReady: true,
+            error: null,
+            checkedAt: Date.now(),
+          }));
+        } else {
+          setPreCheckPartyStatus((prev) => ({
+            ...(finalState || prev),
+            running: false,
+            customerReady: true,
+            checkedAt: Date.now(),
+          }));
         }
         setPreCheckPartyWarmupRunning(false);
       } catch (e) {
         console.warn('[PreCheck] sequential warmup pending', e?.message ?? e);
         if (preCheckPartyWarmupRunRef.current !== runId || sessionKeyAtOpen !== sessionKey) return;
-        setPreCheckTodayOrdersLoading(true);
-        setPreCheckStockLoading(true);
+        // At most one quick retry — never spin for minutes.
+        if (cycle < 1) {
+          setPreCheckTodayOrdersLoading(true);
+          setPreCheckStockLoading(true);
+          setPreCheckPartyStatus((prev) => ({
+            ...prev,
+            running: true,
+            error: null,
+            checkedAt: Date.now(),
+          }));
+          setTimeout(() => {
+            if (preCheckPartyWarmupRunRef.current === runId && sessionKeyAtOpen === sessionKey) {
+              void runSequentialPreCheckWarmup(cycle + 1);
+            }
+          }, 800);
+          return;
+        }
+        setPreCheckTodayOrdersLoading(false);
+        setPreCheckStockLoading(false);
         setPreCheckPartyStatus((prev) => ({
           ...prev,
-          running: true,
+          running: false,
+          customerReady: true,
           error: null,
           checkedAt: Date.now(),
         }));
-        setTimeout(() => {
-          if (preCheckPartyWarmupRunRef.current === runId && sessionKeyAtOpen === sessionKey) {
-            void runSequentialPreCheckWarmup(cycle + 1);
-          }
-        }, Math.min(5000, 1400 + cycle * 300));
+        setPreCheckPartyWarmupRunning(false);
       }
     };
     void runSequentialPreCheckWarmup();
@@ -1684,8 +1714,6 @@ export default function DashboardScreen({ navigation }) {
       if (!byPartner[key]) return;
 
       const orderedQty = Math.round(Number(line.product_uom_qty) || 0);
-      if (orderedQty <= 0) return;
-
       const productName = (Array.isArray(line.product_id) ? line.product_id[1] : null) || line.name || '';
       const canonicalKg = canonicalKgFromName(productName);
       const parsedKg = canonicalKg == null ? parseKgFromProductName(productName) : null;
@@ -1694,10 +1722,6 @@ export default function DashboardScreen({ navigation }) {
         : Number.isFinite(Number(parsedKg))
           ? `${Number(parsedKg)}kg`
           : 'Other';
-
-      byPartner[key].stacks[gasTypeKey] = (Number(byPartner[key].stacks[gasTypeKey]) || 0) + orderedQty;
-
-      byPartner[key].total += orderedQty;
 
       const isDone = orderCountsAsDeliveredForDashboard(
         order,
@@ -1709,9 +1733,14 @@ export default function DashboardScreen({ navigation }) {
         chartOrderLines
       );
       const isInvoiced = String(order?.invoice_status || '').toLowerCase() === 'invoiced';
-      const deliveredQty = Math.round(effectiveDeliveredQtyForLine(line, { isInvoiced }));
-      if (isDone) byPartner[key].delivered += deliveredQty > 0 ? deliveredQty : orderedQty;
-      else byPartner[key].pending += orderedQty;
+      const q = chartProgressQtyForLine(line, { isDone, isInvoiced });
+      if (q.stack <= 0 && q.delivered <= 0 && q.pending <= 0) return;
+      if (!isDone && orderedQty <= 0) return;
+
+      byPartner[key].stacks[gasTypeKey] = (Number(byPartner[key].stacks[gasTypeKey]) || 0) + q.stack;
+      byPartner[key].total += q.stack;
+      byPartner[key].delivered += q.delivered;
+      byPartner[key].pending += q.pending;
     });
 
     const real = Object.values(byPartner)

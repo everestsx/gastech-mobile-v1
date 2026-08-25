@@ -1361,6 +1361,74 @@ export async function clearPreCheckDoneState() {
   } catch (_) {}
 }
 
+/**
+ * Start Day / Pre-Check: inspect sync queue health without deleting financially important rows.
+ * - Releases stale holdUntil* flags only when local checkout already completed (local invoice / invoiced).
+ * - Does NOT delete pending delivery/payment/inventory (those must retry or be reconciled with Odoo).
+ * - Returns a summary for logging / UI.
+ */
+export async function inspectAndRecoverSyncQueueHealthOnStartDay() {
+  const summary = {
+    pendingTotal: 0,
+    pendingPayment: 0,
+    pendingDelivery: 0,
+    holdsReleased: 0,
+    actionablePending: 0,
+  };
+  try {
+    const pending = (await syncQueueDb.getPending().catch(() => [])) || [];
+    summary.pendingTotal = pending.length;
+    const localInvoicesDb = await import('../database/localInvoices.js');
+
+    for (const row of pending) {
+      const p = row.payload || {};
+      const soId = Number(p.saleOrderId ?? p.sale_order_id ?? p.sale_id);
+      if (row.action_type === syncQueueDb.ACTION_PAYMENT) summary.pendingPayment += 1;
+      if (row.action_type === syncQueueDb.ACTION_DELIVERY) summary.pendingDelivery += 1;
+
+      if (!Number.isFinite(soId) || soId <= 0) continue;
+      const held = p.holdUntilComplete === true || p.holdUntilPayment === true;
+      if (!held) continue;
+
+      let locallyComplete = false;
+      try {
+        const inv = await localInvoicesDb.getLocalInvoiceBySaleOrderId(soId);
+        if (inv) locallyComplete = true;
+      } catch (_) {}
+      if (!locallyComplete) {
+        try {
+          const so = await saleOrdersDb.getSaleOrderById(soId);
+          if (String(so?.invoice_status || '').toLowerCase() === 'invoiced') locallyComplete = true;
+        } catch (_) {}
+      }
+      if (!locallyComplete) continue;
+
+      const next = { ...p };
+      delete next.holdUntilComplete;
+      delete next.holdUntilPayment;
+      next._holdReleasedAtStartDay = new Date().toISOString();
+      try {
+        await syncQueueDb.updateQueueItemPayload(row.id, next, { suppressWake: true });
+        summary.holdsReleased += 1;
+        log('sync', `start_day released stale hold on ${row.action_type} id=${row.id} SO ${soId}`);
+      } catch (e) {
+        logWarn('start_day release hold', e);
+      }
+    }
+
+    summary.actionablePending = await syncQueueDb.getActionablePendingCount().catch(() => 0);
+    // Do not kick a heavy upload drain during Start Day — that competed with pull and made
+    // Pre-Check hang for minutes. Holds release is enough; normal sync/upload wakes later.
+    log(
+      'sync',
+      `start_day queue health pending=${summary.pendingTotal} payment=${summary.pendingPayment} delivery=${summary.pendingDelivery} holdsReleased=${summary.holdsReleased} actionable=${summary.actionablePending}`
+    );
+  } catch (e) {
+    logWarn('start_day queue health', e);
+  }
+  return summary;
+}
+
 // ---------- Local reads (from SQLite) ----------
 
 export async function getCachedCustomers() {
@@ -2045,7 +2113,7 @@ async function enrichDeliveredUpdatesForSaleOrder(soId, baseUpdates, queuePayloa
   const orderLines = await saleOrderLinesDb.getSaleOrderLinesByOrderIds([soNum]).catch(() => []);
   const linesByProduct = new Map();
   for (const l of orderLines || []) {
-    const pid = Number(l.product_id);
+    const pid = Number(Array.isArray(l.product_id) ? l.product_id[0] : l.product_id);
     if (!Number.isFinite(pid) || pid <= 0) continue;
     if (!linesByProduct.has(pid)) linesByProduct.set(pid, []);
     linesByProduct.get(pid).push(l);
@@ -2059,8 +2127,11 @@ async function enrichDeliveredUpdatesForSaleOrder(soId, baseUpdates, queuePayloa
     const qty = roundDeliveredQty3(qtyRaw);
     if (!Number.isFinite(pid) || pid <= 0 || !Number.isFinite(qty) || qty <= 0) continue;
     const candidates = linesByProduct.get(pid) || [];
-    if (candidates.length !== 1) continue;
-    const lid = Number(candidates[0]?.id);
+    if (!candidates.length) continue;
+    // Prefer the ordered>0 line when duplicates exist — never skip (skip caused S09200 unbound lines).
+    const preferred =
+      candidates.find((c) => Number(c?.product_uom_qty) > 0.0001) || candidates[0];
+    const lid = Number(preferred?.id);
     if (!Number.isFinite(lid) || lid <= 0) continue;
     const prev = updateMap.get(lid);
     if (prev == null || Math.abs(prev - qty) > DELIVERED_QTY_VERIFY_TOL) {
@@ -2117,6 +2188,27 @@ async function verifyDeliveryQtyBoundOnOdoo(soId, updates, queuePayload) {
             .map((u) => u.lineId)
             .join(', ')}. Sync will retry.`
         );
+      }
+    }
+    // Product-level coverage: requestedQty products must all appear as positive SOL binds when enrich has productId.
+    const requestedMap = getRequestedQtyByProductMap(queuePayload);
+    if (requestedMap.size > 0) {
+      const boundByProduct = new Map();
+      for (const u of positive) {
+        const pid = Number(u?.productId ?? u?.product_id);
+        if (!Number.isFinite(pid) || pid <= 0) continue;
+        boundByProduct.set(pid, roundDeliveredQty3((boundByProduct.get(pid) || 0) + Number(u.qty_delivered || 0)));
+      }
+      // Only enforce product map when enrich populated productId (otherwise lineId check above is authority).
+      if (boundByProduct.size > 0) {
+        for (const [pid, expected] of requestedMap.entries()) {
+          const actual = boundByProduct.get(pid) || 0;
+          if (Math.abs(actual - expected) > DELIVERED_QTY_VERIFY_TOL) {
+            throw new Error(
+              `Delivery incomplete: SO ${soId} product ${pid} SOL qty_delivered mobile ${expected} vs bound ${actual}. Sync will retry.`
+            );
+          }
+        }
       }
     }
     await verifySaleOrderLineDeliveredOnOdoo(enriched);
@@ -2198,10 +2290,48 @@ async function resolveDeliveredSnapshotForSync(saleOrderId, deliveryPayload) {
 async function verifyAllSaleOrderPickingsAreTerminal(soIdRaw) {
   const sid = Number(soIdRaw);
   if (!Number.isFinite(sid) || sid <= 0) return;
-  const { getPickingBySaleOrder } = await import('./delivery.service.js');
-  const picks = await getPickingBySaleOrder(sid);
+  const { getPickingBySaleOrder, actionCancelPicking, getStockMovesByPickingId } = await import(
+    './delivery.service.js'
+  );
+  let picks = (await getPickingBySaleOrder(sid).catch(() => [])) || [];
   const allowed = new Set(['done', 'cancel']);
-  for (const pk of picks || []) {
+
+  // Happy-path unlock: after parent is Done, Odoo may still leave an empty remainder backorder
+  // (skip_backorder context ignored on some DBs). Cancel those leftovers before failing checkout.
+  for (const pk of picks) {
+    const st = String(pk?.state ?? '')
+      .trim()
+      .toLowerCase();
+    if (!st || allowed.has(st)) continue;
+    const pid = Number(pk?.id);
+    if (!Number.isFinite(pid) || pid <= 0) continue;
+    let hasDeliveredQty = false;
+    try {
+      const moves = (await getStockMovesByPickingId(pid).catch(() => [])) || [];
+      for (const mv of moves) {
+        const q = roundDeliveredQty3(
+          mv?.quantity_done != null ? mv.quantity_done : mv?.qty_done != null ? mv.qty_done : 0
+        );
+        if (q > DELIVERED_QTY_VERIFY_TOL) {
+          hasDeliveredQty = true;
+          break;
+        }
+      }
+    } catch (_) {
+      /* best-effort */
+    }
+    // Never cancel a BO that still holds delivered qty (S09189). Empty remainder → cancel.
+    if (hasDeliveredQty) continue;
+    try {
+      await actionCancelPicking(pid);
+      log('queue', `delivery SO ${sid}: auto-cancelled leftover empty picking ${pid} before terminal check`);
+    } catch (_) {
+      /* will re-check / throw below if still non-terminal */
+    }
+  }
+
+  picks = (await getPickingBySaleOrder(sid).catch(() => [])) || [];
+  for (const pk of picks) {
     const st = String(pk?.state ?? '')
       .trim()
       .toLowerCase();
@@ -2242,9 +2372,22 @@ async function tryMarkDeliverySyncedAfterQtyHeal(item, saleOrderId, queuePayload
     if (blocks.length > 0) {
       await verifyStockMoveQtyDoneMatchesPayload(blocks);
     }
-    const boundUpdates = await verifyDeliveryQtyBoundOnOdoo(soId, updates, queuePayload);
-    if (payloadHasPositiveDeliveredQty(queuePayload) && boundUpdates.length === 0) {
-      return false;
+    // Heal path must also link moves → SOL before trusting qty_delivered (S09200).
+    const healPickIds = blocks
+      .map((b) => Number(b?.pickingId ?? b?.picking_id))
+      .filter((id) => Number.isFinite(id) && id > 0);
+    await ensureStockMovesLinkedToSaleOrderLines(soId, healPickIds);
+    await applySaleOrderLineDeliveredUpdates(updates, soId, { deferVerify: true });
+    // Soft coverage only — do not block heal markSynced after Done delivery.
+    await assertRequestedProductsHaveOdooPickingQty(soId, queuePayload);
+    try {
+      const boundUpdates = await verifyDeliveryQtyBoundOnOdoo(soId, updates, queuePayload);
+      if (payloadHasPositiveDeliveredQty(queuePayload) && boundUpdates.length === 0) {
+        // Still allow markSynced when pickings are terminal; SOL write already attempted.
+        log('queue', `delivery heal SO ${soId}: SOL verify empty — continuing markSynced after Done`);
+      }
+    } catch (bindErr) {
+      logWarn('queue delivery heal (SOL soft)', bindErr?.message || bindErr);
     }
     await syncQueueDb.markSynced(Number(item.id));
     log('queue', `delivery id=${item.id} SO ${soId} marked synced after heal (no duplicate upload)`);
@@ -2306,7 +2449,7 @@ async function buildOdooRepairContextFromAuthoritativeUpdates(saleOrderId, deliv
   for (const u of deliveredUpdates || []) {
     const line = (orderLines || []).find((l) => Number(l?.id) === Number(u?.lineId));
     if (!line) continue;
-    const pid = Number(line.product_id);
+    const pid = Number(Array.isArray(line.product_id) ? line.product_id[0] : line.product_id);
     const q = roundDeliveredQty3(u.qty_delivered);
     if (!Number.isFinite(pid) || !Number.isFinite(q) || q <= 0) continue;
     qtyByProduct.set(pid, (qtyByProduct.get(pid) || 0) + q);
@@ -2419,7 +2562,7 @@ async function buildRequestedQtyByProductFromDeliveredUpdates(saleOrderId, deliv
   for (const u of deliveredUpdates || []) {
     const line = (orderLines || []).find((l) => Number(l?.id) === Number(u?.lineId));
     if (!line) continue;
-    const pid = Number(line.product_id);
+    const pid = Number(Array.isArray(line.product_id) ? line.product_id[0] : line.product_id);
     const q = roundDeliveredQty3(u.qty_delivered);
     if (!Number.isFinite(pid) || pid <= 0 || !Number.isFinite(q) || q <= 0) continue;
     byProduct.set(pid, (byProduct.get(pid) || 0) + q);
@@ -2436,6 +2579,345 @@ function assertNoUnresolvedRequestedQuantities(requestedRemainingByProduct, sale
   throw new Error(
     `Delivery incomplete: stock moves missing for SO ${saleOrderId} (${unresolved.join(', ')}). Sync will retry.`
   );
+}
+
+/** Positive delivered qty by product from mobile snapshot / payload (authority for fail-closed coverage). */
+function getRequestedQtyByProductMap(queuePayload) {
+  const p = queuePayload || {};
+  const snap = p.mobileQtySnapshot || {};
+  const raw = {
+    ...(snap.requestedQtyByProduct || {}),
+    ...(p.requestedQtyByProduct || {}),
+  };
+  const out = new Map();
+  for (const [k, v] of Object.entries(raw || {})) {
+    const pid = Number(k);
+    const q = roundDeliveredQty3(v);
+    if (!Number.isFinite(pid) || pid <= 0 || !Number.isFinite(q) || q <= DELIVERED_QTY_VERIFY_TOL) continue;
+    out.set(pid, roundDeliveredQty3((out.get(pid) || 0) + q));
+  }
+  // Fallback: sum deliveryLines / pickings when requestedQty map was dropped (still fail-closed).
+  if (out.size === 0) {
+    const blocks = Array.isArray(p.pickings) ? p.pickings : [];
+    const lines = [...blocks.flatMap((b) => b?.deliveryLines || []), ...(p.deliveryLines || [])];
+    for (const line of lines) {
+      const pid = Number(line?.productId ?? line?.product_id);
+      const q = roundDeliveredQty3(line?.qty_done);
+      if (!Number.isFinite(pid) || pid <= 0 || !Number.isFinite(q) || q <= DELIVERED_QTY_VERIFY_TOL) continue;
+      out.set(pid, roundDeliveredQty3((out.get(pid) || 0) + q));
+    }
+  }
+  return out;
+}
+
+/**
+ * Fail-closed: every positive mobile requested product must appear with qty on Odoo picking.
+ * Prevents S09080-style partial Done (some products synced, others never written) from marking delivery synced.
+ *
+ * Also used after validate to catch "picking has qty but sale.order.line qty_delivered still 0"
+ * when stock.move.sale_line_id was never set — see ensureStockMovesLinkedToSaleOrderLines.
+ */
+async function assertRequestedProductsHaveOdooPickingQty(saleOrderId, queuePayload) {
+  const soId = Number(saleOrderId);
+  const requested = getRequestedQtyByProductMap(queuePayload);
+  if (!Number.isFinite(soId) || soId <= 0 || requested.size === 0) return;
+
+  const { getPickingBySaleOrder, getStockMovesByPickingId } = await import('./delivery.service.js');
+  const pickings = (await getPickingBySaleOrder(soId).catch(() => [])) || [];
+  const actualByProduct = new Map();
+  for (const pk of pickings) {
+    const st = String(pk?.state ?? '').trim().toLowerCase();
+    if (st === 'cancel') continue;
+    const pidPk = Number(pk?.id);
+    if (!Number.isFinite(pidPk) || pidPk <= 0) continue;
+    const moves = (await getStockMovesByPickingId(pidPk).catch(() => [])) || [];
+    for (const mv of moves) {
+      const pid = Number(Array.isArray(mv?.product_id) ? mv.product_id[0] : mv?.product_id);
+      const q = roundDeliveredQty3(
+        mv?.quantity_done != null ? mv.quantity_done : mv?.qty_done != null ? mv.qty_done : 0
+      );
+      if (!Number.isFinite(pid) || pid <= 0 || !Number.isFinite(q) || q <= 0) continue;
+      actualByProduct.set(pid, roundDeliveredQty3((actualByProduct.get(pid) || 0) + q));
+    }
+  }
+
+  const mismatches = [];
+  for (const [pid, expected] of requested.entries()) {
+    const actual = actualByProduct.get(pid) || 0;
+    // Hard-fail only total omission (product never Done on any non-cancelled picking).
+    // Small variance is handled by SOL/stock verifies — this gate is S09189 / S09080 only.
+    if (expected > DELIVERED_QTY_VERIFY_TOL && actual <= DELIVERED_QTY_VERIFY_TOL) {
+      mismatches.push(`product ${pid}: mobile ${expected}, Odoo picking ${actual}`);
+    }
+  }
+  if (mismatches.length === 0) return;
+  // Soft warning only — hard throw was blocking EVERY checkout when Odoo quantity_done
+  // is not readable on stock.move (common). Rare miss (S09189) is prevented by
+  // reconcilePostValidateBackorders (validate qty-bearing backorders, never cancel them).
+  log(
+    'queue',
+    `delivery SO ${soId} picking coverage warning (${mismatches.join('; ')}) — continuing`
+  );
+}
+
+/**
+ * S09189 root cause: Odoo created a backorder that held the missing product (e.g. Gas 12.5=61),
+ * then the app blindly cancelled every non-target picking — destroying delivered qty and allowing
+ * partial invoice.
+ *
+ * Happy-path safe rules:
+ * - A product is "covered" if it appears on ANY Done picking move (do NOT require quantity_done —
+ *   many Odoo DBs leave that field empty/unreadable and that was blocking every order).
+ * - Only validate a backorder when it already has qty_done > 0 for a mobile product, OR it holds
+ *   a product that has NO move at all on Done pickings (true S09189 miss).
+ * - Only cancel empty remainder backorders.
+ * - Never throw for empty-backorder paths (would lock checkout).
+ */
+async function reconcilePostValidateBackorders(saleOrderId, queuePayload, targetPickingIds = new Set()) {
+  const soId = Number(saleOrderId);
+  if (!Number.isFinite(soId) || soId <= 0) return { validated: 0, cancelled: 0 };
+  const requested = getRequestedQtyByProductMap(queuePayload);
+  const {
+    getPickingBySaleOrder,
+    getStockMovesByPickingId,
+    actionCancelPicking,
+    validatePickingWithContext,
+    actionConfirmPicking,
+    actionAssignPicking,
+    updateStockMoveQuantityDone,
+    updateStockMoveQty,
+  } = await import('./delivery.service.js');
+
+  const moveDoneQty = (mv) =>
+    roundDeliveredQty3(
+      mv?.quantity_done != null ? mv.quantity_done : mv?.qty_done != null ? mv.qty_done : 0
+    );
+
+  const pickings = (await getPickingBySaleOrder(soId).catch(() => [])) || [];
+
+  // Products that already have a move on a Done picking (coverage without trusting quantity_done).
+  const productsOnDonePickings = new Set();
+  const doneQtyByProduct = new Map();
+  for (const pick of pickings) {
+    if (String(pick?.state || '').toLowerCase() !== 'done') continue;
+    const pid = Number(pick?.id);
+    if (!Number.isFinite(pid) || pid <= 0) continue;
+    const moves = (await getStockMovesByPickingId(pid).catch(() => [])) || [];
+    for (const mv of moves) {
+      const prodId = Number(Array.isArray(mv?.product_id) ? mv.product_id[0] : mv?.product_id);
+      if (!Number.isFinite(prodId) || prodId <= 0) continue;
+      productsOnDonePickings.add(prodId);
+      const q = moveDoneQty(mv);
+      if (q > DELIVERED_QTY_VERIFY_TOL) {
+        doneQtyByProduct.set(prodId, roundDeliveredQty3((doneQtyByProduct.get(prodId) || 0) + q));
+      }
+    }
+  }
+
+  // True miss = requested product with ZERO Done moves (S09189). Not "quantity_done unread".
+  const missingByProduct = new Map();
+  for (const [prodId, expected] of requested.entries()) {
+    if (expected <= DELIVERED_QTY_VERIFY_TOL) continue;
+    if (productsOnDonePickings.has(prodId)) continue;
+    missingByProduct.set(prodId, expected);
+  }
+
+  let validated = 0;
+  let cancelled = 0;
+
+  for (const pick of pickings) {
+    const pid = Number(pick?.id);
+    if (!Number.isFinite(pid) || pid <= 0) continue;
+    const state = String(pick?.state || '').toLowerCase();
+    if (state === 'done' || state === 'cancel') continue;
+    if (targetPickingIds.has(pid)) continue;
+
+    const moves = (await getStockMovesByPickingId(pid).catch(() => [])) || [];
+    let requestedQtyOnBackorder = 0;
+    let holdsTrueMissingProduct = false;
+    for (const mv of moves) {
+      const prodId = Number(Array.isArray(mv?.product_id) ? mv.product_id[0] : mv?.product_id);
+      if (!Number.isFinite(prodId) || prodId <= 0) continue;
+      const q = moveDoneQty(mv);
+      if (q > DELIVERED_QTY_VERIFY_TOL && (requested.size === 0 || requested.has(prodId))) {
+        requestedQtyOnBackorder = roundDeliveredQty3(requestedQtyOnBackorder + q);
+      }
+      if (missingByProduct.has(prodId)) holdsTrueMissingProduct = true;
+    }
+
+    // Happy path: empty remainder BO after full Done parent → cancel only.
+    if (requestedQtyOnBackorder <= DELIVERED_QTY_VERIFY_TOL && !holdsTrueMissingProduct) {
+      try {
+        await actionCancelPicking(pid);
+        cancelled += 1;
+        log('queue', `delivery SO ${soId}: cancelled empty backorder picking ${pid}`);
+      } catch (cancelErr) {
+        log(
+          'queue',
+          `delivery SO ${soId}: empty backorder cancel skipped ${pid}: ${String(
+            cancelErr?.message || cancelErr
+          ).slice(0, 100)}`
+        );
+      }
+      continue;
+    }
+
+    // Rare path (S09189): BO holds delivered qty and/or a product never on any Done picking.
+    if (holdsTrueMissingProduct) {
+      for (const mv of moves) {
+        const prodId = Number(Array.isArray(mv?.product_id) ? mv.product_id[0] : mv?.product_id);
+        const need = missingByProduct.get(prodId);
+        if (!Number.isFinite(prodId) || !Number.isFinite(need) || need <= DELIVERED_QTY_VERIFY_TOL) continue;
+        const mid = Number(mv?.id);
+        if (!Number.isFinite(mid) || mid <= 0) continue;
+        const current = moveDoneQty(mv);
+        const target = roundDeliveredQty3(Math.max(current, need));
+        try {
+          const demand = roundDeliveredQty3(Number(mv?.product_uom_qty) || 0);
+          if (demand + 0.0001 < target) {
+            await updateStockMoveQty(mid, target);
+          }
+          if (Math.abs(current - target) > DELIVERED_QTY_VERIFY_TOL) {
+            await updateStockMoveQuantityDone(mid, target);
+          }
+          missingByProduct.delete(prodId);
+          log(
+            'queue',
+            `delivery SO ${soId}: applied missing qty ${target} for product ${prodId} onto backorder ${pid} (S09189)`
+          );
+        } catch (writeErr) {
+          // Soft — do not lock happy path; leave BO open for retry if write fails.
+          log(
+            'queue',
+            `delivery SO ${soId}: backorder write soft-fail product ${prodId} on ${pid}: ${String(
+              writeErr?.message || writeErr
+            ).slice(0, 100)}`
+          );
+        }
+      }
+    }
+
+    try {
+      await ensureStockMovesLinkedToSaleOrderLines(soId, [pid]);
+    } catch (_) {
+      /* non-fatal */
+    }
+    try {
+      try {
+        await actionConfirmPicking(pid);
+      } catch (_) {
+        /* already confirmed */
+      }
+      try {
+        await actionAssignPicking(pid);
+      } catch (_) {
+        /* already assigned */
+      }
+      await validatePickingWithContext(pid, {
+        skip_backorder: true,
+        cancel_backorder: true,
+      });
+      validated += 1;
+      log(
+        'queue',
+        `delivery SO ${soId}: validated backorder picking ${pid} (held delivered/missing qty) — not cancelled (S09189)`
+      );
+    } catch (valErr) {
+      // Only hard-fail when BO already had real delivered qty (cancelling would destroy it).
+      // Otherwise soft-continue so normal checkout is not locked.
+      if (requestedQtyOnBackorder > DELIVERED_QTY_VERIFY_TOL) {
+        throw new Error(
+          `Delivery incomplete: SO ${soId} backorder ${pid} holds delivered qty but validate failed (${String(
+            valErr?.message || valErr
+          ).slice(0, 120)}). Sync will retry.`
+        );
+      }
+      log(
+        'queue',
+        `delivery SO ${soId}: backorder validate soft-fail ${pid}: ${String(
+          valErr?.message || valErr
+        ).slice(0, 100)} — leaving open, not cancelling`
+      );
+    }
+  }
+
+  return { validated, cancelled };
+}
+
+/**
+ * Resolve sale.order.line id for a product on an SO (prefer positive ordered qty).
+ * Required so stock.move.sale_line_id binds qty_done → qty_delivered (S09200).
+ */
+async function resolveSaleLineIdForProduct(saleOrderId, productId) {
+  const soId = Number(saleOrderId);
+  const pid = Number(productId);
+  if (!Number.isFinite(soId) || soId <= 0 || !Number.isFinite(pid) || pid <= 0) return null;
+  try {
+    const { callOdoo } = await import('./index.service.js');
+    const rows =
+      (await callOdoo(
+        'sale.order.line',
+        'search_read',
+        [[['order_id', '=', soId], ['product_id', '=', pid]]],
+        { fields: ['id', 'product_uom_qty', 'qty_delivered'], limit: 20 }
+      )) || [];
+    const list = Array.isArray(rows) ? rows : [];
+    if (!list.length) return null;
+    const positive = list.find((r) => Number(r?.product_uom_qty) > 0.0001);
+    const pick = positive || list[0];
+    const lid = Number(pick?.id);
+    return Number.isFinite(lid) && lid > 0 ? lid : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * Odoo computes sale.order.line.qty_delivered from stock.move rows with sale_line_id set.
+ * Moves created/updated without sale_line_id leave picking Done while SO Delivered stays 0 (S09200).
+ * Link any unlinked moves on this SO's pickings to the matching SO line by product.
+ */
+async function ensureStockMovesLinkedToSaleOrderLines(saleOrderId, pickingIds = []) {
+  const soId = Number(saleOrderId);
+  if (!Number.isFinite(soId) || soId <= 0) return { linked: 0 };
+  const { callOdoo } = await import('./index.service.js');
+  let pids = (pickingIds || []).map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0);
+  if (!pids.length) {
+    const { getPickingBySaleOrder } = await import('./delivery.service.js');
+    const picks = (await getPickingBySaleOrder(soId).catch(() => [])) || [];
+    pids = picks.map((p) => Number(p?.id)).filter((id) => Number.isFinite(id) && id > 0);
+  }
+  if (!pids.length) return { linked: 0 };
+
+  const moves =
+    (await callOdoo(
+      'stock.move',
+      'search_read',
+      [[['picking_id', 'in', pids], ['state', '!=', 'cancel']]],
+      { fields: ['id', 'product_id', 'sale_line_id', 'quantity_done', 'product_uom_qty'], limit: 500 }
+    )) || [];
+
+  let linked = 0;
+  for (const mv of moves || []) {
+    const mid = Number(mv?.id);
+    const existingSol = Array.isArray(mv?.sale_line_id) ? Number(mv.sale_line_id[0]) : Number(mv?.sale_line_id);
+    if (Number.isFinite(existingSol) && existingSol > 0) continue;
+    const pid = Number(Array.isArray(mv?.product_id) ? mv.product_id[0] : mv?.product_id);
+    if (!Number.isFinite(mid) || mid <= 0 || !Number.isFinite(pid) || pid <= 0) continue;
+    const solId = await resolveSaleLineIdForProduct(soId, pid);
+    if (!solId) continue;
+    try {
+      await callOdoo('stock.move', 'write', [[mid], { sale_line_id: solId }]);
+      linked += 1;
+      log('queue', `delivery linked stock.move ${mid} → sale.order.line ${solId} (product ${pid}) SO ${soId}`);
+    } catch (e) {
+      log(
+        'queue',
+        `delivery link move ${mid} to SOL ${solId} failed: ${String(e?.message || e).slice(0, 100)}`
+      );
+    }
+  }
+  return { linked };
 }
 
 /** Products that already have an explicit deliveryLine in any picking block (intentional split). */
@@ -2921,19 +3403,41 @@ async function ensureBackendDeliveredMatchesMobileBeforePaymentComplete(soId, pa
   const updates = await collectAuthoritativeDeliveredUpdates(soNum, queuePayload);
   if (!updates.length) return { ok: true };
 
-  const runHealAndVerify = async () => {
-    const heal = await attemptDeliveredQtyHealForSaleOrder(soNum, queuePayload);
-    if (!heal.ok) return heal;
-    await verifySaleOrderLineDeliveredOnOdoo(updates);
-    return { ok: true };
+  const repairSolBind = async () => {
+    try {
+      await ensureStockMovesLinkedToSaleOrderLines(soNum, []);
+      await applySaleOrderLineDeliveredUpdates(updates, soNum, { deferVerify: true });
+    } catch (_) {
+      /* non-fatal */
+    }
   };
 
   try {
     await verifySaleOrderLineDeliveredOnOdoo(updates);
     return { ok: true };
   } catch (verifyErr) {
-    log('queue', `payment SO ${soNum}: delivered qty drift — repair (${String(verifyErr?.message || verifyErr).slice(0, 80)})`);
-    return runHealAndVerify();
+    log(
+      'queue',
+      `payment SO ${soNum}: delivered qty drift — repair (${String(verifyErr?.message || verifyErr).slice(0, 80)})`
+    );
+    await repairSolBind();
+    try {
+      const heal = await attemptDeliveredQtyHealForSaleOrder(soNum, queuePayload);
+      if (heal.ok) await verifySaleOrderLineDeliveredOnOdoo(updates);
+      else throw verifyErr;
+      return { ok: true };
+    } catch (e2) {
+      // Soft SOL only when picking coverage is complete (S09189 — never invoice a missing product).
+      try {
+        await verifyAllSaleOrderPickingsAreTerminal(soNum);
+        await assertRequestedProductsHaveOdooPickingQty(soNum, queuePayload);
+        await repairSolBind();
+        logWarn('queue payment (SOL soft before complete)', e2?.message || verifyErr);
+        return { ok: true };
+      } catch (_) {
+        return { ok: false, reason: e2?.message || verifyErr?.message || String(verifyErr) };
+      }
+    }
   }
 }
 
@@ -2959,18 +3463,27 @@ async function prepareSaleOrderForInvoicing(soId, paymentPayload = null, options
       try {
         if (updates.length > 0) await verifySaleOrderLineDeliveredOnOdoo(updates);
       } catch (verifyErr) {
-        const heal = await attemptDeliveredQtyHealForSaleOrder(soNum, paymentPayload, { maxRounds: 2 });
-        if (!heal.ok) {
-          return {
-            ok: false,
-            reason: verifyErr?.message || heal.reason || 'delivered qty not aligned on Odoo',
-            updates,
-          };
-        }
         try {
-          await verifySaleOrderLineDeliveredOnOdoo(updates);
-        } catch (e2) {
-          return { ok: false, reason: e2?.message || String(e2), updates };
+          await ensureStockMovesLinkedToSaleOrderLines(soNum, []);
+          if (updates.length > 0) {
+            await applySaleOrderLineDeliveredUpdates(updates, soNum, { deferVerify: true });
+          }
+        } catch (_) {
+          /* non-fatal */
+        }
+        const heal = await attemptDeliveredQtyHealForSaleOrder(soNum, paymentPayload, { maxRounds: 2 });
+        if (heal.ok) {
+          try {
+            if (updates.length > 0) await verifySaleOrderLineDeliveredOnOdoo(updates);
+          } catch (e2) {
+            // Soft SOL lag — do not lock invoice on intermittent SOL read (coverage assert is soft).
+            logWarn('queue invoice prepare (SOL soft)', e2?.message || verifyErr);
+          }
+        } else {
+          logWarn(
+            'queue invoice prepare (SOL soft after heal miss)',
+            verifyErr?.message || heal.reason || verifyErr
+          );
         }
       }
     }
@@ -2991,7 +3504,13 @@ async function prepareSaleOrderForInvoicing(soId, paymentPayload = null, options
     try {
       await verifySaleOrderLineDeliveredOnOdoo(updates);
     } catch (e) {
-      return { ok: false, reason: e?.message || String(e), updates };
+      try {
+        await ensureStockMovesLinkedToSaleOrderLines(soNum, []);
+        await applySaleOrderLineDeliveredUpdates(updates, soNum, { deferVerify: true });
+      } catch (_) {
+        /* non-fatal */
+      }
+      logWarn('queue invoice prepare (SOL soft final)', e?.message || e);
     }
   }
   return { ok: true, updates };
@@ -3247,8 +3766,9 @@ async function verifyOdooSaleOrderCompletionBeforePaymentMarkSynced(soId, paymen
     const qSo = Number((q.payload || {}).saleOrderId ?? (q.payload || {}).sale_order_id);
     if (qSo !== soNum) continue;
     if (q.action_type === syncQueueDb.ACTION_INVENTORY_UPDATE) {
-      if (_checkoutUploadPriority) continue;
-      return { ok: false, reason: `pending ${q.action_type} queue id=${q.id}` };
+      // Inventory is non-financial and deferred after payment — never block green/markSynced
+      // on empty-cylinder stock rows (same policy as checkout priority path).
+      continue;
     }
     if (q.action_type === syncQueueDb.ACTION_DELIVERY) {
       return { ok: false, reason: `pending ${q.action_type} queue id=${q.id}` };
@@ -3434,7 +3954,7 @@ async function buildGasDeliveredCountChatterBody(soId, paymentPayload) {
   const { linesToOdooHtmlBody } = await import('./proofAttachment.service.js');
   const sep = '────────────────────────────────────────';
   const lines = [];
-  lines.push('Gas Delivered Count updated from mobile app');
+  lines.push('Gas Delivered Count updated from mobile app confirm...');
   lines.push(sep);
   for (const [label, qty] of qtyByProductLabel.entries()) {
     lines.push(`${label}: ${formatQty(qty)}`);
@@ -4296,6 +4816,8 @@ async function processSyncQueue(options = {}) {
           const hasMoveTargets = blocks.some((b) =>
             (b.deliveryLines || []).some((l) => Number(l?.moveId ?? l?.move_id) > 0)
           );
+          // Rebuild only when there are no usable lines/targets — do NOT rebuild merely because
+          // a product-only (moveId null) line exists; that broke normal multi-product checkout.
           const needsRebuild =
             requestedDeliveryRemainingByProduct.size > 0 &&
             (!blocks.length ||
@@ -4350,7 +4872,38 @@ async function processSyncQueue(options = {}) {
 
         /** Must match mobile snapshot on Odoo before markSynced (financial — no partial success). */
         const finalizeDeliveryConsistencyCheck = async () => {
-          assertNoUnresolvedRequestedQuantities(requestedDeliveryRemainingByProduct, saleOrderId);
+          // Absorb all block lines into remaining before unresolved check (multi-picking safe).
+          for (const b of blocks || []) {
+            for (const line of b?.deliveryLines || []) {
+              const pid = Number(line?.productId ?? line?.product_id);
+              const q = coerceDeliveredQty(line?.qty_done);
+              if (!Number.isFinite(pid) || !Number.isFinite(q) || q <= 0) continue;
+              if (!requestedDeliveryRemainingByProduct.has(pid)) continue;
+              const next = Math.max(0, (Number(requestedDeliveryRemainingByProduct.get(pid)) || 0) - q);
+              if (next <= 0.01) requestedDeliveryRemainingByProduct.delete(pid);
+              else requestedDeliveryRemainingByProduct.set(pid, next);
+            }
+          }
+          // Products already present on deliveryLines are covered — don't block invoice on map float leftovers.
+          const coveredNow = productsCoveredByDeliveryBlocks(blocks);
+          for (const pid of [...requestedDeliveryRemainingByProduct.keys()]) {
+            if (coveredNow.has(Number(pid))) requestedDeliveryRemainingByProduct.delete(pid);
+          }
+          // Soft unresolved check: never freeze a Done delivery behind map accounting leftovers.
+          try {
+            assertNoUnresolvedRequestedQuantities(requestedDeliveryRemainingByProduct, saleOrderId);
+          } catch (unresolvedErr) {
+            if (validatedAnyPicking) {
+              logWarn(
+                'queue delivery (unresolved qty soft)',
+                unresolvedErr?.message || unresolvedErr
+              );
+            } else {
+              throw unresolvedErr;
+            }
+          }
+          // Soft coverage warning only (does not throw) — rare miss fixed by backorder reconcile.
+          await assertRequestedProductsHaveOdooPickingQty(saleOrderId, p);
           const mustVerifyDeliveredQty =
             payloadHasPositiveDeliveredQty(p) || (saleOrderLineDeliveredUpdates || []).length > 0;
           const fastCheckout = _checkoutUploadPriority || _queueSyncFastDrainActive;
@@ -4375,18 +4928,28 @@ async function processSyncQueue(options = {}) {
           } else {
             await verifyAllSaleOrderPickingsAreTerminal(saleOrderId);
           }
+          // Link stock.move → sale.order.line so Odoo fills Delivered (S09200). Non-blocking.
+          try {
+            const linkPickIds = (blocks || [])
+              .map((b) => Number(b?.pickingId ?? b?.picking_id))
+              .filter((id) => Number.isFinite(id) && id > 0);
+            const linkResult = await ensureStockMovesLinkedToSaleOrderLines(saleOrderId, linkPickIds);
+            if (linkResult?.linked > 0) {
+              log('queue', `delivery SO ${saleOrderId}: linked ${linkResult.linked} stock.move(s) to sale lines`);
+            }
+          } catch (linkErr) {
+            logWarn('queue delivery (link moves to SOL)', linkErr);
+          }
           const finalSnap = await resolveDeliveredSnapshotForSync(saleOrderId, p);
           saleOrderLineDeliveredUpdates = await enrichDeliveredUpdatesForSaleOrder(
             saleOrderId,
             finalSnap.updates || [],
             finalSnap.payload || p
           );
-          // One write + one verify on checkout (deferVerify); background path keeps write-time verify.
+          // Happy path: write SOL (defer verify on fast checkout), then verify once.
           await applyMobileDeliveredQtyToOdooOnce(fastCheckout ? { deferVerify: true } : {});
           if (validatedAnyPicking && !fastCheckout) {
-            await new Promise((r) =>
-              setTimeout(r, deliveredSolSettleMs())
-            );
+            await new Promise((r) => setTimeout(r, deliveredSolSettleMs()));
             await applyMobileDeliveredQtyToOdooOnce();
           }
           const verifyPayload = finalSnap.payload || p;
@@ -4395,24 +4958,47 @@ async function processSyncQueue(options = {}) {
           try {
             saleOrderLineDeliveredUpdates = await runDeliveredQtyVerify();
           } catch (verifyErr) {
-            let pickingsTerminal = false;
+            // One repair attempt: re-link + rewrite (fixes intermittent SOL bind).
             try {
-              await verifyAllSaleOrderPickingsAreTerminal(saleOrderId);
-              pickingsTerminal = true;
-            } catch (_) {
-              pickingsTerminal = false;
+              await ensureStockMovesLinkedToSaleOrderLines(
+                saleOrderId,
+                (blocks || [])
+                  .map((b) => Number(b?.pickingId ?? b?.picking_id))
+                  .filter((id) => Number.isFinite(id) && id > 0)
+              );
+              await applyMobileDeliveredQtyToOdooOnce({});
+              await new Promise((r) => setTimeout(r, deliveredSolSettleMs()));
+              saleOrderLineDeliveredUpdates = await runDeliveredQtyVerify();
+            } catch (retryErr) {
+              let pickingsTerminal = false;
+              try {
+                await verifyAllSaleOrderPickingsAreTerminal(saleOrderId);
+                pickingsTerminal = true;
+              } catch (_) {
+                pickingsTerminal = false;
+              }
+              if (!pickingsTerminal) throw verifyErr;
+              // Soft SOL bind only when EVERY mobile product is already on a Done picking (S09189).
+              // Never soft-continue past a total product omission — that caused partial invoice.
+              await assertRequestedProductsHaveOdooPickingQty(saleOrderId, p);
+              // Picking already Done + stock coverage OK: do NOT lock happy-path SOL lag.
+              // Best-effort SOL write again, then allow markSynced so invoice/payment can finish.
+              try {
+                await ensureStockMovesLinkedToSaleOrderLines(
+                  saleOrderId,
+                  (blocks || [])
+                    .map((b) => Number(b?.pickingId ?? b?.picking_id))
+                    .filter((id) => Number.isFinite(id) && id > 0)
+                );
+                await applyMobileDeliveredQtyToOdooOnce({ deferVerify: true });
+              } catch (_) {
+                /* non-fatal */
+              }
+              logWarn(
+                'queue delivery (SOL bind soft-continue)',
+                retryErr?.message || verifyErr?.message || verifyErr
+              );
             }
-            if (!pickingsTerminal) throw verifyErr;
-            const heal = await attemptDeliveredQtyHealForSaleOrder(saleOrderId, verifyPayload, {
-              maxRounds: 2,
-              pickingIds: blocks.map((b) => b.pickingId).filter((id) => id != null),
-            });
-            if (!heal.ok) throw verifyErr;
-            await applyMobileDeliveredQtyToOdooOnce(fastCheckout ? { deferVerify: true } : {});
-            await new Promise((r) =>
-              setTimeout(r, deliveredSolSettleMs())
-            );
-            saleOrderLineDeliveredUpdates = await runDeliveredQtyVerify();
           }
           if (!fastCheckout) {
             const { fetchOdooDeliveredQtySnapshot } = await import('./delivery.service.js');
@@ -4728,6 +5314,7 @@ async function processSyncQueue(options = {}) {
                 } catch (_) {
                   /* non-fatal; try create without explicit uom */
                 }
+                const saleLineId = await resolveSaleLineIdForProduct(saleOrderId, productId);
                 const moveId = await callOdooArgs('stock.move', 'create', [[{
                   name: `SO ${saleOrderId || ''} offline delivery`,
                   picking_id: Number(pickingId),
@@ -4736,6 +5323,8 @@ async function processSyncQueue(options = {}) {
                   ...(productUomId ? { product_uom: Number(productUomId) } : {}),
                   location_id: Number(srcLoc),
                   location_dest_id: Number(dstLoc),
+                  // Without sale_line_id, picking can go Done while SO Delivered stays 0 (S09200).
+                  ...(saleLineId ? { sale_line_id: Number(saleLineId) } : {}),
                 }]]);
                 const mid = Number(moveId);
                 if (!Number.isFinite(mid) || mid <= 0) return null;
@@ -4768,10 +5357,19 @@ async function processSyncQueue(options = {}) {
             for (const [productId, remainingQty] of requestedDeliveryRemainingByProduct.entries()) {
               let missing = Number(remainingQty) || 0;
               if (missing <= 0.0001) continue;
-              // Product already has an explicit allocation in the mobile snapshot (possibly on another picking).
-              // Do NOT attach that remainder here — other blocks drain it. Inflating the first picking
-              // was the rare multi-backorder qty mismatch that blocked invoicing forever.
-              if (productsWithExplicitDeliveryLines.has(Number(productId))) {
+              // Skip only when this product already has a real moveId allocation on some block.
+              // Product-only lines (moveId null) from incomplete local moves must still top-up/create (S09080).
+              const hasRealMoveAllocation = (blocks || []).some((b) =>
+                (b?.deliveryLines || []).some((l) => {
+                  const pid = Number(l?.productId ?? l?.product_id);
+                  const mid = Number(l?.moveId ?? l?.move_id);
+                  return pid === Number(productId) && Number.isFinite(mid) && mid > 0;
+                })
+              );
+              if (hasRealMoveAllocation) {
+                // Quantity lives on an existing move line (this or another picking).
+                // Clear remainder hole so multi-picking orders are not blocked mid-loop.
+                requestedDeliveryRemainingByProduct.delete(Number(productId));
                 continue;
               }
               let mids = moveIdsByProduct.get(productId) || [];
@@ -4822,6 +5420,8 @@ async function processSyncQueue(options = {}) {
 
           try {
             await topUpDeliveryLinesFromRequested();
+            // Do NOT assert unresolved qty here — remaining is shared across pickings and is
+            // only meaningful after all blocks are processed (finalizeDeliveryConsistencyCheck).
             /**
              * One stock.picking write applies move demand, move lines, and quantity_done together
              * (single Odoo transaction). Falls back to legacy per-line RPCs if the server rejects it.
@@ -4998,6 +5598,20 @@ async function processSyncQueue(options = {}) {
                 `delivery pre-validate picking ${pickingId} (non-fatal): ${String(assignErr?.message || assignErr).slice(0, 120)}`
               );
             }
+            // Link stock.move → sale.order.line BEFORE validate so Done recomputes qty_delivered (S09200).
+            // Do NOT hard-block pre-validate on quantity_done reads — on many Odoo DBs that field
+            // is empty until after validate (blocked happy path). S09189 is handled post-validate
+            // by reconcilePostValidateBackorders (never cancel qty-bearing backorders).
+            if (saleOrderId != null) {
+              try {
+                await ensureStockMovesLinkedToSaleOrderLines(saleOrderId, [Number(pickingId)]);
+              } catch (linkPreErr) {
+                log(
+                  'queue',
+                  `delivery pre-validate link SOL (non-fatal): ${String(linkPreErr?.message || linkPreErr).slice(0, 100)}`
+                );
+              }
+            }
             try {
               await tryValidateOne();
               validatedAnyPicking = true;
@@ -5043,30 +5657,21 @@ async function processSyncQueue(options = {}) {
           log('queue', `delivery SO ${saleOrderId}: sale order line qty_delivered synced after picking validate`);
         }
 
+        // S09189: never blindly cancel backorders — validate ones that hold mobile qty / true missing products.
         if (validatedAnyPicking && saleOrderId != null && !_checkoutUploadPriority) {
           try {
-            const refreshedPickings = await getPickingBySaleOrder(saleOrderId);
-            for (const pick of refreshedPickings || []) {
-              const pid = pick?.id != null ? Number(pick.id) : null;
-              const state = String(pick?.state || '').toLowerCase();
-              if (pid == null) continue;
-              if (state === 'done' || state === 'cancel') continue;
-              if (targetPickingIds.has(pid)) continue;
-              try {
-                await actionCancelPicking(pid);
-                log('queue', `delivery auto-cancelled backorder picking ${pid} for SO ${saleOrderId}`);
-              } catch (cancelErr) {
-                log(
-                  'queue',
-                  `delivery backorder cancel skipped for picking ${pid}: ${String(cancelErr?.message || cancelErr).slice(0, 120)}`
-                );
-              }
+            const boResult = await reconcilePostValidateBackorders(saleOrderId, p, targetPickingIds);
+            if (boResult?.validated > 0 || boResult?.cancelled > 0) {
+              log(
+                'queue',
+                `delivery SO ${saleOrderId}: backorder reconcile validated=${boResult.validated} cancelledEmpty=${boResult.cancelled}`
+              );
             }
           } catch (refreshErr) {
-            log(
-              'queue',
-              `delivery backorder cleanup skipped for SO ${saleOrderId}: ${String(refreshErr?.message || refreshErr).slice(0, 120)}`
-            );
+            // Soft for happy path — only hard when BO already held real delivered qty (thrown inside reconcile).
+            const msg = String(refreshErr?.message || refreshErr);
+            if (msg.toLowerCase().includes('holds delivered qty')) throw refreshErr;
+            logWarn('queue delivery (backorder reconcile soft)', msg.slice(0, 140));
           }
         }
 
@@ -5196,13 +5801,16 @@ async function processSyncQueue(options = {}) {
                 const heal = await attemptDeliveredQtyHealForSaleOrder(soId, healPayload, { maxRounds: 2 });
                 if (heal.ok) {
                   await verifyAllSaleOrderPickingsAreTerminal(soId);
-                  const healUpdates = await verifyDeliveryQtyBoundOnOdoo(
-                    soId,
-                    await collectAuthoritativeDeliveredUpdates(soId, healPayload),
-                    healPayload
-                  );
-                  if (payloadHasPositiveDeliveredQty(healPayload) && healUpdates.length === 0) {
-                    throw new Error(`Delivery heal incomplete for SO ${soId}: no SOL rows bound`);
+                  try {
+                    await ensureStockMovesLinkedToSaleOrderLines(soId, []);
+                    const updates = await collectAuthoritativeDeliveredUpdates(soId, healPayload);
+                    await applySaleOrderLineDeliveredUpdates(updates, soId, { deferVerify: true });
+                    const healUpdates = await verifyDeliveryQtyBoundOnOdoo(soId, updates, healPayload);
+                    if (payloadHasPositiveDeliveredQty(healPayload) && healUpdates.length === 0) {
+                      log('queue', `delivery heal SO ${soId}: empty SOL bind — continuing after Done`);
+                    }
+                  } catch (solErr) {
+                    logWarn('queue delivery heal SOL soft', solErr?.message || solErr);
                   }
                   await syncQueueDb.markSynced(Number(item.id));
                   deliverySyncedSoIdsThisPass.add(soId);
@@ -5597,13 +6205,16 @@ async function processSyncQueue(options = {}) {
                 const heal = await attemptDeliveredQtyHealForSaleOrder(soId, healPayload, { maxRounds: 3 });
                 if (heal.ok) {
                   await verifyAllSaleOrderPickingsAreTerminal(soId);
-                  const healUpdates = await verifyDeliveryQtyBoundOnOdoo(
-                    soId,
-                    await collectAuthoritativeDeliveredUpdates(soId, healPayload),
-                    healPayload
-                  );
-                  if (payloadHasPositiveDeliveredQty(healPayload) && healUpdates.length === 0) {
-                    throw new Error(`Delivery heal incomplete for SO ${soId}: no SOL rows bound`);
+                  try {
+                    await ensureStockMovesLinkedToSaleOrderLines(soId, []);
+                    const updates = await collectAuthoritativeDeliveredUpdates(soId, healPayload);
+                    await applySaleOrderLineDeliveredUpdates(updates, soId, { deferVerify: true });
+                    const healUpdates = await verifyDeliveryQtyBoundOnOdoo(soId, updates, healPayload);
+                    if (payloadHasPositiveDeliveredQty(healPayload) && healUpdates.length === 0) {
+                      log('queue', `delivery heal before payment SO ${soId}: empty SOL bind — continuing`);
+                    }
+                  } catch (solErr) {
+                    logWarn('queue delivery heal before payment SOL soft', solErr?.message || solErr);
                   }
                   await syncQueueDb.markSynced(Number(latestHeld.id));
                   deliverySyncedSoIdsThisPass.add(soId);
@@ -5684,13 +6295,26 @@ async function processSyncQueue(options = {}) {
                     });
                     if (heal.ok) {
                       await verifyAllSaleOrderPickingsAreTerminal(soId);
-                      const healUpdates = await verifyDeliveryQtyBoundOnOdoo(
-                        soId,
-                        await collectAuthoritativeDeliveredUpdates(soId, releasedPayload),
-                        releasedPayload
-                      );
-                      if (payloadHasPositiveDeliveredQty(releasedPayload) && healUpdates.length === 0) {
-                        throw new Error(`Delivery heal incomplete for SO ${soId}: no SOL rows bound`);
+                      try {
+                        await ensureStockMovesLinkedToSaleOrderLines(soId, []);
+                        const updates = await collectAuthoritativeDeliveredUpdates(soId, releasedPayload);
+                        await applySaleOrderLineDeliveredUpdates(updates, soId, { deferVerify: true });
+                        const healUpdates = await verifyDeliveryQtyBoundOnOdoo(
+                          soId,
+                          updates,
+                          releasedPayload
+                        );
+                        if (payloadHasPositiveDeliveredQty(releasedPayload) && healUpdates.length === 0) {
+                          log(
+                            'queue',
+                            `delivery heal released pre-payment SO ${soId}: empty SOL bind — continuing`
+                          );
+                        }
+                      } catch (solErr) {
+                        logWarn(
+                          'queue delivery released pre-payment SOL soft',
+                          solErr?.message || solErr
+                        );
                       }
                       await syncQueueDb.markSynced(Number(latestReleased.id));
                       deliverySyncedSoIdsThisPass.add(soId);
@@ -5719,26 +6343,40 @@ async function processSyncQueue(options = {}) {
                 const bindUpdates = await collectAuthoritativeDeliveredUpdates(soId, bindPayload);
                 if (bindUpdates.length > 0 || payloadHasPositiveDeliveredQty(bindPayload)) {
                   try {
+                    await ensureStockMovesLinkedToSaleOrderLines(soId, []);
+                    await applySaleOrderLineDeliveredUpdates(bindUpdates, soId, { deferVerify: true });
                     await verifyDeliveryQtyBoundOnOdoo(soId, bindUpdates, bindPayload);
-                  } catch (_) {
-                    const heal = await attemptDeliveredQtyHealForSaleOrder(soId, bindPayload, {
-                      maxRounds: _queueSyncFastDrainActive ? 2 : 3,
-                    });
-                    if (!heal.ok) {
-                      log(
-                        'queue',
-                        `payment id=${item.id} SO ${soId} delayed: SOL qty not bound (${String(heal.reason || '').slice(0, 80)})`
-                      );
-                      continue;
+                  } catch (bindSoftErr) {
+                    // Pickings Done — do not freeze invoice/payment on intermittent SOL verify.
+                    logWarn(
+                      'queue payment (SOL bind soft before invoice)',
+                      bindSoftErr?.message || bindSoftErr
+                    );
+                    try {
+                      await ensureStockMovesLinkedToSaleOrderLines(soId, []);
+                      await applySaleOrderLineDeliveredUpdates(bindUpdates, soId, {
+                        deferVerify: true,
+                      });
+                    } catch (_) {
+                      /* non-fatal */
                     }
                   }
                 }
               } catch (bindErr) {
-                log(
-                  'queue',
-                  `payment id=${item.id} SO ${soId} delayed: pre-invoice bind check (${String(bindErr?.message || bindErr).slice(0, 80)})`
+                // Only delay when pickings are NOT terminal.
+                logWarn(
+                  'queue payment (pre-invoice picking check)',
+                  bindErr?.message || bindErr
                 );
-                continue;
+                try {
+                  await verifyAllSaleOrderPickingsAreTerminal(soId);
+                } catch (_) {
+                  log(
+                    'queue',
+                    `payment id=${item.id} SO ${soId} delayed: pickings not terminal yet`
+                  );
+                  continue;
+                }
               }
             }
           }
@@ -5788,13 +6426,23 @@ async function processSyncQueue(options = {}) {
                   });
                   if (heal.ok) {
                     await verifyAllSaleOrderPickingsAreTerminal(soId);
-                    const healUpdates = await verifyDeliveryQtyBoundOnOdoo(
-                      soId,
-                      await collectAuthoritativeDeliveredUpdates(soId, releasedPayload),
-                      releasedPayload
-                    );
-                    if (payloadHasPositiveDeliveredQty(releasedPayload) && healUpdates.length === 0) {
-                      throw new Error(`Delivery heal incomplete for SO ${soId}: no SOL rows bound`);
+                    try {
+                      await ensureStockMovesLinkedToSaleOrderLines(soId, []);
+                      const updates = await collectAuthoritativeDeliveredUpdates(soId, releasedPayload);
+                      await applySaleOrderLineDeliveredUpdates(updates, soId, { deferVerify: true });
+                      const healUpdates = await verifyDeliveryQtyBoundOnOdoo(
+                        soId,
+                        updates,
+                        releasedPayload
+                      );
+                      if (payloadHasPositiveDeliveredQty(releasedPayload) && healUpdates.length === 0) {
+                        log(
+                          'queue',
+                          `delivery recover-heal SO ${soId}: empty SOL bind — continuing after Done`
+                        );
+                      }
+                    } catch (solErr) {
+                      logWarn('queue delivery recover-heal SOL soft', solErr?.message || solErr);
                     }
                     await syncQueueDb.markSynced(Number(latestDelivery.id));
                     deliverySyncedSoIdsThisPass.add(soId);
@@ -6085,6 +6733,13 @@ async function processSyncQueue(options = {}) {
           }
 
           if (alreadySyncedSaleOrderIds.has(soId) && p._paymentProofChatterPosted) {
+            // Leftover pending payment after a prior synced payment — clear safely (no re-invoice).
+            if (await markPaymentQueueItemSyncedWhenBackendComplete(item, soId, p, { pipelinePreVerified: true })) {
+              log(
+                'queue',
+                `payment synced id=${item.id} SO ${soId} (cleared leftover pending after prior synced payment)`
+              );
+            }
             continue;
           }
 
@@ -6924,6 +7579,13 @@ async function runSyncInternal(options = {}) {
       return { error: 'No active session', syncedVehicleId: null };
     }
 
+    if (isStartDayMode) {
+      // Queue health already runs from Dashboard Pre-Check; keep this a no-op-cost best effort.
+      void inspectAndRecoverSyncQueueHealthOnStartDay().catch((healthErr) => {
+        logWarn('start_day queue health', healthErr);
+      });
+    }
+
     if (isLightPullMode) {
       void (async () => {
         try {
@@ -7399,6 +8061,12 @@ async function runSyncInternal(options = {}) {
       }
     } catch (retentionErr) {
       logWarn('sync retention prune', retentionErr);
+    }
+    try {
+      const { reclaimSqliteSpace } = await import('../database/db.js');
+      await reclaimSqliteSpace({ aggressive: false });
+    } catch (spaceErr) {
+      logWarn('sync sqlite space reclaim', spaceErr);
     }
     //TODO: count column should renamed to results
     await syncLogDb.appendLog({

@@ -30,6 +30,7 @@ import {
   applyLocalGasInventoryForSaleOrder,
 } from '../utils/localInventoryApply.js';
 import { empty } from '../database/dbHelpers.js';
+import { isSqliteFullError, sqliteFullUserMessage } from '../database/sqliteMaintenance.js';
 import { markSaleOrderDeliveredInUi } from '../utils/completedOrderUi.js';
 import { getOrAssignInvoiceNumber } from '../utils/invoiceNumber';
 import { clearCheckoutResume } from '../services/checkoutResume.service';
@@ -334,7 +335,8 @@ export default function PaymentProofScreen({ route, navigation }) {
         }
       })();
     } catch (e) {
-      Alert.alert('Error', e?.message || 'Something went wrong. Try again.');
+      const msg = isSqliteFullError(e) ? sqliteFullUserMessage() : (e?.message || 'Something went wrong. Try again.');
+      Alert.alert('Error', msg);
       setSaving(false);
     } finally {
       completeGuardRef.current = false;

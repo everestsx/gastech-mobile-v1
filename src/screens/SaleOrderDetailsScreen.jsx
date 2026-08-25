@@ -713,9 +713,29 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
     let pickings = await stockPickingsDb.getStockPickingsBySaleId(soId);
     if (Array.isArray(pickings) && pickings.length > 0) {
       const { getStockMovesByPickingId } = await import('../database/stockMoves.js');
+      const soLines = (await saleOrderLinesDb.getSaleOrderLinesByOrderIds([soId]).catch(() => [])) || [];
+      const neededProducts = new Set();
+      for (const l of soLines) {
+        const pid = Array.isArray(l.product_id) ? Number(l.product_id[0]) : Number(l.product_id);
+        const ordered = Number(l.product_uom_qty) || 0;
+        if (!Number.isFinite(pid) || pid <= 0) continue;
+        // Ordered > 0 must have a stock.move — partial move sets caused S09080-style silent line drops.
+        if (ordered > 0.0001) neededProducts.add(pid);
+      }
+      const haveProducts = new Set();
+      let anyMoves = false;
       for (const pk of pickings) {
         const moves = await getStockMovesByPickingId(pk.id).catch(() => []);
-        if (Array.isArray(moves) && moves.length > 0) return pickings;
+        if (!Array.isArray(moves) || moves.length === 0) continue;
+        anyMoves = true;
+        for (const mv of moves) {
+          const pid = Array.isArray(mv.product_id) ? Number(mv.product_id[0]) : Number(mv.product_id);
+          if (Number.isFinite(pid) && pid > 0) haveProducts.add(pid);
+        }
+      }
+      // Only reuse local pickings when EVERY ordered SO product has a move (not merely "some moves exist").
+      if (anyMoves && (neededProducts.size === 0 || [...neededProducts].every((pid) => haveProducts.has(pid)))) {
+        return pickings;
       }
     }
 
@@ -1221,15 +1241,24 @@ const validateQuantities = useCallback(() => {
         slot.allocatedQty = alloc;
       }
 
+      /** Products with delivered qty but no local stock.move slot — must NOT be silently zeroed (S09080). */
+      const undrainedProducts = [];
       for (const pidKey of Object.keys(remainingByProduct)) {
         const leftover = Number(remainingByProduct[pidKey]) || 0;
         if (leftover <= 0.0001) continue;
+        let drained = false;
         for (let i = allocationSlots.length - 1; i >= 0; i--) {
           if (String(allocationSlots[i].productId) !== pidKey) continue;
           allocationSlots[i].allocatedQty = (Number(allocationSlots[i].allocatedQty) || 0) + leftover;
+          drained = true;
           break;
         }
-        remainingByProduct[pidKey] = 0;
+        if (drained) {
+          remainingByProduct[pidKey] = 0;
+        } else {
+          undrainedProducts.push({ productId: Number(pidKey), qty: leftover });
+          // Keep leftover visible — sync top-up / createMissingMove must recover this qty.
+        }
       }
 
       const slotsByPickingId = {};
@@ -1307,6 +1336,39 @@ const validateQuantities = useCallback(() => {
             deliveryLines: demandEdit ? [] : deliveryLines,
           });
         }
+      }
+
+      /**
+       * Product has delivered qty but no local stock.move (incomplete pull / lag).
+       * Attach product-only deliveryLines so sync can createMissingMove — never drop the qty (S09080).
+       */
+      if (!demandEdit && undrainedProducts.length > 0) {
+        let targetBlock = pickingsOut[0];
+        if (!targetBlock) {
+          const firstTarget = (targets || []).find((p) => p?.id != null);
+          if (firstTarget?.id != null) {
+            targetBlock = {
+              pickingId: Number(firstTarget.id),
+              moveUpdates: [],
+              moveLineUpdates: [],
+              deliveryLines: [],
+            };
+            pickingsOut.push(targetBlock);
+          }
+        }
+        if (targetBlock) {
+          for (const u of undrainedProducts) {
+            if (!Number.isFinite(u.productId) || u.productId <= 0) continue;
+            if (!Number.isFinite(u.qty) || u.qty <= 0) continue;
+            targetBlock.deliveryLines.push({
+              moveId: null,
+              productId: u.productId,
+              qty_done: u.qty,
+            });
+          }
+        }
+        // If no picking target yet, keep requestedQtyByProduct — sync rebuild/top-up recovers.
+        // Never block Proceed/Complete on missing local moves (offline-first).
       }
 
       /** Sync writes `qty_delivered` on SO lines after picking — never overwrite ordered qty from delivery flow. */
