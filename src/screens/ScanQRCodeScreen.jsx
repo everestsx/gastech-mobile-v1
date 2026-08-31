@@ -5,7 +5,9 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { getCustomerByRef, getPartnersByIds } from '../services/customer.service';
-import { getCachedOrders, getUserSession } from '../services/sync.service';
+import { getCachedCustomers, getCachedOrders, getPickingsBySaleIdsFromDB, getUserSession } from '../services/sync.service';
+import { getCheckoutResumeMap } from '../services/checkoutResume.service';
+import { isSaleOrderDeliveredInUi } from '../utils/completedOrderUi';
 
 const CUSTOMER_PREFIX = 'CUSTOMER:';
 
@@ -16,24 +18,121 @@ function formatDate(d) {
   return `${year}-${month}-${day}`;
 }
 
-/** Get today's first (non-cancelled) order for this customer from cache. */
-async function getTodayOrderForCustomer(customerId, syncDateField) {
+function normalizeScanText(value) {
+  const s = String(value ?? '').trim();
+  return s;
+}
+
+function normalizeRef(value) {
+  return normalizeScanText(value).toLowerCase();
+}
+
+/** Today's orders for this customer from local cache (same date rules as the Orders tab). */
+async function getTodayOrdersForCustomer(customerId, syncDateField) {
   const user = await getUserSession();
   const vehicleId = user?.isAdmin === false ? user.vehicleId : null;
   const data = await getCachedOrders(vehicleId);
   const all = Array.isArray(data) ? data : [];
   const todayStr = formatDate(new Date());
-  const list = all.filter(
-    (o) =>
-      String(
-        (syncDateField === 'delivery_date'
-          ? (o.commitment_date || o.date_order)
-          : (o.date_order || o.commitment_date)) || ''
-      ).startsWith(todayStr) &&
-      o.partner_id?.[0] === customerId &&
-      String(o.state || '') !== 'cancel'
-  );
-  return list.length ? list[0] : null;
+  return all.filter((o) => {
+    if (o.partner_id?.[0] !== customerId) return false;
+    if (String(o.state || '') === 'cancel') return false;
+    const selectedDateValue =
+      syncDateField === 'delivery_date'
+        ? (o.commitment_date || o.date_order)
+        : (o.date_order || o.commitment_date);
+    if (String(selectedDateValue || '').startsWith(todayStr)) return true;
+    if (
+      syncDateField === 'delivery_date' &&
+      !o.commitment_date &&
+      String(o?.invoice_status || '').toLowerCase() !== 'invoiced'
+    ) {
+      return true;
+    }
+    return false;
+  });
+}
+
+function pickingStateBySaleId(pickings) {
+  const map = {};
+  (pickings || []).forEach((p) => {
+    const saleId = Array.isArray(p.sale_id) ? p.sale_id[0] : p.sale_id;
+    if (saleId == null) return;
+    if (p.state === 'done') map[saleId] = 'done';
+    else if (map[saleId] !== 'done') map[saleId] = p.state;
+  });
+  return map;
+}
+
+function isOrderVisibleOnOrdersTab(order, pickingState, resumeEntry) {
+  if (isSaleOrderDeliveredInUi(Number(order?.id))) return false;
+  if (String(order?.state || '') === 'cancel') return false;
+  if (resumeEntry?.invoiceParams || resumeEntry?.phase === 'payment') return true;
+  const inv = String(order?.invoice_status || '').toLowerCase() === 'invoiced';
+  const st = String(pickingState || '').toLowerCase();
+  return !(inv || st === 'done' || st === 'cancel');
+}
+
+/**
+ * Orders-tab scan: only open an order that is still on the Orders tab.
+ * Already delivered → already_delivered. None for today → not_available.
+ */
+async function resolveOrdersTabScanForCustomer(customerId, syncDateField) {
+  const list = await getTodayOrdersForCustomer(customerId, syncDateField);
+  if (!list.length) return { status: 'not_available', customerName: null };
+
+  const [resumeMap, pickings] = await Promise.all([
+    getCheckoutResumeMap().catch(() => ({})),
+    getPickingsBySaleIdsFromDB(list.map((o) => o.id)),
+  ]);
+  const saleIdToPickingState = pickingStateBySaleId(pickings);
+  const resume = resumeMap && typeof resumeMap === 'object' ? resumeMap : {};
+
+  const available = [];
+  const delivered = [];
+  for (const o of list) {
+    const resumeEntry = resume[String(o.id)];
+    if (isOrderVisibleOnOrdersTab(o, saleIdToPickingState[o.id], resumeEntry)) {
+      available.push(o);
+    } else {
+      delivered.push(o);
+    }
+  }
+  const customerName =
+    list.find((o) => o?.partner_id?.[1])?.partner_id?.[1] || null;
+  if (available.length) {
+    return { status: 'available', order: available[0], customerName };
+  }
+  if (delivered.length) {
+    return { status: 'already_delivered', order: delivered[0], customerName };
+  }
+  return { status: 'not_available', customerName };
+}
+
+async function getLocalCustomerById(customerId) {
+  const id = Number(customerId);
+  if (!Number.isFinite(id) || id <= 0) return null;
+  try {
+    const partners = await getCachedCustomers();
+    const row = (Array.isArray(partners) ? partners : []).find((p) => Number(p?.id) === id);
+    return row || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function getLocalCustomerByRef(refCode) {
+  const wanted = normalizeRef(refCode);
+  if (!wanted) return null;
+  try {
+    const partners = await getCachedCustomers();
+    const row = (Array.isArray(partners) ? partners : []).find(
+      (p) => normalizeRef(p?.ref) === wanted
+    );
+    return row || null;
+  } catch (_) {
+    return null;
+  }
 }
 
 export default function ScanQRCodeScreen({ navigation, route }) {
@@ -165,17 +264,24 @@ export default function ScanQRCodeScreen({ navigation, route }) {
         return;
       }
       try {
-        const order = await getTodayOrderForCustomer(customerId, syncDateField);
-        if (order?.id) {
-          navigateToOrderDetails(order.id);
-        } else {
-          navigateToScanResult({
-            type: 'no_order',
-            customerName: customerName || '',
-          });
+        const result = await resolveOrdersTabScanForCustomer(customerId, syncDateField);
+        if (result.status === 'available' && result.order?.id) {
+          navigateToOrderDetails(result.order.id);
+          return;
         }
+        if (result.status === 'already_delivered') {
+          navigateToScanResult({
+            type: 'already_delivered',
+            customerName: customerName || result.customerName || '',
+          });
+          return;
+        }
+        navigateToScanResult({
+          type: 'order_not_available',
+          customerName: customerName || result.customerName || '',
+        });
       } catch (err) {
-        console.warn('ScanQR: getTodayOrderForCustomer failed', err);
+        console.warn('ScanQR: resolveOrdersTabScanForCustomer failed', err);
         navigateToScanResult({
           type: 'error',
           message: 'Could not load orders. Try again.',
@@ -194,7 +300,7 @@ export default function ScanQRCodeScreen({ navigation, route }) {
     async ({ data }) => {
       if (scanned || resolving) return;
       setScanned(true);
-      const trimmed = (data || '').trim();
+      const trimmed = normalizeScanText(data);
       // Format 1: CUSTOMER:<partner_id>
       if (trimmed.startsWith(CUSTOMER_PREFIX)) {
         const idStr = trimmed.slice(CUSTOMER_PREFIX.length).trim();
@@ -202,15 +308,28 @@ export default function ScanQRCodeScreen({ navigation, route }) {
         if (!Number.isNaN(customerId)) {
           setResolving(true);
           try {
-            const partners = await getPartnersByIds([customerId]);
-            const partner = partners?.find((p) => p.id === customerId);
-            const customerName = partner?.name ?? null;
+            // Local-first so scan works fully offline.
+            let customerName = (await getLocalCustomerById(customerId))?.name ?? null;
+            if (!customerName) {
+              const scanLookup = await resolveOrdersTabScanForCustomer(customerId, syncDateField);
+              customerName = scanLookup.customerName ?? null;
+            }
+            if (!customerName) {
+              // Best-effort online enrich for message quality; navigation itself stays cache-driven.
+              try {
+                const partners = await getPartnersByIds([customerId]);
+                const partner = partners?.find((p) => Number(p?.id) === Number(customerId));
+                customerName = partner?.name ?? null;
+              } catch (_) {
+                // ignore: offline or transient network issue
+              }
+            }
             await resolveAndNavigate(customerId, customerName);
           } catch (err) {
             console.warn('ScanQR: getPartnersByIds failed', err);
             navigateToScanResult({
               type: 'error',
-              message: 'Could not look up customer. Check connection and try again.',
+              message: 'Could not look up customer from local data.',
             });
           } finally {
             setResolving(false);
@@ -221,6 +340,11 @@ export default function ScanQRCodeScreen({ navigation, route }) {
       // Format 2: plain customer ref code (e.g. 2019080029)
       setResolving(true);
       try {
+        const localCustomer = await getLocalCustomerByRef(trimmed);
+        if (localCustomer?.id) {
+          await resolveAndNavigate(localCustomer.id, localCustomer.name ?? null);
+          return;
+        }
         const customer = await getCustomerByRef(trimmed);
         if (customer?.id) {
           await resolveAndNavigate(customer.id, customer.name ?? null);
@@ -234,14 +358,14 @@ export default function ScanQRCodeScreen({ navigation, route }) {
         console.warn('ScanQR: getCustomerByRef failed', err);
         navigateToScanResult({
           type: 'error',
-          message: 'Could not look up customer. Check connection and try again.',
+          message: 'Customer code is not in local cache. Please sync once when online.',
         });
       } finally {
         setResolving(false);
         setScanned(false);
       }
     },
-    [scanned, resolving, resolveAndNavigate, navigateToScanResult]
+    [scanned, resolving, resolveAndNavigate, navigateToScanResult, syncDateField]
   );
 
   if (!permission) {

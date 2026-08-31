@@ -11,6 +11,10 @@ const SHARED_PERMISSIONS = [
   "android.permission.BLUETOOTH_CONNECT",
   "android.permission.ACCESS_FINE_LOCATION",
   "android.permission.ACCESS_COARSE_LOCATION",
+  "android.permission.READ_EXTERNAL_STORAGE",
+  "android.permission.WRITE_EXTERNAL_STORAGE",
+  "android.permission.READ_MEDIA_IMAGES",
+  "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
 ];
 
 const APP_VARIANTS = {
@@ -115,6 +119,15 @@ module.exports = () => {
           "expo-camera",
           {
             cameraPermission: "Allow GasTech to scan customer QR codes",
+          },
+        ],
+        [
+          "expo-media-library",
+          {
+            photosPermission: "Allow GasTech to save customer QR codes to your gallery.",
+            savePhotosPermission: "Allow GasTech to save customer QR codes to your gallery.",
+            isAccessMediaLocationEnabled: true,
+            granularPermissions: ["photo"],
           },
         ],
       ],

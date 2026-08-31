@@ -30,7 +30,7 @@ import { SRI_LANKA_BANKS } from '../constants/sriLankaBanks';
 import { formatAmount } from '../utils/format';
 import { getOrAssignInvoiceNumber } from '../utils/invoiceNumber';
 import { empty, sqliteIntegerFkOrNull, num, odooRecordId } from '../database/dbHelpers.js';
-import { isSqliteFullError, sqliteFullUserMessage } from '../database/sqliteMaintenance.js';
+import { parseOdooDateToIso } from '../utils/invoiceDeliveryDate';
 
 const PAYMENT_CASH = 'cash';
 const PAYMENT_CHECK = 'cheque';
@@ -346,6 +346,10 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       });
 
       const soId = Number(saleOrderId);
+      const invoiceDateIso =
+        parseOdooDateToIso(orderInfo?.commitment_date) ||
+        parseOdooDateToIso(orderInfo?.delivery_date) ||
+        null;
 
       // Enqueue delivery (ordered-qty edits, stock moves, qty_delivered hints, validate) after payment.
       const needsDeliverySync =
@@ -363,6 +367,8 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           ...deliveryPayload,
           holdUntilPayment: true,
           ...(Array.isArray(invoiceLineQtys) && invoiceLineQtys.length > 0 ? { invoiceLineQtys } : {}),
+          ...(invoiceDateIso ? { invoiceDateIso } : {}),
+          ...(orderInfo?.commitment_date ? { commitmentDateRaw: orderInfo.commitment_date } : {}),
         };
         const existingDelivery = await syncQueueDb.getPendingDeliveryItemBySaleOrderId(soId);
         if (existingDelivery) {
@@ -417,6 +423,8 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           checkNumber: p.type === 'check' ? empty(p.checkNumber) : '',
         })),
         paymentDate: paymentDateStr,
+        ...(invoiceDateIso ? { invoiceDateIso } : {}),
+        ...(orderInfo?.commitment_date ? { commitmentDateRaw: orderInfo.commitment_date } : {}),
         chequeBankName: needsCheck ? empty(selectedLocalBank?.name) : '',
         checkNumber: needsCheck ? empty(checkNumberTrimmed) : '',
         porterEmployeeIds: Array.isArray(porterEmployeeIds) ? porterEmployeeIds : [],

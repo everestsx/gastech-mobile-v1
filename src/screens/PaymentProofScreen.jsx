@@ -90,6 +90,19 @@ export default function PaymentProofScreen({ route, navigation }) {
       await syncQueueDb.updateQueueItemPayload(latestPayment.id, payload, { suppressWake: true });
     }
 
+    const pendingRows = await syncQueueDb.getPending().catch(() => []);
+    for (const row of pendingRows || []) {
+      const payload = row?.payload || {};
+      const rowSo = Number(payload.saleOrderId ?? payload.sale_id ?? payload.sale_order_id);
+      if (rowSo !== soId) continue;
+      if (payload.holdUntilComplete !== true && payload.holdUntilPayment !== true) continue;
+      if (latestPayment && Number(row.id) === Number(latestPayment.id)) continue;
+      const next = { ...payload };
+      delete next.holdUntilComplete;
+      delete next.holdUntilPayment;
+      await syncQueueDb.updateQueueItemPayload(row.id, next, { suppressWake: true });
+    }
+
     const deliveryRow = await syncQueueDb.getPendingDeliveryItemBySaleOrderId(soId);
     if (deliveryRow) {
       const payload = { ...(deliveryRow.payload || {}) };

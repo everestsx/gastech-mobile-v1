@@ -15,6 +15,34 @@ const PARTNER_FIELDS = [
   "name_sinhala",
 ];
 
+const CUSTOMER_PAGE_SIZE = 500;
+const CUSTOMER_FETCH_CAP = 50000;
+
+export async function getAllCustomers(opts = {}) {
+  const onProgress = typeof opts.onProgress === "function" ? opts.onProgress : null;
+  const all = [];
+  let offset = 0;
+  while (offset < CUSTOMER_FETCH_CAP) {
+    const batch = await callOdoo(
+      "res.partner",
+      "search_read",
+      [[["customer_rank", ">", 0]]],
+      {
+        fields: PARTNER_FIELDS,
+        limit: CUSTOMER_PAGE_SIZE,
+        offset,
+        order: "name ASC",
+      }
+    );
+    const rows = Array.isArray(batch) ? batch : [];
+    all.push(...rows);
+    onProgress?.(all.length);
+    if (rows.length < CUSTOMER_PAGE_SIZE) break;
+    offset += CUSTOMER_PAGE_SIZE;
+  }
+  return all;
+}
+
 export const getCustomers = () =>
   callOdoo(
     "res.partner",

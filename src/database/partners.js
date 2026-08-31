@@ -32,6 +32,7 @@ export async function upsertPartners(rows) {
         odooTextRequired(r.name),
         odooTextOrNull(r.phone) ?? '',
         odooTextOrNull(r.city) ?? '',
+        odooTextOrNull(r.ref) ?? '',
         odooTextOrNull(r.name_tamil) ?? '',
         odooTextOrNull(r.name_sinhala) ?? '',
         iso(),
@@ -39,7 +40,7 @@ export async function upsertPartners(rows) {
       const params = coerceSqliteBindArray(rawParams);
       try {
         await tx.runAsync(
-          `INSERT OR REPLACE INTO partners (id, name, phone, city, name_tamil, name_sinhala, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT OR REPLACE INTO partners (id, name, phone, city, ref, name_tamil, name_sinhala, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
           params
         );
       } catch (e) {
@@ -52,13 +53,14 @@ export async function upsertPartners(rows) {
 export async function getAllPartners() {
   const db = await getDb();
   const rows = await db.getAllAsync(
-    `SELECT id, name, phone, city, name_tamil, name_sinhala FROM partners ORDER BY name ASC`
+    `SELECT id, name, phone, city, ref, name_tamil, name_sinhala FROM partners ORDER BY name ASC`
   );
   return (rows || []).map((row) => ({
     id: row.id,
     name: row.name,
     phone: row.phone,
     city: row.city,
+    ref: row.ref ?? null,
     name_tamil: row.name_tamil ?? null,
     name_sinhala: row.name_sinhala ?? null,
   }));

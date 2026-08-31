@@ -50,7 +50,7 @@ export async function upsertSaleOrders(rows, options = {}) {
       }
       if (preserveIds.length > 0) {
         const placeholders = preserveIds.map(() => '?').join(',');
-        const selectSql = `SELECT id, invoice_status, payment_type, state, cancel_reason FROM sale_orders WHERE id IN (${placeholders})`;
+        const selectSql = `SELECT id, invoice_status, payment_type, state, cancel_reason, commitment_date FROM sale_orders WHERE id IN (${placeholders})`;
         const localRows = await tx.getAllAsync(selectSql, preserveIds);
         for (const row of localRows || []) {
           const idKey = num(row.id);
@@ -60,6 +60,7 @@ export async function upsertSaleOrders(rows, options = {}) {
             payment_type: empty(row.payment_type),
             state: localMap[idKey]?.state || empty(row.state),
             cancel_reason: localMap[idKey]?.cancel_reason || empty(row.cancel_reason),
+            commitment_date: empty(row.commitment_date),
           };
         }
         logQuery(op, `SELECT preserve local rows=${(localRows || []).length}`);
@@ -80,6 +81,10 @@ export async function upsertSaleOrders(rows, options = {}) {
         const paymentType = preservePayment
           ? (localMap[rid].payment_type || empty(r.payment_type ?? ''))
           : empty(r.payment_type ?? '');
+        const commitmentDate =
+          preservePayment && localMap[rid].commitment_date
+            ? localMap[rid].commitment_date
+            : empty(r.commitment_date);
         const localState = useLocal ? String(localMap[rid].state || '').toLowerCase() : '';
         const state = localState === 'cancel' ? 'cancel' : empty(r.state);
         const cancelReason =
@@ -97,7 +102,7 @@ export async function upsertSaleOrders(rows, options = {}) {
           empty(partner.name),
           state,
           empty(r.date_order),
-          empty(r.commitment_date),
+          commitmentDate,
           num(r.amount_total),
           num(r.amount_untaxed),
           num(r.amount_tax),

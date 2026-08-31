@@ -12,6 +12,22 @@ export const postInvoice = (invoiceId) =>
   callOdooArgs("account.move", "action_post", [[Number(invoiceId)]]);
 
 /**
+ * Stamp customer-facing invoice date from the sale order committed delivery date
+ * while the move is still draft. Does not change payment terms / due-date computation
+ * beyond what Odoo recalculates from invoice_date.
+ */
+export const setInvoiceDateFromDelivery = (invoiceId, dateIso) => {
+  const invoiceDate = String(dateIso || "").trim().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(invoiceDate)) {
+    return Promise.resolve(null);
+  }
+  return callOdooArgs("account.move", "write", [
+    [Number(invoiceId)],
+    { invoice_date: invoiceDate },
+  ]);
+};
+
+/**
  * Driver's customer-SMS choice for this invoice.
  * Same as Postman: POST /json/2/account.move/write with { ids, vals: { send_invoice_sms } }.
  * The back office sends the SMS on confirmation, so this must land before action_post.

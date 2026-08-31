@@ -96,6 +96,7 @@ async function runMigrations(db) {
       name TEXT,
       city TEXT,
       phone TEXT,
+      ref TEXT,
       updated_at TEXT
     );
     CREATE TABLE IF NOT EXISTS sale_orders (
@@ -752,6 +753,21 @@ async function runMigrations(db) {
       console.warn('[Migration] offline_attachments next_retry_at:', e);
     }
     await db.runAsync('PRAGMA user_version = 31');
+  }
+
+  // Migration 32: store partner reference for offline QR ref scan.
+  if (current < 32) {
+    try {
+      const info = await db.getAllAsync('PRAGMA table_info(partners)');
+      const names = new Set((info || []).map((c) => c.name));
+      if (!names.has('ref')) {
+        await db.runAsync('ALTER TABLE partners ADD COLUMN ref TEXT');
+      }
+      await db.runAsync('CREATE INDEX IF NOT EXISTS idx_partners_ref ON partners(ref)');
+    } catch (e) {
+      console.warn('[Migration] partners ref:', e);
+    }
+    await db.runAsync('PRAGMA user_version = 32');
   }
 }
 

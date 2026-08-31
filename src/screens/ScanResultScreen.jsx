@@ -20,14 +20,24 @@ export default function ScanResultScreen({ route, navigation }) {
   const { type = 'error', customerName = '', message: customMessage = '', ref: refCode = '' } = route?.params ?? {};
 
   const { icon, iconColor, title, message } = useMemo(() => {
-    if (type === 'no_order') {
+    if (type === 'no_order' || type === 'order_not_available') {
       return {
         icon: 'cube-outline',
         iconColor: colors.warning ?? colors.textSecondary,
-        title: 'No order for this date',
+        title: 'Order not available',
         message: customerName
-          ? `No order on file for ${customerName} for this date.`
-          : 'No order on file for this customer for this date.',
+          ? `No order is available in the Orders tab for ${customerName}.`
+          : 'No order is available in the Orders tab for this customer.',
+      };
+    }
+    if (type === 'already_delivered') {
+      return {
+        icon: 'checkmark-circle-outline',
+        iconColor: colors.success ?? colors.primary,
+        title: 'Already delivered',
+        message: customerName
+          ? `This order for ${customerName} is already delivered and cannot be scanned again.`
+          : 'This order is already delivered and cannot be scanned again.',
       };
     }
     if (type === 'customer_not_found') {

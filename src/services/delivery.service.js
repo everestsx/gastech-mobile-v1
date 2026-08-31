@@ -165,13 +165,51 @@ export const validatePicking = (pickingId) =>
   callOdooArgs("stock.picking", "button_validate", [[pickingId]]);
 
 /** Validate picking with context (e.g. skip_backorder to avoid backorder wizard). */
-export const validatePickingWithContext = (pickingId, context = {}) =>
-  callOdooArgsKwargs(
+export const validatePickingWithContext = async (pickingId, context = {}) => {
+  const pid = Number(pickingId);
+  const mergedContext = {
+    active_model: "stock.picking",
+    active_id: pid,
+    active_ids: [pid],
+    ...context,
+  };
+  const result = await callOdooArgsKwargs(
     "stock.picking",
     "button_validate",
-    [[pickingId]],
-    { context: { ...context } }
+    [[pid]],
+    { context: mergedContext }
   );
+  // Some Odoo DBs still return backorder wizard action despite skip/cancel context.
+  // Handle it explicitly so behavior stays consistent across devices.
+  const actionModel = String(result?.res_model || "").toLowerCase();
+  const wizardId = Number(result?.res_id);
+  if (actionModel === "stock.backorder.confirmation" && Number.isFinite(wizardId) && wizardId > 0) {
+    if (mergedContext.cancel_backorder === true) {
+      try {
+        return await callOdooArgsKwargs(
+          "stock.backorder.confirmation",
+          "process_cancel_backorder",
+          [[wizardId]],
+          { context: mergedContext }
+        );
+      } catch (_) {
+        return await callOdooArgsKwargs(
+          "stock.backorder.confirmation",
+          "process",
+          [[wizardId]],
+          { context: mergedContext }
+        );
+      }
+    }
+    return await callOdooArgsKwargs(
+      "stock.backorder.confirmation",
+      "process",
+      [[wizardId]],
+      { context: mergedContext }
+    );
+  }
+  return result;
+};
 
 /** Create stock.move.line with qty_done (for offline sync: set delivered qty per move). */
 export const createMoveLine = (pickingId, moveId, productId, qtyDone) =>
