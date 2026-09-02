@@ -18,6 +18,14 @@ export async function upsertRoutes(rows) {
   });
 }
 
+export async function getRouteNameById(routeId) {
+  const id = Number(routeId);
+  if (!Number.isFinite(id) || id <= 0) return '';
+  const db = await getDb();
+  const row = await db.getFirstAsync('SELECT name FROM routes WHERE id = ?', [id]);
+  return String(row?.name || '').trim();
+}
+
 export async function getAllRoutes() {
   const db = await getDb();
   const rows = await db.getAllAsync('SELECT id, name FROM routes ORDER BY name ASC');

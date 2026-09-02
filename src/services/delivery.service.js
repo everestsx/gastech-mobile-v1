@@ -205,6 +205,8 @@ async function consumeStockValidateWizards(pickingId, result, mergedContext, dep
     cancel_backorder: true,
     skip_backorder: true,
     skip_immediate: true,
+    picking_ids_not_to_backorder: [Number(pickingId)],
+    button_validate_picking_ids: [Number(pickingId)],
   };
 
   let next = result;
@@ -286,7 +288,14 @@ export const validatePickingWithContext = async (pickingId, context = {}) => {
     active_id: pid,
     active_ids: [pid],
     skip_immediate: true,
+    skip_backorder: true,
+    cancel_backorder: true,
     ...context,
+    // Same flags as Odoo process_cancel_backorder. skip_backorder alone still
+    // creates a remainder picking when the warehouse type is ask/always; the
+    // app then cancelled it (Done + Cancelled on some vehicles only).
+    picking_ids_not_to_backorder: [pid],
+    button_validate_picking_ids: [pid],
   };
   const result = await callOdooArgsKwargs(
     "stock.picking",
@@ -385,6 +394,10 @@ export const actionConfirmPicking = (pickingId) =>
 /** Cancel transfer (used to force-close any auto-created backorders). */
 export const actionCancelPicking = (pickingId) =>
   callOdooArgs("stock.picking", "action_cancel", [[pickingId]]);
+
+/** Remove an empty remainder picking so it does not stay as Cancelled on the SO. */
+export const unlinkPicking = (pickingId) =>
+  callOdoo("stock.picking", "unlink", [[Number(pickingId)]]);
 
 /**
  * Get full delivery data for a sale order: picking, moves, move lines.

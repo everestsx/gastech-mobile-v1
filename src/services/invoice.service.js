@@ -424,35 +424,88 @@ export const reconcileMoveLines = (lineIds) =>
 
 /* ---------------- Payment register wizard (for sync: cash/cheque on posted invoice) ---------------- */
 
-/** Step 5 — Create payment register wizard. Same as Postman: account.payment.register create [{ amount, journal_id, payment_date }], context active_ids [res_id]. Returns wizard id (e.g. 14). */
-export const createPaymentRegisterWizard = (invoiceResId, { amount, journalId, paymentDate }) => {
+function isUnknownFieldOdooError(err) {
+  const m = String(err?.message || err || "").toLowerCase();
+  return (
+    m.includes("field") &&
+    (m.includes("invalid") || m.includes("unknown") || m.includes("does not exist") || m.includes("undefined"))
+  );
+}
+
+/** Optional GasTech fields on payment register / account.payment. Empty values are omitted. */
+export function paymentRegisterExtraVals({ bank, route, cheque_no } = {}) {
+  const vals = {};
+  const b = String(bank || "").trim();
+  const r = String(route || "").trim();
+  const c = String(cheque_no || "").trim();
+  if (b) vals.bank = b;
+  if (r) vals.route = r;
+  if (c) vals.cheque_no = c;
+  return vals;
+}
+
+export function paymentIdsFromRegisterResult(result) {
+  if (result == null || result === true || result === false) return [];
+  if (typeof result === "number" && Number.isFinite(result) && result > 0) return [result];
+  if (typeof result !== "object") return [];
+  const ids = [];
+  const resId = Number(result.res_id);
+  if (Number.isFinite(resId) && resId > 0) ids.push(resId);
+  for (const x of result.res_ids || []) {
+    const n = Number(x);
+    if (Number.isFinite(n) && n > 0) ids.push(n);
+  }
+  return [...new Set(ids)];
+}
+
+/** Step 5 — Create payment register wizard. Same as Postman: amount + journal_id + payment_date; also bank, route, cheque_no when present. */
+export const createPaymentRegisterWizard = async (invoiceResId, opts = {}) => {
+  const { amount, journalId, paymentDate, bank, route, cheque_no } = opts;
   const dateStr = paymentDate && String(paymentDate).match(/^\d{4}-\d{2}-\d{2}/)
     ? String(paymentDate).slice(0, 10)
     : new Date().toISOString().slice(0, 10);
-  return callOdooArgsKwargs(
-    "account.payment.register",
-    "create",
-    [
-      [
-        {
-          amount: Number(amount),
-          journal_id: Number(journalId),
-          payment_date: dateStr,
-        },
-      ],
-    ],
-    {
-      context: {
-        active_model: "account.move",
-        active_ids: [Number(invoiceResId)],
-      },
+  const baseVals = {
+    amount: Number(amount),
+    journal_id: Number(journalId),
+    payment_date: dateStr,
+  };
+  const extra = paymentRegisterExtraVals({ bank, route, cheque_no });
+  const kwargs = {
+    context: {
+      active_model: "account.move",
+      active_ids: [Number(invoiceResId)],
+    },
+  };
+  const create = (vals) =>
+    callOdooArgsKwargs("account.payment.register", "create", [[vals]], kwargs);
+  try {
+    return await create({ ...baseVals, ...extra });
+  } catch (err) {
+    if (Object.keys(extra).length > 0 && isUnknownFieldOdooError(err)) {
+      return create(baseVals);
     }
-  );
+    throw err;
+  }
 };
 
 /** Step 6 — Execute payment. Same as Postman: account.payment.register action_create_payments [[wizardId]]. */
 export const executePaymentRegister = (wizardId) =>
   callOdooArgs("account.payment.register", "action_create_payments", [[Number(wizardId)]]);
+
+/** Stamp bank / route / cheque_no on the created account.payment when the Back Office has those fields. */
+export const writeAccountPaymentExtras = async (paymentIds, extras = {}) => {
+  const ids = (Array.isArray(paymentIds) ? paymentIds : [paymentIds])
+    .map((n) => Number(n))
+    .filter((n) => Number.isFinite(n) && n > 0);
+  const vals = paymentRegisterExtraVals(extras);
+  if (!ids.length || !Object.keys(vals).length) return false;
+  try {
+    await callOdooArgs("account.payment", "write", [ids, vals]);
+    return true;
+  } catch (_) {
+    return false;
+  }
+};
 
 /**
  * Post the payment and reconcile it with the invoice in one flow.

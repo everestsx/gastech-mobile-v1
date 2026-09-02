@@ -2736,6 +2736,7 @@ async function reconcilePostValidateBackorders(saleOrderId, queuePayload, target
     actionConfirmPicking,
     actionAssignPicking,
     actionCancelPicking,
+    unlinkPicking,
     updateStockMoveQuantityDone,
     updateStockMoveQty,
   } = await import('./delivery.service.js');
@@ -2809,18 +2810,21 @@ async function reconcilePostValidateBackorders(saleOrderId, queuePayload, target
       if (missingByProduct.has(prodId)) holdsTrueMissingProduct = true;
     }
 
-    // Empty remainder backorder after a Done parent: cancel it so Delivery tab
-    // shows only the completed transfer (not a leftover Ready row).
-    // Only cancel true backorders of a Done parent — never the original open picking.
+    // Empty remainder after a Done parent: remove it (do not leave a Cancelled
+    // transfer on the SO). Only true backorders of a Done parent — never the original picking.
     if (requestedQtyOnBackorder <= DELIVERED_QTY_VERIFY_TOL && !holdsTrueMissingProduct) {
       if (!doneBackorderIds.has(pid)) {
         log('queue', `delivery SO ${soId}: skip cancel of open picking ${pid} (not a Done-parent backorder)`);
         continue;
       }
       try {
-        await actionCancelPicking(pid);
+        try {
+          await unlinkPicking(pid);
+        } catch (_) {
+          await actionCancelPicking(pid);
+        }
         cancelled += 1;
-        log('queue', `delivery SO ${soId}: cancelled empty remainder backorder picking ${pid}`);
+        log('queue', `delivery SO ${soId}: removed empty remainder backorder picking ${pid}`);
       } catch (cancelErr) {
         log(
           'queue',
@@ -4233,7 +4237,7 @@ async function buildGasDeliveredCountChatterBody(soId, paymentPayload) {
   const { linesToOdooHtmlBody } = await import('./proofAttachment.service.js');
   const sep = '────────────────────────────────────────';
   const lines = [];
-  lines.push('Gas Delivered Count updated from mobile app updated new one');
+  lines.push('Gas Delivered Count updated from mobile app updated in expo through');
   lines.push(sep);
   for (const [label, qty] of qtyByProductLabel.entries()) {
     lines.push(`${label}: ${formatQty(qty)}`);
@@ -5012,6 +5016,8 @@ async function processSyncQueue(options = {}) {
         getPaymentsByInvoiceIds,
         createPaymentRegisterWizard,
         executePaymentRegister,
+        writeAccountPaymentExtras,
+        paymentIdsFromRegisterResult,
       } = await import('./invoice.service');
 
       const roundQty3 = (q) => Math.round(Number(q) * 1000) / 1000;
@@ -7110,6 +7116,27 @@ async function processSyncQueue(options = {}) {
                   }
 
                   const dateStr = p.paymentDate || new Date().toISOString().slice(0, 10);
+                  let routeLabel = String(p.route || p.routeName || '').trim();
+                  if (!routeLabel) {
+                    try {
+                      const soRow = await saleOrdersDb.getSaleOrderById(Number(saleOrderId));
+                      if (Array.isArray(soRow?.route_id) && String(soRow.route_id[1] || '').trim()) {
+                        routeLabel = String(soRow.route_id[1]).trim();
+                      } else if (soRow?.route_name) {
+                        routeLabel = String(soRow.route_name).trim();
+                      } else {
+                        const rid = Number(
+                          Array.isArray(soRow?.route_id) ? soRow.route_id[0] : soRow?.route_id
+                        );
+                        if (Number.isFinite(rid) && rid > 0) {
+                          const { getRouteNameById } = await import('../database/routes.js');
+                          routeLabel = await getRouteNameById(rid);
+                        }
+                      }
+                    } catch (_) {
+                      routeLabel = '';
+                    }
+                  }
                   for (const pm of payments) {
                     if (pm.type === 'credit') continue;
                     const amount = Number(pm.amount);
@@ -7149,15 +7176,33 @@ async function processSyncQueue(options = {}) {
                       continue;
                     }
                     try {
+                      const chequeNo = String(
+                        pm.cheque_no || pm.checkNumber || p.cheque_no || p.checkNumber || ''
+                      ).trim();
+                      const bankName = String(
+                        pm.bank || pm.bankName || p.bank || p.chequeBankName || p.selectedBankName || ''
+                      ).trim();
+                      const extras = {
+                        ...(routeLabel ? { route: routeLabel } : {}),
+                        ...(pm.type === 'check' && bankName ? { bank: bankName } : {}),
+                        ...(pm.type === 'check' && chequeNo ? { cheque_no: chequeNo } : {}),
+                      };
                       log('queue', `payment SO ${saleOrderId}: Step 5 — payment register create amount=${desiredAmount} journal_id=${journalId} active_ids=[${targetResId}]`);
                       const registerWizardId = await createPaymentRegisterWizard(targetResId, {
                         amount: desiredAmount,
                         journalId,
                         paymentDate: dateStr,
+                        ...extras,
                       });
                       if (registerWizardId != null) {
                         log('queue', `payment SO ${saleOrderId}: Step 6 — action_create_payments [[${registerWizardId}]]`);
-                        await executePaymentRegister(registerWizardId);
+                        const execResult = await executePaymentRegister(registerWizardId);
+                        if (Object.keys(extras).length > 0) {
+                          await writeAccountPaymentExtras(
+                            paymentIdsFromRegisterResult(execResult),
+                            extras
+                          );
+                        }
                         const methodLabel = pm.type === 'check' ? 'cheque' : 'cash';
                         log('queue', `payment SO ${saleOrderId}: ${methodLabel} payment executed wizard=${registerWizardId} invoice res_id=${targetResId}`);
                       }

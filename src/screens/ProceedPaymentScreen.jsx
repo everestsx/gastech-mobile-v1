@@ -31,6 +31,7 @@ import { formatAmount } from '../utils/format';
 import { getOrAssignInvoiceNumber } from '../utils/invoiceNumber';
 import { empty, sqliteIntegerFkOrNull, num, odooRecordId } from '../database/dbHelpers.js';
 import { parseOdooDateToIso } from '../utils/invoiceDeliveryDate';
+import { getRouteNameById } from '../database/routes.js';
 
 const PAYMENT_CASH = 'cash';
 const PAYMENT_CHECK = 'cheque';
@@ -340,6 +341,19 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       if (!orderInfo) throw new Error('Sale order not found');
       const partnerId = odooRecordId(orderInfo.partner_id);
       const orderName = orderInfo.name ?? `Order ${saleOrderId}`;
+      let routeLabel = '';
+      if (Array.isArray(orderInfo.route_id) && String(orderInfo.route_id[1] || '').trim()) {
+        routeLabel = String(orderInfo.route_id[1]).trim();
+      } else if (orderInfo.route_name) {
+        routeLabel = String(orderInfo.route_name).trim();
+      } else {
+        const rid = Number(Array.isArray(orderInfo.route_id) ? orderInfo.route_id[0] : orderInfo.route_id);
+        if (Number.isFinite(rid) && rid > 0) {
+          routeLabel = await getRouteNameById(rid);
+        }
+      }
+      const chequeBankName = needsCheck ? empty(selectedLocalBank?.name) : '';
+      const chequeNo = needsCheck ? empty(checkNumberTrimmed) : '';
       const invoiceNumber = await getOrAssignInvoiceNumber(saleOrderId, {
         saleOrderName: orderName,
         backendInvoiceNumber: orderInfo?.invoice_number,
@@ -390,6 +404,8 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           amount: chequePayAmount,
           journalId: checkJournalId,
           checkNumber: checkNumberTrimmed || undefined,
+          bank: empty(selectedLocalBank?.name) || undefined,
+          cheque_no: checkNumberTrimmed || undefined,
         });
         paymentSplit.check = chequePayAmount;
       }
@@ -421,12 +437,17 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           amount: num(p.amount),
           journalId: sqliteIntegerFkOrNull(p.journalId),
           checkNumber: p.type === 'check' ? empty(p.checkNumber) : '',
+          bank: p.type === 'check' ? empty(p.bank || chequeBankName) : '',
+          cheque_no: p.type === 'check' ? empty(p.cheque_no || p.checkNumber) : '',
         })),
         paymentDate: paymentDateStr,
         ...(invoiceDateIso ? { invoiceDateIso } : {}),
         ...(orderInfo?.commitment_date ? { commitmentDateRaw: orderInfo.commitment_date } : {}),
-        chequeBankName: needsCheck ? empty(selectedLocalBank?.name) : '',
-        checkNumber: needsCheck ? empty(checkNumberTrimmed) : '',
+        bank: chequeBankName,
+        route: empty(routeLabel),
+        cheque_no: chequeNo,
+        chequeBankName,
+        checkNumber: chequeNo,
         porterEmployeeIds: Array.isArray(porterEmployeeIds) ? porterEmployeeIds : [],
         holdUntilComplete: true,
         ...(driverEmployeeId != null && Number.isFinite(driverEmployeeId) && driverEmployeeId > 0
