@@ -2,7 +2,7 @@
 import { ODOO_URL, ODOO_DB, ODOO_API_KEY, UID } from '@env';
 import { trackNetworkUsage, usageBytes } from './dataUsage.service';
 
-const REQUEST_TIMEOUT_MS = 35000;
+const REQUEST_TIMEOUT_MS = 60000;
 
 /** Strip BOM/CRLF, trim, remove optional wrapping quotes (common .env / Windows issues). */
 function normalizeEnvString(v) {

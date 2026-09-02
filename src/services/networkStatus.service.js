@@ -22,11 +22,17 @@ const STABLE_FLUSH_COOLDOWN_MS = 2000;
 function classify(state) {
   if (!state) return NetworkQuality.OFFLINE;
   if (state.isConnected === false) return NetworkQuality.OFFLINE;
-  if (state.isInternetReachable === false) return NetworkQuality.OFFLINE;
 
   const details = state.details && typeof state.details === 'object' ? state.details : {};
   const downlinkMbps = Number(details.downlink);
   const effectiveType = String(details.effectiveType || '').toLowerCase();
+  const isWifi = state.type === 'wifi' || state.type === 'ethernet';
+
+  // Many OEM Androids report isInternetReachable=false while the radio is up.
+  // Treating that as OFFLINE blocked uploads on those phones only.
+  if (state.isInternetReachable === false) {
+    return isWifi ? NetworkQuality.GOOD : NetworkQuality.WEAK;
+  }
 
   if (state.isInternetReachable === true) {
     if (Number.isFinite(downlinkMbps)) {
@@ -37,14 +43,13 @@ function classify(state) {
     if (effectiveType === '3g' || effectiveType === '2g' || effectiveType === 'slow-2g') {
       return NetworkQuality.WEAK;
     }
-    if (state.type === 'wifi' || state.type === 'ethernet') return NetworkQuality.GOOD;
+    if (isWifi) return NetworkQuality.GOOD;
     if (state.type === 'cellular') return NetworkQuality.WEAK;
     return NetworkQuality.GOOD;
   }
 
-  if (state.isConnected === true && state.isInternetReachable == null) {
-    if (state.type === 'wifi' || state.type === 'ethernet') return NetworkQuality.GOOD;
-    return NetworkQuality.WEAK;
+  if (state.isConnected === true) {
+    return isWifi ? NetworkQuality.GOOD : NetworkQuality.WEAK;
   }
 
   return NetworkQuality.OFFLINE;

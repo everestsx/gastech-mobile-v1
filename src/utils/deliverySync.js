@@ -185,6 +185,171 @@ export function auditQtyViewFromPayload(payload = {}) {
   };
 }
 
+/** Checkout invoice qty by product (only rows that carry productId). */
+export function qtyByProductFromInvoiceLines(invoiceLineQtys = []) {
+  const map = {};
+  for (const row of invoiceLineQtys || []) {
+    const pid = Number(row?.productId ?? row?.product_id);
+    const q = coerceDeliveredQty(row?.qty ?? row?.quantity);
+    if (!Number.isFinite(pid) || pid <= 0 || !Number.isFinite(q) || q < 0) continue;
+    const key = String(pid);
+    map[key] = coerceDeliveredQty((Number(map[key]) || 0) + q);
+  }
+  return map;
+}
+
+/**
+ * Never raise requested qty from invoice (invoice can include non-stock lines).
+ * Never leave requested ABOVE invoiced for products present on both (Kodituwakku 15 vs 10).
+ */
+export function capRequestedQtyToInvoice(requestedQtyByProduct = {}, invoiceByProduct = {}) {
+  const out = {};
+  for (const [k, v] of Object.entries(requestedQtyByProduct || {})) {
+    const pid = Number(k);
+    const req = coerceDeliveredQty(v);
+    if (!Number.isFinite(pid) || pid <= 0 || !Number.isFinite(req)) continue;
+    const invRaw = invoiceByProduct[String(pid)] ?? invoiceByProduct[pid] ?? invoiceByProduct[k];
+    const inv = coerceDeliveredQty(invRaw);
+    out[String(pid)] = Number.isFinite(inv) && inv + 0.0001 < req ? inv : req;
+  }
+  return out;
+}
+
+/**
+ * Confirmed qty per product on picking blocks.
+ * deliveryLines and moveLineUpdates are the same checkout written twice — never add them.
+ */
+function productQtyClaimedByBlocks(blocks = []) {
+  const totals = new Map();
+  for (const b of blocks || []) {
+    const fromLines = new Map();
+    const fromMl = new Map();
+    for (const line of b.deliveryLines || []) {
+      const pid = Number(line?.productId ?? line?.product_id);
+      const q = coerceDeliveredQty(line?.qty_done);
+      if (!Number.isFinite(pid) || pid <= 0 || !Number.isFinite(q)) continue;
+      fromLines.set(pid, coerceDeliveredQty((fromLines.get(pid) || 0) + q));
+    }
+    for (const u of b.moveLineUpdates || []) {
+      const pid = Number(u?.productId ?? u?.product_id);
+      const q = coerceDeliveredQty(u?.qty_done);
+      if (!Number.isFinite(pid) || pid <= 0 || !Number.isFinite(q)) continue;
+      fromMl.set(pid, coerceDeliveredQty((fromMl.get(pid) || 0) + q));
+    }
+    const pids = new Set([...fromLines.keys(), ...fromMl.keys()]);
+    for (const pid of pids) {
+      const claimed = fromLines.has(pid) ? fromLines.get(pid) : fromMl.get(pid);
+      totals.set(pid, coerceDeliveredQty((totals.get(pid) || 0) + claimed));
+    }
+  }
+  return totals;
+}
+
+/** Scale picking qty_done down when it exceeds checkout invoice qty for that product. No-op when they match. */
+export function capPickingBlocksToProductQtyMap(blocks = [], maxQtyByProduct = {}, requestedQtyByProduct = null) {
+  const maxMap = new Map();
+  for (const [k, v] of Object.entries(maxQtyByProduct || {})) {
+    const pid = Number(k);
+    const q = coerceDeliveredQty(v);
+    if (!Number.isFinite(pid) || pid <= 0 || !Number.isFinite(q) || q < 0) continue;
+    maxMap.set(pid, q);
+  }
+  if (maxMap.size === 0) return blocks;
+
+  const totals = productQtyClaimedByBlocks(blocks);
+
+  const factorByProduct = new Map();
+  for (const [pid, have] of totals.entries()) {
+    if (!maxMap.has(pid)) continue;
+    const want = maxMap.get(pid);
+    if (have > want + 0.0001 && have > 0) {
+      factorByProduct.set(pid, want / have);
+      continue;
+    }
+    // Restore payloads already halved by the old double-count cap (18+18 vs invoice 18 → 9).
+    const req = coerceDeliveredQty(
+      requestedQtyByProduct?.[String(pid)] ?? requestedQtyByProduct?.[pid]
+    );
+    if (
+      have > 0 &&
+      want > 0 &&
+      have + 0.0001 < want &&
+      Number.isFinite(req) &&
+      Math.abs(req - want) <= 0.02 &&
+      Math.abs(have * 2 - want) <= 0.02
+    ) {
+      factorByProduct.set(pid, want / have);
+    }
+  }
+  if (factorByProduct.size === 0) return blocks;
+
+  const scaleList = (list) =>
+    (list || []).map((row) => {
+      const pid = Number(row?.productId ?? row?.product_id);
+      const factor = factorByProduct.get(pid);
+      if (factor == null) return { ...row };
+      const q = coerceDeliveredQty(row?.qty_done);
+      if (!Number.isFinite(q)) return { ...row };
+      return { ...row, qty_done: coerceDeliveredQty(q * factor) };
+    });
+
+  return (blocks || []).map((b) => ({
+    ...b,
+    deliveryLines: scaleList(b.deliveryLines),
+    moveLineUpdates: scaleList(b.moveLineUpdates),
+  }));
+}
+
+/**
+ * Failure-path only: if frozen pickings / requested qty drifted above the checkout invoice
+ * (colleague devices, retry, go-back-and-reduce), cap them. Matching payloads are unchanged.
+ */
+export function applyCheckoutInvoiceQtyCapToPayload(payload, invoiceByProductOverride = null) {
+  if (!payload || typeof payload !== 'object') return payload;
+  const invRows =
+    Array.isArray(payload.invoiceLineQtys) && payload.invoiceLineQtys.length > 0
+      ? payload.invoiceLineQtys
+      : payload.mobileQtySnapshot?.invoiceLineQtys;
+  const invoiceByProduct =
+    invoiceByProductOverride && Object.keys(invoiceByProductOverride).length > 0
+      ? Object.fromEntries(
+          Object.entries(invoiceByProductOverride).map(([k, v]) => [String(Number(k) || k), coerceDeliveredQty(v)])
+        )
+      : qtyByProductFromInvoiceLines(invRows);
+  const usableInvoice = {};
+  for (const [k, v] of Object.entries(invoiceByProduct || {})) {
+    const pid = Number(k);
+    const q = coerceDeliveredQty(v);
+    if (!Number.isFinite(pid) || pid <= 0 || !Number.isFinite(q) || q < 0) continue;
+    usableInvoice[String(pid)] = q;
+  }
+  if (Object.keys(usableInvoice).length === 0) return payload;
+
+  const out = { ...payload };
+  const reqSrc = out.mobileQtySnapshot?.requestedQtyByProduct || out.requestedQtyByProduct || {};
+  const cappedReq = capRequestedQtyToInvoice(reqSrc, usableInvoice);
+  out.requestedQtyByProduct = cappedReq;
+  if (Array.isArray(out.pickings) && out.pickings.length > 0) {
+    out.pickings = capPickingBlocksToProductQtyMap(out.pickings, usableInvoice, cappedReq);
+  }
+  if (out.mobileQtySnapshot && typeof out.mobileQtySnapshot === 'object') {
+    const snapReq = capRequestedQtyToInvoice(
+      out.mobileQtySnapshot.requestedQtyByProduct || cappedReq,
+      usableInvoice
+    );
+    out.mobileQtySnapshot = {
+      ...out.mobileQtySnapshot,
+      requestedQtyByProduct: snapReq,
+      pickings: capPickingBlocksToProductQtyMap(
+        out.mobileQtySnapshot.pickings || [],
+        usableInvoice,
+        snapReq
+      ),
+    };
+  }
+  return out;
+}
+
 /**
  * Ensure payload carries deliveryTxnId + frozen mobile qty snapshot metadata.
  * Called on enqueue / updateQueueItemPayload only. Snapshot is set once and never replaced.
@@ -235,7 +400,8 @@ export async function ensureDeliveryTxnOnPayload(payload) {
       out.saleOrderLineDeliveredUpdates = fromInvoice;
     }
   }
-  return out;
+  // Cap frozen pickings to checkout invoice qty when they drifted above it (does nothing when they match).
+  return applyCheckoutInvoiceQtyCapToPayload(out);
 }
 
 /**

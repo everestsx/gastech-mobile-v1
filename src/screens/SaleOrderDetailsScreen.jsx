@@ -78,6 +78,15 @@ function clampNonNegativeStock(n) {
   if (!Number.isFinite(x)) return 0;
   return Math.max(0, x);
 }
+
+function invoiceQtyRowFromLine(line, qty) {
+  const productId = Number(Array.isArray(line?.product_id) ? line.product_id[0] : line?.product_id);
+  return {
+    lineId: line?.id,
+    ...(Number.isFinite(productId) && productId > 0 ? { productId } : {}),
+    qty: Number(qty) || 0,
+  };
+}
 export default function SaleOrderDetailsScreen({ route, navigation }) {
   const { t } = useTranslation();
   const { colors, appLanguage } = useTheme();
@@ -1585,10 +1594,9 @@ const handleProceedToPayment = useCallback(async () => {
       : lines.reduce((sum, l) => sum + lineTaxAtQuantity(l, l.newQty), 0);
     const total = subtotal + tax;
 
-    const invoiceLineQtys = lines.map((l, i) => ({
-      lineId: l.id,
-      qty: Number(effectiveQtys[i] != null ? effectiveQtys[i] : l.newQty) || 0,
-    }));
+    const invoiceLineQtys = lines.map((l, i) =>
+      invoiceQtyRowFromLine(l, effectiveQtys[i] != null ? effectiveQtys[i] : l.newQty)
+    );
 
     navigation.navigate('ProceedPayment', {
       saleOrderId: order.id,
@@ -1980,10 +1988,7 @@ const handleProceedToPayment = useCallback(async () => {
             onPress={() => {
               if (!canPay || orderIsCancelled) return;
               if (isDelivered) {
-                const invoiceLineQtys = lines.map((l) => ({
-                  lineId: l.id,
-                  qty: Number(l.newQty) || 0,
-                }));
+                const invoiceLineQtys = lines.map((l) => invoiceQtyRowFromLine(l, l.newQty));
                 navigation.navigate('ProceedPayment', {
                   saleOrderId: order.id,
                   total: computedTotal,

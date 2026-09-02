@@ -33,6 +33,7 @@ import { getDb } from '../database/db.js';
 import { recordDriverLogout } from './driverLoginHistory.service';
 import { normalizeSmsEnabled, shouldWriteInvoiceSmsFlag } from './smsPreference.service';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
+import { applyCheckoutInvoiceQtyCapToPayload } from '../utils/deliverySync.js';
 import {
   createUsageSession,
   finishUsageSession,
@@ -2241,7 +2242,7 @@ function mergeQueuePayloadForAuthoritativeQty(paymentPayload, pendingDeliveryPay
   } else if (Array.isArray(delInv) && delInv.length > 0) {
     merged.invoiceLineQtys = delInv;
   }
-  return merged;
+  return applyCheckoutInvoiceQtyCapToPayload(merged);
 }
 
 /** Delivered qty rows for Odoo writes: checkout invoiceLineQtys wins over stale SOL / frozen snapshot rows. */
@@ -2287,6 +2288,27 @@ async function resolveDeliveredSnapshotForSync(saleOrderId, deliveryPayload) {
   return { payload: merged, updates };
 }
 
+/** Map checkout invoice lineId→qty onto product ids when older queue rows omitted productId. */
+async function invoiceQtyByProductViaSaleOrderLines(invoiceLineQtys, saleOrderId) {
+  const soId = Number(saleOrderId);
+  if (!Number.isFinite(soId) || soId <= 0 || !Array.isArray(invoiceLineQtys) || invoiceLineQtys.length === 0) {
+    return {};
+  }
+  const orderLines = await saleOrderLinesDb.getSaleOrderLinesByOrderIds([soId]).catch(() => []);
+  const out = {};
+  for (const row of invoiceLineQtys) {
+    const lid = Number(row?.lineId ?? row?.line_id);
+    const q = roundDeliveredQty3(row?.qty ?? row?.quantity);
+    if (!Number.isFinite(lid) || lid <= 0 || !Number.isFinite(q) || q < 0) continue;
+    const line = (orderLines || []).find((l) => Number(l?.id) === lid);
+    const pid = Number(Array.isArray(line?.product_id) ? line.product_id[0] : line?.product_id);
+    if (!Number.isFinite(pid) || pid <= 0) continue;
+    const key = String(pid);
+    out[key] = roundDeliveredQty3((Number(out[key]) || 0) + q);
+  }
+  return out;
+}
+
 async function verifyAllSaleOrderPickingsAreTerminal(soIdRaw) {
   const sid = Number(soIdRaw);
   if (!Number.isFinite(sid) || sid <= 0) return;
@@ -2328,6 +2350,35 @@ async function verifyAllSaleOrderPickingsAreTerminal(soIdRaw) {
   }
 }
 
+function isOutgoingDeliveryPicking(pk) {
+  const code = String(pk?.picking_type_code || '').toLowerCase();
+  if (code === 'incoming' || code === 'internal') return false;
+  if (code === 'outgoing') return true;
+  const name = String(pk?.name || '');
+  if (/\/IN\//i.test(name)) return false;
+  return true;
+}
+
+/**
+ * Rare-path gate: never mark delivery synced when the driver confirmed qty but Odoo
+ * still has no Done outgoing transfer (crew fields can land from payment first).
+ */
+async function assertMobileQtyHasDonePickingOnOdoo(soIdRaw, queuePayload) {
+  const sid = Number(soIdRaw);
+  if (!Number.isFinite(sid) || sid <= 0) return;
+  if (!payloadHasPositiveDeliveredQty(queuePayload)) return;
+  const { getPickingBySaleOrder } = await import('./delivery.service.js');
+  const picks = (await getPickingBySaleOrder(sid).catch(() => [])) || [];
+  const hasDoneOutgoing = (picks || []).some((pk) => {
+    const st = String(pk?.state || '').toLowerCase();
+    return st === 'done' && isOutgoingDeliveryPicking(pk);
+  });
+  if (hasDoneOutgoing) return;
+  throw new Error(
+    `Delivery incomplete: SO ${sid} mobile delivered qty is set but Odoo has no Done delivery transfer. Sync will retry.`
+  );
+}
+
 /**
  * After a failed delivery RPC pass, align Odoo to the queued snapshot without re-running validate/move writes.
  */
@@ -2344,6 +2395,7 @@ async function tryMarkDeliverySyncedAfterQtyHeal(item, saleOrderId, queuePayload
   if (!repair.ok) return false;
   try {
     await verifyAllSaleOrderPickingsAreTerminal(soId);
+    await assertMobileQtyHasDonePickingOnOdoo(soId, queuePayload);
     const blocks = [];
     const p = queuePayload || {};
     if (Array.isArray(p.pickings) && p.pickings.length > 0) {
@@ -2598,6 +2650,15 @@ function getRequestedQtyByProductMap(queuePayload) {
       out.set(pid, roundDeliveredQty3((out.get(pid) || 0) + q));
     }
   }
+  // Checkout invoice qty wins downward: never require Odoo to match a stale ordered qty
+  // when the driver invoiced less (Kodituwakku 15/12 vs mobile 10/10).
+  for (const row of [...(snap.invoiceLineQtys || []), ...(p.invoiceLineQtys || [])]) {
+    const pid = Number(row?.productId ?? row?.product_id);
+    const q = roundDeliveredQty3(row?.qty ?? row?.quantity);
+    if (!Number.isFinite(pid) || pid <= 0 || !Number.isFinite(q)) continue;
+    const prev = out.get(pid);
+    if (prev != null && q + DELIVERED_QTY_VERIFY_TOL < prev) out.set(pid, q);
+  }
   return out;
 }
 
@@ -2674,6 +2735,7 @@ async function reconcilePostValidateBackorders(saleOrderId, queuePayload, target
     validatePickingWithContext,
     actionConfirmPicking,
     actionAssignPicking,
+    actionCancelPicking,
     updateStockMoveQuantityDone,
     updateStockMoveQty,
   } = await import('./delivery.service.js');
@@ -2684,6 +2746,17 @@ async function reconcilePostValidateBackorders(saleOrderId, queuePayload, target
     );
 
   const pickings = (await getPickingBySaleOrder(soId).catch(() => [])) || [];
+
+  const doneBackorderIds = new Set();
+  for (const pk of pickings) {
+    if (String(pk?.state || '').toLowerCase() !== 'done') continue;
+    const raw = pk?.backorder_ids;
+    const ids = Array.isArray(raw) ? raw : [];
+    for (const bid of ids) {
+      const id = Number(Array.isArray(bid) ? bid[0] : bid);
+      if (Number.isFinite(id) && id > 0) doneBackorderIds.add(id);
+    }
+  }
 
   // Products that already have a move on a Done picking (coverage without trusting quantity_done).
   const productsOnDonePickings = new Set();
@@ -2721,6 +2794,7 @@ async function reconcilePostValidateBackorders(saleOrderId, queuePayload, target
     const state = String(pick?.state || '').toLowerCase();
     if (state === 'done' || state === 'cancel') continue;
     if (targetPickingIds.has(pid)) continue;
+    if (!isOutgoingDeliveryPicking(pick)) continue;
 
     const moves = (await getStockMovesByPickingId(pid).catch(() => [])) || [];
     let requestedQtyOnBackorder = 0;
@@ -2735,10 +2809,26 @@ async function reconcilePostValidateBackorders(saleOrderId, queuePayload, target
       if (missingByProduct.has(prodId)) holdsTrueMissingProduct = true;
     }
 
-    // Happy path: empty remainder BO after full Done parent.
-    // Keep it open and let Odoo manage remainder flow; do not auto-cancel here.
+    // Empty remainder backorder after a Done parent: cancel it so Delivery tab
+    // shows only the completed transfer (not a leftover Ready row).
+    // Only cancel true backorders of a Done parent — never the original open picking.
     if (requestedQtyOnBackorder <= DELIVERED_QTY_VERIFY_TOL && !holdsTrueMissingProduct) {
-      log('queue', `delivery SO ${soId}: leaving empty remainder backorder picking ${pid} open`);
+      if (!doneBackorderIds.has(pid)) {
+        log('queue', `delivery SO ${soId}: skip cancel of open picking ${pid} (not a Done-parent backorder)`);
+        continue;
+      }
+      try {
+        await actionCancelPicking(pid);
+        cancelled += 1;
+        log('queue', `delivery SO ${soId}: cancelled empty remainder backorder picking ${pid}`);
+      } catch (cancelErr) {
+        log(
+          'queue',
+          `delivery SO ${soId}: empty remainder cancel soft-fail ${pid}: ${String(
+            cancelErr?.message || cancelErr
+          ).slice(0, 100)}`
+        );
+      }
       continue;
     }
 
@@ -2795,6 +2885,7 @@ async function reconcilePostValidateBackorders(saleOrderId, queuePayload, target
       }
       await validatePickingWithContext(pid, {
         skip_backorder: true,
+        cancel_backorder: true,
       });
       validated += 1;
       log(
@@ -4142,7 +4233,7 @@ async function buildGasDeliveredCountChatterBody(soId, paymentPayload) {
   const { linesToOdooHtmlBody } = await import('./proofAttachment.service.js');
   const sep = '────────────────────────────────────────';
   const lines = [];
-  lines.push('Gas Delivered Count updated from mobile app latest');
+  lines.push('Gas Delivered Count updated from mobile app updated new one');
   lines.push(sep);
   for (const [label, qty] of qtyByProductLabel.entries()) {
     lines.push(`${label}: ${formatQty(qty)}`);
@@ -4955,10 +5046,26 @@ async function processSyncQueue(options = {}) {
           pickingsBlocksFromDeliveryPayload,
           auditQtyViewFromPayload,
           buildMobileQtySnapshot,
+          applyCheckoutInvoiceQtyCapToPayload,
+          qtyByProductFromInvoiceLines,
         } = await import('../utils/deliverySync.js');
         const saleOrderIdRaw = (item.payload || {}).saleOrderId ?? (item.payload || {}).sale_id;
         const snapshot = await resolveDeliveredSnapshotForSync(saleOrderIdRaw, item.payload || {});
         let p = snapshot.payload || {};
+        p = applyCheckoutInvoiceQtyCapToPayload(p);
+        {
+          const invRows = p.invoiceLineQtys || p.mobileQtySnapshot?.invoiceLineQtys || [];
+          if (
+            Array.isArray(invRows) &&
+            invRows.length > 0 &&
+            Object.keys(qtyByProductFromInvoiceLines(invRows)).length === 0
+          ) {
+            p = applyCheckoutInvoiceQtyCapToPayload(
+              p,
+              await invoiceQtyByProductViaSaleOrderLines(invRows, saleOrderIdRaw)
+            );
+          }
+        }
         if (!p.mobileQtySnapshot) {
           const { ensureDeliveryTxnOnPayload: ensureTxn } = await import('../utils/deliverySync.js');
           p = await ensureTxn({ ...p });
@@ -4968,6 +5075,15 @@ async function processSyncQueue(options = {}) {
             });
           } catch (_) {
             /* non-fatal — sync still uses in-memory frozen snapshot */
+          }
+        } else {
+          try {
+            await syncQueueDb.updateQueueItemPayload(Number(item.id), p, {
+              actionType: syncQueueDb.ACTION_DELIVERY,
+              suppressWake: true,
+            });
+          } catch (_) {
+            /* in-memory cap still applies this pass */
           }
         }
         const saleOrderId = p.saleOrderId ?? p.sale_id;
@@ -5122,6 +5238,7 @@ async function processSyncQueue(options = {}) {
           } else {
             await verifyAllSaleOrderPickingsAreTerminal(saleOrderId);
           }
+          await assertMobileQtyHasDonePickingOnOdoo(saleOrderId, p);
           // Link stock.move → sale.order.line so Odoo fills Delivered (S09200). Non-blocking.
           try {
             const linkPickIds = (blocks || [])
@@ -5418,15 +5535,45 @@ async function processSyncQueue(options = {}) {
             const stateRows = await getPickingState(pickingId);
             const pick = Array.isArray(stateRows) ? stateRows[0] : stateRows;
             if (pick?.state === 'done') {
-              log('queue', `delivery picking ${pickingId} already done — align move qty_done from mobile snapshot`);
+              const mobilePositive = (deliveryLines || []).some(
+                (line) => coerceDeliveredQty(line?.qty_done) > 0.0001
+              );
+              let odooHasPositive = false;
               try {
-                await applyPickingDeliverySnapshotIdempotent(
-                  pickingId,
-                  { deliveryLines },
-                  { deliveryTxnId: p.deliveryTxnId, deviceId: p.deviceId }
-                );
+                const doneMoves = await getStockMovesByPickingId(Number(pickingId)).catch(() => []);
+                for (const mv of doneMoves || []) {
+                  const q = roundDeliveredQty3(
+                    mv?.quantity_done != null ? mv.quantity_done : mv?.qty_done != null ? mv.qty_done : 0
+                  );
+                  if (q > DELIVERED_QTY_VERIFY_TOL) {
+                    odooHasPositive = true;
+                    break;
+                  }
+                }
               } catch (_) {
-                /* readonly on some done transfers */
+                odooHasPositive = false;
+              }
+              // Never rewrite a Done transfer downward. That logged
+              // "The done move line has been corrected" (12→0 / 15→0) on retry/align.
+              if (mobilePositive && !odooHasPositive) {
+                log(
+                  'queue',
+                  `delivery picking ${pickingId} already done with qty 0 — repair from mobile snapshot`
+                );
+                try {
+                  await applyPickingDeliverySnapshotIdempotent(
+                    pickingId,
+                    { deliveryLines },
+                    { deliveryTxnId: p.deliveryTxnId, deviceId: p.deviceId }
+                  );
+                } catch (_) {
+                  /* readonly on some done transfers */
+                }
+              } else {
+                log(
+                  'queue',
+                  `delivery picking ${pickingId} already done — skip qty rewrite`
+                );
               }
               // Never absorb remaining until Odoo matches frozen mobile qty (prevents partial SOL cases).
               try {
@@ -5452,7 +5599,12 @@ async function processSyncQueue(options = {}) {
               validatedAnyPicking = true;
               continue;
             }
-          } catch (_) { }
+          } catch (doneStateErr) {
+            const doneMsg = String(doneStateErr?.message || doneStateErr);
+            if (doneMsg.includes('is Done but qty does not match')) {
+              throw doneStateErr;
+            }
+          }
 
           /**
            * Edge case: line demand changed from 0 -> >0 while offline may leave payload without a concrete move mapping.
@@ -5700,7 +5852,35 @@ async function processSyncQueue(options = {}) {
           const tryValidateOne = async () => {
             await validatePickingWithContext(pickingId, {
               skip_backorder: true,
+              cancel_backorder: true,
+              skip_immediate: true,
             });
+            let stateAfter = '';
+            try {
+              const stRows = await getPickingState(pickingId);
+              const stPick = Array.isArray(stRows) ? stRows[0] : stRows;
+              stateAfter = String(stPick?.state || '').toLowerCase();
+            } catch (_) {
+              stateAfter = '';
+            }
+            if (stateAfter === 'done' || stateAfter === 'cancel') return;
+            // Wizard returned without error but picking stayed Ready (colleague-device / slow RPC).
+            await validatePickingWithContext(pickingId, {
+              skip_backorder: true,
+              cancel_backorder: true,
+              skip_immediate: true,
+            });
+            try {
+              const stRows2 = await getPickingState(pickingId);
+              const stPick2 = Array.isArray(stRows2) ? stRows2[0] : stRows2;
+              stateAfter = String(stPick2?.state || '').toLowerCase();
+            } catch (_) {
+              stateAfter = '';
+            }
+            if (stateAfter === 'done' || stateAfter === 'cancel') return;
+            throw new Error(
+              `Delivery incomplete: picking ${pickingId} still "${stateAfter || 'unknown'}" after validate. Sync will retry.`
+            );
           };
           /** Avoid swallowing hard validate failures behind a broad "already..." match (Odoo qty/invoice mismatches). */
           const validateMsgOkToSkip = (msg) => {
@@ -5708,8 +5888,6 @@ async function processSyncQueue(options = {}) {
             return (
               v.includes('does not exist') ||
               v.includes('has been deleted') ||
-              v.includes('nothing to validate') ||
-              v.includes('nothing backorder') ||
               v.includes('has already been validated') ||
               v.includes('already been validated') ||
               v.includes('transfer has already been processed') ||
@@ -5721,63 +5899,59 @@ async function processSyncQueue(options = {}) {
           const mightBeStockReservation = (msg) => {
             const v = (msg || '').toLowerCase();
             return (
-              v.includes('availability') ||
-              v.includes('available') ||
               v.includes('not available') ||
-              v.includes('reserved') ||
-              v.includes('reservation') ||
-              v.includes('quantity') ||
-              v.includes('assigned') ||
-              v.includes('waiting') ||
-              v.includes('move line') ||
-              v.includes('need to supply')
+              v.includes('availability') ||
+              v.includes('unreserved') ||
+              v.includes('need to supply') ||
+              (v.includes('reserv') && !v.includes('qty_done'))
             );
           };
 
           try {
-            // Scrub orphan/unexpected move lines before validate so Done cannot lock inflation.
+            // Reuse picking state when possible; skip redundant confirm/assign on already-ready transfers.
+            let pickingStateForValidate = '';
             try {
-              const expectedByProduct = new Map();
-              const frozenBlocks = frozenDeliveryBlocksForVerify(p, [{ pickingId, deliveryLines }]);
-              for (const b of frozenBlocks) {
-                for (const line of b.deliveryLines || []) {
-                  const prodId = Number(line?.productId ?? line?.product_id);
-                  const q = coerceDeliveredQty(line?.qty_done);
-                  if (!Number.isFinite(prodId) || prodId <= 0 || !Number.isFinite(q) || q <= 0) continue;
-                  expectedByProduct.set(prodId, coerceDeliveredQty((expectedByProduct.get(prodId) || 0) + q));
+              const stRows = await getPickingState(pickingId);
+              const stPick = Array.isArray(stRows) ? stRows[0] : stRows;
+              pickingStateForValidate = String(stPick?.state || '').toLowerCase();
+            } catch (_) {
+              pickingStateForValidate = '';
+            }
+            // Scrub orphan lines only while the transfer is still open. Never scrub a Done picking
+            // (that can zero validated qty). Skip entirely when the expected map is empty.
+            if (pickingStateForValidate !== 'done') {
+              try {
+                const expectedByProduct = new Map();
+                const frozenBlocks = frozenDeliveryBlocksForVerify(p, [{ pickingId, deliveryLines }]);
+                for (const b of frozenBlocks) {
+                  for (const line of b.deliveryLines || []) {
+                    const prodId = Number(line?.productId ?? line?.product_id);
+                    const q = coerceDeliveredQty(line?.qty_done);
+                    if (!Number.isFinite(prodId) || prodId <= 0 || !Number.isFinite(q) || q <= 0) continue;
+                    expectedByProduct.set(prodId, coerceDeliveredQty((expectedByProduct.get(prodId) || 0) + q));
+                  }
                 }
+                const requested = p.mobileQtySnapshot?.requestedQtyByProduct || p.requestedQtyByProduct || {};
+                for (const [pidRaw, qtyRaw] of Object.entries(requested)) {
+                  const prodId = Number(pidRaw);
+                  const q = coerceDeliveredQty(qtyRaw);
+                  if (!Number.isFinite(prodId) || prodId <= 0 || !Number.isFinite(q) || q <= 0) continue;
+                  if (!expectedByProduct.has(prodId)) expectedByProduct.set(prodId, q);
+                }
+                const scrub = await scrubUnexpectedPickingMoveLines(pickingId, expectedByProduct);
+                if (scrub?.scrubbed > 0) {
+                  log('queue', `delivery scrubbed ${scrub.scrubbed} unexpected move line(s) on picking ${pickingId}`);
+                }
+              } catch (scrubErr) {
+                log(
+                  'queue',
+                  `delivery scrub unexpected lines non-fatal: ${String(scrubErr?.message || scrubErr).slice(0, 100)}`
+                );
               }
-              const requested = p.mobileQtySnapshot?.requestedQtyByProduct || p.requestedQtyByProduct || {};
-              for (const [pidRaw, qtyRaw] of Object.entries(requested)) {
-                const prodId = Number(pidRaw);
-                const q = coerceDeliveredQty(qtyRaw);
-                if (!Number.isFinite(prodId) || prodId <= 0 || !Number.isFinite(q) || q <= 0) continue;
-                if (!expectedByProduct.has(prodId)) expectedByProduct.set(prodId, q);
-              }
-              const scrub = await scrubUnexpectedPickingMoveLines(pickingId, expectedByProduct);
-              if (scrub?.scrubbed > 0) {
-                log('queue', `delivery scrubbed ${scrub.scrubbed} unexpected move line(s) on picking ${pickingId}`);
-              }
-            } catch (scrubErr) {
-              log(
-                'queue',
-                `delivery scrub unexpected lines non-fatal: ${String(scrubErr?.message || scrubErr).slice(0, 100)}`
-              );
             }
             try {
-              // Reuse picking state when possible; skip redundant confirm/assign on already-ready transfers.
-              // Business outcome unchanged: still validate (or treat already-done as success).
-              let pickingStateForValidate = '';
-              try {
-                const stRows = await getPickingState(pickingId);
-                const stPick = Array.isArray(stRows) ? stRows[0] : stRows;
-                pickingStateForValidate = String(stPick?.state || '').toLowerCase();
-              } catch (_) {
-                pickingStateForValidate = '';
-              }
               const alreadyReady =
                 pickingStateForValidate === 'assigned' ||
-                pickingStateForValidate === 'confirmed' ||
                 pickingStateForValidate === 'done';
               if (!alreadyReady) {
                 try {
@@ -5796,6 +5970,19 @@ async function processSyncQueue(options = {}) {
                   log(
                     'queue',
                     `delivery action_assign picking ${pickingId} (non-fatal): ${String(assignErr?.message || assignErr).slice(0, 120)}`
+                  );
+                }
+                // Waiting/Confirmed after modify: action_assign can wipe qty_done. Re-apply before validate.
+                try {
+                  await applyPickingDeliverySnapshotIdempotent(pickingId, blockSnapshot, {
+                    deliveryTxnId: p.deliveryTxnId,
+                    deviceId: p.deviceId,
+                  });
+                  log('queue', `delivery re-applied qty after assign picking ${pickingId}`);
+                } catch (reapplyAfterAssignErr) {
+                  log(
+                    'queue',
+                    `delivery re-apply after assign picking ${pickingId} (non-fatal): ${String(reapplyAfterAssignErr?.message || reapplyAfterAssignErr).slice(0, 120)}`
                   );
                 }
               } else if (pickingStateForValidate !== 'done') {
@@ -5832,15 +6019,39 @@ async function processSyncQueue(options = {}) {
                 log('queue', `delivery validate skipped (picking ${pickingId}): ${vMsg.slice(0, 80)}`);
                 validatedAnyPicking = true;
               } else if (mightBeStockReservation(vMsg)) {
-                log('queue', `delivery validate failed (stock?) picking ${pickingId} — retry after action_assign`);
+                log('queue', `delivery validate failed (stock?) picking ${pickingId} — retry after snapshot re-apply`);
+                let stateNow = '';
                 try {
-                  await actionAssignPicking(pickingId);
+                  const stRows = await getPickingState(pickingId);
+                  const stPick = Array.isArray(stRows) ? stRows[0] : stRows;
+                  stateNow = String(stPick?.state || '').toLowerCase();
                 } catch (_) {
-                  /* second assign optional */
+                  stateNow = '';
+                }
+                // Never action_assign a Ready picking — it can unreserve and wipe qty_done (Ready→Waiting).
+                if (stateNow && stateNow !== 'assigned' && stateNow !== 'done' && stateNow !== 'cancel') {
+                  try {
+                    await actionAssignPicking(pickingId);
+                  } catch (_) {
+                    /* second assign optional */
+                  }
+                }
+                try {
+                  await applyPickingDeliverySnapshotIdempotent(pickingId, blockSnapshot, {
+                    deliveryTxnId: p.deliveryTxnId,
+                    deviceId: p.deviceId,
+                  });
+                  await verifyStockMoveQtyDoneMatchesPayload(verifyBlocks);
+                } catch (reapplyErr) {
+                  log(
+                    'queue',
+                    `delivery re-apply after stock retry picking ${pickingId}: ${String(reapplyErr?.message || reapplyErr).slice(0, 120)}`
+                  );
+                  throw validateErr;
                 }
                 await tryValidateOne();
                 validatedAnyPicking = true;
-                log('queue', `delivery validated picking ${pickingId} after assign retry`);
+                log('queue', `delivery validated picking ${pickingId} after stock retry`);
               } else {
                 throw validateErr;
               }
@@ -5902,7 +6113,8 @@ async function processSyncQueue(options = {}) {
         }
 
         // S09189: never blindly cancel backorders — validate ones that hold mobile qty / true missing products.
-        if (validatedAnyPicking && saleOrderId != null && !_checkoutUploadPriority) {
+        // Also cancel empty remainder Ready rows (must run on checkout fast-path too).
+        if (validatedAnyPicking && saleOrderId != null) {
           try {
             const boResult = await reconcilePostValidateBackorders(saleOrderId, p, targetPickingIds);
             if (boResult?.validated > 0 || boResult?.cancelled > 0) {
@@ -6046,6 +6258,7 @@ async function processSyncQueue(options = {}) {
                 const heal = await attemptDeliveredQtyHealForSaleOrder(soId, healPayload, { maxRounds: 2 });
                 if (heal.ok) {
                   await verifyAllSaleOrderPickingsAreTerminal(soId);
+                  await assertMobileQtyHasDonePickingOnOdoo(soId, healPayload);
                   try {
                     await ensureStockMovesLinkedToSaleOrderLines(soId, []);
                     const updates = await collectAuthoritativeDeliveredUpdates(soId, healPayload);
@@ -6452,6 +6665,7 @@ async function processSyncQueue(options = {}) {
                 const heal = await attemptDeliveredQtyHealForSaleOrder(soId, healPayload, { maxRounds: 3 });
                 if (heal.ok) {
                   await verifyAllSaleOrderPickingsAreTerminal(soId);
+                  await assertMobileQtyHasDonePickingOnOdoo(soId, healPayload);
                   try {
                     await ensureStockMovesLinkedToSaleOrderLines(soId, []);
                     const updates = await collectAuthoritativeDeliveredUpdates(soId, healPayload);
@@ -6545,6 +6759,7 @@ async function processSyncQueue(options = {}) {
                     });
                     if (heal.ok) {
                       await verifyAllSaleOrderPickingsAreTerminal(soId);
+                      await assertMobileQtyHasDonePickingOnOdoo(soId, releasedPayload);
                       try {
                         await ensureStockMovesLinkedToSaleOrderLines(soId, []);
                         const updates = await collectAuthoritativeDeliveredUpdates(soId, releasedPayload);
@@ -6634,6 +6849,7 @@ async function processSyncQueue(options = {}) {
                     });
                     if (heal.ok) {
                       await verifyAllSaleOrderPickingsAreTerminal(soId);
+                      await assertMobileQtyHasDonePickingOnOdoo(soId, healPayload);
                       deliverySyncedSoIdsThisPass.add(soId);
                       log('queue', `payment SO ${soId}: recovered stuck delivery via heal (no pending row)`);
                     } else {
@@ -6703,6 +6919,7 @@ async function processSyncQueue(options = {}) {
                   });
                   if (heal.ok) {
                     await verifyAllSaleOrderPickingsAreTerminal(soId);
+                    await assertMobileQtyHasDonePickingOnOdoo(soId, releasedPayload);
                     try {
                       await ensureStockMovesLinkedToSaleOrderLines(soId, []);
                       const updates = await collectAuthoritativeDeliveredUpdates(soId, releasedPayload);

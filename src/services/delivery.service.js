@@ -11,6 +11,26 @@ function dedupeMoveLineUpdatesByLineId(updates = []) {
   return [...byLine.values()];
 }
 
+/** Prefer the line that already has qty_done — lowest-id empty lines must not steal/zero the real qty. */
+function pickKeeperMoveLine(rows = []) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) return null;
+  let keeper = list[0];
+  let best = coerceDeliveredQty(keeper?.qty_done);
+  if (!Number.isFinite(best)) best = -1;
+  for (let i = 1; i < list.length; i++) {
+    const q = coerceDeliveredQty(list[i]?.qty_done);
+    const qn = Number.isFinite(q) ? q : -1;
+    if (qn > best) {
+      keeper = list[i];
+      best = qn;
+    } else if (qn === best && Number(list[i]?.id) < Number(keeper?.id)) {
+      keeper = list[i];
+    }
+  }
+  return keeper;
+}
+
 /**
  * Map deliveryLines to existing stock.move.line writes (exact qty) instead of creating duplicate lines on retry.
  */
@@ -57,19 +77,27 @@ export async function enrichDeliverySnapshotWithExistingMoveLines(pickingId, sna
       remainingDeliveryLines.push(line);
       continue;
     }
+    const keeper = pickKeeperMoveLine(rows) || rows[0];
     moveLineUpdates.push({
-      moveLineId: rows[0].id,
+      moveLineId: keeper.id,
       moveId: mid,
       productId: line.productId ?? line.product_id,
       qty_done: target,
     });
-    for (let i = 1; i < rows.length; i++) {
-      moveLineUpdates.push({
-        moveLineId: rows[i].id,
-        moveId: mid,
-        productId: line.productId ?? line.product_id,
-        qty_done: 0,
-      });
+    // Only zero extra lines that currently hold qty (duplicate create). Never write 0 onto
+    // the keeper, and never emit no-op zeros — those overwrote Done qty 12→0 on retry.
+    if (Number.isFinite(target) && target > 0.0001) {
+      for (const row of rows) {
+        if (Number(row?.id) === Number(keeper.id)) continue;
+        const extraQty = coerceDeliveredQty(row?.qty_done);
+        if (!Number.isFinite(extraQty) || extraQty <= 0.0001) continue;
+        moveLineUpdates.push({
+          moveLineId: row.id,
+          moveId: mid,
+          productId: line.productId ?? line.product_id,
+          qty_done: 0,
+        });
+      }
     }
   }
 
@@ -88,7 +116,7 @@ export const getPickingBySaleOrder = (saleOrderId) =>
     "search_read",
     [[["sale_id", "=", saleOrderId]]],
     {
-      fields: ["id", "name", "state", "move_ids", "backorder_ids"],
+      fields: ["id", "name", "state", "move_ids", "backorder_ids", "picking_type_code"],
       limit: 20,
       order: "id asc",
     }
@@ -164,6 +192,92 @@ export const updateStockMoveQuantityDone = (moveId, qtyDone) =>
 export const validatePicking = (pickingId) =>
   callOdooArgs("stock.picking", "button_validate", [[pickingId]]);
 
+async function consumeStockValidateWizards(pickingId, result, mergedContext, depth = 0) {
+  if (depth > 4) return result;
+  const actionModel = String(result?.res_model || "").toLowerCase();
+  const wizardId = Number(result?.res_id);
+  if (!actionModel.startsWith("stock.") || !Number.isFinite(wizardId) || wizardId <= 0) {
+    return result;
+  }
+
+  const wizardContext = {
+    ...mergedContext,
+    cancel_backorder: true,
+    skip_backorder: true,
+    skip_immediate: true,
+  };
+
+  let next = result;
+  if (actionModel === "stock.backorder.confirmation") {
+    try {
+      next = await callOdooArgsKwargs(
+        "stock.backorder.confirmation",
+        "process_cancel_backorder",
+        [[wizardId]],
+        { context: wizardContext }
+      );
+    } catch (_) {
+      // Never fall back to process() — that creates a Ready remainder backorder (S09924).
+      next = await callOdooArgsKwargs(
+        "stock.picking",
+        "button_validate",
+        [[pickingId]],
+        { context: wizardContext }
+      );
+    }
+    return consumeStockValidateWizards(pickingId, next, wizardContext, depth + 1);
+  }
+
+  if (actionModel === "stock.immediate.transfer") {
+    try {
+      next = await callOdooArgsKwargs(
+        "stock.immediate.transfer",
+        "process",
+        [[wizardId]],
+        { context: wizardContext }
+      );
+    } catch (_) {
+      next = await callOdooArgsKwargs(
+        "stock.picking",
+        "button_validate",
+        [[pickingId]],
+        { context: wizardContext }
+      );
+    }
+    return consumeStockValidateWizards(pickingId, next, wizardContext, depth + 1);
+  }
+
+  if (actionModel === "stock.overprocessed.transfer") {
+    try {
+      next = await callOdooArgsKwargs(
+        "stock.overprocessed.transfer",
+        "action_confirm",
+        [[wizardId]],
+        { context: wizardContext }
+      );
+    } catch (_) {
+      try {
+        next = await callOdooArgsKwargs(
+          "stock.overprocessed.transfer",
+          "process",
+          [[wizardId]],
+          { context: wizardContext }
+        );
+      } catch (_) {
+        next = await callOdooArgsKwargs(
+          "stock.picking",
+          "button_validate",
+          [[pickingId]],
+          { context: wizardContext }
+        );
+      }
+    }
+    return consumeStockValidateWizards(pickingId, next, wizardContext, depth + 1);
+  }
+
+  return result;
+}
+
 /** Validate picking with context (e.g. skip_backorder to avoid backorder wizard). */
 export const validatePickingWithContext = async (pickingId, context = {}) => {
   const pid = Number(pickingId);
@@ -171,6 +285,7 @@ export const validatePickingWithContext = async (pickingId, context = {}) => {
     active_model: "stock.picking",
     active_id: pid,
     active_ids: [pid],
+    skip_immediate: true,
     ...context,
   };
   const result = await callOdooArgsKwargs(
@@ -179,36 +294,7 @@ export const validatePickingWithContext = async (pickingId, context = {}) => {
     [[pid]],
     { context: mergedContext }
   );
-  // Some Odoo DBs still return backorder wizard action despite skip/cancel context.
-  // Handle it explicitly so behavior stays consistent across devices.
-  const actionModel = String(result?.res_model || "").toLowerCase();
-  const wizardId = Number(result?.res_id);
-  if (actionModel === "stock.backorder.confirmation" && Number.isFinite(wizardId) && wizardId > 0) {
-    if (mergedContext.cancel_backorder === true) {
-      try {
-        return await callOdooArgsKwargs(
-          "stock.backorder.confirmation",
-          "process_cancel_backorder",
-          [[wizardId]],
-          { context: mergedContext }
-        );
-      } catch (_) {
-        return await callOdooArgsKwargs(
-          "stock.backorder.confirmation",
-          "process",
-          [[wizardId]],
-          { context: mergedContext }
-        );
-      }
-    }
-    return await callOdooArgsKwargs(
-      "stock.backorder.confirmation",
-      "process",
-      [[wizardId]],
-      { context: mergedContext }
-    );
-  }
-  return result;
+  return consumeStockValidateWizards(pid, result, mergedContext, 0);
 };
 
 /** Create stock.move.line with qty_done (for offline sync: set delivered qty per move). */
@@ -224,6 +310,18 @@ export const createMoveLine = (pickingId, moveId, productId, qtyDone) =>
 export async function scrubUnexpectedPickingMoveLines(pickingId, expectedQtyByProduct = new Map()) {
   const pid = Number(pickingId);
   if (!Number.isFinite(pid) || pid <= 0) return { scrubbed: 0 };
+  if (!(expectedQtyByProduct instanceof Map) || expectedQtyByProduct.size === 0) {
+    return { scrubbed: 0 };
+  }
+  try {
+    const stateRows = await getPickingState(pid);
+    const pick = Array.isArray(stateRows) ? stateRows[0] : stateRows;
+    if (String(pick?.state || "").toLowerCase() === "done") {
+      return { scrubbed: 0 };
+    }
+  } catch (_) {
+    /* if state cannot be read, still avoid mass-zero — caller should have a map */
+  }
   const rows =
     (await callOdoo(
       'stock.move.line',
@@ -451,7 +549,9 @@ export async function applyPickingDeliverySnapshotAtomic(pickingId, snapshot = {
 export async function applyPickingDeliverySnapshotSequential(pickingId, snapshot = {}) {
   const pid = Number(pickingId);
   // Re-enrich so retries SET existing lines instead of creating duplicates.
-  const enriched = await enrichDeliverySnapshotWithExistingMoveLines(pid, snapshot);
+  let enriched = await enrichDeliverySnapshotWithExistingMoveLines(pid, snapshot);
+  enriched = await stripDownwardQtyWritesIfPickingDone(pid, enriched);
+  if (!snapshotHasQtyWrites(enriched)) return { ok: true, mode: "done_protected" };
   const { moveUpdates = [], moveLineUpdates = [], deliveryLines = [] } = enriched;
   for (const u of moveUpdates || []) {
     if (u?.moveId == null || u?.product_uom_qty == null) continue;
@@ -483,9 +583,13 @@ export async function applyPickingDeliverySnapshotSequential(pickingId, snapshot
         // Caller must not retry-create on success path.
         const existing = await getStockMoveLinesByMoveIds([Number(moveId)]).catch(() => []);
         if (Array.isArray(existing) && existing.length > 0) {
-          await updateMoveLineQty(existing[0].id, qtyN);
-          for (let i = 1; i < existing.length; i++) {
-            await updateMoveLineQty(existing[i].id, 0);
+          const keeper = pickKeeperMoveLine(existing) || existing[0];
+          await updateMoveLineQty(keeper.id, qtyN);
+          for (const row of existing) {
+            if (Number(row?.id) === Number(keeper.id)) continue;
+            const extraQty = coerceDeliveredQty(row?.qty_done);
+            if (!Number.isFinite(extraQty) || extraQty <= 0.0001) continue;
+            await updateMoveLineQty(row.id, 0);
           }
           updatedMoveIds.add(Number(moveId));
           continue;
@@ -515,6 +619,75 @@ export async function applyPickingDeliverySnapshotSequential(pickingId, snapshot
 
 const QTY_DONE_MATCH_TOL = 0.02;
 
+/**
+ * Hard guard: never reduce qty on a Done transfer.
+ * Later heal/retry (hours after validate) was writing 23→0 and locking Delivered tab.
+ * Upward repair (Done with 0, mobile still has qty) is still allowed.
+ */
+async function stripDownwardQtyWritesIfPickingDone(pickingId, snapshot = {}) {
+  const pid = Number(pickingId);
+  if (!Number.isFinite(pid) || pid <= 0) return snapshot;
+  const stateRows = await getPickingState(pid).catch(() => []);
+  const pick = Array.isArray(stateRows) ? stateRows[0] : stateRows;
+  if (String(pick?.state || "").toLowerCase() !== "done") return snapshot;
+
+  const moves = await getStockMovesByPickingId(pid).catch(() => []);
+  const qtyByMove = new Map();
+  const moveIds = [];
+  for (const mv of moves || []) {
+    const mid = Number(mv?.id);
+    if (!Number.isFinite(mid) || mid <= 0) continue;
+    moveIds.push(mid);
+    const q = coerceDeliveredQty(mv?.quantity_done != null ? mv.quantity_done : mv?.qty_done);
+    qtyByMove.set(mid, Number.isFinite(q) ? q : 0);
+  }
+  const lineRows = moveIds.length ? await getStockMoveLinesByMoveIds(moveIds).catch(() => []) : [];
+  const qtyByLine = new Map();
+  for (const ml of lineRows || []) {
+    const lid = Number(ml?.id);
+    const q = coerceDeliveredQty(ml?.qty_done);
+    if (Number.isFinite(lid) && lid > 0) qtyByLine.set(lid, Number.isFinite(q) ? q : 0);
+  }
+
+  const keepIfNotReducing = (current, target) => {
+    const cur = Number.isFinite(current) ? current : 0;
+    const tgt = coerceDeliveredQty(target);
+    if (cur > 0.0001 && (!Number.isFinite(tgt) || tgt + QTY_DONE_MATCH_TOL < cur)) {
+      return false;
+    }
+    return true;
+  };
+
+  const deliveryLines = (snapshot.deliveryLines || []).filter((line) => {
+    const mid = Number(line?.moveId ?? line?.move_id);
+    return keepIfNotReducing(qtyByMove.get(mid) || 0, line?.qty_done);
+  });
+  const moveLineUpdates = (snapshot.moveLineUpdates || []).filter((u) => {
+    const lid = Number(u?.moveLineId);
+    const mid = Number(u?.moveId);
+    const current =
+      (Number.isFinite(lid) && qtyByLine.has(lid) ? qtyByLine.get(lid) : null) ??
+      (Number.isFinite(mid) ? qtyByMove.get(mid) : 0) ??
+      0;
+    return keepIfNotReducing(current, u?.qty_done);
+  });
+
+  return {
+    ...snapshot,
+    moveUpdates: [],
+    deliveryLines,
+    moveLineUpdates,
+  };
+}
+
+function snapshotHasQtyWrites(snapshot = {}) {
+  return (
+    (Array.isArray(snapshot.deliveryLines) && snapshot.deliveryLines.length > 0) ||
+    (Array.isArray(snapshot.moveLineUpdates) && snapshot.moveLineUpdates.length > 0) ||
+    (Array.isArray(snapshot.moveUpdates) && snapshot.moveUpdates.length > 0)
+  );
+}
+
 /** True when Odoo already matches the mobile snapshot (skip re-write on queue retry/heal). */
 export async function pickingDeliverySnapshotAlreadyApplied(pickingId, snapshot = {}, tolerance = QTY_DONE_MATCH_TOL) {
   const pid = Number(pickingId);
@@ -524,13 +697,16 @@ export async function pickingDeliverySnapshotAlreadyApplied(pickingId, snapshot 
   for (const line of deliveryLines || []) {
     const mid = Number(line?.moveId ?? line?.move_id);
     const qty = Number(line?.qty_done);
-    if (!Number.isFinite(mid) || mid <= 0 || !Number.isFinite(qty)) continue;
-    expectedByMove.set(mid, qty);
+    if (!Number.isFinite(mid) || mid <= 0 || !Number.isFinite(qty) || qty <= 0) continue;
+    const prev = expectedByMove.get(mid);
+    expectedByMove.set(mid, prev == null ? qty : Math.max(prev, qty));
   }
   for (const u of moveLineUpdates || []) {
     const mid = Number(u?.moveId);
     const qty = Number(u?.qty_done);
-    if (Number.isFinite(mid) && mid > 0 && Number.isFinite(qty)) expectedByMove.set(mid, qty);
+    if (!Number.isFinite(mid) || mid <= 0 || !Number.isFinite(qty) || qty <= 0) continue;
+    const prev = expectedByMove.get(mid);
+    expectedByMove.set(mid, prev == null ? qty : Math.max(prev, qty));
   }
   if (expectedByMove.size === 0) return false;
 
@@ -562,7 +738,9 @@ export async function pickingDeliverySnapshotAlreadyApplied(pickingId, snapshot 
 export async function applyPickingDeliverySnapshotIdempotent(pickingId, snapshot = {}, meta = {}) {
   const pid = Number(pickingId);
   if (!Number.isFinite(pid) || pid <= 0) return { ok: true, mode: "noop" };
-  const enriched = await enrichDeliverySnapshotWithExistingMoveLines(pid, snapshot);
+  let enriched = await enrichDeliverySnapshotWithExistingMoveLines(pid, snapshot);
+  enriched = await stripDownwardQtyWritesIfPickingDone(pid, enriched);
+  if (!snapshotHasQtyWrites(enriched)) return { ok: true, mode: "done_protected" };
   if (await pickingDeliverySnapshotAlreadyApplied(pid, enriched)) {
     return { ok: true, mode: "already_applied" };
   }
@@ -573,7 +751,9 @@ export async function applyPickingDeliverySnapshotIdempotent(pickingId, snapshot
 export async function applyPickingDeliverySnapshotWithFallback(pickingId, snapshot = {}, meta = {}) {
   const pid = Number(pickingId);
   if (!Number.isFinite(pid) || pid <= 0) return { ok: true, mode: "noop" };
-  const enriched = await enrichDeliverySnapshotWithExistingMoveLines(pid, snapshot);
+  let enriched = await enrichDeliverySnapshotWithExistingMoveLines(pid, snapshot);
+  enriched = await stripDownwardQtyWritesIfPickingDone(pid, enriched);
+  if (!snapshotHasQtyWrites(enriched)) return { ok: true, mode: "done_protected" };
   if (await pickingDeliverySnapshotAlreadyApplied(pid, enriched)) {
     return { ok: true, mode: "already_applied" };
   }

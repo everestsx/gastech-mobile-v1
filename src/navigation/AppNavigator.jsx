@@ -65,6 +65,18 @@ import {
 
 export const rootNavigationRef = createNavigationContainerRef();
 
+const SQLITE_RECLAIM_MIN_MS = 30 * 60 * 1000;
+let lastSqliteReclaimAt = 0;
+
+function reclaimSqliteOnResumeIfDue() {
+  const now = Date.now();
+  if (now - lastSqliteReclaimAt < SQLITE_RECLAIM_MIN_MS) return;
+  lastSqliteReclaimAt = now;
+  void import('../database/db.js')
+    .then((m) => m.reclaimSqliteSpace({ aggressive: false }))
+    .catch(() => {});
+}
+
 async function enforceSessionNotExpired() {
   const user = await getUserSession();
   if (!user || !isSessionExpired(user)) return;
@@ -377,6 +389,7 @@ export default function AppNavigator() {
       const isActive = nextState === 'active';
       if (isActive && !wasActive) {
         void enforceSessionNotExpired();
+        reclaimSqliteOnResumeIfDue();
         void runScheduledSyncIfNeeded();
         syncIntervalRef.current = setInterval(() => {
           void runScheduledSyncIfNeeded();
