@@ -1,4 +1,23 @@
 const { execSync } = require("child_process");
+const fs = require("fs");
+const path = require("path");
+
+function loadProjectEnv() {
+  try {
+    const dotenv = require("dotenv");
+    const envFile = path.join(__dirname, ".env");
+    if (fs.existsSync(envFile)) {
+      dotenv.config({ path: envFile });
+      console.log("[app.config] Loaded .env from", envFile);
+    } else {
+      console.log("[app.config] No .env at", envFile);
+    }
+  } catch (e) {
+    console.log("[app.config] dotenv load skipped:", e?.message || e);
+  }
+}
+
+loadProjectEnv();
 
 const SHARED_PERMISSIONS = [
   "android.permission.INTERNET",
@@ -19,10 +38,10 @@ const SHARED_PERMISSIONS = [
 
 const APP_VARIANTS = {
   production: {
-    name: "GasTechMobile",
-    slug: "GasTechMobile",
-    updatesUrl: "https://u.expo.dev/af65ddf8-bf52-4856-9eff-cd08773a7bab",
-    projectId: "af65ddf8-bf52-4856-9eff-cd08773a7bab",
+    name: "GasTechMobileStage",
+    slug: "GasTechMobileStage",
+    updatesUrl: "https://u.expo.dev/2f94bcdc-e805-4cfb-a4d1-b9e15c833662",
+    projectId: "2f94bcdc-e805-4cfb-a4d1-b9e15c833662",
   },
   stage: {
     name: "GasTechMobileStage",
@@ -142,6 +161,14 @@ module.exports = () => {
         eas: {
           projectId: selectedVariant.projectId,
         },
+        ODOO_URL: process.env.ODOO_URL || "",
+        ODOO_DB: process.env.ODOO_DB || "",
+        ODOO_API_KEY: process.env.ODOO_API_KEY || "",
+        UID: process.env.UID || "",
+        GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID || "",
+        GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET || "",
+        GOOGLE_REFRESH_TOKEN: process.env.GOOGLE_REFRESH_TOKEN || "",
+        ROOT_FOLDER_ID: process.env.ROOT_FOLDER_ID || "",
       },
     },
   };
