@@ -137,24 +137,28 @@ export const getPickingsBySaleIds = (saleOrderIds) => {
 };
 
 /** Get stock moves for a picking (to map products to move lines) */
-export const getStockMovesByPickingId = (pickingId) =>
-  callOdoo(
-    "stock.move",
-    "search_read",
-    [[["picking_id", "=", pickingId]]],
-    {
-      // quantity_done / sale_line_id required for coverage asserts + S09189 backorder reconcile
-      fields: [
-        "id",
-        "product_uom_qty",
-        "product_id",
-        "state",
-        "quantity_done",
-        "sale_line_id",
-        "picking_id",
-      ],
-    }
-  );
+export const getStockMovesByPickingId = async (pickingId) => {
+  const domain = [[["picking_id", "=", pickingId]]];
+  const baseFields = [
+    "id",
+    "product_uom_qty",
+    "product_id",
+    "state",
+    "quantity_done",
+    "sale_line_id",
+    "picking_id",
+  ];
+  try {
+    // Odoo 17+ stores done qty on `quantity`; older DBs only have `quantity_done`.
+    return await callOdoo("stock.move", "search_read", domain, {
+      fields: [...baseFields, "quantity"],
+    });
+  } catch (e) {
+    const msg = String(e?.message || e);
+    if (!/invalid field ['"]?quantity['"]?/i.test(msg)) throw e;
+    return callOdoo("stock.move", "search_read", domain, { fields: baseFields });
+  }
+};
 
 /** Get stock move lines by move ids (for updating qty_done) */
 export const getStockMoveLinesByMoveIds = (moveIds) =>
@@ -651,7 +655,13 @@ async function stripDownwardQtyWritesIfPickingDone(pickingId, snapshot = {}) {
     const mid = Number(mv?.id);
     if (!Number.isFinite(mid) || mid <= 0) continue;
     moveIds.push(mid);
-    const q = coerceDeliveredQty(mv?.quantity_done != null ? mv.quantity_done : mv?.qty_done);
+    const q = coerceDeliveredQty(
+      mv?.quantity != null && mv.quantity !== false
+        ? mv.quantity
+        : mv?.quantity_done != null && mv.quantity_done !== false
+          ? mv.quantity_done
+          : mv?.qty_done
+    );
     qtyByMove.set(mid, Number.isFinite(q) ? q : 0);
   }
   const lineRows = moveIds.length ? await getStockMoveLinesByMoveIds(moveIds).catch(() => []) : [];
@@ -733,11 +743,25 @@ export async function pickingDeliverySnapshotAlreadyApplied(pickingId, snapshot 
     moveRows = [];
   }
   const moveById = new Map((Array.isArray(moveRows) ? moveRows : []).map((m) => [Number(m.id), m]));
-
+  const moveByIdFromPick = new Map(
+    (Array.isArray(moves) ? moves : []).map((m) => [Number(m.id), m])
+  );
   for (const [mid, expected] of expectedByMove) {
     let actual = NaN;
-    const mv = moveById.get(mid);
-    if (mv?.quantity_done != null) actual = Number(mv.quantity_done);
+    const fromPick = moveByIdFromPick.get(mid);
+    if (fromPick) {
+      actual = coerceDeliveredQty(
+        fromPick.quantity != null && fromPick.quantity !== false
+          ? fromPick.quantity
+          : fromPick.quantity_done != null && fromPick.quantity_done !== false
+            ? fromPick.quantity_done
+            : fromPick.qty_done
+      );
+    }
+    if (!Number.isFinite(actual)) {
+      const mv = moveById.get(mid);
+      if (mv?.quantity_done != null && mv.quantity_done !== false) actual = Number(mv.quantity_done);
+    }
     if (!Number.isFinite(actual)) {
       const mls = await getStockMoveLinesByMoveIds([mid]).catch(() => []);
       actual = (mls || []).reduce((sum, ml) => sum + (Number(ml?.qty_done) || 0), 0);
