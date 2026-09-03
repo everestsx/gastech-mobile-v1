@@ -6,7 +6,7 @@
     "runtimeVersion": "1.0.0",
     "updates": {
       "url": "https://u.expo.dev/2f94bcdc-e805-4cfb-a4d1-b9e15c833662",
-      "checkAutomatically": "ON_LOAD",
+      "checkAutomatically": "NEVER",
       "fallbackToCacheTimeout": 0
     },
     "orientation": "portrait",

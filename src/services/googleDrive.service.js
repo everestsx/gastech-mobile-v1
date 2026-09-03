@@ -1,4 +1,4 @@
-import { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN, ROOT_FOLDER_ID } from '@env';
+import { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN, ROOT_FOLDER_ID } from '../config/env';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { trackNetworkUsage, usageBytes } from './dataUsage.service';
 

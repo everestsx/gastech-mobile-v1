@@ -1,5 +1,5 @@
 // services/index.service.js
-import { ODOO_URL, ODOO_DB, ODOO_API_KEY, UID } from '@env';
+import { ODOO_URL, ODOO_DB, ODOO_API_KEY, UID, describeOdooEnvForLog } from '../config/env';
 import { trackNetworkUsage, usageBytes } from './dataUsage.service';
 
 const REQUEST_TIMEOUT_MS = 60000;
@@ -41,7 +41,7 @@ function getOdooConfig() {
     if (!apiKey) missing.push('ODOO_API_KEY');
     if (Number.isNaN(uid)) missing.push('UID (must be a number)');
     throw new Error(
-      `Odoo env not set or invalid: ${missing.join(', ')}. Check .env and restart the app with cache clear (e.g. npx expo start -c).`
+      `Odoo env not set or invalid: ${missing.join(', ')}. ${JSON.stringify(describeOdooEnvForLog())}`
     );
   }
   return { url, db, uid, apiKey };
@@ -56,11 +56,10 @@ function getHostFromUrl(u) {
   }
 }
 
-if (__DEV__) {
-  try {
-    const c = getOdooConfig();
-    console.log('[Odoo] Using server:', getHostFromUrl(c.url), '| db:', c.db, '| uid:', c.uid, '| apiKeyLen:', c.apiKey?.length ?? 0);
-  } catch (_) {}
+try {
+  console.log('[Odoo] env check', describeOdooEnvForLog());
+} catch (e) {
+  console.warn('[Odoo] env check failed', e?.message || e);
 }
 
 /** fetch with a real timeout (React Native fetch ignores timeout option). */

@@ -7,7 +7,7 @@ function loadProjectEnv() {
     const dotenv = require("dotenv");
     const envFile = path.join(__dirname, ".env");
     if (fs.existsSync(envFile)) {
-      dotenv.config({ path: envFile });
+      dotenv.config({ path: envFile, override: true });
       console.log("[app.config] Loaded .env from", envFile);
     } else {
       console.log("[app.config] No .env at", envFile);
@@ -96,6 +96,21 @@ module.exports = () => {
     `[app.config] Using ${variantKey} config: ${selectedVariant.name} (${selectedVariant.projectId})`
   );
 
+  const extraOdooUrl = process.env.ODOO_URL || "";
+  let extraOdooHost = "(empty)";
+  try {
+    if (extraOdooUrl) extraOdooHost = new URL(extraOdooUrl).host;
+  } catch {
+    extraOdooHost = "(invalid url)";
+  }
+  console.log("[app.config] extra Odoo bake", {
+    hasUrl: !!extraOdooUrl,
+    host: extraOdooHost,
+    hasDb: !!(process.env.ODOO_DB || ""),
+    hasApiKey: !!(process.env.ODOO_API_KEY || ""),
+    uidOk: !!(process.env.UID || ""),
+  });
+
   return {
     expo: {
       name: selectedVariant.name,
@@ -104,7 +119,7 @@ module.exports = () => {
       runtimeVersion: "1.0.0",
       updates: {
         url: selectedVariant.updatesUrl,
-        checkAutomatically: "ON_LOAD",
+        checkAutomatically: "NEVER",
         fallbackToCacheTimeout: 0,
       },
       orientation: "portrait",

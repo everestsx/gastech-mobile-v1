@@ -1,5 +1,8 @@
 const { execSync } = require('child_process');
 const fs = require('fs');
+const path = require('path');
+
+const PROJECT_ROOT = __dirname;
 
 function getCurrentGitBranch() {
   try {
@@ -12,7 +15,7 @@ function getCurrentGitBranch() {
   }
 }
 
-function resolveEnvPath() {
+function resolveEnvFileName() {
   const explicitVariant = String(process.env.APP_VARIANT || '').toLowerCase().trim();
   if (explicitVariant === 'stage' || explicitVariant === 'staging') return '.env.stage';
   if (explicitVariant === 'prod' || explicitVariant === 'production') return '.env.production';
@@ -28,26 +31,32 @@ function resolveEnvPath() {
     return '.env.production';
   }
 
-  return '.env.production';
+  return '.env';
 }
 
 function resolveExistingEnvPath() {
-  const preferred = resolveEnvPath();
-  if (fs.existsSync(preferred)) {
-    return preferred;
+  const preferredName = resolveEnvFileName();
+  const preferred = path.join(PROJECT_ROOT, preferredName);
+  const fallback = path.join(PROJECT_ROOT, '.env');
+  if (fs.existsSync(preferred)) return preferred;
+  if (fs.existsSync(fallback)) {
+    console.log(`[babel] ${preferredName} not found. Falling back to .env`);
+    return fallback;
   }
-  if (fs.existsSync('.env')) {
-    console.log(`[babel] ${preferred} not found. Falling back to .env`);
-    return '.env';
-  }
-  console.log(`[babel] ${preferred} not found and .env not found. Using ${preferred}`);
+  console.log(`[babel] ${preferredName} not found and .env not found.`);
   return preferred;
 }
 
 module.exports = function (api) {
-  api.cache(true);
   const envPath = resolveExistingEnvPath();
-  console.log(`[babel] Using env file: ${envPath}`);
+  let envStamp = 'missing';
+  try {
+    if (fs.existsSync(envPath)) envStamp = String(fs.statSync(envPath).mtimeMs);
+  } catch (_) {
+    /* ignore */
+  }
+  api.cache.using(() => `${envPath}:${envStamp}`);
+  console.log(`[babel] Using env file: ${envPath} exists=${fs.existsSync(envPath)}`);
 
   return {
     presets: ['babel-preset-expo'],
