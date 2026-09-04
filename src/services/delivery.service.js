@@ -136,6 +136,9 @@ export const getPickingsBySaleIds = (saleOrderIds) => {
   );
 };
 
+/** null = unknown; cache so older Odoo DBs don't pay an invalid-field error on every move read. */
+let _stockMoveHasQuantityField = null;
+
 /** Get stock moves for a picking (to map products to move lines) */
 export const getStockMovesByPickingId = async (pickingId) => {
   const domain = [[["picking_id", "=", pickingId]]];
@@ -148,14 +151,20 @@ export const getStockMovesByPickingId = async (pickingId) => {
     "sale_line_id",
     "picking_id",
   ];
+  if (_stockMoveHasQuantityField === false) {
+    return callOdoo("stock.move", "search_read", domain, { fields: baseFields });
+  }
   try {
     // Odoo 17+ stores done qty on `quantity`; older DBs only have `quantity_done`.
-    return await callOdoo("stock.move", "search_read", domain, {
+    const rows = await callOdoo("stock.move", "search_read", domain, {
       fields: [...baseFields, "quantity"],
     });
+    _stockMoveHasQuantityField = true;
+    return rows;
   } catch (e) {
     const msg = String(e?.message || e);
     if (!/invalid field ['"]?quantity['"]?/i.test(msg)) throw e;
+    _stockMoveHasQuantityField = false;
     return callOdoo("stock.move", "search_read", domain, { fields: baseFields });
   }
 };
@@ -394,6 +403,113 @@ export const actionAssignPicking = (pickingId) =>
 /** Confirm transfer before assignment/validation (safe no-op if already confirmed). */
 export const actionConfirmPicking = (pickingId) =>
   callOdooArgs("stock.picking", "action_confirm", [[pickingId]]);
+
+function qtyByMoveFromDeliverySnapshot(snapshot = {}) {
+  const qtyByMove = new Map();
+  for (const line of snapshot.deliveryLines || []) {
+    const mid = Number(line?.moveId ?? line?.move_id);
+    const qty = coerceDeliveredQty(line?.qty_done);
+    if (!Number.isFinite(mid) || mid <= 0 || !Number.isFinite(qty) || qty <= 0.0001) continue;
+    qtyByMove.set(mid, qty);
+  }
+  for (const u of snapshot.moveLineUpdates || []) {
+    const mid = Number(u?.moveId);
+    const qty = coerceDeliveredQty(u?.qty_done);
+    if (!Number.isFinite(mid) || mid <= 0 || !Number.isFinite(qty) || qty <= 0.0001) continue;
+    if (!qtyByMove.has(mid)) qtyByMove.set(mid, qty);
+  }
+  return qtyByMove;
+}
+
+async function writeMoveDoneQuantityOdoo17Aware(moveId, qty) {
+  const mid = Number(moveId);
+  const q = coerceDeliveredQty(qty);
+  if (!Number.isFinite(mid) || mid <= 0 || !Number.isFinite(q) || q <= 0) return;
+  if (_stockMoveHasQuantityField !== false) {
+    try {
+      await callOdoo("stock.move", "write", [[mid], { quantity: q }]);
+      _stockMoveHasQuantityField = true;
+      return;
+    } catch (e) {
+      const msg = String(e?.message || e);
+      if (!/invalid field ['"]?quantity['"]?/i.test(msg)) {
+        try {
+          await callOdoo("stock.move", "write", [[mid], { quantity_done: q }]);
+          return;
+        } catch (_) {
+          throw e;
+        }
+      }
+      _stockMoveHasQuantityField = false;
+    }
+  }
+  await callOdoo("stock.move", "write", [[mid], { quantity_done: q }]);
+}
+
+/**
+ * Rare Waiting / Not Available recovery only.
+ * Check Availability (`action_assign`) on a Ready picking (or after a demand write) can
+ * unreserve vehicle stock: Ready → Waiting, Quantity 0, Validate never reaches Done.
+ * Odoo 17 Operations "Quantity" is stock.move.quantity — qty_done on lines is ignored
+ * until reserved. Write `quantity` so Validate can finish without reservation.
+ * Never call this on Ready/Done pickings.
+ */
+export async function forceDoneQtyOnWaitingPickingMoves(pickingId, snapshot = {}) {
+  const pid = Number(pickingId);
+  if (!Number.isFinite(pid) || pid <= 0) return { ok: true, skipped: true };
+  const stateRows = await getPickingState(pid).catch(() => []);
+  const pick = Array.isArray(stateRows) ? stateRows[0] : stateRows;
+  const state = String(pick?.state || "").toLowerCase();
+  if (state === "assigned" || state === "done" || state === "cancel") {
+    return { ok: true, skipped: true };
+  }
+  const qtyByMove = qtyByMoveFromDeliverySnapshot(snapshot);
+  if (!qtyByMove.size) return { ok: true, skipped: true };
+
+  let written = 0;
+  for (const [moveId, qty] of qtyByMove) {
+    try {
+      await writeMoveDoneQuantityOdoo17Aware(moveId, qty);
+      written += 1;
+    } catch (_) {
+      const lines = await getStockMoveLinesByMoveIds([moveId]).catch(() => []);
+      if (Array.isArray(lines) && lines.length > 0) {
+        const keeper = pickKeeperMoveLine(lines) || lines[0];
+        try {
+          await callOdoo("stock.move.line", "write", [
+            [Number(keeper.id)],
+            { qty_done: qty, quantity: qty },
+          ]);
+          written += 1;
+        } catch (_) {
+          try {
+            await updateMoveLineQty(Number(keeper.id), qty);
+            written += 1;
+          } catch (_) {
+            /* validate will retry */
+          }
+        }
+      } else {
+        let productId = NaN;
+        for (const line of snapshot.deliveryLines || []) {
+          if (Number(line?.moveId ?? line?.move_id) === moveId) {
+            productId = Number(line?.productId ?? line?.product_id);
+            break;
+          }
+        }
+        if (Number.isFinite(productId) && productId > 0) {
+          try {
+            await createMoveLine(pid, moveId, productId, qty);
+            written += 1;
+          } catch (_) {
+            /* validate will retry */
+          }
+        }
+      }
+    }
+  }
+  return { ok: true, skipped: false, written };
+}
 
 /** Cancel transfer (used to force-close any auto-created backorders). */
 export const actionCancelPicking = (pickingId) =>
@@ -734,15 +850,6 @@ export async function pickingDeliverySnapshotAlreadyApplied(pickingId, snapshot 
   if (expectedByMove.size === 0) return false;
 
   const moves = await getStockMovesByPickingId(pid).catch(() => []);
-  const moveIds = [...expectedByMove.keys()];
-  let moveRows = [];
-  try {
-    moveRows =
-      (await callOdoo("stock.move", "read", [moveIds], { fields: ["id", "quantity_done"] })) || [];
-  } catch (_) {
-    moveRows = [];
-  }
-  const moveById = new Map((Array.isArray(moveRows) ? moveRows : []).map((m) => [Number(m.id), m]));
   const moveByIdFromPick = new Map(
     (Array.isArray(moves) ? moves : []).map((m) => [Number(m.id), m])
   );
@@ -759,10 +866,6 @@ export async function pickingDeliverySnapshotAlreadyApplied(pickingId, snapshot 
       );
     }
     if (!Number.isFinite(actual)) {
-      const mv = moveById.get(mid);
-      if (mv?.quantity_done != null && mv.quantity_done !== false) actual = Number(mv.quantity_done);
-    }
-    if (!Number.isFinite(actual)) {
       const mls = await getStockMoveLinesByMoveIds([mid]).catch(() => []);
       actual = (mls || []).reduce((sum, ml) => sum + (Number(ml?.qty_done) || 0), 0);
     }
@@ -776,12 +879,35 @@ export async function applyPickingDeliverySnapshotIdempotent(pickingId, snapshot
   const pid = Number(pickingId);
   if (!Number.isFinite(pid) || pid <= 0) return { ok: true, mode: "noop" };
   let enriched = await enrichDeliverySnapshotWithExistingMoveLines(pid, snapshot);
-  enriched = await stripDownwardQtyWritesIfPickingDone(pid, enriched);
-  if (!snapshotHasQtyWrites(enriched)) return { ok: true, mode: "done_protected" };
-  if (await pickingDeliverySnapshotAlreadyApplied(pid, enriched)) {
-    return { ok: true, mode: "already_applied" };
+  let isDone = false;
+  if (meta.pickingAlreadyOpen === true) {
+    isDone = false;
+  } else {
+    const stateRows = await getPickingState(pid).catch(() => []);
+    const pick = Array.isArray(stateRows) ? stateRows[0] : stateRows;
+    isDone = String(pick?.state || "").toLowerCase() === "done";
   }
-  return applyPickingDeliverySnapshotWithFallback(pid, enriched, meta);
+  // Open picking: write immediately. Done picking: keep downward-qty guard + already-applied skip.
+  if (isDone) {
+    enriched = await stripDownwardQtyWritesIfPickingDone(pid, enriched);
+    if (!snapshotHasQtyWrites(enriched)) return { ok: true, mode: "done_protected" };
+    if (await pickingDeliverySnapshotAlreadyApplied(pid, enriched)) {
+      return { ok: true, mode: "already_applied" };
+    }
+  } else if (!snapshotHasQtyWrites(enriched)) {
+    return { ok: true, mode: "noop" };
+  }
+  try {
+    return await applyPickingDeliverySnapshotAtomic(pickingId, enriched, meta);
+  } catch (atomicErr) {
+    if (__DEV__) {
+      console.warn(
+        `[delivery] atomic picking write failed for ${pickingId}, using sequential:`,
+        atomicErr?.message || atomicErr
+      );
+    }
+    return applyPickingDeliverySnapshotSequential(pickingId, enriched);
+  }
 }
 
 /** Atomic picking write with safe fallback to the legacy per-line sequence. */

@@ -1460,6 +1460,10 @@ export default function DashboardScreen({ navigation }) {
       try {
         // Step 1: Supplier/company details first (mandatory).
         let supplierReadySeed = false;
+        const startDayPromise = runSync({ mode: 'start_day', trackIndicator: false }).catch((e) => ({
+          error: e?.message || 'start day sync failed',
+        }));
+        const queueHealthPromise = inspectAndRecoverSyncQueueHealthOnStartDay().catch(() => null);
         for (let i = 0; i < 3 && !supplierReadySeed; i += 1) {
           if (preCheckPartyWarmupRunRef.current !== runId || sessionKeyAtOpen !== sessionKey) return;
           const supplierSeed = await preloadInvoicePartyInfoForOrders([], {
@@ -1470,13 +1474,8 @@ export default function DashboardScreen({ navigation }) {
         }
         if (!supplierReadySeed) throw new Error('Supplier details not ready yet');
 
-        // Step 1b: Fast queue health (release safe holds only — no upload drain).
-        await inspectAndRecoverSyncQueueHealthOnStartDay().catch(() => null);
-
-        // Step 2: One start_day pull (second pass was doubling wait to 1+ minutes).
-        const startDayResult = await runSync({ mode: 'start_day', trackIndicator: false }).catch((e) => ({
-          error: e?.message || 'start day sync failed',
-        }));
+        await queueHealthPromise;
+        const startDayResult = await startDayPromise;
         await loadData({ showLoading: false }).catch(() => null);
 
         // Step 3: Re-read latest today's orders from local DB after start-day sync.

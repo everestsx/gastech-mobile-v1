@@ -24,7 +24,7 @@ import * as localInvoicesDb from '../database/localInvoices.js';
 import * as localPaymentsDb from '../database/localPayments.js';
 import * as stockPickingsDb from '../database/stockPickings.js';
 import * as syncQueueDb from '../database/syncQueue.js';
-import { getSaleOrderDetailsFromDB, notifyLocalInventoryChanged, signalDashboardPendingUploadStarted, startCheckoutUploadInBackground } from '../services/sync.service';
+import { getSaleOrderDetailsFromDB, notifyLocalInventoryChanged, signalDashboardPendingUploadStarted, startCheckoutUploadInBackground, beginCheckoutUploadPriority, endCheckoutUploadPriority } from '../services/sync.service';
 import {
   applyInventoryUpdatesToLocalDb,
   applyLocalGasInventoryForSaleOrder,
@@ -316,6 +316,8 @@ export default function PaymentProofScreen({ route, navigation }) {
     if (completeGuardRef.current) return;
     completeGuardRef.current = true;
     setSaving(true);
+    let checkoutUploadStarted = false;
+    beginCheckoutUploadPriority();
     try {
       if (photos.length > 0) {
         await persistPhotos();
@@ -335,6 +337,7 @@ export default function PaymentProofScreen({ route, navigation }) {
       });
       setSaving(false);
 
+      checkoutUploadStarted = true;
       startCheckoutUploadInBackground(soId, {
         includeAttachments: creditProofRequired || photos.length > 0,
       });
@@ -348,6 +351,7 @@ export default function PaymentProofScreen({ route, navigation }) {
         }
       })();
     } catch (e) {
+      if (!checkoutUploadStarted) endCheckoutUploadPriority();
       const msg = isSqliteFullError(e) ? sqliteFullUserMessage() : (e?.message || 'Something went wrong. Try again.');
       Alert.alert('Error', msg);
       setSaving(false);

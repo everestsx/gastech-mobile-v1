@@ -84,6 +84,17 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = REQUEST_TIMEOUT_M
   }
 }
 
+// ─── Per-RPC timing log ────────────────────────────────────────────────────
+// Temporary diagnostic: logs every Odoo RPC call with its duration.
+// Grep for [RpcTime] in the Metro console to measure where the 40s is spent.
+function rpcLog(model, method, startMs, ok) {
+  try {
+    const dur = Date.now() - startMs;
+    console.log(`[RpcTime] ${model}.${method} → ${dur}ms ${ok ? 'OK' : 'ERR'}`);
+  } catch (_) {}
+}
+// ──────────────────────────────────────────────────────────────────────────
+
 function estimateResponseBytes(response, rawText) {
   try {
     const cl = Number(response?.headers?.get?.('content-length'));
@@ -112,6 +123,7 @@ export const callOdoo = async (model, method, domain = [], options = {}) => {
   };
 
   const requestBody = JSON.stringify(payload);
+  const _t0 = Date.now();
   let response;
   try {
     response = await fetchWithTimeout(url, {
@@ -121,6 +133,7 @@ export const callOdoo = async (model, method, domain = [], options = {}) => {
       credentials: USE_SESSION ? 'include' : 'omit',
     });
   } catch (networkErr) {
+    rpcLog(model, method, _t0, false);
     const msg = networkErr?.message || String(networkErr);
     const host = getHostFromUrl(url);
     const isAbort = msg.includes('abort') || networkErr?.name === 'AbortError';
@@ -132,6 +145,7 @@ export const callOdoo = async (model, method, domain = [], options = {}) => {
   }
 
   const rawText = await response.text();
+  rpcLog(model, method, _t0, true);
   trackNetworkUsage(usageBytes(requestBody), estimateResponseBytes(response, rawText), {
     kind: 'odoo_jsonrpc',
     model,
@@ -236,6 +250,7 @@ export const callOdooArgs = async (model, method, positionalArgs) => {
   };
 
   const requestBody = JSON.stringify(payload);
+  const _t0 = Date.now();
   let response;
   try {
     response = await fetchWithTimeout(url, {
@@ -245,6 +260,7 @@ export const callOdooArgs = async (model, method, positionalArgs) => {
       credentials: USE_SESSION ? 'include' : 'omit',
     });
   } catch (networkErr) {
+    rpcLog(model, method, _t0, false);
     const msg = networkErr?.message || String(networkErr);
     const host = getHostFromUrl(url);
     const isAbort = msg.includes('abort') || networkErr?.name === 'AbortError';
@@ -256,6 +272,7 @@ export const callOdooArgs = async (model, method, positionalArgs) => {
   }
 
   const rawText = await response.text();
+  rpcLog(model, method, _t0, true);
   trackNetworkUsage(usageBytes(requestBody), estimateResponseBytes(response, rawText), {
     kind: 'odoo_jsonrpc_args',
     model,
@@ -290,6 +307,7 @@ export const callOdooArgsKwargs = async (model, method, positionalArgs, kwargs =
   };
 
   const requestBody = JSON.stringify(payload);
+  const _t0 = Date.now();
   let response;
   try {
     response = await fetchWithTimeout(url, {
@@ -299,6 +317,7 @@ export const callOdooArgsKwargs = async (model, method, positionalArgs, kwargs =
       credentials: USE_SESSION ? 'include' : 'omit',
     });
   } catch (networkErr) {
+    rpcLog(model, method, _t0, false);
     const msg = networkErr?.message || String(networkErr);
     const host = getHostFromUrl(url);
     const isAbort = msg.includes('abort') || networkErr?.name === 'AbortError';
@@ -310,6 +329,7 @@ export const callOdooArgsKwargs = async (model, method, positionalArgs, kwargs =
   }
 
   const rawText = await response.text();
+  rpcLog(model, method, _t0, true);
   trackNetworkUsage(usageBytes(requestBody), estimateResponseBytes(response, rawText), {
     kind: 'odoo_jsonrpc_kwargs',
     model,

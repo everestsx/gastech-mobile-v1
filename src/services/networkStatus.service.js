@@ -15,9 +15,23 @@ export const NetworkQuality = {
 };
 
 let lastQuality = NetworkQuality.OFFLINE;
+let lastConnected = false;
 let lastFlushAt = 0;
 let hasObservedNetworkState = false;
-const STABLE_FLUSH_COOLDOWN_MS = 2000;
+const STABLE_FLUSH_COOLDOWN_MS = 400;
+
+try {
+  // Native radio events are fast. The default HTTP reachability probe (15–60s) was
+  // delaying "we're online" by ~40s on many Android devices after airplane-mode off.
+  NetInfo.configure({
+    reachabilityShouldRun: false,
+    reachabilityLongTimeout: 4000,
+    reachabilityShortTimeout: 1000,
+    reachabilityRequestTimeout: 2500,
+  });
+} catch (_) {
+  /* older netinfo builds may not expose configure */
+}
 
 function classify(state) {
   if (!state) return NetworkQuality.OFFLINE;
@@ -55,6 +69,14 @@ function classify(state) {
   return NetworkQuality.OFFLINE;
 }
 
+function perfNet(event) {
+  try {
+    console.log(`[SyncPerf] ${event}`);
+  } catch (_) {
+    /* ignore */
+  }
+}
+
 export function getLastNetworkQuality() {
   return lastQuality;
 }
@@ -78,7 +100,7 @@ export async function fetchNetworkSnapshot() {
   };
 }
 
-async function flushQueueOnStableConnection() {
+async function flushQueueOnStableConnection(reason = 'online') {
   const now = Date.now();
   if (now - lastFlushAt < STABLE_FLUSH_COOLDOWN_MS) return;
   try {
@@ -89,9 +111,52 @@ async function flushQueueOnStableConnection() {
         : await m.hasActionablePendingUploadWork();
     if (!shouldRun) return;
     lastFlushAt = now;
+    perfNet(`flush-trigger reason=${reason} quality=${lastQuality}`);
     m.wakePendingUploadSyncNow({ queuePasses: 8, includeAttachments: true, chainRetry: false });
   } catch (_) {
     /* non-fatal */
+  }
+}
+
+function applyNetworkState(state, listener) {
+  const quality = classify(state);
+  const connected = !!state?.isConnected;
+  const prev = lastQuality;
+  const wasConnected = lastConnected;
+  hasObservedNetworkState = true;
+  lastQuality = quality;
+  lastConnected = connected;
+  if (typeof listener === 'function') {
+    listener({
+      quality,
+      isConnected: connected,
+      isInternetReachable: state?.isInternetReachable ?? null,
+      type: state?.type ?? 'unknown',
+      details: state?.details ?? null,
+    });
+  }
+  const cameOnline = (!wasConnected && connected) || (prev === NetworkQuality.OFFLINE && quality !== NetworkQuality.OFFLINE);
+  const becameGood = quality === NetworkQuality.GOOD && prev !== NetworkQuality.GOOD;
+  if (cameOnline || becameGood) {
+    if (cameOnline) perfNet(`online ${prev}→${quality} type=${state?.type || 'unknown'}`);
+    void flushQueueOnStableConnection(cameOnline ? 'came-online' : 'became-good');
+  }
+}
+
+/**
+ * Re-read native connectivity when the listener may have missed a radio change.
+ * Used by the pending-upload poll while still classified OFFLINE.
+ */
+export async function probeNetworkAndFlushIfOnline() {
+  try {
+    const state = await NetInfo.fetch();
+    applyNetworkState(state, null);
+    return {
+      quality: lastQuality,
+      isConnected: lastConnected,
+    };
+  } catch (_) {
+    return { quality: lastQuality, isConnected: lastConnected };
   }
 }
 
@@ -102,25 +167,7 @@ async function flushQueueOnStableConnection() {
 export function subscribeNetworkStatus(listener) {
   if (typeof listener !== 'function') return () => {};
 
-  const onState = (state) => {
-    const quality = classify(state);
-    const prev = lastQuality;
-    hasObservedNetworkState = true;
-    lastQuality = quality;
-    listener({
-      quality,
-      isConnected: !!state?.isConnected,
-      isInternetReachable: state?.isInternetReachable ?? null,
-      type: state?.type ?? 'unknown',
-      details: state?.details ?? null,
-    });
-    if (quality === NetworkQuality.GOOD && prev !== NetworkQuality.GOOD) {
-      void flushQueueOnStableConnection();
-    } else if (prev === NetworkQuality.OFFLINE && quality !== NetworkQuality.OFFLINE) {
-      void flushQueueOnStableConnection();
-    }
-  };
-
+  const onState = (state) => applyNetworkState(state, listener);
   const unsub = NetInfo.addEventListener(onState);
   void NetInfo.fetch().then(onState);
   return () => unsub();
@@ -129,8 +176,8 @@ export function subscribeNetworkStatus(listener) {
 /** Poll interval hint for AppNavigator fast-pending loop from connection quality. */
 export function getPendingRetryDelayMsForQuality(quality) {
   if (quality === NetworkQuality.GOOD) return PENDING_QUEUE_ACTIVE_RETRY_MS;
-  if (quality === NetworkQuality.WEAK) return Math.max(PENDING_QUEUE_FAST_RETRY_MS, 3000);
-  return 12000;
+  if (quality === NetworkQuality.WEAK) return Math.max(PENDING_QUEUE_FAST_RETRY_MS, 1000);
+  return 1000;
 }
 
 /** Poll interval for pending-upload loop (foreground vs background / screen off). */

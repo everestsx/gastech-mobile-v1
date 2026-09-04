@@ -60,6 +60,7 @@ import {
   subscribeNetworkStatus,
   getPendingRetryDelayMsForQuality,
   getPendingRetryDelayMsForAppState,
+  probeNetworkAndFlushIfOnline,
   NetworkQuality,
 } from '../services/networkStatus.service';
 
@@ -327,7 +328,21 @@ export default function AppNavigator() {
 
   useEffect(() => {
     const unsubNet = subscribeNetworkStatus((snap) => {
+      const prev = networkQualityRef.current;
       networkQualityRef.current = snap.quality;
+      if (prev === NetworkQuality.OFFLINE && snap.quality !== NetworkQuality.OFFLINE) {
+        wakePendingUploadSyncNow({
+          queuePasses: 8,
+          includeAttachments: true,
+          chainRetry: false,
+        });
+      } else if (snap.quality === NetworkQuality.GOOD && prev !== NetworkQuality.GOOD) {
+        wakePendingUploadSyncNow({
+          queuePasses: 8,
+          includeAttachments: true,
+          chainRetry: false,
+        });
+      }
     });
     return () => unsubNet?.();
   }, []);
@@ -335,8 +350,16 @@ export default function AppNavigator() {
   useEffect(() => {
     const intervalMs = getSyncIntervalMs(syncInterval);
     const runScheduledSyncIfNeeded = async () => {
-      if (networkQualityRef.current === NetworkQuality.OFFLINE) return;
       if (isCheckoutUploadActive()) return;
+      if (networkQualityRef.current === NetworkQuality.OFFLINE) {
+        try {
+          const probed = await probeNetworkAndFlushIfOnline();
+          if (probed?.quality) networkQualityRef.current = probed.quality;
+        } catch (_) {
+          /* ignore */
+        }
+        if (networkQualityRef.current === NetworkQuality.OFFLINE) return;
+      }
       try {
         if (await hasActionablePendingUploadWork()) {
           await flushPendingUploadsNow({
@@ -353,8 +376,16 @@ export default function AppNavigator() {
     };
 
     const runFastPending = async () => {
-      if (networkQualityRef.current === NetworkQuality.OFFLINE) return;
       if (isCheckoutUploadActive()) return;
+      if (networkQualityRef.current === NetworkQuality.OFFLINE) {
+        try {
+          const probed = await probeNetworkAndFlushIfOnline();
+          if (probed?.quality) networkQualityRef.current = probed.quality;
+        } catch (_) {
+          /* ignore */
+        }
+        if (networkQualityRef.current === NetworkQuality.OFFLINE) return;
+      }
       try {
         if (!(await shouldRunPendingUploadRetryLoop())) return;
         const ageMs = await syncQueueDb.getOldestPendingQueueAgeMs();
@@ -446,7 +477,7 @@ export default function AppNavigator() {
     };
     /** Start upload drain quickly when a prior session left pending checkout uploads. */
     void (async () => {
-      let startupPendingDelayMs = 2800;
+      let startupPendingDelayMs = 400;
       try {
         const n = await syncQueueDb.getActionablePendingCount();
         if (Number(n) > 0) startupPendingDelayMs = 400;
