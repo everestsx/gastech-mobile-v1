@@ -365,6 +365,24 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         parseOdooDateToIso(orderInfo?.delivery_date) ||
         null;
 
+      const session = await getUserSession();
+      const porterEmployeeIds = Array.isArray(session?.selectedPorters)
+        ? session.selectedPorters.map((x) => Number(x.id)).filter((id) => Number.isFinite(id))
+        : [];
+      const driverEmployeeId =
+        session?.driverId != null && Number.isFinite(Number(session.driverId))
+          ? Number(session.driverId)
+          : null;
+      const crewFields = {
+        porterEmployeeIds: Array.isArray(porterEmployeeIds) ? porterEmployeeIds : [],
+        ...(driverEmployeeId != null && Number.isFinite(driverEmployeeId) && driverEmployeeId > 0
+          ? { driverEmployeeId }
+          : {}),
+        ...(session?.driverName && String(session.driverName).trim()
+          ? { driverName: String(session.driverName).trim() }
+          : {}),
+      };
+
       // Enqueue delivery (ordered-qty edits, stock moves, qty_delivered hints, validate) after payment.
       const needsDeliverySync =
         deliveryPayload &&
@@ -380,6 +398,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         const heldPayload = {
           ...deliveryPayload,
           holdUntilPayment: true,
+          ...crewFields,
           ...(Array.isArray(invoiceLineQtys) && invoiceLineQtys.length > 0 ? { invoiceLineQtys } : {}),
           ...(invoiceDateIso ? { invoiceDateIso } : {}),
           ...(orderInfo?.commitment_date ? { commitmentDateRaw: orderInfo.commitment_date } : {}),
@@ -416,14 +435,6 @@ export default function ProceedPaymentScreen({ route, navigation }) {
       if (payments.length === 0) return;
 
       const paymentDateStr = new Date().toISOString().slice(0, 10);
-      const session = await getUserSession();
-      const porterEmployeeIds = Array.isArray(session?.selectedPorters)
-        ? session.selectedPorters.map((x) => Number(x.id)).filter((id) => Number.isFinite(id))
-        : [];
-      const driverEmployeeId =
-        session?.driverId != null && Number.isFinite(Number(session.driverId))
-          ? Number(session.driverId)
-          : null;
 
       const queuePayload = {
         saleOrderId: soId,
@@ -448,14 +459,8 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         cheque_no: chequeNo,
         chequeBankName,
         checkNumber: chequeNo,
-        porterEmployeeIds: Array.isArray(porterEmployeeIds) ? porterEmployeeIds : [],
         holdUntilComplete: true,
-        ...(driverEmployeeId != null && Number.isFinite(driverEmployeeId) && driverEmployeeId > 0
-          ? { driverEmployeeId }
-          : {}),
-        ...(session?.driverName && String(session.driverName).trim()
-          ? { driverName: String(session.driverName).trim() }
-          : {}),
+        ...crewFields,
       };
       const existingPending = await syncQueueDb.getPendingPaymentItemBySaleOrderId(soId);
       if (existingPending) {

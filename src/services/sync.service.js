@@ -2544,6 +2544,7 @@ async function tryMarkDeliverySyncedAfterQtyHeal(item, saleOrderId, queuePayload
         return false;
       }
     }
+    await writeSaleOrderCrewFromPaymentPayload(soId, queuePayload);
     await syncQueueDb.markSynced(Number(item.id));
     log('queue', `delivery id=${item.id} SO ${soId} marked synced after heal (no duplicate upload)`);
     try {
@@ -3719,6 +3720,17 @@ async function verifySaleOrderLineDeliveredOnOdoo(deliveredUpdates, options = {}
     const row = byId.get(lid);
     const actual = row != null ? roundDeliveredQty3(row.qty_delivered) : NaN;
     if (!Number.isFinite(actual) || Math.abs(actual - exp) > tol) {
+      // Fast checkout: SOL qty_delivered can still be 0 for a moment after write (compute lag).
+      // Do NOT treat lag as success-or-fail — stock qty_done is the warehouse gate.
+      // DO fail when Odoo already has a different *positive* qty (stale / stacked).
+      if (
+        options.allowZeroLag === true &&
+        Number.isFinite(actual) &&
+        actual <= tol &&
+        exp > tol
+      ) {
+        continue;
+      }
       throw new Error(
         `Delivered qty mismatch on SO line ${lid}: mobile ${exp}, Odoo ${actual}. Sync will retry.`
       );
@@ -4475,7 +4487,7 @@ async function buildGasDeliveredCountChatterBody(soId, paymentPayload) {
   const { linesToOdooHtmlBody } = await import('./proofAttachment.service.js');
   const sep = '────────────────────────────────────────';
   const lines = [];
-  lines.push('Gas Delivered Count updated from mobile app updated and optimized the performnce..');
+  lines.push('Gas Delivered Count updated throuh mobile fixed..');
   lines.push(sep);
   for (const [label, qty] of qtyByProductLabel.entries()) {
     lines.push(`${label}: ${formatQty(qty)}`);
@@ -5496,37 +5508,29 @@ async function processSyncQueue(options = {}) {
             return;
           }
           const stockVerifyBlocks = frozenDeliveryBlocksForVerify(p, blocks);
+          // Warehouse qty_done has no compute lag — always match mobile before markSynced.
+          // Fast checkout used to skip this and could accept a stacked/partial Done picking.
+          if (mustVerifyDeliveredQty && stockVerifyBlocks.length > 0) {
+            await verifyStockMoveQtyDoneMatchesPayload(stockVerifyBlocks);
+          }
           if (!(fastSync && validatedAnyPicking)) {
-            if (stockVerifyBlocks.length > 0) {
-              if (fastCheckout) {
-                await Promise.all([
-                  verifyAllSaleOrderPickingsAreTerminal(saleOrderId),
-                  verifyStockMoveQtyDoneMatchesPayload(stockVerifyBlocks),
-                ]);
-              } else {
-                await verifyAllSaleOrderPickingsAreTerminal(saleOrderId);
-                await verifyStockMoveQtyDoneMatchesPayload(stockVerifyBlocks);
-              }
-            } else {
-              await verifyAllSaleOrderPickingsAreTerminal(saleOrderId);
-            }
+            await verifyAllSaleOrderPickingsAreTerminal(saleOrderId);
+          }
+          if (mustVerifyDeliveredQty) {
             await assertMobileQtyHasDonePickingOnOdoo(saleOrderId, p);
           }
-          // Link stock.move → sale.order.line so Odoo fills Delivered (S09200). Non-blocking.
-          // Checkout/fast drain already linked each picking before validate; skip the duplicate
-          // round-trip. Rare unbound Done products are still fail-closed by assertDonePickingSaleLinesBound.
-          if (!fastSync) {
-            try {
-              const linkPickIds = (blocks || [])
-                .map((b) => Number(b?.pickingId ?? b?.picking_id))
-                .filter((id) => Number.isFinite(id) && id > 0);
-              const linkResult = await ensureStockMovesLinkedToSaleOrderLines(saleOrderId, linkPickIds);
-              if (linkResult?.linked > 0) {
-                log('queue', `delivery SO ${saleOrderId}: linked ${linkResult.linked} stock.move(s) to sale lines`);
-              }
-            } catch (linkErr) {
-              logWarn('queue delivery (link moves to SOL)', linkErr);
+          // Link stock.move → sale.order.line so Odoo fills Delivered (S09200).
+          // Fast checkout used to skip this; picking went Done while some SO lines stayed 0 (S10372).
+          try {
+            const linkPickIds = (blocks || [])
+              .map((b) => Number(b?.pickingId ?? b?.picking_id))
+              .filter((id) => Number.isFinite(id) && id > 0);
+            const linkResult = await ensureStockMovesLinkedToSaleOrderLines(saleOrderId, linkPickIds);
+            if (linkResult?.linked > 0) {
+              log('queue', `delivery SO ${saleOrderId}: linked ${linkResult.linked} stock.move(s) to sale lines`);
             }
+          } catch (linkErr) {
+            logWarn('queue delivery (link moves to SOL)', linkErr);
           }
           const finalSnap = await resolveDeliveredSnapshotForSync(saleOrderId, p);
           saleOrderLineDeliveredUpdates = await enrichDeliveredUpdatesForSaleOrder(
@@ -5543,10 +5547,8 @@ async function processSyncQueue(options = {}) {
           const verifyPayload = finalSnap.payload || p;
           const runDeliveredQtyVerify = async () =>
             verifyDeliveryQtyBoundOnOdoo(saleOrderId, saleOrderLineDeliveredUpdates, verifyPayload);
-          // Checkout/fast drain: SOL was just written and moves were linked before validate.
-          // Do NOT immediately re-read qty_delivered (settle is 0) — a compute lag throws
-          // mismatch → re-link/heal/retry and turns a ~1s upload into ~40–60s.
-          // Offline drain still fail-closes via verify + assertDone.
+          // Fast checkout skips the SOL qty_delivered settle retry loop (compute lag).
+          // Bind gate is assertDonePickingSaleLinesBound below — picking qty vs SO Delivered.
           if (!(fastCheckout && validatedAnyPicking)) {
           try {
             saleOrderLineDeliveredUpdates = await runDeliveredQtyVerify();
@@ -5595,12 +5597,11 @@ async function processSyncQueue(options = {}) {
           }
           }
           if (
-            !(fastCheckout && validatedAnyPicking) &&
             validatedAnyPicking &&
             (payloadHasPositiveDeliveredQty(p) || (saleOrderLineDeliveredUpdates || []).length > 0)
           ) {
             // Rare: picking Done with qty but some stock.move rows have no sale_line_id,
-            // so SO Delivered stays 0 (S10375). Happy path leftover is empty and returns immediately.
+            // so SO Delivered stays 0 (S10375 / S10372). Happy path leftover is empty.
             await assertDonePickingSaleLinesBound(saleOrderId);
           }
           if (!fastCheckout) {
@@ -5827,7 +5828,7 @@ async function processSyncQueue(options = {}) {
             const stateRows = await getPickingState(pickingId);
             const pick = Array.isArray(stateRows) ? stateRows[0] : stateRows;
             pickingStateKnown = String(pick?.state || '').toLowerCase();
-            if (pick?.state === 'done') {
+            if (pickingStateKnown === 'done') {
               const mobilePositive = (deliveryLines || []).some(
                 (line) => coerceDeliveredQty(line?.qty_done) > 0.0001
               );
@@ -5835,10 +5836,7 @@ async function processSyncQueue(options = {}) {
               try {
                 const doneMoves = await getStockMovesByPickingId(Number(pickingId)).catch(() => []);
                 for (const mv of doneMoves || []) {
-                  const q = roundDeliveredQty3(
-                    mv?.quantity_done != null ? mv.quantity_done : mv?.qty_done != null ? mv.qty_done : 0
-                  );
-                  if (q > DELIVERED_QTY_VERIFY_TOL) {
+                  if (stockMoveDoneQty(mv) > DELIVERED_QTY_VERIFY_TOL) {
                     odooHasPositive = true;
                     break;
                   }
@@ -6281,6 +6279,14 @@ async function processSyncQueue(options = {}) {
           /** Avoid swallowing hard validate failures behind a broad "already..." match (Odoo qty/invoice mismatches). */
           const validateMsgOkToSkip = (msg) => {
             const v = (msg || '').toLowerCase();
+            if (
+              v.includes('qty_done mismatch') ||
+              v.includes('qty does not match') ||
+              v.includes('delivered qty mismatch') ||
+              v.includes('unexpected picking qty')
+            ) {
+              return false;
+            }
             return (
               v.includes('does not exist') ||
               v.includes('has been deleted') ||
@@ -6448,6 +6454,8 @@ async function processSyncQueue(options = {}) {
               const vMsgRaw = String(validateErr?.message || validateErr);
               const vMsg = vMsgRaw.toLowerCase();
               if (validateMsgOkToSkip(vMsg)) {
+                // Rare: Odoo said "already done" — still require warehouse qty to match mobile.
+                await verifyStockMoveQtyDoneMatchesPayload(verifyBlocks);
                 log('queue', `delivery validate skipped (picking ${pickingId}): ${vMsg.slice(0, 80)}`);
                 validatedAnyPicking = true;
               } else if (mightBeStockReservation(vMsg)) {
@@ -6509,6 +6517,7 @@ async function processSyncQueue(options = {}) {
           } catch (validateErr) {
             const vMsg = String(validateErr?.message || validateErr).toLowerCase();
             if (validateMsgOkToSkip(vMsg)) {
+              await verifyStockMoveQtyDoneMatchesPayload(verifyBlocks);
               log('queue', `delivery validate skipped (picking already done or deleted): ${vMsg.slice(0, 60)}`);
               validatedAnyPicking = true;
             } else {
@@ -7409,12 +7418,12 @@ async function processSyncQueue(options = {}) {
               return;
             }
           }
-          if (!deliverySyncedSoIdsThisPass.has(soId)) {
-            await writeSaleOrderCrewFromPaymentPayload(soId, {
-              ...((await syncQueueDb.getPendingDeliveryItemBySaleOrderId(soId).catch(() => null))?.payload || {}),
-              ...p,
-            });
-          }
+          // Always bind logged-in driver + porters on the sale order. Skipping this when
+          // delivery already synced this pass left Driver Name / Porters empty (qty landed, crew did not).
+          await writeSaleOrderCrewFromPaymentPayload(soId, {
+            ...((await syncQueueDb.getPendingDeliveryItemBySaleOrderId(soId).catch(() => null))?.payload || {}),
+            ...p,
+          });
 
           const payments = p.payments || [];
           const orderName = p.orderName ?? `Order ${saleOrderId}`;

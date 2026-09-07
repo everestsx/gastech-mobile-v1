@@ -123,6 +123,15 @@ export default function PaymentProofScreen({ route, navigation }) {
               u.qty_delivered >= 0
           );
       }
+      if (paymentPayload?.driverEmployeeId != null) {
+        payload.driverEmployeeId = paymentPayload.driverEmployeeId;
+      }
+      if (Array.isArray(paymentPayload?.porterEmployeeIds) && paymentPayload.porterEmployeeIds.length > 0) {
+        payload.porterEmployeeIds = paymentPayload.porterEmployeeIds;
+      }
+      if (paymentPayload?.driverName) {
+        payload.driverName = paymentPayload.driverName;
+      }
       await syncQueueDb.updateQueueItemPayload(deliveryRow.id, payload, { suppressWake: true });
       const pickings = Array.isArray(payload.pickings) ? payload.pickings : [];
       if (pickings.length > 0) {

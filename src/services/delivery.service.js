@@ -54,7 +54,9 @@ export async function enrichDeliverySnapshotWithExistingMoveLines(pickingId, sna
     };
   }
 
-  const existingRows = await getStockMoveLinesByMoveIds(moveIds).catch(() => []);
+  // Fail closed: an empty catch treated "could not read lines" as "no lines exist"
+  // and the atomic/sequential path CREATEd another move.line (retry stacking).
+  const existingRows = await getStockMoveLinesByMoveIds(moveIds);
   const byMove = new Map();
   for (const ml of existingRows || []) {
     const mid = Number(Array.isArray(ml?.move_id) ? ml.move_id[0] : ml?.move_id);
@@ -342,7 +344,9 @@ export async function scrubUnexpectedPickingMoveLines(pickingId, expectedQtyByPr
       return { scrubbed: 0 };
     }
   } catch (_) {
-    /* if state cannot be read, still avoid mass-zero — caller should have a map */
+    // Unknown state — never zero qty_done. A failed read on a Done picking
+    // logged "The done move line has been corrected" 18→0 / 10→0 (S10373).
+    return { scrubbed: 0 };
   }
   const rows =
     (await callOdoo(
@@ -472,7 +476,7 @@ export async function forceDoneQtyOnWaitingPickingMoves(pickingId, snapshot = {}
       await writeMoveDoneQuantityOdoo17Aware(moveId, qty);
       written += 1;
     } catch (_) {
-      const lines = await getStockMoveLinesByMoveIds([moveId]).catch(() => []);
+      const lines = await getStockMoveLinesByMoveIds([moveId]);
       if (Array.isArray(lines) && lines.length > 0) {
         const keeper = pickKeeperMoveLine(lines) || lines[0];
         try {
@@ -622,6 +626,10 @@ export function buildPickingDeliveryWritePayload({
     const qtyN = line.qty_done != null ? Number(line.qty_done) : NaN;
     if (moveId == null || productId == null || !Number.isFinite(qtyN) || qtyN <= 0) continue;
     qtyDoneByMoveId.set(Number(moveId), qtyN);
+    // CREATE only when enrich left this move without an existing line write.
+    // Retry stacking happens if we CREATE while a line already exists — enrich +
+    // already-applied guard must run first. Do not also SET quantity_done below
+    // (that double-counts).
     if (!updatedMoveIds.has(Number(moveId))) {
       moveLineIdsCommands.push([
         0,
@@ -686,6 +694,14 @@ export async function applyPickingDeliverySnapshotSequential(pickingId, snapshot
   enriched = await stripDownwardQtyWritesIfPickingDone(pid, enriched);
   if (!snapshotHasQtyWrites(enriched)) return { ok: true, mode: "done_protected" };
   const { moveUpdates = [], moveLineUpdates = [], deliveryLines = [] } = enriched;
+  let pickingIsDone = false;
+  try {
+    const stateRows = await getPickingState(pid).catch(() => []);
+    const pick = Array.isArray(stateRows) ? stateRows[0] : stateRows;
+    pickingIsDone = String(pick?.state || "").toLowerCase() === "done";
+  } catch (_) {
+    pickingIsDone = false;
+  }
   for (const u of moveUpdates || []) {
     if (u?.moveId == null || u?.product_uom_qty == null) continue;
     await updateStockMoveQty(u.moveId, u.product_uom_qty);
@@ -714,15 +730,17 @@ export async function applyPickingDeliverySnapshotSequential(pickingId, snapshot
       try {
         // Last resort: create one line only if SET failed (e.g. no move line yet).
         // Caller must not retry-create on success path.
-        const existing = await getStockMoveLinesByMoveIds([Number(moveId)]).catch(() => []);
+        const existing = await getStockMoveLinesByMoveIds([Number(moveId)]);
         if (Array.isArray(existing) && existing.length > 0) {
           const keeper = pickKeeperMoveLine(existing) || existing[0];
           await updateMoveLineQty(keeper.id, qtyN);
-          for (const row of existing) {
-            if (Number(row?.id) === Number(keeper.id)) continue;
-            const extraQty = coerceDeliveredQty(row?.qty_done);
-            if (!Number.isFinite(extraQty) || extraQty <= 0.0001) continue;
-            await updateMoveLineQty(row.id, 0);
+          if (!pickingIsDone) {
+            for (const row of existing) {
+              if (Number(row?.id) === Number(keeper.id)) continue;
+              const extraQty = coerceDeliveredQty(row?.qty_done);
+              if (!Number.isFinite(extraQty) || extraQty <= 0.0001) continue;
+              await updateMoveLineQty(row.id, 0);
+            }
           }
           updatedMoveIds.add(Number(moveId));
           continue;
@@ -762,7 +780,10 @@ async function stripDownwardQtyWritesIfPickingDone(pickingId, snapshot = {}) {
   if (!Number.isFinite(pid) || pid <= 0) return snapshot;
   const stateRows = await getPickingState(pid).catch(() => []);
   const pick = Array.isArray(stateRows) ? stateRows[0] : stateRows;
-  if (String(pick?.state || "").toLowerCase() !== "done") return snapshot;
+  const state = String(pick?.state || "").toLowerCase();
+  // Only skip the downward guard when we KNOW the picking is still open.
+  // Unknown/failed state read on a Done transfer must not write 18→0 / 10→0.
+  if (state && state !== "done" && state !== "cancel") return snapshot;
 
   const moves = await getStockMovesByPickingId(pid).catch(() => []);
   const qtyByMove = new Map();
@@ -879,14 +900,11 @@ export async function applyPickingDeliverySnapshotIdempotent(pickingId, snapshot
   const pid = Number(pickingId);
   if (!Number.isFinite(pid) || pid <= 0) return { ok: true, mode: "noop" };
   let enriched = await enrichDeliverySnapshotWithExistingMoveLines(pid, snapshot);
-  let isDone = false;
-  if (meta.pickingAlreadyOpen === true) {
-    isDone = false;
-  } else {
-    const stateRows = await getPickingState(pid).catch(() => []);
-    const pick = Array.isArray(stateRows) ? stateRows[0] : stateRows;
-    isDone = String(pick?.state || "").toLowerCase() === "done";
-  }
+  const stateRows = await getPickingState(pid).catch(() => []);
+  const pick = Array.isArray(stateRows) ? stateRows[0] : stateRows;
+  const isDone = String(pick?.state || "").toLowerCase() === "done";
+  // pickingAlreadyOpen only skipped a duplicate state read. It must NEVER skip the
+  // Done downward guard — that wrote 10→0 / 18→0 on a transfer that had just gone Done.
   // Open picking: write immediately. Done picking: keep downward-qty guard + already-applied skip.
   if (isDone) {
     enriched = await stripDownwardQtyWritesIfPickingDone(pid, enriched);
@@ -896,6 +914,13 @@ export async function applyPickingDeliverySnapshotIdempotent(pickingId, snapshot
     }
   } else if (!snapshotHasQtyWrites(enriched)) {
     return { ok: true, mode: "noop" };
+  } else if ((enriched.deliveryLines || []).length > 0) {
+    // Remaining deliveryLines would CREATE. Skip when Odoo already matches — retry
+    // CREATE is what stacked qty (S06821). Happy path with reserved lines never hits this
+    // (enrich maps them to moveLineUpdates).
+    if (await pickingDeliverySnapshotAlreadyApplied(pid, snapshot)) {
+      return { ok: true, mode: "already_applied" };
+    }
   }
   try {
     return await applyPickingDeliverySnapshotAtomic(pickingId, enriched, meta);
