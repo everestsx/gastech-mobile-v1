@@ -81,6 +81,41 @@ export async function getLocalPaymentsBySaleOrderId(saleOrderId) {
   return (rows || []).map(mapRow);
 }
 
+/** Build { cash, cheque, credit } from a payment queue payload (payments[]). */
+export function paymentSplitFromPayload(payload) {
+  const split = { cash: 0, cheque: 0, credit: 0 };
+  const payments = Array.isArray(payload?.payments) ? payload.payments : [];
+  for (const p of payments) {
+    const t = String(p?.type || '').toLowerCase();
+    const amt = Number(p?.amount) || 0;
+    if (!(amt > 0)) continue;
+    if (t === 'cash') split.cash += amt;
+    else if (t === 'cheque' || t === 'check') split.cheque += amt;
+    else if (t === 'credit') split.credit += amt;
+  }
+  return split;
+}
+
+export function paymentSplitHasAmount(split) {
+  return (
+    (Number(split?.cash) || 0) > 0 ||
+    (Number(split?.cheque ?? split?.check) || 0) > 0 ||
+    (Number(split?.credit) || 0) > 0
+  );
+}
+
+/** Primary type for tabs: highest amount; tie prefers cheque then cash. Empty split → ''. */
+export function primaryPaymentTypeFromSplit(split) {
+  const c = Number(split?.cash) || 0;
+  const q = Number(split?.cheque ?? split?.check) || 0;
+  const r = Number(split?.credit) || 0;
+  const max = Math.max(c, q, r);
+  if (max === 0) return '';
+  if (q === max) return 'cheque';
+  if (c === max) return 'cash';
+  return 'credit';
+}
+
 /** Get payment split summary by sale_order_id: { cash, cheque, credit } */
 export async function getPaymentSplitBySaleOrderId(saleOrderId) {
   const rows = await getLocalPaymentsBySaleOrderId(saleOrderId);

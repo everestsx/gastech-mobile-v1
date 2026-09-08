@@ -110,19 +110,96 @@ export async function enrichDeliverySnapshotWithExistingMoveLines(pickingId, sna
   };
 }
 
+function preferOutgoingPickings(rows) {
+  const list = Array.isArray(rows) ? rows.filter((pk) => pk?.id != null) : [];
+  const outgoing = list.filter(
+    (pk) => String(pk?.picking_type_code || "").toLowerCase() === "outgoing"
+  );
+  return outgoing.length > 0 ? outgoing : list;
+}
+
 /** Get picking(s) for a sale order with move_ids and backorder_ids for delivery flow */
 /** Outgoing transfers for a sale order, oldest first (parent delivery before backorders). */
-export const getPickingBySaleOrder = (saleOrderId) =>
-  callOdoo(
-    "stock.picking",
-    "search_read",
-    [[["sale_id", "=", saleOrderId]]],
-    {
-      fields: ["id", "name", "state", "move_ids", "backorder_ids", "picking_type_code"],
-      limit: 20,
-      order: "id asc",
+export async function getPickingBySaleOrder(saleOrderId) {
+  const soId = Number(saleOrderId);
+  if (!Number.isFinite(soId) || soId <= 0) return [];
+  const fields = ["id", "name", "state", "move_ids", "backorder_ids", "picking_type_code"];
+  const bySale =
+    (await callOdoo(
+      "stock.picking",
+      "search_read",
+      [[["sale_id", "=", soId]]],
+      { fields, limit: 20, order: "id asc" }
+    )) || [];
+  if (Array.isArray(bySale) && bySale.length > 0) return bySale;
+
+  // Newly confirmed / just-updated orders can have a live warehouse transfer whose
+  // `sale_id` is still empty. sale_id-only search then returns [] and the app keeps a
+  // synthetic picking id — qty writes hit a non-existent record and used to be skipped
+  // as success, so the delivered order never reached the back office.
+  let soName = "";
+  let groupId = NaN;
+  try {
+    const sos =
+      (await callOdoo("sale.order", "search_read", [[["id", "=", soId]]], {
+        fields: ["name", "procurement_group_id"],
+        limit: 1,
+      })) || [];
+    const so = Array.isArray(sos) ? sos[0] : null;
+    soName = so?.name ? String(so.name).trim() : "";
+    groupId = Array.isArray(so?.procurement_group_id)
+      ? Number(so.procurement_group_id[0])
+      : Number(so?.procurement_group_id);
+  } catch (_) {
+    try {
+      const sos =
+        (await callOdoo("sale.order", "search_read", [[["id", "=", soId]]], {
+          fields: ["name"],
+          limit: 1,
+        })) || [];
+      soName = Array.isArray(sos) && sos[0]?.name ? String(sos[0].name).trim() : "";
+    } catch {
+      soName = "";
     }
-  );
+  }
+
+  if (Number.isFinite(groupId) && groupId > 0) {
+    try {
+      const byGroup =
+        (await callOdoo(
+          "stock.picking",
+          "search_read",
+          [[["group_id", "=", groupId], ["state", "!=", "cancel"]]],
+          { fields, limit: 20, order: "id asc" }
+        )) || [];
+      const preferred = preferOutgoingPickings(byGroup);
+      if (preferred.length > 0) return preferred;
+    } catch (_) {
+      /* group_id may be unavailable; fall through to origin */
+    }
+  }
+
+  if (!soName) return [];
+  const originDomains = [
+    [["origin", "=", soName], ["state", "!=", "cancel"]],
+    [["origin", "=like", `${soName}:%`], ["state", "!=", "cancel"]],
+  ];
+  for (const domain of originDomains) {
+    try {
+      const byOrigin =
+        (await callOdoo("stock.picking", "search_read", [domain], {
+          fields,
+          limit: 20,
+          order: "id asc",
+        })) || [];
+      const preferred = preferOutgoingPickings(byOrigin);
+      if (preferred.length > 0) return preferred;
+    } catch (_) {
+      /* try next origin domain */
+    }
+  }
+  return [];
+}
 
 /** Get picking state for multiple sale orders in one call. Returns list of { id, sale_id, state }. */
 export const getPickingsBySaleIds = (saleOrderIds) => {
@@ -171,16 +248,33 @@ export const getStockMovesByPickingId = async (pickingId) => {
   }
 };
 
+/** null = unknown; Odoo 17+ uses `quantity` on stock.move.line, older DBs use `qty_done`. */
+let _stockMoveLineHasQuantityField = null;
+
 /** Get stock move lines by move ids (for updating qty_done) */
-export const getStockMoveLinesByMoveIds = (moveIds) =>
-  callOdoo(
-    "stock.move.line",
-    "search_read",
-    [[["move_id", "in", moveIds]]],
-    {
-      fields: ["id", "move_id", "qty_done"],
-    }
-  );
+export const getStockMoveLinesByMoveIds = async (moveIds) => {
+  const ids = (Array.isArray(moveIds) ? moveIds : [])
+    .map((id) => Number(id))
+    .filter((id) => Number.isFinite(id) && id > 0);
+  if (!ids.length) return [];
+  const domain = [[["move_id", "in", ids]]];
+  const baseFields = ["id", "move_id", "qty_done"];
+  if (_stockMoveLineHasQuantityField === false) {
+    return callOdoo("stock.move.line", "search_read", domain, { fields: baseFields });
+  }
+  try {
+    const rows = await callOdoo("stock.move.line", "search_read", domain, {
+      fields: [...baseFields, "quantity"],
+    });
+    _stockMoveLineHasQuantityField = true;
+    return rows;
+  } catch (e) {
+    const msg = String(e?.message || e);
+    if (!/invalid field ['"]?quantity['"]?/i.test(msg)) throw e;
+    _stockMoveLineHasQuantityField = false;
+    return callOdoo("stock.move.line", "search_read", domain, { fields: baseFields });
+  }
+};
 
 /** Legacy: get move lines by ids (read) */
 export const getMoveLines = (ids) =>
@@ -1031,7 +1125,7 @@ export async function fetchOdooDeliveredQtySnapshot(pickingBlocks = [], delivere
 /**
  * Offline-first scaffolding when Odoo delivery/picking rows were never pulled locally.
  * Creates synthetic stock_picking + stock_moves (+ empty move lines) from sale.order.lines
- * so Save / Proceed can work without network. Upload remaps synthetic ids via sale_id.
+ * so Save / Proceed can work without network. Upload remaps synthetic ids via sale_id / origin.
  *
  * @returns {Promise<Array>} local picking rows (synthetic or existing)
  */

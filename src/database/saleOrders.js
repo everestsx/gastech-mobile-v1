@@ -22,7 +22,7 @@ function logError(operation, paramsSummary, err) {
 
 /**
  * @param {Array} rows - Orders from Odoo (or merged).
- * @param {{ preserveLocalForSaleOrderIds?: Set<number> | number[] }} [options] - When set, for these sale order ids we keep existing local invoice_status and payment_type (so sync download does not overwrite unuploaded local state). amount_credit is not synced from Odoo; it is set only locally when user completes payment.
+ * @param {{ preserveLocalForSaleOrderIds?: Set<number> | number[] }} [options] - When set, for these sale order ids we keep existing local invoice_status and payment_type (so sync download does not overwrite unuploaded local state). Cash/cheque/credit amounts are kept when Odoo sale.order has no positive split (those fields are often missing).
  */
 export async function upsertSaleOrders(rows, options = {}) {
   if (!rows?.length) return;
@@ -48,11 +48,16 @@ export async function upsertSaleOrders(rows, options = {}) {
           cancel_reason: empty(row.cancel_reason),
         };
       }
-      if (preserveIds.length > 0) {
-        const placeholders = preserveIds.map(() => '?').join(',');
-        const selectSql = `SELECT id, invoice_status, payment_type, state, cancel_reason, commitment_date FROM sale_orders WHERE id IN (${placeholders})`;
-        const localRows = await tx.getAllAsync(selectSql, preserveIds);
-        for (const row of localRows || []) {
+      const upsertIds = rows.map((r) => num(r.id)).filter((id) => Number.isFinite(id) && id > 0);
+      if (upsertIds.length > 0) {
+        const placeholders = upsertIds.map(() => '?').join(',');
+        const existingRows = await tx.getAllAsync(
+          `SELECT id, invoice_status, payment_type, state, cancel_reason, commitment_date,
+                  amount_cash, amount_cheque, amount_credit
+           FROM sale_orders WHERE id IN (${placeholders})`,
+          upsertIds
+        );
+        for (const row of existingRows || []) {
           const idKey = num(row.id);
           localMap[idKey] = {
             ...(localMap[idKey] || {}),
@@ -61,9 +66,14 @@ export async function upsertSaleOrders(rows, options = {}) {
             state: localMap[idKey]?.state || empty(row.state),
             cancel_reason: localMap[idKey]?.cancel_reason || empty(row.cancel_reason),
             commitment_date: empty(row.commitment_date),
+            amount_cash: row.amount_cash != null ? row.amount_cash : null,
+            amount_cheque: row.amount_cheque != null ? row.amount_cheque : null,
+            amount_credit: row.amount_credit != null ? row.amount_credit : null,
           };
         }
-        logQuery(op, `SELECT preserve local rows=${(localRows || []).length}`);
+      }
+      if (preserveIds.length > 0) {
+        logQuery(op, `preserve local payment/invoice for ${preserveIds.length} ids`);
       }
 
       for (let i = 0; i < rows.length; i++) {
@@ -78,9 +88,19 @@ export async function upsertSaleOrders(rows, options = {}) {
         const invoiceStatus = preservePayment
           ? (localMap[rid].invoice_status || empty(r.invoice_status))
           : empty(r.invoice_status);
+        const incomingCash = numOrNull(r.amount_cash);
+        const incomingCheque = numOrNull(r.amount_cheque);
+        const incomingCredit = numOrNull(r.amount_credit);
+        const odooHasPositiveSplit =
+          (Number(incomingCash) || 0) > 0 ||
+          (Number(incomingCheque) || 0) > 0 ||
+          (Number(incomingCredit) || 0) > 0;
+        const incomingPaymentType = empty(r.payment_type ?? '');
         const paymentType = preservePayment
-          ? (localMap[rid].payment_type || empty(r.payment_type ?? ''))
-          : empty(r.payment_type ?? '');
+          ? (localMap[rid].payment_type || incomingPaymentType)
+          : odooHasPositiveSplit
+            ? (incomingPaymentType || localMap[rid]?.payment_type || '')
+            : (localMap[rid]?.payment_type || incomingPaymentType || '');
         const commitmentDate =
           preservePayment && localMap[rid].commitment_date
             ? localMap[rid].commitment_date
@@ -91,9 +111,15 @@ export async function upsertSaleOrders(rows, options = {}) {
           localState === 'cancel' && localMap[rid].cancel_reason
             ? localMap[rid].cancel_reason
             : empty(r.cancel_reason);
-        const amountCash = numOrNull(r.amount_cash);
-        const amountCheque = numOrNull(r.amount_cheque);
-        const amountCredit = numOrNull(r.amount_credit);
+        const amountCash = odooHasPositiveSplit
+          ? incomingCash
+          : (localMap[rid]?.amount_cash != null ? localMap[rid].amount_cash : incomingCash);
+        const amountCheque = odooHasPositiveSplit
+          ? incomingCheque
+          : (localMap[rid]?.amount_cheque != null ? localMap[rid].amount_cheque : incomingCheque);
+        const amountCredit = odooHasPositiveSplit
+          ? incomingCredit
+          : (localMap[rid]?.amount_credit != null ? localMap[rid].amount_credit : incomingCredit);
 
         const params = [
           rid,
@@ -137,8 +163,10 @@ export async function upsertSaleOrders(rows, options = {}) {
               route_id=excluded.route_id, route_name=excluded.route_name,
               vehicle_id=excluded.vehicle_id, vehicle_name=excluded.vehicle_name,
               updated_at=excluded.updated_at, payload=excluded.payload,
-              payment_type=excluded.payment_type,
-              amount_cash=excluded.amount_cash, amount_cheque=excluded.amount_cheque, amount_credit=excluded.amount_credit,
+              payment_type=COALESCE(NULLIF(excluded.payment_type, ''), sale_orders.payment_type),
+              amount_cash=COALESCE(NULLIF(excluded.amount_cash, ''), sale_orders.amount_cash),
+              amount_cheque=COALESCE(NULLIF(excluded.amount_cheque, ''), sale_orders.amount_cheque),
+              amount_credit=COALESCE(NULLIF(excluded.amount_credit, ''), sale_orders.amount_credit),
               invoice_number=COALESCE(NULLIF(excluded.invoice_number, ''), sale_orders.invoice_number),
               cancel_reason=COALESCE(NULLIF(excluded.cancel_reason, ''), sale_orders.cancel_reason)`,
             params

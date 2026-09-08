@@ -11,6 +11,7 @@ import {
   Alert,
   Modal,
   Pressable,
+  InteractionManager,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
@@ -153,44 +154,41 @@ export default function PaymentProofScreen({ route, navigation }) {
     }
   }, [soId]);
 
-  /** Persist local invoice + line snapshot before dashboard (amounts + VAT for My Invoices). */
+  /** Fast local invoice + cash/cheque/credit split so dashboard totals are correct immediately. */
   const persistLocalInvoiceAtCheckout = useCallback(async () => {
     const latestPayment = await syncQueueDb.getPendingPaymentItemBySaleOrderId(soId);
     const paymentPayload = latestPayment?.payload || {};
-    const data = await getSaleOrderDetailsFromDB(soId);
-    const orderInfo = data?.order || {};
     const existingLocalInv = await localInvoicesDb.getLocalInvoiceBySaleOrderId(soId);
 
-    const fromBackend =
-      orderInfo?.invoice_number != null && String(orderInfo.invoice_number).trim() !== ''
-        ? String(orderInfo.invoice_number).trim()
+    const fromPayload =
+      paymentPayload?.invoiceNumber != null && String(paymentPayload.invoiceNumber).trim() !== ''
+        ? String(paymentPayload.invoiceNumber).trim()
         : '';
     const fromLocalRow =
       existingLocalInv?.invoice_number != null && String(existingLocalInv.invoice_number).trim() !== ''
         ? String(existingLocalInv.invoice_number).trim()
         : '';
-    let invoiceNumber = fromBackend || fromLocalRow;
+    let invoiceNumber = fromPayload || fromLocalRow;
     if (!invoiceNumber) {
       try {
         invoiceNumber = await getOrAssignInvoiceNumber(soId, {
-          saleOrderName: orderInfo?.name,
-          backendInvoiceNumber: orderInfo?.invoice_number,
+          saleOrderName: paymentPayload?.orderName,
         });
       } catch (e) {
         console.warn('[PaymentProof] resolve invoice number', e?.message || e);
-        invoiceNumber = orderInfo?.name ? `TEMP-${soId}` : '—';
+        invoiceNumber = paymentPayload?.orderName ? `TEMP-${soId}` : '—';
       }
     }
 
-    const total = Number(paymentPayload.total ?? orderInfo.amount_total ?? 0) || 0;
-    const untaxed = Number(orderInfo.amount_untaxed ?? total) || 0;
-    const tax = Number(orderInfo.amount_tax ?? Math.max(0, total - untaxed)) || 0;
+    const total = Number(paymentPayload.total ?? existingLocalInv?.amount_total ?? 0) || 0;
+    const untaxed = Number(existingLocalInv?.amount_untaxed ?? total) || 0;
+    const tax = Number(existingLocalInv?.amount_tax ?? Math.max(0, total - untaxed)) || 0;
     const checkoutDriverName =
       paymentPayload?.driverName != null && String(paymentPayload.driverName).trim()
         ? String(paymentPayload.driverName).trim()
         : '';
 
-    await localInvoicesDb.upsertLocalInvoice({
+    const invoiceId = await localInvoicesDb.upsertLocalInvoice({
       sale_order_id: soId,
       invoice_number: invoiceNumber,
       amount_total: total,
@@ -202,13 +200,20 @@ export default function PaymentProofScreen({ route, navigation }) {
       driver_name: checkoutDriverName,
     });
 
-    const invQtys =
-      (Array.isArray(paymentPayload?.invoiceLineQtys) && paymentPayload.invoiceLineQtys.length > 0
-        ? paymentPayload.invoiceLineQtys
-        : null) || [];
-    if (invQtys.length > 0) {
-      await finalizeLocalInvoiceSnapshotFromPayment(soId, invQtys);
-    }
+    const payments = Array.isArray(paymentPayload.payments) ? paymentPayload.payments : [];
+    const paymentRows = payments.map((p) => ({
+      sale_order_id: soId,
+      payment_type: String(p?.type || '').toLowerCase() === 'check' ? 'cheque' : String(p?.type || '').toLowerCase(),
+      amount: Number(p?.amount || 0),
+      journal_id: p?.journalId ?? null,
+      check_number: String(p?.type || '').toLowerCase() === 'check' ? empty(p?.checkNumber || paymentPayload?.checkNumber) : '',
+      bank_name: String(p?.type || '').toLowerCase() === 'check' ? empty(paymentPayload?.chequeBankName) : '',
+    }));
+    await localPaymentsDb.replacePaymentsForInvoice(invoiceId, paymentRows);
+
+    const split = localPaymentsDb.paymentSplitFromPayload(paymentPayload);
+    const primary = localPaymentsDb.primaryPaymentTypeFromSplit(split) || 'cash';
+    await saleOrdersDb.updatePaymentSplitByOrderId(soId, split, primary);
   }, [soId]);
 
   /** Local invoice/payments/inventory — safe to finish after dashboard navigation. */
@@ -291,11 +296,9 @@ export default function PaymentProofScreen({ route, navigation }) {
     }));
     await localPaymentsDb.replacePaymentsForInvoice(invoiceId, paymentRows);
 
-    const cash = paymentRows.reduce((s, r) => s + (r.payment_type === 'cash' ? Number(r.amount || 0) : 0), 0);
-    const cheque = paymentRows.reduce((s, r) => s + (r.payment_type === 'cheque' ? Number(r.amount || 0) : 0), 0);
-    const credit = paymentRows.reduce((s, r) => s + (r.payment_type === 'credit' ? Number(r.amount || 0) : 0), 0);
-    const primary = credit > 0 ? 'credit' : cheque > 0 ? 'cheque' : 'cash';
-    await saleOrdersDb.updateSaleOrderPaymentTypeLocal(soId, primary, credit);
+    const split = localPaymentsDb.paymentSplitFromPayload(paymentPayload);
+    const primary = localPaymentsDb.primaryPaymentTypeFromSplit(split) || 'cash';
+    await saleOrdersDb.updatePaymentSplitByOrderId(soId, split, primary);
     await saleOrdersDb.updateSaleOrderAmountsFromLines(soId);
     await saleOrdersDb.updateSaleOrderInvoiceStatusLocal(soId, 'invoiced');
 
@@ -328,17 +331,11 @@ export default function PaymentProofScreen({ route, navigation }) {
     let checkoutUploadStarted = false;
     beginCheckoutUploadPriority();
     try {
-      if (photos.length > 0) {
-        await persistPhotos();
-      }
-      await applyLocalGasInventoryForSaleOrder(soId);
-      await releaseQueueHoldsForSo();
-      await clearCheckoutResume(soId);
       await persistLocalInvoiceAtCheckout();
       await saleOrdersDb.updateSaleOrderInvoiceStatusLocal(soId, 'invoiced');
+      await clearCheckoutResume(soId);
       markSaleOrderDeliveredInUi(soId);
       signalDashboardPendingUploadStarted();
-      notifyLocalInventoryChanged();
 
       navigation.reset({
         index: 0,
@@ -347,18 +344,31 @@ export default function PaymentProofScreen({ route, navigation }) {
       setSaving(false);
 
       checkoutUploadStarted = true;
-      startCheckoutUploadInBackground(soId, {
-        includeAttachments: creditProofRequired || photos.length > 0,
+      const includeAttachments = creditProofRequired || photos.length > 0;
+      const persistPhotosNow = persistPhotos;
+      InteractionManager.runAfterInteractions(() => {
+        void (async () => {
+          try {
+            if (photos.length > 0) {
+              await persistPhotosNow();
+            }
+            await applyLocalGasInventoryForSaleOrder(soId);
+            await releaseQueueHoldsForSo();
+            notifyLocalInventoryChanged();
+            startCheckoutUploadInBackground(soId, { includeAttachments });
+            await finalizeLocalCheckoutState();
+            await clearCheckoutResume(soId);
+          } catch (bgErr) {
+            console.warn('[PaymentProof] background checkout', bgErr?.message || bgErr);
+            try {
+              await releaseQueueHoldsForSo();
+              startCheckoutUploadInBackground(soId, { includeAttachments });
+            } catch (retryErr) {
+              console.warn('[PaymentProof] background checkout retry', retryErr?.message || retryErr);
+            }
+          }
+        })();
       });
-
-      void (async () => {
-        try {
-          await finalizeLocalCheckoutState();
-          await clearCheckoutResume(soId);
-        } catch (e) {
-          console.warn('[PaymentProof] background finalize', e?.message || e);
-        }
-      })();
     } catch (e) {
       if (!checkoutUploadStarted) endCheckoutUploadPriority();
       const msg = isSqliteFullError(e) ? sqliteFullUserMessage() : (e?.message || 'Something went wrong. Try again.');
@@ -372,6 +382,7 @@ export default function PaymentProofScreen({ route, navigation }) {
     creditProofRequired,
     photos.length,
     persistPhotos,
+    photos,
     releaseQueueHoldsForSo,
     persistLocalInvoiceAtCheckout,
     finalizeLocalCheckoutState,

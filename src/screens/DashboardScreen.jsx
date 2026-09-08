@@ -190,6 +190,14 @@ function normalizePaymentType(rawType) {
   return '';
 }
 
+function paymentSplitHasAmount(split) {
+  return (
+    (Number(split?.cash) || 0) > 0 ||
+    (Number(split?.cheque ?? split?.check) || 0) > 0 ||
+    (Number(split?.credit) || 0) > 0
+  );
+}
+
 /** Local calendar YYYY-MM-DD (avoid UTC day-shift from toISOString()). */
 function formatLocalYyyyMmDd(d) {
   if (!(d instanceof Date) || Number.isNaN(d.getTime())) return '';
@@ -272,6 +280,7 @@ export default function DashboardScreen({ navigation }) {
   const [localInvoicedSaleOrderIds, setLocalInvoicedSaleOrderIds] = useState(() => new Set());
   const [pendingCheckoutOrderIds, setPendingCheckoutOrderIds] = useState(() => new Set());
   const [paymentSplitsByOrderId, setPaymentSplitsByOrderId] = useState({});
+  const [paymentSplitsFromQueueByOrderId, setPaymentSplitsFromQueueByOrderId] = useState({});
   // Commission state
   const [commissionPlan, setCommissionPlan] = useState(() => lastDashboardSnapshot?.commissionPlan ?? null);
   const [commissionLoading, setCommissionLoading] = useState(false);
@@ -588,21 +597,29 @@ export default function DashboardScreen({ navigation }) {
       const todayOrders = (Array.isArray(data) ? data : []).filter((o) => getOrderDateForSyncMode(o).startsWith(today));
       // console.log('todayOrders', todayOrders);
       const orderIds = todayOrders.map((o) => o.id);
-      const [totals, pickings, orderLines, splits, qtyDoneMap] = await Promise.all([
+      const [totals, pickings, orderLines, splits, qtyDoneMap, latestPaymentPayloads] = await Promise.all([
         getOrderLineTotalsFromDB(todayOrders),
         orderIds.length ? getPickingsBySaleIdsFromDB(orderIds) : Promise.resolve([]),
         orderIds.length ? getOrderLinesByOrderIdsFromDB(orderIds) : Promise.resolve([]),
         orderIds.length ? localPaymentsDb.getPaymentSplitsBySaleOrderIds(orderIds) : Promise.resolve({}),
         orderIds.length ? deliveryQtyDb.getTotalQtyDoneBySaleOrderIds(orderIds) : Promise.resolve({}),
+        orderIds.length ? syncQueueDb.getLatestPaymentPayloadMapBySaleOrderIds(orderIds).catch(() => ({})) : Promise.resolve({}),
       ]);
       setLineTotalsByOrder(totals || {});
       setPickingsBySaleId(pickings || []);
       setQtyDoneBySaleId(qtyDoneMap || {});
       setTodayOrderLines(orderLines || []);
       setPaymentSplitsByOrderId(splits || {});
-      const saleIdToPickState = mergePickingStateBySaleIdFromRows(pickings);
-
       const pendingQueueItems = await syncQueueDb.getPending().catch(() => []);
+      const queueSplits = {};
+      for (const [soIdKey, row] of Object.entries(latestPaymentPayloads || {})) {
+        const soId = Number(soIdKey);
+        if (!Number.isFinite(soId) || soId <= 0) continue;
+        const split = localPaymentsDb.paymentSplitFromPayload(row?.payload);
+        if (localPaymentsDb.paymentSplitHasAmount(split)) queueSplits[soId] = split;
+      }
+      setPaymentSplitsFromQueueByOrderId(queueSplits);
+      const saleIdToPickState = mergePickingStateBySaleIdFromRows(pickings);
 
       const pendingPaymentOrderIds = new Set(
         (pendingQueueItems || [])
@@ -1326,43 +1343,66 @@ export default function DashboardScreen({ navigation }) {
   const getSplitForOrder = (order) => {
     const id = order?.id;
     if (id == null) return undefined;
-    return paymentSplitsByOrderId[Number(id)] ?? paymentSplitsByOrderId[id] ?? paymentSplitsByOrderId[String(id)];
+    const local =
+      paymentSplitsByOrderId[Number(id)] ?? paymentSplitsByOrderId[id] ?? paymentSplitsByOrderId[String(id)];
+    if (paymentSplitHasAmount(local)) return local;
+    const queued =
+      paymentSplitsFromQueueByOrderId[Number(id)] ??
+      paymentSplitsFromQueueByOrderId[id] ??
+      paymentSplitsFromQueueByOrderId[String(id)];
+    if (paymentSplitHasAmount(queued)) return queued;
+    return undefined;
   };
-  // Collection totals: local split first; else synced amounts (amount_cash/amount_cheque/amount_credit); else payment_type + amount_total
-  const cashTotal = deliveredTodayOrders.reduce((s, o) => {
+  // Collection totals: local/queue split first; else synced amounts (amount_cash/amount_cheque/amount_credit); else payment_type + amount_total
+  const cashTotal = deliveredTodayOrdersAllRoutes.reduce((s, o) => {
     const split = getSplitForOrder(o);
-    if (split && (Number(split.cash) > 0 || Number(split.cheque ?? split.check) > 0 || Number(split.credit) > 0)) {
+    if (split && paymentSplitHasAmount(split)) {
       return s + (Number(split.cash) || 0);
     }
     const sc = Number(o.amount_cash) || 0;
     const sq = Number(o.amount_cheque) || 0;
     const sr = Number(o.amount_credit) || 0;
-    if (sc > 0 || sq > 0 || sr > 0) return s + sc;
     const pt = normalizePaymentType(o.payment_type);
+    if (sc > 0 || sq > 0 || sr > 0) {
+      if ((pt === 'cash' || pt === 'cheque') && sc === 0 && sq === 0 && sr > 0) {
+        return s + (pt === 'cash' ? orderMoneyTotal(o) : 0);
+      }
+      return s + sc;
+    }
     return s + (pt === 'cash' ? orderMoneyTotal(o) : 0);
   }, 0);
-  const chequeTotal = deliveredTodayOrders.reduce((s, o) => {
+  const chequeTotal = deliveredTodayOrdersAllRoutes.reduce((s, o) => {
     const split = getSplitForOrder(o);
-    if (split && (Number(split.cash) > 0 || Number(split.cheque ?? split.check) > 0 || Number(split.credit) > 0)) {
+    if (split && paymentSplitHasAmount(split)) {
       return s + (Number(split.cheque ?? split.check) || 0);
     }
     const sc = Number(o.amount_cash) || 0;
     const sq = Number(o.amount_cheque) || 0;
     const sr = Number(o.amount_credit) || 0;
-    if (sc > 0 || sq > 0 || sr > 0) return s + sq;
     const pt = normalizePaymentType(o.payment_type);
+    if (sc > 0 || sq > 0 || sr > 0) {
+      if ((pt === 'cash' || pt === 'cheque') && sc === 0 && sq === 0 && sr > 0) {
+        return s + (pt === 'cheque' ? orderMoneyTotal(o) : 0);
+      }
+      return s + sq;
+    }
     return s + (pt === 'cheque' ? orderMoneyTotal(o) : 0);
   }, 0);
-  const creditTotal = deliveredTodayOrders.reduce((s, o) => {
+  const creditTotal = deliveredTodayOrdersAllRoutes.reduce((s, o) => {
     const split = getSplitForOrder(o);
-    if (split && (Number(split.cash) > 0 || Number(split.cheque ?? split.check) > 0 || Number(split.credit) > 0)) {
+    if (split && paymentSplitHasAmount(split)) {
       return s + (Number(split.credit) || 0);
     }
     const sc = Number(o.amount_cash) || 0;
     const sq = Number(o.amount_cheque) || 0;
     const sr = Number(o.amount_credit) || 0;
-    if (sc > 0 || sq > 0 || sr > 0) return s + sr;
     const pt = normalizePaymentType(o.payment_type);
+    if (sc > 0 || sq > 0 || sr > 0) {
+      if ((pt === 'cash' || pt === 'cheque') && sc === 0 && sq === 0 && sr > 0) {
+        return s;
+      }
+      return s + sr;
+    }
     // Do not treat unknown/empty payment_type as full credit (fresh device after sync was inflating credit).
     return s + (pt === 'credit' ? orderMoneyTotal(o) : 0);
   }, 0);

@@ -28,6 +28,7 @@ import * as vehicleInventoriesDb from '../database/vehicleInventories.js';
 import * as productsDb from '../database/products.js';
 import * as syncLogDb from '../database/syncLog.js';
 import * as syncQueueDb from '../database/syncQueue.js';
+import * as localPaymentsDb from '../database/localPayments.js';
 import { buildCheckoutHeldSaleOrderIds } from '../utils/emptyCollectionLocal.js';
 import { getDb } from '../database/db.js';
 import { recordDriverLogout } from './driverLoginHistory.service';
@@ -902,9 +903,18 @@ export async function uploadCompletedOrderNow(saleOrderId, options = {}) {
         checkoutSingleShot: true,
       });
       const paymentRow = await syncQueueDb.getPendingPaymentItemBySaleOrderId(soId).catch(() => null);
-      pendingCount = paymentRow ? 1 : 0;
-      if (!paymentRow) break;
-      log('queue', `checkout upload SO ${soId} retry ${attempt + 1}/${maxImmediateAttempts} (payment still pending)`);
+      const deliveryRow = await syncQueueDb.getPendingDeliveryItemBySaleOrderId(soId).catch(() => null);
+      pendingCount = paymentRow || deliveryRow ? 1 : 0;
+      if (!paymentRow && !deliveryRow) break;
+      log(
+        'queue',
+        `checkout upload SO ${soId} retry ${attempt + 1}/${maxImmediateAttempts} (${[
+          paymentRow ? 'payment' : null,
+          deliveryRow ? 'delivery' : null,
+        ]
+          .filter(Boolean)
+          .join('+')} still pending)`
+      );
     }
     void pullSaleOrderHeaderAfterPayment(soId).catch(() => {});
     log('queue', `checkout upload done SO ${soId} pending=${pendingCount}`);
@@ -1914,10 +1924,25 @@ export async function refreshPaymentTypesFromOdoo(syncedOrders, options = {}) {
       return 'credit';
     }
 
+    const orderIdsForLocal = Object.keys(orderNameToSplit)
+      .map((name) => Number(orderNameToId[String(name).trim()] ?? orderNameToId[name]))
+      .filter((id) => Number.isFinite(id) && id > 0);
+    let localPaymentSplits = {};
+    let localOrderRows = {};
+    let queuePayloadBySoId = {};
+    try {
+      localPaymentSplits = await localPaymentsDb.getPaymentSplitsBySaleOrderIds(orderIdsForLocal);
+      localOrderRows = await saleOrdersDb.getSaleOrdersByIds(orderIdsForLocal);
+      queuePayloadBySoId = await syncQueueDb.getLatestPaymentPayloadMapBySaleOrderIds(orderIdsForLocal);
+    } catch (localErr) {
+      logWarn('refresh payment_type local split lookup', localErr);
+    }
+
     let updated = 0;
     let byCash = 0;
     let byCheque = 0;
     let byCredit = 0;
+    let skippedLocalCashCheque = 0;
     for (const name of Object.keys(orderNameToSplit)) {
       const trimmedName = String(name).trim();
       const orderId = orderNameToId[trimmedName] ?? orderNameToId[name];
@@ -1927,6 +1952,33 @@ export async function refreshPaymentTypesFromOdoo(syncedOrders, options = {}) {
       else if (paymentType === 'cheque') byCheque++;
       else byCredit++;
       if (skipOrderIds?.size && orderId != null && skipOrderIds.has(Number(orderId))) continue;
+      const odooCreditOnly =
+        (Number(split?.cash) || 0) <= 0 &&
+        (Number(split?.cheque) || 0) <= 0 &&
+        (Number(split?.credit) || 0) > 0;
+      if (odooCreditOnly && orderId != null) {
+        const oid = Number(orderId);
+        const localSplit = localPaymentSplits[oid] || localPaymentSplits[orderId] || {};
+        const localRow = localOrderRows[oid] || localOrderRows[orderId] || {};
+        const queueSplit = localPaymentsDb.paymentSplitFromPayload(
+          queuePayloadBySoId[oid]?.payload || queuePayloadBySoId[orderId]?.payload
+        );
+        const localType = String(localRow?.payment_type || '').toLowerCase();
+        const hasLocalCashOrCheque =
+          (Number(localSplit.cash) || 0) > 0 ||
+          (Number(localSplit.cheque) || 0) > 0 ||
+          (Number(localRow?.amount_cash) || 0) > 0 ||
+          (Number(localRow?.amount_cheque) || 0) > 0 ||
+          (Number(queueSplit.cash) || 0) > 0 ||
+          (Number(queueSplit.cheque) || 0) > 0 ||
+          localType === 'cash' ||
+          localType === 'cheque' ||
+          localType === 'check';
+        if (hasLocalCashOrCheque) {
+          skippedLocalCashCheque += 1;
+          continue;
+        }
+      }
       if (orderId != null) {
         await saleOrdersDb.updatePaymentSplitByOrderId(orderId, split, paymentType);
       } else {
@@ -1934,7 +1986,12 @@ export async function refreshPaymentTypesFromOdoo(syncedOrders, options = {}) {
       }
       updated++;
     }
-    log('refresh', `payment_type: ${updated} updated (cash=${byCash} cheque=${byCheque} credit=${byCredit}) from Odoo invoice+payment APIs`);
+    log(
+      'refresh',
+      `payment_type: ${updated} updated (cash=${byCash} cheque=${byCheque} credit=${byCredit}` +
+        (skippedLocalCashCheque ? `, skippedLocalCashCheque=${skippedLocalCashCheque}` : '') +
+        `) from Odoo invoice+payment APIs`
+    );
   } catch (e) {
     logWarn('refresh payment_type from Odoo', e);
   }
@@ -2282,7 +2339,18 @@ async function enrichDeliveredUpdatesForSaleOrder(soId, baseUpdates, queuePayloa
     updateMap.set(lid, qty);
   }
 
-  return Array.from(updateMap.entries()).map(([lineId, qty_delivered]) => ({ lineId, qty_delivered }));
+  const productByLineId = new Map();
+  for (const l of orderLines || []) {
+    const lid = Number(l?.id);
+    const pid = Number(Array.isArray(l.product_id) ? l.product_id[0] : l.product_id);
+    if (!Number.isFinite(lid) || lid <= 0 || !Number.isFinite(pid) || pid <= 0) continue;
+    productByLineId.set(lid, pid);
+  }
+  return Array.from(updateMap.entries()).map(([lineId, qty_delivered]) => ({
+    lineId,
+    qty_delivered,
+    ...(productByLineId.has(lineId) ? { productId: productByLineId.get(lineId) } : {}),
+  }));
 }
 
 /**
@@ -3109,31 +3177,58 @@ async function writeStockMoveSaleLineId(moveId, saleLineId) {
   const solId = Number(saleLineId);
   if (!Number.isFinite(mid) || mid <= 0 || !Number.isFinite(solId) || solId <= 0) return false;
   const { callOdoo, callOdooArgsKwargs } = await import('./index.service.js');
+  const ctx = { skip_sms: true, tracking_disable: true, mail_notrack: true };
   try {
     await callOdooArgsKwargs(
       'stock.move',
       'write',
       [[mid], { sale_line_id: solId }],
-      { context: { skip_sms: true, tracking_disable: true, mail_notrack: true } }
+      { context: ctx }
     );
     return true;
   } catch (_) {
     try {
       await callOdoo('stock.move', 'write', [[mid], { sale_line_id: solId }]);
       return true;
-    } catch (e) {
-      log(
-        'queue',
-        `delivery link move ${mid} to SOL ${solId} failed: ${String(e?.message || e).slice(0, 100)}`
-      );
-      return false;
+    } catch (_) {
+      // Done moves can reject stock.move.write. Inverse One2many link still sets sale_line_id
+      // so Odoo recomputes qty_delivered from this move instead of dropping it to 0.
+      try {
+        await callOdoo('sale.order.line', 'write', [[solId], { move_ids: [[4, mid]] }], {
+          context: ctx,
+        });
+        return true;
+      } catch (e) {
+        log(
+          'queue',
+          `delivery link move ${mid} to SOL ${solId} failed: ${String(e?.message || e).slice(0, 100)}`
+        );
+        return false;
+      }
     }
   }
 }
 
+/** True when a qty-bearing move must be (re)pointed at the ordered>0 SO line for its product. */
+function stockMoveSaleLineNeedsBind(existingSol, preferredId, productId, lineById, preferred) {
+  if (!Number.isFinite(preferredId) || preferredId <= 0) return false;
+  if (!Number.isFinite(existingSol) || existingSol <= 0) return true;
+  if (existingSol === preferredId) return false;
+  const existingLine = lineById.get(existingSol);
+  if (!existingLine) return true;
+  const existingPid = odooRelId(existingLine?.product_id);
+  if (Number.isFinite(existingPid) && existingPid !== Number(productId)) return true;
+  const existingOrdered = Number(existingLine?.product_uom_qty) || 0;
+  const preferredOrdered = Number(preferred?.product_uom_qty) || 0;
+  return existingOrdered <= 0.0001 && preferredOrdered > 0.0001;
+}
+
 /**
  * Rare S09200: picking Done with qty_done, but sale.order.line Delivered stays 0 because
- * stock.move.sale_line_id is empty or pointed at a 0-qty duplicate line.
+ * stock.move.sale_line_id is empty or pointed at a 0-qty duplicate / wrong-product line.
+ *
+ * Authority is sale_line_id on qty-bearing moves — never SOL qty_delivered. A just-written
+ * qty_delivered can look bound and then recompute to 0 (S10650 / S10550 partial bind).
  */
 async function getUnboundDeliveredProductsOnOdoo(saleOrderId) {
   const soId = Number(saleOrderId);
@@ -3149,7 +3244,6 @@ async function getUnboundDeliveredProductsOnOdoo(saleOrderId) {
   ).catch(() => []);
   const pickings = (await getPickingBySaleOrder(soId).catch(() => [])) || [];
   const pickingQtyByProduct = new Map();
-  const doneProducts = new Set();
   const activePickingIds = [];
   for (const pk of pickings) {
     const st = String(pk?.state || '').toLowerCase();
@@ -3163,109 +3257,88 @@ async function getUnboundDeliveredProductsOnOdoo(saleOrderId) {
   );
   const unreadMoveIds = [];
   const allMoves = [];
+  const qtyByMoveId = new Map();
   for (const moves of moveLists) {
     for (const mv of moves || []) {
       allMoves.push(mv);
       const pid = odooRelId(mv?.product_id);
       if (!Number.isFinite(pid) || pid <= 0) continue;
-      if (String(mv?.state || '').toLowerCase() === 'done') doneProducts.add(pid);
       const q = stockMoveDoneQty(mv);
+      const mid = Number(mv?.id);
       if (q > DELIVERED_QTY_VERIFY_TOL) {
         pickingQtyByProduct.set(pid, roundDeliveredQty3((pickingQtyByProduct.get(pid) || 0) + q));
-      } else {
-        const mid = Number(mv?.id);
-        if (Number.isFinite(mid) && mid > 0) unreadMoveIds.push(mid);
+        if (Number.isFinite(mid) && mid > 0) qtyByMoveId.set(mid, q);
+      } else if (Number.isFinite(mid) && mid > 0) {
+        unreadMoveIds.push(mid);
       }
     }
   }
   if (unreadMoveIds.length) {
     const mls = (await getStockMoveLinesByMoveIds(unreadMoveIds).catch(() => [])) || [];
-    const qtyByMove = new Map();
     for (const ml of mls) {
       const mid = Number(Array.isArray(ml?.move_id) ? ml.move_id[0] : ml?.move_id);
       const q = stockMoveLineDoneQty(ml);
       if (!Number.isFinite(mid) || mid <= 0 || !Number.isFinite(q) || q <= 0) continue;
-      qtyByMove.set(mid, roundDeliveredQty3((qtyByMove.get(mid) || 0) + q));
+      qtyByMoveId.set(mid, roundDeliveredQty3((qtyByMoveId.get(mid) || 0) + q));
     }
     for (const mv of allMoves) {
-      const extra = qtyByMove.get(Number(mv?.id)) || 0;
+      const extra = qtyByMoveId.get(Number(mv?.id)) || 0;
       if (extra <= DELIVERED_QTY_VERIFY_TOL) continue;
       const pid = odooRelId(mv?.product_id);
       if (!Number.isFinite(pid) || pid <= 0) continue;
+      const already = stockMoveDoneQty(mv);
+      if (already > DELIVERED_QTY_VERIFY_TOL) continue;
       pickingQtyByProduct.set(pid, roundDeliveredQty3((pickingQtyByProduct.get(pid) || 0) + extra));
     }
   }
-  if (!pickingQtyByProduct.size && !doneProducts.size) {
+  if (!pickingQtyByProduct.size) {
     await soLinesPromise.catch(() => []);
     return [];
   }
 
   const soLines = (await soLinesPromise) || [];
   const linesByProduct = new Map();
-  const solQtyByProduct = new Map();
+  const lineById = new Map();
   for (const row of soLines || []) {
     const pid = odooRelId(row?.product_id);
     const lid = Number(row?.id);
-    if (!Number.isFinite(pid) || pid <= 0 || !Number.isFinite(lid) || lid <= 0) continue;
+    if (!Number.isFinite(lid) || lid <= 0) continue;
+    lineById.set(lid, row);
+    if (!Number.isFinite(pid) || pid <= 0) continue;
     const list = linesByProduct.get(pid) || [];
     list.push(row);
     linesByProduct.set(pid, list);
-    solQtyByProduct.set(
-      pid,
-      roundDeliveredQty3((solQtyByProduct.get(pid) || 0) + roundDeliveredQty3(row?.qty_delivered))
-    );
   }
 
-  // sale_line_id is the real bind. SOL qty_delivered can still show a just-written
-  // value while Odoo is about to recompute it to 0 for unlinked moves (S10650).
-  const soLineIdsByProduct = new Map();
-  for (const [pid, list] of linesByProduct.entries()) {
-    soLineIdsByProduct.set(
-      pid,
-      new Set((list || []).map((r) => Number(r?.id)).filter((n) => Number.isFinite(n) && n > 0))
-    );
-  }
   const productHasUnlinkedQtyMove = new Set();
   for (const mv of allMoves) {
     const st = String(mv?.state || '').toLowerCase();
     if (st === 'cancel') continue;
     const pid = odooRelId(mv?.product_id);
     if (!Number.isFinite(pid) || pid <= 0) continue;
-    // Only qty-bearing moves. Empty Done leftovers must not mark a linked product unbound.
-    if (stockMoveDoneQty(mv) <= DELIVERED_QTY_VERIFY_TOL) continue;
-    const sol = odooRelId(mv?.sale_line_id);
-    const allowed = soLineIdsByProduct.get(pid);
-    if (!allowed || !allowed.has(sol)) {
+    const mid = Number(mv?.id);
+    const q = Math.max(stockMoveDoneQty(mv), qtyByMoveId.get(mid) || 0);
+    if (q <= DELIVERED_QTY_VERIFY_TOL) continue;
+    const preferred = preferSaleLineRow(linesByProduct.get(pid) || []);
+    const preferredId = Number(preferred?.id);
+    const existingSol = odooRelId(mv?.sale_line_id);
+    if (stockMoveSaleLineNeedsBind(existingSol, preferredId, pid, lineById, preferred)) {
       productHasUnlinkedQtyMove.add(pid);
     }
   }
 
   const unbound = [];
-  const productIds = new Set([
-    ...pickingQtyByProduct.keys(),
-    ...doneProducts,
-    ...productHasUnlinkedQtyMove,
-  ]);
-  for (const pid of productIds) {
+  for (const pid of productHasUnlinkedQtyMove) {
     const pickingQty = pickingQtyByProduct.get(pid) || 0;
-    const solQty = solQtyByProduct.get(pid) || 0;
     const preferred = preferSaleLineRow(linesByProduct.get(pid) || []);
-    const ordered = Number(preferred?.product_uom_qty) || 0;
-    const doneWithUnreadQty = doneProducts.has(pid) && ordered > 0.0001;
-    const unlinkedMove = productHasUnlinkedQtyMove.has(pid);
-    if (
-      unlinkedMove ||
-      (solQty <= DELIVERED_QTY_VERIFY_TOL && (pickingQty > DELIVERED_QTY_VERIFY_TOL || doneWithUnreadQty))
-    ) {
-      const lineId = Number(preferred?.id);
-      unbound.push({
-        productId: pid,
-        pickingQty,
-        solQty,
-        lineId: Number.isFinite(lineId) && lineId > 0 ? lineId : null,
-        unlinkedMove,
-      });
-    }
+    const lineId = Number(preferred?.id);
+    unbound.push({
+      productId: pid,
+      pickingQty,
+      solQty: 0,
+      lineId: Number.isFinite(lineId) && lineId > 0 ? lineId : null,
+      unlinkedMove: true,
+    });
   }
   return unbound;
 }
@@ -3311,7 +3384,8 @@ async function forceBindSaleLinesFromDeliveredUpdates(saleOrderId, deliveredUpda
   });
   if (!Number.isFinite(soId) || soId <= 0 || !updates.length) return { bound: 0 };
   const { callOdoo } = await import('./index.service.js');
-  const { getPickingBySaleOrder, getStockMovesByPickingId } = await import('./delivery.service.js');
+  const { getPickingBySaleOrder, getStockMovesByPickingId, getStockMoveLinesByMoveIds } =
+    await import('./delivery.service.js');
   const ids = [...new Set(updates.map((u) => Number(u.lineId)))];
   const solRows =
     (await callOdoo('sale.order.line', 'read', [ids], {
@@ -3323,24 +3397,43 @@ async function forceBindSaleLinesFromDeliveredUpdates(saleOrderId, deliveredUpda
   await ensureStockMovesLinkedToSaleOrderLines(soId, []);
   for (const u of updates) {
     const lid = Number(u.lineId);
-    const expected = roundDeliveredQty3(u.qty_delivered);
     const sol = solById.get(lid);
-    const actual = roundDeliveredQty3(sol?.qty_delivered);
-    if (Math.abs(actual - expected) <= DELIVERED_QTY_VERIFY_TOL) continue;
     const pid = odooRelId(sol?.product_id);
     if (!Number.isFinite(pid) || pid <= 0) continue;
+    // Always write sale_line_id on qty-bearing moves. Matching SOL qty_delivered is ephemeral
+    // and must not skip the durable bind (S10550: 1 of 3 products stayed unbound).
     for (const pk of picks) {
       if (String(pk?.state || '').toLowerCase() === 'cancel') continue;
       const pkId = Number(pk?.id);
       if (!Number.isFinite(pkId) || pkId <= 0) continue;
       const moves = (await getStockMovesByPickingId(pkId).catch(() => [])) || [];
+      const unread = [];
+      for (const mv of moves) {
+        if (odooRelId(mv?.product_id) !== pid) continue;
+        if (stockMoveDoneQty(mv) <= DELIVERED_QTY_VERIFY_TOL) {
+          const mid = Number(mv?.id);
+          if (Number.isFinite(mid) && mid > 0) unread.push(mid);
+        }
+      }
+      const qtyByMove = new Map();
+      if (unread.length) {
+        const mls = (await getStockMoveLinesByMoveIds(unread).catch(() => [])) || [];
+        for (const ml of mls) {
+          const mid = Number(Array.isArray(ml?.move_id) ? ml.move_id[0] : ml?.move_id);
+          const q = stockMoveLineDoneQty(ml);
+          if (!Number.isFinite(mid) || mid <= 0 || q <= 0) continue;
+          qtyByMove.set(mid, roundDeliveredQty3((qtyByMove.get(mid) || 0) + q));
+        }
+      }
       for (const mv of moves) {
         if (odooRelId(mv?.product_id) !== pid) continue;
         const st = String(mv?.state || '').toLowerCase();
         if (st === 'cancel') continue;
-        if (st !== 'done' && stockMoveDoneQty(mv) <= DELIVERED_QTY_VERIFY_TOL) continue;
         const mid = Number(mv?.id);
         if (!Number.isFinite(mid) || mid <= 0) continue;
+        const q = Math.max(stockMoveDoneQty(mv), qtyByMove.get(mid) || 0);
+        if (st !== 'done' && q <= DELIVERED_QTY_VERIFY_TOL) continue;
+        if (odooRelId(mv?.sale_line_id) === lid) continue;
         const ok = await writeStockMoveSaleLineId(mid, lid);
         if (ok) bound += 1;
       }
@@ -3398,15 +3491,15 @@ async function assertDonePickingSaleLinesBound(saleOrderId) {
  * Odoo computes sale.order.line.qty_delivered from stock.move rows with sale_line_id set.
  * Moves created/updated without sale_line_id leave picking Done while SO Delivered stays 0 (S09200).
  * Link any unlinked moves on this SO's pickings to the matching SO line by product.
- * Also re-point a Done move that was linked to a 0-qty duplicate line onto the ordered>0 line.
+ * Also re-point a Done move that was linked to a 0-qty duplicate or wrong-product line.
  */
 async function ensureStockMovesLinkedToSaleOrderLines(saleOrderId, pickingIds = []) {
   const soId = Number(saleOrderId);
   if (!Number.isFinite(soId) || soId <= 0) return { linked: 0 };
   const { callOdoo } = await import('./index.service.js');
+  const { getPickingBySaleOrder, getStockMovesByPickingId } = await import('./delivery.service.js');
   let pids = (pickingIds || []).map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0);
   if (!pids.length) {
-    const { getPickingBySaleOrder } = await import('./delivery.service.js');
     const picks = (await getPickingBySaleOrder(soId).catch(() => [])) || [];
     pids = picks.map((p) => Number(p?.id)).filter((id) => Number.isFinite(id) && id > 0);
   }
@@ -3418,13 +3511,8 @@ async function ensureStockMovesLinkedToSaleOrderLines(saleOrderId, pickingIds = 
     [[['order_id', '=', soId]]],
     { fields: ['id', 'product_id', 'product_uom_qty'], limit: 200 }
   ).catch(() => []);
-  const movesPromise = callOdoo(
-    'stock.move',
-    'search_read',
-    [[['picking_id', 'in', pids], ['state', '!=', 'cancel']]],
-    { fields: ['id', 'product_id', 'sale_line_id', 'quantity_done', 'product_uom_qty'], limit: 500 }
-  );
-  const [soLinesRaw, moves] = await Promise.all([soLinesPromise, movesPromise]);
+  const moveLists = await Promise.all(pids.map((pid) => getStockMovesByPickingId(pid).catch(() => [])));
+  const [soLinesRaw] = await Promise.all([soLinesPromise]);
   const soLines = soLinesRaw || [];
   const linesByProduct = new Map();
   const lineById = new Map();
@@ -3439,8 +3527,16 @@ async function ensureStockMovesLinkedToSaleOrderLines(saleOrderId, pickingIds = 
     linesByProduct.set(pid, list);
   }
 
+  const moves = [];
+  for (const list of moveLists) {
+    for (const mv of list || []) {
+      if (String(mv?.state || '').toLowerCase() === 'cancel') continue;
+      moves.push(mv);
+    }
+  }
+
   let linked = 0;
-  for (const mv of moves || []) {
+  for (const mv of moves) {
     const mid = Number(mv?.id);
     const pid = odooRelId(mv?.product_id);
     if (!Number.isFinite(mid) || mid <= 0 || !Number.isFinite(pid) || pid <= 0) continue;
@@ -3449,13 +3545,7 @@ async function ensureStockMovesLinkedToSaleOrderLines(saleOrderId, pickingIds = 
     if (!Number.isFinite(preferredId) || preferredId <= 0) continue;
 
     const existingSol = odooRelId(mv?.sale_line_id);
-    if (Number.isFinite(existingSol) && existingSol > 0) {
-      if (existingSol === preferredId) continue;
-      const existingOrdered = Number(lineById.get(existingSol)?.product_uom_qty) || 0;
-      const preferredOrdered = Number(preferred?.product_uom_qty) || 0;
-      // Only retarget when the current link is a 0-qty duplicate and a real ordered line exists.
-      if (!(existingOrdered <= 0.0001 && preferredOrdered > 0.0001)) continue;
-    }
+    if (!stockMoveSaleLineNeedsBind(existingSol, preferredId, pid, lineById, preferred)) continue;
 
     const ok = await writeStockMoveSaleLineId(mid, preferredId);
     if (!ok) continue;
@@ -5859,6 +5949,10 @@ async function processSyncQueue(options = {}) {
               );
             }
           }
+          if (pickingId != null && Number(pickingId) <= 0) {
+            // Synthetic local scaffold ids are not Odoo records. Never write/validate them.
+            pickingId = null;
+          }
           if (pickingId == null && saleOrderId != null) {
             const pickings = await getPickingBySaleOrder(saleOrderId);
             const first = Array.isArray(pickings) ? pickings[0] : null;
@@ -5935,6 +6029,11 @@ async function processSyncQueue(options = {}) {
               'queue',
               `delivery rebuilt ${deliveryLines.length} lines on real picking ${pickingId} for SO ${saleOrderId}`
             );
+            if (qtyByProduct.size > 0 && deliveryLines.length === 0) {
+              throw new Error(
+                `Delivery incomplete: picking ${pickingId} has no matching moves for delivered products on SO ${saleOrderId}. Sync will retry.`
+              );
+            }
           }
 
           let pickingStateKnown = '';
@@ -6017,6 +6116,16 @@ async function processSyncQueue(options = {}) {
                 else requestedDeliveryRemainingByProduct.set(pid, next);
               }
               validatedAnyPicking = true;
+              if (saleOrderId != null) {
+                try {
+                  await ensureStockMovesLinkedToSaleOrderLines(Number(saleOrderId), [Number(pickingId)]);
+                } catch (linkDoneErr) {
+                  log(
+                    'queue',
+                    `delivery already-done link SOL (non-fatal): ${String(linkDoneErr?.message || linkDoneErr).slice(0, 100)}`
+                  );
+                }
+              }
               continue;
             }
           } catch (doneStateErr) {
@@ -6308,7 +6417,9 @@ async function processSyncQueue(options = {}) {
           } catch (updateErr) {
             const msg = (updateErr?.message || String(updateErr)).toLowerCase();
             const recordDeleted = msg.includes('does not exist or has been deleted') || msg.includes('has been deleted');
-            if (recordDeleted) {
+            // Synthetic / not-yet-linked pickings also return "does not exist". Skipping used to
+            // mark the queue row synced while Odoo still had no delivery.
+            if (recordDeleted && !hadSyntheticPicking && Number(pickingId) > 0) {
               log('queue', `delivery updates skipped (record deleted): ${msg.slice(0, 80)}`);
             } else {
               throw updateErr;
@@ -6413,9 +6524,12 @@ async function processSyncQueue(options = {}) {
             ) {
               return false;
             }
+            const missingRecord = v.includes('does not exist') || v.includes('has been deleted');
+            if (missingRecord && (hadSyntheticPicking || Number(pickingId) <= 0)) {
+              return false;
+            }
             return (
-              v.includes('does not exist') ||
-              v.includes('has been deleted') ||
+              missingRecord ||
               v.includes('has already been validated') ||
               v.includes('already been validated') ||
               v.includes('transfer has already been processed') ||
@@ -6652,6 +6766,18 @@ async function processSyncQueue(options = {}) {
           }
 
           if (validatedAnyPicking) {
+            // Validate / already-Done can leave extra qty-bearing moves without sale_line_id.
+            // Bind before the SOL qty_delivered write so ephemeral SOL qty cannot mask unbound lines.
+            if (saleOrderId != null && pickingId != null) {
+              try {
+                await ensureStockMovesLinkedToSaleOrderLines(saleOrderId, [Number(pickingId)]);
+              } catch (linkAfterValidateErr) {
+                log(
+                  'queue',
+                  `delivery post-validate link SOL (non-fatal): ${String(linkAfterValidateErr?.message || linkAfterValidateErr).slice(0, 100)}`
+                );
+              }
+            }
             try {
               let payPayload = p;
               try {
