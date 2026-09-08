@@ -130,23 +130,10 @@ export default function PostCheckHandoverModal({
             { km: startKmToday }
           )
         : null;
-  const submitDisabled = pendingUpload || submitting;
+  const submitDisabled = submitting;
 
   const handleSubmit = useCallback(async () => {
     if (submitting) return;
-
-    const pendingNow = (orderSyncStats?.localCompleted ?? 0) > 0;
-    if (pendingNow) {
-      Alert.alert(
-        t('dashboard.postCheckSyncRequiredTitle', 'Sync required'),
-        t(
-          'dashboard.postCheckSyncRequiredBody',
-          '{{count}} payment(s) still pending upload. Please sync before submitting handover.',
-          { count: orderSyncStats?.localCompleted ?? 0 }
-        )
-      );
-      return;
-    }
 
     const km = parseOdometerKm(endKm);
     if (km == null) {
@@ -188,6 +175,7 @@ export default function PostCheckHandoverModal({
       await submitVehicleOdometerWrite({
         vehicleId,
         odometer: km,
+        driverId: user?.driverId,
         source: 'postcheck',
       });
 
@@ -657,9 +645,7 @@ export default function PostCheckHandoverModal({
                 >
                   {submitting
                     ? t('dashboard.postCheckSubmitting', 'Submitting...')
-                    : pendingUpload
-                      ? t('dashboard.postCheckSyncPending', 'Sync Pending – Cannot Submit')
-                      : t('dashboard.postCheckSubmit', 'Submit Handover')}
+                    : t('dashboard.postCheckSubmit', 'Submit Handover')}
                 </Text>
               </TouchableOpacity>
             </View>

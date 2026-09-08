@@ -546,7 +546,7 @@ export default function PreCheckSummaryModal({
                 <Ionicons
                   name="checkmark-circle"
                   size={20}
-                  color="#fff"
+                  color="#94a3b8"
                   style={{ marginRight: 8 }}
                 />
               )}

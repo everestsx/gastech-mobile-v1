@@ -186,8 +186,29 @@ export const callOdooJson2 = async (model, method, params = {}) => {
     model,
     method,
   });
-  const json = rawText ? JSON.parse(rawText) : {};
-  if (json.error) {
+  let json = {};
+  try {
+    json = rawText ? JSON.parse(rawText) : {};
+  } catch (parseErr) {
+    if (!response.ok) {
+      throw new Error(
+        (rawText && String(rawText).slice(0, 300)) || `Odoo JSON 2 HTTP ${response.status}`
+      );
+    }
+    throw parseErr;
+  }
+  // JSON-2 errors are HTTP 4xx/5xx with { name, message } — not JSON-RPC { error }.
+  if (!response.ok) {
+    const msg =
+      json?.error?.data?.message ||
+      json?.error?.message ||
+      json?.message ||
+      (typeof json?.error === 'string' ? json.error : null) ||
+      (rawText && String(rawText).slice(0, 300)) ||
+      `Odoo JSON 2 HTTP ${response.status}`;
+    throw new Error(msg);
+  }
+  if (json && typeof json === 'object' && json.error) {
     const msg = json.error.data?.message || json.error.message || "Odoo JSON 2 error";
     throw new Error(msg);
   }

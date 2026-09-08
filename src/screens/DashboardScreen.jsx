@@ -1667,6 +1667,7 @@ export default function DashboardScreen({ navigation }) {
       await submitVehicleOdometerWrite({
         vehicleId,
         odometer: parsed,
+        driverId: u?.driverId,
         source: 'precheck',
       });
       setPreCheckSummaryModalVisible(false);

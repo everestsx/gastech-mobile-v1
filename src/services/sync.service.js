@@ -2155,6 +2155,20 @@ function stockMoveDoneQty(mv) {
   return Number.isFinite(q) ? q : 0;
 }
 
+/** Done qty on stock.move.line: Odoo 17+ `quantity`, older `qty_done`. */
+function stockMoveLineDoneQty(ml) {
+  const raw =
+    ml?.quantity != null && ml.quantity !== false
+      ? ml.quantity
+      : ml?.qty_done != null && ml.qty_done !== false
+        ? ml.qty_done
+        : ml?.quantity_done != null && ml.quantity_done !== false
+          ? ml.quantity_done
+          : 0;
+  const q = roundDeliveredQty3(raw);
+  return Number.isFinite(q) ? q : 0;
+}
+
 /** True when mobile payload carries any positive delivered quantity (must bind SO lines before markSynced). */
 function payloadHasPositiveDeliveredQty(queuePayload) {
   const p = queuePayload || {};
@@ -3169,7 +3183,7 @@ async function getUnboundDeliveredProductsOnOdoo(saleOrderId) {
     const qtyByMove = new Map();
     for (const ml of mls) {
       const mid = Number(Array.isArray(ml?.move_id) ? ml.move_id[0] : ml?.move_id);
-      const q = roundDeliveredQty3(ml?.qty_done);
+      const q = stockMoveLineDoneQty(ml);
       if (!Number.isFinite(mid) || mid <= 0 || !Number.isFinite(q) || q <= 0) continue;
       qtyByMove.set(mid, roundDeliveredQty3((qtyByMove.get(mid) || 0) + q));
     }
@@ -3202,21 +3216,54 @@ async function getUnboundDeliveredProductsOnOdoo(saleOrderId) {
     );
   }
 
+  // sale_line_id is the real bind. SOL qty_delivered can still show a just-written
+  // value while Odoo is about to recompute it to 0 for unlinked moves (S10650).
+  const soLineIdsByProduct = new Map();
+  for (const [pid, list] of linesByProduct.entries()) {
+    soLineIdsByProduct.set(
+      pid,
+      new Set((list || []).map((r) => Number(r?.id)).filter((n) => Number.isFinite(n) && n > 0))
+    );
+  }
+  const productHasUnlinkedQtyMove = new Set();
+  for (const mv of allMoves) {
+    const st = String(mv?.state || '').toLowerCase();
+    if (st === 'cancel') continue;
+    const pid = odooRelId(mv?.product_id);
+    if (!Number.isFinite(pid) || pid <= 0) continue;
+    // Only qty-bearing moves. Empty Done leftovers must not mark a linked product unbound.
+    if (stockMoveDoneQty(mv) <= DELIVERED_QTY_VERIFY_TOL) continue;
+    const sol = odooRelId(mv?.sale_line_id);
+    const allowed = soLineIdsByProduct.get(pid);
+    if (!allowed || !allowed.has(sol)) {
+      productHasUnlinkedQtyMove.add(pid);
+    }
+  }
+
   const unbound = [];
-  const productIds = new Set([...pickingQtyByProduct.keys(), ...doneProducts]);
+  const productIds = new Set([
+    ...pickingQtyByProduct.keys(),
+    ...doneProducts,
+    ...productHasUnlinkedQtyMove,
+  ]);
   for (const pid of productIds) {
     const pickingQty = pickingQtyByProduct.get(pid) || 0;
     const solQty = solQtyByProduct.get(pid) || 0;
     const preferred = preferSaleLineRow(linesByProduct.get(pid) || []);
     const ordered = Number(preferred?.product_uom_qty) || 0;
     const doneWithUnreadQty = doneProducts.has(pid) && ordered > 0.0001;
-    if (solQty <= DELIVERED_QTY_VERIFY_TOL && (pickingQty > DELIVERED_QTY_VERIFY_TOL || doneWithUnreadQty)) {
+    const unlinkedMove = productHasUnlinkedQtyMove.has(pid);
+    if (
+      unlinkedMove ||
+      (solQty <= DELIVERED_QTY_VERIFY_TOL && (pickingQty > DELIVERED_QTY_VERIFY_TOL || doneWithUnreadQty))
+    ) {
       const lineId = Number(preferred?.id);
       unbound.push({
         productId: pid,
         pickingQty,
         solQty,
         lineId: Number.isFinite(lineId) && lineId > 0 ? lineId : null,
+        unlinkedMove,
       });
     }
   }
@@ -3234,7 +3281,7 @@ async function forceBindUnboundDoneMovesToSaleOrderLines(saleOrderId) {
   if (!unbound.length) return { unbound: 0, bound: 0 };
   log(
     'queue',
-    `delivery SO ${soId}: ${unbound.length} product(s) Done on picking but SOL Delivered=0 — forcing sale_line_id bind`
+    `delivery SO ${soId}: ${unbound.length} product(s) picking qty not bound to this sale order — forcing sale_line_id bind`
   );
   await ensureStockMovesLinkedToSaleOrderLines(soId, []);
   const updates = unbound
@@ -3340,7 +3387,7 @@ async function assertDonePickingSaleLinesBound(saleOrderId) {
   const force = await forceBindUnboundDoneMovesToSaleOrderLines(soId);
   if (force.still?.length) {
     throw new Error(
-      `Delivery incomplete: SO ${soId} picking is Done but sale order line Delivered is still 0 for product(s) ${force.still
+      `Delivery incomplete: SO ${soId} picking qty is not bound to this sale order for product(s) ${force.still
         .map((u) => u.productId)
         .join(', ')}. Sync will retry.`
     );
@@ -4497,7 +4544,7 @@ async function buildGasDeliveredCountChatterBody(soId, paymentPayload) {
   const { linesToOdooHtmlBody } = await import('./proofAttachment.service.js');
   const sep = '────────────────────────────────────────';
   const lines = [];
-  lines.push('Gas Delivered Count updated throuh mobile fixed..');
+  lines.push('Gas Delivered Count updated throuh mobile..');
   lines.push(sep);
   for (const [label, qty] of qtyByProductLabel.entries()) {
     lines.push(`${label}: ${formatQty(qty)}`);
@@ -6268,6 +6315,18 @@ async function processSyncQueue(options = {}) {
             }
           }
           await linkMovesBeforeValidatePromise;
+          // Apply can create extra stock.moves (increased qty, e.g. 30→35). The overlap
+          // link above may have finished before those rows existed (S10650 GAS12.5).
+          if (saleOrderId != null) {
+            try {
+              await ensureStockMovesLinkedToSaleOrderLines(saleOrderId, [Number(pickingId)]);
+            } catch (linkAfterApplyErr) {
+              log(
+                'queue',
+                `delivery post-apply link SOL (non-fatal): ${String(linkAfterApplyErr?.message || linkAfterApplyErr).slice(0, 100)}`
+              );
+            }
+          }
 
           if (Number(syncOptions.queuePass) > 1 && deliveryLines.length > 0 && !_queueSyncFastDrainActive) {
             await new Promise((r) => setTimeout(r, 400));

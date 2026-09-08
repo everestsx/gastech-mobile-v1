@@ -14,7 +14,7 @@ export const ACTION_PAYMENT = 'payment';
 export const ACTION_INVENTORY_UPDATE = 'inventory_update';
 /** Cancel sale order on Odoo when back online. Payload: { saleOrderId, reason, cancelledAt? } */
 export const ACTION_CANCEL_ORDER = 'order_cancel';
-/** Fleet vehicle odometer write (start KM / end KM). Payload: { vehicleId, odometer, source?, recordedAt? } */
+/** Fleet vehicle odometer write (start KM / end KM). Payload: { vehicleId, odometer, driverId?, source?, recordedAt? } */
 export const ACTION_VEHICLE_ODOMETER = 'vehicle_odometer';
 
 function wakePendingUploadAfterQueueChange() {
@@ -42,15 +42,19 @@ export async function enqueue(actionType, payload, options = {}) {
     typeof payloadObj === 'string'
       ? payloadObj
       : JSON.stringify(payloadObj ?? {}, (_k, v) => (typeof v === 'bigint' ? v.toString() : v));
-  await db.runAsync(
+  const result = await db.runAsync(
     'INSERT INTO sync_queue (action_type, payload, created_at, is_uploaded) VALUES (?, ?, ?, 0)',
     [empty(actionType) || 'unknown', payloadStr, iso()]
   );
-  const row = await db.getFirstAsync('SELECT last_insert_rowid() AS id');
+  let id = num(result?.lastInsertRowId ?? result?.lastInsertRowid);
+  if (!Number.isFinite(id) || id <= 0) {
+    const row = await db.getFirstAsync('SELECT last_insert_rowid() AS id');
+    id = num(row?.id);
+  }
   if (options.suppressWake !== true) {
     wakePendingUploadAfterQueueChange();
   }
-  return num(row?.id);
+  return id;
 }
 
 export function requestPendingUploadWake() {
