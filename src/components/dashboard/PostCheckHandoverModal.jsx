@@ -177,6 +177,7 @@ export default function PostCheckHandoverModal({
         odometer: km,
         driverId: user?.driverId,
         workContactId: user?.workContactId,
+        licensePlate: user?.licensePlate || user?.license_plate || user?.vehicleName,
         source: 'postcheck',
       });
 

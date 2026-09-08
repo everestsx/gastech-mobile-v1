@@ -1,4 +1,4 @@
-import { callOdoo } from "./index.service";
+import { callOdoo, callOdooJson2 } from "./index.service";
 
 /**
  * Get all fleet vehicles (fleet.vehicle search_read)
@@ -12,17 +12,123 @@ const VEHICLE_FIELDS = [
   "check_journal_id",
   "sales_team_id",
 ];
+const VEHICLE_ID_FIELDS = ["id", "name", "license_plate"];
+const VEHICLE_FETCH_LIMIT = 500;
 
-export const getVehicles = () =>
-  callOdoo(
-    "fleet.vehicle",
-    "search_read",
-    [[]],
-    {
-      fields: VEHICLE_FIELDS,
-      order: "name asc",
+function parsePositiveId(raw) {
+  if (raw == null || raw === false) return null;
+  if (Array.isArray(raw)) return parsePositiveId(raw[0]);
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function normalizePlate(raw) {
+  return String(raw ?? "").trim();
+}
+
+function plateKey(raw) {
+  return normalizePlate(raw).toLowerCase().replace(/[\s\-_.]/g, "");
+}
+
+function platesEquivalent(a, b) {
+  const ka = plateKey(a);
+  const kb = plateKey(b);
+  return Boolean(ka && kb && ka === kb);
+}
+
+async function vehicleSearchRead(domain, { fields = VEHICLE_FIELDS, limit = 20, order } = {}) {
+  const opts = { fields, limit };
+  if (order) opts.order = order;
+  try {
+    const rows = await callOdoo("fleet.vehicle", "search_read", [domain], opts);
+    if (Array.isArray(rows) && rows.length > 0) return rows;
+  } catch (e) {
+    console.warn("fleet.vehicle search_read jsonrpc", e?.message ?? e);
+  }
+  try {
+    const rows = await callOdooJson2("fleet.vehicle", "search_read", {
+      domain,
+      fields,
+      limit,
+      ...(order ? { order } : {}),
+    });
+    return Array.isArray(rows) ? rows : [];
+  } catch (e) {
+    console.warn("fleet.vehicle search_read json2", e?.message ?? e);
+    return [];
+  }
+}
+
+function pickBestVehicleRow(rows, hintedId, plate) {
+  if (!Array.isArray(rows) || rows.length === 0) return null;
+  if (hintedId != null) {
+    const hinted = rows.find((r) => parsePositiveId(r?.id) === hintedId);
+    if (hinted) return hinted;
+  }
+  if (plate) {
+    const exact = rows.find(
+      (r) => platesEquivalent(r?.license_plate, plate) || platesEquivalent(r?.name, plate)
+    );
+    if (exact) return exact;
+  }
+  return rows[0];
+}
+
+/**
+ * Bind the live Odoo fleet.vehicle id for odometer writes.
+ * Local SQLite ids can be stale or duplicated by plate; Postman works because it uses the real id.
+ */
+export async function resolveFleetVehicleId({ vehicleId, licensePlate } = {}) {
+  const hintedId = parsePositiveId(vehicleId);
+  const plate = normalizePlate(licensePlate);
+
+  if (hintedId != null) {
+    const byId = await vehicleSearchRead([["id", "=", hintedId]], {
+      fields: VEHICLE_ID_FIELDS,
+      limit: 1,
+    });
+    const rec = byId[0];
+    if (rec) {
+      const recPlate = rec.license_plate || rec.name;
+      if (!plate || platesEquivalent(plate, recPlate) || platesEquivalent(plate, rec.license_plate) || platesEquivalent(plate, rec.name)) {
+        return hintedId;
+      }
     }
-  );
+  }
+
+  if (plate) {
+    let rows = await vehicleSearchRead([["license_plate", "=", plate]], {
+      fields: VEHICLE_ID_FIELDS,
+      limit: 20,
+    });
+    if (!rows.length) {
+      rows = await vehicleSearchRead([["license_plate", "ilike", plate]], {
+        fields: VEHICLE_ID_FIELDS,
+        limit: 20,
+      });
+    }
+    if (!rows.length) {
+      rows = await vehicleSearchRead([["name", "ilike", plate]], {
+        fields: VEHICLE_ID_FIELDS,
+        limit: 20,
+      });
+    }
+    const match = pickBestVehicleRow(rows, hintedId, plate);
+    const resolved = parsePositiveId(match?.id);
+    if (resolved != null) return resolved;
+  }
+
+  return hintedId;
+}
+
+export const getVehicles = async () => {
+  const rows = await vehicleSearchRead([], {
+    fields: VEHICLE_FIELDS,
+    limit: VEHICLE_FETCH_LIMIT,
+    order: "name asc",
+  });
+  return Array.isArray(rows) ? rows : [];
+};
 
 /**
  * Get a single vehicle by id (for vehicle-scoped sync; avoids fetching all vehicles).

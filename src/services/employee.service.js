@@ -4,7 +4,6 @@ import { callOdoo, callOdooJson2 } from "./index.service";
 /** Fields safe for portal-style users; do not include `barcode` (requires HR Officer in many DBs). */
 const EMPLOYEE_READ_FIELDS = ["id", "name", "image_1920", "mobile_phone", "work_phone", "work_contact_id"];
 const EMPLOYEE_READ_FIELDS_LIGHT = ["id", "name", "mobile_phone", "work_phone"];
-const EMPLOYEE_WORK_CONTACT_FIELDS = ["id", "work_contact_id"];
 
 const CONTEXT = { lang: "en_US" };
 const PORTERS_CACHE_KEY = "@gastech_porters_cache_v1";
@@ -28,7 +27,11 @@ function isAccessLikeError(err) {
 
 function isWorkContactFieldError(err) {
   const m = String(err?.message || err || "").toLowerCase();
-  return m.includes("work_contact_id") || m.includes("invalid field");
+  return (
+    m.includes("work_contact_id") ||
+    m.includes("address_id") ||
+    m.includes("invalid field")
+  );
 }
 
 /**
@@ -56,12 +59,12 @@ async function employeeSearchRead(domain, { limit = 500, fields = EMPLOYEE_READ_
   } catch (e) {
     const canStripWorkContact =
       Array.isArray(fields) &&
-      fields.includes("work_contact_id") &&
+      (fields.includes("work_contact_id") || fields.includes("address_id")) &&
       (isAccessLikeError(e) || isWorkContactFieldError(e));
     if (canStripWorkContact) {
       return employeeSearchReadOnce(domain, {
         limit,
-        fields: fields.filter((f) => f !== "work_contact_id"),
+        fields: fields.filter((f) => f !== "work_contact_id" && f !== "address_id"),
       });
     }
     throw e;
@@ -165,7 +168,7 @@ export function normalizeEmployee(row, enteredDriverCode = "") {
     barcode: entered,
     imageBase64: row.image_1920 != null && row.image_1920 !== false ? String(row.image_1920) : null,
     phone: pickEmployeePhone(row),
-    workContactId: parseWorkContactId(row.work_contact_id),
+    workContactId: parseWorkContactId(row.work_contact_id) ?? parseWorkContactId(row.address_id),
   };
 }
 
@@ -176,12 +179,24 @@ export function normalizeEmployee(row, enteredDriverCode = "") {
 export async function getEmployeeWorkContactId(employeeId) {
   const id = Number(employeeId);
   if (!Number.isFinite(id) || id <= 0) return null;
-  const rows = await employeeSearchRead([["id", "=", id]], {
-    limit: 1,
-    fields: EMPLOYEE_WORK_CONTACT_FIELDS,
-  });
-  const row = Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
-  return parseWorkContactId(row?.work_contact_id);
+  const domain = [["id", "=", id]];
+  try {
+    const rows = await employeeSearchRead(domain, {
+      limit: 1,
+      fields: ["id", "work_contact_id"],
+    });
+    const fromWork = parseWorkContactId(rows?.[0]?.work_contact_id);
+    if (fromWork != null) return fromWork;
+  } catch (_) {}
+  try {
+    const rows = await employeeSearchRead(domain, {
+      limit: 1,
+      fields: ["id", "address_id"],
+    });
+    return parseWorkContactId(rows?.[0]?.address_id);
+  } catch (_) {
+    return null;
+  }
 }
 
 /** All employees in the Driving department. */

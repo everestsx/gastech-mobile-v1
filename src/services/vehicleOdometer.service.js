@@ -2,16 +2,18 @@
  * Fleet vehicle odometer writes for Pre Check (start KM) and End Day (end KM).
  * Offline-first: persist to the sync queue, then POST JSON2 immediately.
  *
- * POST /json/2/fleet.vehicle/write
- * { ids: [<logged-in vehicle id>], vals: { odometer: <km>, driver_id: <work_contact_id partner> } }
+ * Always send driver and KM as two writes. Do not combine them: Odoo `odometer` is a
+ * computed inverse field, so `{ driver_id, odometer }` can update the driver and skip the meter.
+ * KM is created as fleet.vehicle.odometer (with fleet.vehicle write as fallback).
  *
- * fleet.vehicle.driver_id is res.partner, not hr.employee. The logged-in driverId is
- * hr.employee.id; we send that employee's work_contact_id instead.
+ * fleet.vehicle.driver_id is res.partner (hr.employee.work_contact_id), not hr.employee.id.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { callOdooJson2 } from './index.service';
+import { callOdoo, callOdooArgs, callOdooJson2 } from './index.service';
 import * as syncQueueDb from '../database/syncQueue.js';
 import { getEmployeeWorkContactId, parseWorkContactId } from './employee.service.js';
+import { resolveFleetVehicleId } from './vehicle.service.js';
+import { formatLocalYyyyMmDd } from '../utils/localDate.js';
 
 const START_ODOMETER_KEY = '@gastech_start_odometer';
 const MAX_ODOMETER_KM = 99999999;
@@ -33,6 +35,12 @@ function parseDriverId(raw) {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+function json2Log(model, method, params) {
+  if (__DEV__) {
+    console.log(`[vehicleOdometer] POST /json/2/${model}/${method}`, JSON.stringify(params));
+  }
+}
+
 async function persistSessionWorkContactId(workContactId) {
   const id = parseDriverId(workContactId);
   if (id == null) return;
@@ -44,9 +52,57 @@ async function persistSessionWorkContactId(workContactId) {
   } catch (_) {}
 }
 
+async function persistSessionVehicleId(vehicleId) {
+  const id = parseDriverId(vehicleId);
+  if (id == null) return;
+  try {
+    const { getUserSession, saveUserSession } = await import('./sync.service.js');
+    const session = await getUserSession();
+    if (!session || parseDriverId(session.vehicleId) === id) return;
+    await saveUserSession({ ...session, vehicleId: id });
+  } catch (_) {}
+}
+
+async function readSessionVehicleHints() {
+  try {
+    const { getUserSession } = await import('./sync.service.js');
+    const session = await getUserSession();
+    return {
+      vehicleId: parseDriverId(session?.vehicleId),
+      licensePlate: String(session?.licensePlate || session?.license_plate || session?.vehicleName || '').trim() || null,
+      driverId: parseDriverId(session?.driverId),
+      workContactId: parseDriverId(session?.workContactId),
+    };
+  } catch (_) {
+    return { vehicleId: null, licensePlate: null, driverId: null, workContactId: null };
+  }
+}
+
+/**
+ * Bind the live Odoo fleet.vehicle id (session/local ids can be stale).
+ */
+async function resolveOdometerVehicleId({ vehicleId, licensePlate } = {}) {
+  const session = await readSessionVehicleHints();
+  const hintedId = parseDriverId(vehicleId) ?? session.vehicleId;
+  const plate = String(licensePlate || session.licensePlate || '').trim() || null;
+  try {
+    const resolved = await resolveFleetVehicleId({ vehicleId: hintedId, licensePlate: plate });
+    if (resolved != null) {
+      if (hintedId !== resolved) {
+        await persistSessionVehicleId(resolved);
+      }
+      return resolved;
+    }
+  } catch (e) {
+    if (__DEV__) {
+      console.warn('[vehicleOdometer] vehicle id rebind failed', e?.message ?? e);
+    }
+  }
+  return hintedId;
+}
+
 /**
  * fleet.vehicle.driver_id is res.partner (hr.employee.work_contact_id).
- * Never send hr.employee.id on this field.
  */
 async function resolveFleetDriverPartnerId({ driverId, workContactId } = {}) {
   const fromArg = parseWorkContactId(workContactId) ?? parseDriverId(workContactId);
@@ -80,34 +136,223 @@ async function resolveFleetDriverPartnerId({ driverId, workContactId } = {}) {
   return null;
 }
 
-/**
- * POST /json/2/fleet.vehicle/write
- * { "ids": [<vehicle id>], "vals": { "odometer": <km>, "driver_id": <work_contact_id> } }
- */
-export async function writeVehicleOdometerJson2(vehicleId, odometer, driverId = null, workContactId = null) {
-  const vid = Number(vehicleId);
-  const km = Number(odometer);
-  if (!Number.isFinite(vid) || vid <= 0) {
-    throw new Error('Missing logged-in vehicle id for odometer write');
+async function patchOdometerQueueProgress(queueId, payload) {
+  const id = Number(queueId);
+  if (!Number.isFinite(id) || id <= 0 || !payload || typeof payload !== 'object') return;
+  try {
+    await syncQueueDb.updateQueueItemPayload(id, payload, { suppressWake: true });
+  } catch (_) {}
+}
+
+/** Replace the vehicle driver even when one is already assigned. Throws on failure. */
+async function assignDriverMustSucceed(vid, partnerId) {
+  const assignPayload = { ids: [vid], vals: { driver_id: partnerId } };
+  json2Log('fleet.vehicle', 'write', assignPayload);
+  try {
+    await callOdooJson2('fleet.vehicle', 'write', assignPayload);
+    return;
+  } catch (firstErr) {
+    const clearPayload = { ids: [vid], vals: { driver_id: false } };
+    json2Log('fleet.vehicle', 'write', clearPayload);
+    await callOdooJson2('fleet.vehicle', 'write', clearPayload);
+    json2Log('fleet.vehicle', 'write', assignPayload);
+    try {
+      await callOdooJson2('fleet.vehicle', 'write', assignPayload);
+    } catch (retryErr) {
+      throw new Error(
+        `Driver assign failed: ${retryErr?.message || retryErr || firstErr?.message || firstErr}`
+      );
+    }
   }
+}
+
+function odometerValuesMatch(a, b) {
+  const n = Number(a);
+  const m = Number(b);
+  return Number.isFinite(n) && Number.isFinite(m) && Math.abs(n - m) < 0.5;
+}
+
+async function vehicleHasOdometerValue(vid, km) {
+  try {
+    const logs = await callOdoo(
+      'fleet.vehicle.odometer',
+      'search_read',
+      [[['vehicle_id', '=', vid]]],
+      { fields: ['id', 'value'], limit: 20, order: 'id desc' }
+    );
+    if (Array.isArray(logs) && logs.some((r) => odometerValuesMatch(r?.value, km))) {
+      return { found: true, readable: true };
+    }
+    if (Array.isArray(logs)) return { found: false, readable: true };
+  } catch (_) {}
+  try {
+    const logs = await callOdooJson2('fleet.vehicle.odometer', 'search_read', {
+      domain: [['vehicle_id', '=', vid]],
+      fields: ['id', 'value'],
+      limit: 20,
+      order: 'id desc',
+    });
+    if (Array.isArray(logs) && logs.some((r) => odometerValuesMatch(r?.value, km))) {
+      return { found: true, readable: true };
+    }
+    if (Array.isArray(logs)) return { found: false, readable: true };
+  } catch (_) {}
+  try {
+    const vehicles = await callOdoo(
+      'fleet.vehicle',
+      'search_read',
+      [[['id', '=', vid]]],
+      { fields: ['id', 'odometer'], limit: 1 }
+    );
+    const rec = Array.isArray(vehicles) ? vehicles[0] : null;
+    if (rec && odometerValuesMatch(rec.odometer, km)) return { found: true, readable: true };
+    if (rec) return { found: false, readable: true };
+  } catch (_) {}
+  return { found: false, readable: false };
+}
+
+/**
+ * KM must land as a fleet.vehicle.odometer log. JSON2 create can return 200 without
+ * creating a meter, which previously skipped the Postman write. Use execute_kw write
+ * (triggers Odoo _set_odometer) and confirm the value on the vehicle.
+ */
+async function writeOdometerMustSucceed(vid, km) {
+  const already = await vehicleHasOdometerValue(vid, km);
+  if (already.found) return;
+
+  const errors = [];
+  const odooKm = Number(km);
+  const today = formatLocalYyyyMmDd(new Date());
+
+  try {
+    json2Log('fleet.vehicle', 'execute_kw write odometer', { ids: [vid], odometer: odooKm });
+    await callOdooArgs('fleet.vehicle', 'write', [[vid], { odometer: odooKm }]);
+  } catch (e) {
+    errors.push(`execute_kw write: ${e?.message || e}`);
+  }
+  if ((await vehicleHasOdometerValue(vid, odooKm)).found) return;
+
+  try {
+    json2Log('fleet.vehicle.odometer', 'execute_kw create', { vehicle_id: vid, value: odooKm, date: today });
+    await callOdooArgs('fleet.vehicle.odometer', 'create', [
+      [{ vehicle_id: vid, value: odooKm, date: today }],
+    ]);
+  } catch (e) {
+    errors.push(`execute_kw create list: ${e?.message || e}`);
+    try {
+      await callOdooArgs('fleet.vehicle.odometer', 'create', [
+        { vehicle_id: vid, value: odooKm, date: today },
+      ]);
+    } catch (e2) {
+      errors.push(`execute_kw create dict: ${e2?.message || e2}`);
+    }
+  }
+  if ((await vehicleHasOdometerValue(vid, odooKm)).found) return;
+
+  try {
+    const payload = { ids: [vid], vals: { odometer: odooKm } };
+    json2Log('fleet.vehicle', 'write', payload);
+    await callOdooJson2('fleet.vehicle', 'write', payload);
+  } catch (e) {
+    errors.push(`json2 write: ${e?.message || e}`);
+  }
+  if ((await vehicleHasOdometerValue(vid, odooKm)).found) return;
+
+  try {
+    const payload = { vals: { vehicle_id: vid, value: odooKm, date: today } };
+    json2Log('fleet.vehicle.odometer', 'create', payload);
+    await callOdooJson2('fleet.vehicle.odometer', 'create', payload);
+  } catch (e) {
+    errors.push(`json2 create: ${e?.message || e}`);
+  }
+
+  const check = await vehicleHasOdometerValue(vid, odooKm);
+  if (check.found) return;
+  if (!check.readable && errors.length === 0) return;
+  throw new Error(
+    `Odoo meter KM ${odooKm} was not saved on vehicle ${vid}${errors.length ? ` (${errors.join('; ')})` : ''}`
+  );
+}
+
+/**
+ * Driver first (already working), then KM as a separate write so the meter is always created.
+ */
+async function sendDriverAndOdometer({
+  vid,
+  km,
+  partnerId,
+  queueId,
+  queuePayload,
+  driverSynced: driverSyncedIn,
+  odometerSynced: odometerSyncedIn,
+}) {
+  let driverSynced = driverSyncedIn === true;
+  let odometerSynced = odometerSyncedIn === true;
+
+  const persist = async () => {
+    await patchOdometerQueueProgress(queueId, {
+      ...queuePayload,
+      vehicleId: vid,
+      odometer: km,
+      workContactId: partnerId ?? queuePayload?.workContactId ?? null,
+      driverSynced,
+      odometerSynced,
+    });
+  };
+
+  if (!driverSynced && partnerId != null) {
+    await assignDriverMustSucceed(vid, partnerId);
+    driverSynced = true;
+    await persist();
+  }
+
+  // Always send KM. Do not trust a prior odometerSynced flag — JSON2 create used to
+  // return 200 without creating a fleet meter, which skipped this write.
+  await writeOdometerMustSucceed(vid, km);
+  odometerSynced = true;
+  await persist();
+
+  if (!odometerSynced) {
+    throw new Error('Odometer was not written to Odoo');
+  }
+  if (partnerId != null && !driverSynced) {
+    throw new Error('Driver was not assigned on the vehicle');
+  }
+  if (partnerId == null && !driverSynced) {
+    throw new Error('Missing driver work contact id for vehicle driver assign');
+  }
+  return { driverSynced, odometerSynced, vehicleId: vid, workContactId: partnerId };
+}
+
+/**
+ * POST driver + odometer to Odoo. Not complete until both succeeded.
+ */
+export async function writeVehicleOdometerJson2(
+  vehicleId,
+  odometer,
+  driverId = null,
+  workContactId = null,
+  licensePlate = null,
+  progress = {}
+) {
+  const km = Number(odometer);
   if (!Number.isFinite(km) || km < 0) {
     throw new Error('Invalid odometer value');
   }
+  const vid = await resolveOdometerVehicleId({ vehicleId, licensePlate });
+  if (vid == null) {
+    throw new Error('Missing logged-in vehicle id for odometer write');
+  }
   const partnerId = await resolveFleetDriverPartnerId({ driverId, workContactId });
-  if (partnerId == null) {
-    throw new Error('Missing driver work contact id for odometer write');
-  }
-  const payload = {
-    ids: [vid],
-    vals: {
-      odometer: km,
-      driver_id: partnerId,
-    },
-  };
-  if (__DEV__) {
-    console.log('[vehicleOdometer] POST /json/2/fleet.vehicle/write', JSON.stringify(payload));
-  }
-  return callOdooJson2('fleet.vehicle', 'write', payload);
+  return sendDriverAndOdometer({
+    vid,
+    km,
+    partnerId,
+    queueId: progress.queueId,
+    queuePayload: progress.queuePayload || {},
+    driverSynced: progress.driverSynced,
+    odometerSynced: progress.odometerSynced,
+  });
 }
 
 function odometerDedupeKey(vehicleId, odometer, source) {
@@ -137,14 +382,36 @@ async function markOdometerQueueRowsSynced(queueId, vehicleId, odometer, source)
   }
 }
 
-async function runOdometerWriteOnce(vehicleId, odometer, source, queueId, driverId = null, workContactId = null) {
+async function runOdometerWriteOnce({
+  vehicleId,
+  odometer,
+  source,
+  queueId,
+  driverId = null,
+  workContactId = null,
+  licensePlate = null,
+  queuePayload = {},
+  driverSynced = false,
+  odometerSynced = false,
+}) {
   const key = odometerDedupeKey(vehicleId, odometer, source);
   const existing = inFlightOdometerWrites.get(key);
   if (existing) return existing;
   const run = (async () => {
-    await writeVehicleOdometerJson2(vehicleId, odometer, driverId, workContactId);
-    await markOdometerQueueRowsSynced(queueId, vehicleId, odometer, source);
-    return { ok: true };
+    const result = await writeVehicleOdometerJson2(
+      vehicleId,
+      odometer,
+      driverId,
+      workContactId,
+      licensePlate,
+      { queueId, queuePayload, driverSynced, odometerSynced }
+    );
+    if (result?.odometerSynced && result?.driverSynced) {
+      await markOdometerQueueRowsSynced(queueId, vehicleId, odometer, source);
+    } else {
+      throw new Error('Vehicle meter and driver were not both saved to Odoo');
+    }
+    return { ok: true, ...result };
   })();
   inFlightOdometerWrites.set(key, run);
   try {
@@ -161,16 +428,34 @@ async function runOdometerWriteOnce(vehicleId, odometer, source, queueId, driver
 export async function flushVehicleOdometerQueueItem(item) {
   const id = Number(item?.id);
   const p = item?.payload || {};
-  const vehicleId = Number(p.vehicleId ?? p.vehicle_id);
   const odometer = Number(p.odometer);
   const source = p.source || null;
   const driverId = parseDriverId(p.driverId ?? p.driver_id);
   const workContactId = parseDriverId(p.workContactId ?? p.work_contact_id);
-  if (!Number.isFinite(vehicleId) || vehicleId <= 0 || !Number.isFinite(odometer) || odometer < 0) {
+  const licensePlate = String(p.licensePlate ?? p.license_plate ?? '').trim() || null;
+  if (!Number.isFinite(odometer) || odometer < 0) {
     if (Number.isFinite(id) && id > 0) await syncQueueDb.markSynced(id);
     return { ok: true, skipped: true };
   }
-  return runOdometerWriteOnce(vehicleId, odometer, source, id, driverId, workContactId);
+  const vehicleId = await resolveOdometerVehicleId({
+    vehicleId: p.vehicleId ?? p.vehicle_id,
+    licensePlate,
+  });
+  if (vehicleId == null) {
+    throw new Error('Missing logged-in vehicle id for odometer write');
+  }
+  return runOdometerWriteOnce({
+    vehicleId,
+    odometer,
+    source,
+    queueId: id,
+    driverId,
+    workContactId,
+    licensePlate,
+    queuePayload: p,
+    driverSynced: p.driverSynced === true,
+    odometerSynced: p.odometerSynced === true,
+  });
 }
 
 export async function saveStartOdometer({ vehicleId, km, loggedInAt }) {
@@ -213,40 +498,53 @@ export async function clearStartOdometer() {
  * Persist to the sync queue first so offline drivers never lose the reading,
  * then write JSON2 immediately (same API as Start Delivery / End Day).
  */
-export async function submitVehicleOdometerWrite({ vehicleId, odometer, driverId, workContactId, source }) {
-  const vid = Number(vehicleId);
+export async function submitVehicleOdometerWrite({ vehicleId, odometer, driverId, workContactId, licensePlate, source }) {
   const km = parseOdometerKm(odometer);
-  if (!Number.isFinite(vid) || vid <= 0) {
-    throw new Error('Missing logged-in vehicle id for odometer write');
-  }
   if (km == null) {
     throw new Error('Invalid odometer value');
+  }
+  const session = await readSessionVehicleHints();
+  const plate = String(licensePlate || session.licensePlate || '').trim() || null;
+  const vid = await resolveOdometerVehicleId({ vehicleId, licensePlate: plate });
+  if (vid == null) {
+    throw new Error('Missing logged-in vehicle id for odometer write');
   }
   let partnerId = parseWorkContactId(workContactId) ?? parseDriverId(workContactId);
   if (partnerId == null) {
     partnerId = await resolveFleetDriverPartnerId({ driverId, workContactId });
   }
-  const employeeId = parseDriverId(driverId);
-  if (partnerId == null && employeeId == null) {
-    throw new Error('Missing driver work contact id for odometer write');
-  }
+  const employeeId = parseDriverId(driverId) ?? session.driverId;
   const payload = {
     vehicleId: vid,
     odometer: km,
     driverId: employeeId,
     workContactId: partnerId,
+    licensePlate: plate,
     source: source || null,
     recordedAt: new Date().toISOString(),
+    driverSynced: false,
+    odometerSynced: false,
   };
   const queueId = await syncQueueDb.enqueue(syncQueueDb.ACTION_VEHICLE_ODOMETER, payload, {
     suppressWake: true,
   });
   try {
-    await runOdometerWriteOnce(vid, km, payload.source, queueId, employeeId, partnerId);
-    return { ok: true, queued: false, queueId };
+    await runOdometerWriteOnce({
+      vehicleId: vid,
+      odometer: km,
+      source: payload.source,
+      queueId,
+      driverId: employeeId,
+      workContactId: partnerId,
+      licensePlate: plate,
+      queuePayload: payload,
+      driverSynced: false,
+      odometerSynced: false,
+    });
+    return { ok: true, queued: false, queueId, vehicleId: vid };
   } catch (e) {
     console.warn('[vehicleOdometer] write queued for retry', e?.message ?? e);
     syncQueueDb.requestPendingUploadWake();
-    return { ok: true, queued: true, queueId, error: e };
+    return { ok: true, queued: true, queueId, vehicleId: vid, error: e };
   }
 }

@@ -1669,6 +1669,7 @@ export default function DashboardScreen({ navigation }) {
         odometer: parsed,
         driverId: u?.driverId,
         workContactId: u?.workContactId,
+        licensePlate: u?.licensePlate || u?.license_plate || u?.vehicleName,
         source: 'precheck',
       });
       setPreCheckSummaryModalVisible(false);

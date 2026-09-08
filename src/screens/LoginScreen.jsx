@@ -34,7 +34,7 @@ import {
   getSessionExpiryAtIsoEndOfLocalDay,
 } from '../services/sync.service';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { fetchAndStoreVehicleJournals } from '../services/vehicle.service';
+import { fetchAndStoreVehicleJournals, resolveFleetVehicleId } from '../services/vehicle.service';
 import {
   getDriverByBarcode,
   getPortersEmployeesOfflineFirst,
@@ -260,12 +260,24 @@ export default function LoginScreen({ navigation }) {
 
     setLoading(true);
     try {
+      const licensePlate = String(selected.license_plate || selected.name || '').trim();
+      let vehicleId = selected.id;
+      try {
+        const liveId = await resolveFleetVehicleId({
+          vehicleId: selected.id,
+          licensePlate,
+        });
+        if (liveId != null) vehicleId = liveId;
+      } catch (bindErr) {
+        console.warn('[Login] vehicle id rebind failed', bindErr?.message || bindErr);
+      }
+
       await clearPreCheckDoneState();
       await saveUserSession({
         isAdmin: false,
-        vehicleId: selected.id,
+        vehicleId,
         vehicleName: selected.name,
-        licensePlate: selected.license_plate || '',
+        licensePlate,
         driverId: matchedDriver.id,
         workContactId: matchedDriver.workContactId ?? null,
         driverName: matchedDriver.name,
@@ -279,17 +291,16 @@ export default function LoginScreen({ navigation }) {
       });
 
       try {
-        await saveLastVehicleId(selected.id);
+        await saveLastVehicleId(vehicleId);
       } catch (e) {
         console.warn('[Login] saveLastVehicleId failed', e?.message || e);
       }
-      const licensePlate = (selected.license_plate || selected.name || '').trim();
 
       // Notify back office of this login session; never blocks reaching the dashboard.
       void recordDriverLogin({
         batchId: matchedDriver.barcode,
         driverId: matchedDriver.id,
-        vehicleId: selected.id,
+        vehicleId,
       });
 
       // Do not block login UI on heavy network sync; driver must reach dashboard quickly.
