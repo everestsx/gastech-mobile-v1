@@ -32,7 +32,7 @@ function wakePendingUploadAfterQueueChange() {
     .catch(() => {});
 }
 
-export async function enqueue(actionType, payload) {
+export async function enqueue(actionType, payload, options = {}) {
   const db = await getDb();
   let payloadObj = payload;
   if (actionType === ACTION_DELIVERY && payload != null && typeof payload === 'object') {
@@ -47,8 +47,14 @@ export async function enqueue(actionType, payload) {
     [empty(actionType) || 'unknown', payloadStr, iso()]
   );
   const row = await db.getFirstAsync('SELECT last_insert_rowid() AS id');
-  wakePendingUploadAfterQueueChange();
+  if (options.suppressWake !== true) {
+    wakePendingUploadAfterQueueChange();
+  }
   return num(row?.id);
+}
+
+export function requestPendingUploadWake() {
+  wakePendingUploadAfterQueueChange();
 }
 
 export async function getPending() {

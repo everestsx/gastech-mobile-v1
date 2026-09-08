@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -47,17 +47,23 @@ export default function PreCheckSummaryModal({
   const [confirmEnabled, setConfirmEnabled] = useState(false);
   const [startKm, setStartKm] = useState('');
   const [startKmTouched, setStartKmTouched] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
 
   useEffect(() => {
     if (!visible) {
       setConfirmEnabled(false);
       setStartKm('');
       setStartKmTouched(false);
+      setSubmitting(false);
+      submittingRef.current = false;
       return;
     }
     setConfirmEnabled(false);
     setStartKm('');
     setStartKmTouched(false);
+    setSubmitting(false);
+    submittingRef.current = false;
     const timer = setTimeout(() => {
       setConfirmEnabled(true);
     }, 40000);
@@ -70,10 +76,14 @@ export default function PreCheckSummaryModal({
     startKmTouched && !startKmValid
       ? t('dashboard.startKmRequired', 'Enter the start KM of the lorry to continue.')
       : null;
-  const confirmReady = confirmEnabled && startKmValid;
+  const submitDisabled = !confirmEnabled || submitting;
 
-  const handleConfirm = () => {
+  const handleConfirm = useCallback(async () => {
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+
     if (!startKmValid) {
+      submittingRef.current = false;
       setStartKmTouched(true);
       Alert.alert(
         t('dashboard.startKmRequiredTitle', 'Start KM required'),
@@ -81,9 +91,25 @@ export default function PreCheckSummaryModal({
       );
       return;
     }
-    if (!confirmEnabled) return;
-    onConfirm?.(parsedStartKm);
-  };
+    if (!confirmEnabled) {
+      submittingRef.current = false;
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      await onConfirm?.(parsedStartKm);
+    } catch (err) {
+      Alert.alert(
+        t('common.error', 'Error'),
+        t('dashboard.startKmSaveFailed', 'Could not save start KM. Please try again.')
+      );
+      console.warn('[PreCheck] start delivery submit failed', err?.message ?? err);
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
+    }
+  }, [startKmValid, confirmEnabled, onConfirm, parsedStartKm, t]);
 
   const sheetLayout = useMemo(() => {
     const screenH = Dimensions.get('window').height;
@@ -153,6 +179,7 @@ export default function PreCheckSummaryModal({
               }}
               placeholder={t('dashboard.startKmPlaceholder', 'Start KM')}
               errorText={startKmError}
+              editable={!submitting}
             />
 
             {syncInProgress ? (
@@ -505,19 +532,33 @@ export default function PreCheckSummaryModal({
             <TouchableOpacity
               style={[
                 styles.postCheckSubmitBtn,
-                !confirmReady ? { opacity: 0.78 } : null,
+                submitDisabled && styles.postCheckSubmitBtnDisabled,
+                !startKmValid && !submitDisabled ? { opacity: 0.78 } : null,
               ]}
-              activeOpacity={0.88}
-              onPress={handleConfirm}
-              disabled={!confirmEnabled}
+              disabled={submitDisabled}
+              activeOpacity={0.85}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              onPress={() => void handleConfirm()}
             >
-              {confirmEnabled ? (
-                <Ionicons name="checkmark-circle" size={20} color="#fff" style={{ marginRight: 8 }} />
-              ) : (
+              {submitting || !confirmEnabled ? (
                 <ActivityIndicator size="small" color="#fff" style={{ marginRight: 8 }} />
+              ) : (
+                <Ionicons
+                  name="checkmark-circle"
+                  size={20}
+                  color="#fff"
+                  style={{ marginRight: 8 }}
+                />
               )}
-              <Text style={styles.postCheckSubmitBtnText}>
-                {t('dashboard.preCheckOk', 'OK Start delivery')}
+              <Text
+                style={[
+                  styles.postCheckSubmitBtnText,
+                  submitDisabled && { color: colors.textSecondary ?? '#94a3b8' },
+                ]}
+              >
+                {submitting
+                  ? t('dashboard.preCheckSubmitting', 'Submitting...')
+                  : t('dashboard.preCheckOk', 'OK Start delivery')}
               </Text>
             </TouchableOpacity>
           </View>

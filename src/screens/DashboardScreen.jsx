@@ -372,6 +372,7 @@ export default function DashboardScreen({ navigation }) {
   const routeSyncSentRef = useRef(new Set());
   const lastSyncNotificationRef = React.useRef(null);
   const preCheckPartyWarmupRunRef = useRef(0);
+  const preCheckSubmitLockRef = useRef(false);
   /** Latched while orange pending upload counter > 0 and a flush is running; cleared when counter hits 0. */
   const [networkQuality, setNetworkQuality] = useState(NetworkQuality.OFFLINE);
 
@@ -1638,24 +1639,26 @@ export default function DashboardScreen({ navigation }) {
   }, [preCheckSummaryModalVisible]);
 
   const confirmPreCheckSummary = useCallback(async (startKm) => {
-    const parsed = parseOdometerKm(startKm);
-    if (parsed == null) {
-      Alert.alert(
-        t('dashboard.startKmRequiredTitle', 'Start KM required'),
-        t('dashboard.startKmRequiredBody', 'Enter the start KM of the lorry before starting delivery.')
-      );
-      return;
-    }
-    const u = await getUserSession();
-    const vehicleId = Number(u?.vehicleId);
-    if (!Number.isFinite(vehicleId) || vehicleId <= 0) {
-      Alert.alert(
-        t('common.error', 'Error'),
-        t('dashboard.startKmMissingVehicle', 'Logged-in vehicle was not found. Please log in again.')
-      );
-      return;
-    }
+    if (preCheckSubmitLockRef.current) return;
+    preCheckSubmitLockRef.current = true;
     try {
+      const parsed = parseOdometerKm(startKm);
+      if (parsed == null) {
+        Alert.alert(
+          t('dashboard.startKmRequiredTitle', 'Start KM required'),
+          t('dashboard.startKmRequiredBody', 'Enter the start KM of the lorry before starting delivery.')
+        );
+        return;
+      }
+      const u = await getUserSession();
+      const vehicleId = Number(u?.vehicleId);
+      if (!Number.isFinite(vehicleId) || vehicleId <= 0) {
+        Alert.alert(
+          t('common.error', 'Error'),
+          t('dashboard.startKmMissingVehicle', 'Logged-in vehicle was not found. Please log in again.')
+        );
+        return;
+      }
       await saveStartOdometer({
         vehicleId,
         km: parsed,
@@ -1666,16 +1669,17 @@ export default function DashboardScreen({ navigation }) {
         odometer: parsed,
         source: 'precheck',
       });
+      setPreCheckSummaryModalVisible(false);
+      await setPreCheckDone(true, u?.loggedInAt);
     } catch (err) {
       Alert.alert(
         t('common.error', 'Error'),
         t('dashboard.startKmSaveFailed', 'Could not save start KM. Please try again.')
       );
       console.warn('[PreCheck] start KM save failed', err?.message ?? err);
-      return;
+    } finally {
+      preCheckSubmitLockRef.current = false;
     }
-    setPreCheckSummaryModalVisible(false);
-    await setPreCheckDone(true, u?.loggedInAt);
   }, [setPreCheckDone, t]);
 
   const needsPreCheckGate = !preCheckDone && !preCheckSummaryModalVisible;
@@ -3171,7 +3175,7 @@ export default function DashboardScreen({ navigation }) {
         totalOrdered={preCheckTotalOrderedGas}
         formatQty={formatPreCheckQty}
         partyCheckStatus={preCheckPartyStatus}
-        onConfirm={(startKm) => void confirmPreCheckSummary(startKm)}
+        onConfirm={confirmPreCheckSummary}
       />
 
     </View>
