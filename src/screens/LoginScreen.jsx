@@ -267,6 +267,7 @@ export default function LoginScreen({ navigation }) {
         vehicleName: selected.name,
         licensePlate: selected.license_plate || '',
         driverId: matchedDriver.id,
+        workContactId: matchedDriver.workContactId ?? null,
         driverName: matchedDriver.name,
         driverBarcode: matchedDriver.barcode,
         driverImageBase64: matchedDriver.imageBase64,

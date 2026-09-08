@@ -1668,6 +1668,7 @@ export default function DashboardScreen({ navigation }) {
         vehicleId,
         odometer: parsed,
         driverId: u?.driverId,
+        workContactId: u?.workContactId,
         source: 'precheck',
       });
       setPreCheckSummaryModalVisible(false);

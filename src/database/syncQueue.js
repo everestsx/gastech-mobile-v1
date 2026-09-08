@@ -14,7 +14,7 @@ export const ACTION_PAYMENT = 'payment';
 export const ACTION_INVENTORY_UPDATE = 'inventory_update';
 /** Cancel sale order on Odoo when back online. Payload: { saleOrderId, reason, cancelledAt? } */
 export const ACTION_CANCEL_ORDER = 'order_cancel';
-/** Fleet vehicle odometer write (start KM / end KM). Payload: { vehicleId, odometer, driverId?, source?, recordedAt? } */
+/** Fleet vehicle odometer write (start KM / end KM). Payload: { vehicleId, odometer, driverId?, workContactId?, source?, recordedAt? } */
 export const ACTION_VEHICLE_ODOMETER = 'vehicle_odometer';
 
 function wakePendingUploadAfterQueueChange() {

@@ -3,11 +3,15 @@
  * Offline-first: persist to the sync queue, then POST JSON2 immediately.
  *
  * POST /json/2/fleet.vehicle/write
- * { ids: [<logged-in vehicle id>], vals: { odometer: <km>, driver_id: <logged-in driver id> } }
+ * { ids: [<logged-in vehicle id>], vals: { odometer: <km>, driver_id: <work_contact_id partner> } }
+ *
+ * fleet.vehicle.driver_id is res.partner, not hr.employee. The logged-in driverId is
+ * hr.employee.id; we send that employee's work_contact_id instead.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { callOdooJson2 } from './index.service';
 import * as syncQueueDb from '../database/syncQueue.js';
+import { getEmployeeWorkContactId, parseWorkContactId } from './employee.service.js';
 
 const START_ODOMETER_KEY = '@gastech_start_odometer';
 const MAX_ODOMETER_KM = 99999999;
@@ -29,23 +33,58 @@ function parseDriverId(raw) {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
-async function resolveLoggedInDriverId(driverId) {
-  const fromArg = parseDriverId(driverId);
+async function persistSessionWorkContactId(workContactId) {
+  const id = parseDriverId(workContactId);
+  if (id == null) return;
+  try {
+    const { getUserSession, saveUserSession } = await import('./sync.service.js');
+    const session = await getUserSession();
+    if (!session || parseDriverId(session.workContactId) === id) return;
+    await saveUserSession({ ...session, workContactId: id });
+  } catch (_) {}
+}
+
+/**
+ * fleet.vehicle.driver_id is res.partner (hr.employee.work_contact_id).
+ * Never send hr.employee.id on this field.
+ */
+async function resolveFleetDriverPartnerId({ driverId, workContactId } = {}) {
+  const fromArg = parseWorkContactId(workContactId) ?? parseDriverId(workContactId);
   if (fromArg != null) return fromArg;
+
+  let session = null;
   try {
     const { getUserSession } = await import('./sync.service.js');
-    const session = await getUserSession();
-    return parseDriverId(session?.driverId);
+    session = await getUserSession();
   } catch (_) {
-    return null;
+    session = null;
   }
+
+  const fromSession = parseWorkContactId(session?.workContactId) ?? parseDriverId(session?.workContactId);
+  if (fromSession != null) return fromSession;
+
+  const employeeId = parseDriverId(driverId) ?? parseDriverId(session?.driverId);
+  if (employeeId == null) return null;
+
+  try {
+    const fetched = await getEmployeeWorkContactId(employeeId);
+    if (fetched != null) {
+      await persistSessionWorkContactId(fetched);
+      return fetched;
+    }
+  } catch (e) {
+    if (__DEV__) {
+      console.warn('[vehicleOdometer] work_contact_id lookup failed', e?.message ?? e);
+    }
+  }
+  return null;
 }
 
 /**
  * POST /json/2/fleet.vehicle/write
- * { "ids": [<vehicle id>], "vals": { "odometer": <km>, "driver_id": <driver id> } }
+ * { "ids": [<vehicle id>], "vals": { "odometer": <km>, "driver_id": <work_contact_id> } }
  */
-export async function writeVehicleOdometerJson2(vehicleId, odometer, driverId = null) {
+export async function writeVehicleOdometerJson2(vehicleId, odometer, driverId = null, workContactId = null) {
   const vid = Number(vehicleId);
   const km = Number(odometer);
   if (!Number.isFinite(vid) || vid <= 0) {
@@ -54,15 +93,15 @@ export async function writeVehicleOdometerJson2(vehicleId, odometer, driverId = 
   if (!Number.isFinite(km) || km < 0) {
     throw new Error('Invalid odometer value');
   }
-  const did = await resolveLoggedInDriverId(driverId);
-  if (did == null) {
-    throw new Error('Missing logged-in driver id for odometer write');
+  const partnerId = await resolveFleetDriverPartnerId({ driverId, workContactId });
+  if (partnerId == null) {
+    throw new Error('Missing driver work contact id for odometer write');
   }
   const payload = {
     ids: [vid],
     vals: {
       odometer: km,
-      driver_id: did,
+      driver_id: partnerId,
     },
   };
   if (__DEV__) {
@@ -98,12 +137,12 @@ async function markOdometerQueueRowsSynced(queueId, vehicleId, odometer, source)
   }
 }
 
-async function runOdometerWriteOnce(vehicleId, odometer, source, queueId, driverId = null) {
+async function runOdometerWriteOnce(vehicleId, odometer, source, queueId, driverId = null, workContactId = null) {
   const key = odometerDedupeKey(vehicleId, odometer, source);
   const existing = inFlightOdometerWrites.get(key);
   if (existing) return existing;
   const run = (async () => {
-    await writeVehicleOdometerJson2(vehicleId, odometer, driverId);
+    await writeVehicleOdometerJson2(vehicleId, odometer, driverId, workContactId);
     await markOdometerQueueRowsSynced(queueId, vehicleId, odometer, source);
     return { ok: true };
   })();
@@ -126,11 +165,12 @@ export async function flushVehicleOdometerQueueItem(item) {
   const odometer = Number(p.odometer);
   const source = p.source || null;
   const driverId = parseDriverId(p.driverId ?? p.driver_id);
+  const workContactId = parseDriverId(p.workContactId ?? p.work_contact_id);
   if (!Number.isFinite(vehicleId) || vehicleId <= 0 || !Number.isFinite(odometer) || odometer < 0) {
     if (Number.isFinite(id) && id > 0) await syncQueueDb.markSynced(id);
     return { ok: true, skipped: true };
   }
-  return runOdometerWriteOnce(vehicleId, odometer, source, id, driverId);
+  return runOdometerWriteOnce(vehicleId, odometer, source, id, driverId, workContactId);
 }
 
 export async function saveStartOdometer({ vehicleId, km, loggedInAt }) {
@@ -173,23 +213,28 @@ export async function clearStartOdometer() {
  * Persist to the sync queue first so offline drivers never lose the reading,
  * then write JSON2 immediately (same API as Start Delivery / End Day).
  */
-export async function submitVehicleOdometerWrite({ vehicleId, odometer, driverId, source }) {
+export async function submitVehicleOdometerWrite({ vehicleId, odometer, driverId, workContactId, source }) {
   const vid = Number(vehicleId);
   const km = parseOdometerKm(odometer);
-  const did = await resolveLoggedInDriverId(driverId);
   if (!Number.isFinite(vid) || vid <= 0) {
     throw new Error('Missing logged-in vehicle id for odometer write');
   }
   if (km == null) {
     throw new Error('Invalid odometer value');
   }
-  if (did == null) {
-    throw new Error('Missing logged-in driver id for odometer write');
+  let partnerId = parseWorkContactId(workContactId) ?? parseDriverId(workContactId);
+  if (partnerId == null) {
+    partnerId = await resolveFleetDriverPartnerId({ driverId, workContactId });
+  }
+  const employeeId = parseDriverId(driverId);
+  if (partnerId == null && employeeId == null) {
+    throw new Error('Missing driver work contact id for odometer write');
   }
   const payload = {
     vehicleId: vid,
     odometer: km,
-    driverId: did,
+    driverId: employeeId,
+    workContactId: partnerId,
     source: source || null,
     recordedAt: new Date().toISOString(),
   };
@@ -197,7 +242,7 @@ export async function submitVehicleOdometerWrite({ vehicleId, odometer, driverId
     suppressWake: true,
   });
   try {
-    await runOdometerWriteOnce(vid, km, payload.source, queueId, did);
+    await runOdometerWriteOnce(vid, km, payload.source, queueId, employeeId, partnerId);
     return { ok: true, queued: false, queueId };
   } catch (e) {
     console.warn('[vehicleOdometer] write queued for retry', e?.message ?? e);

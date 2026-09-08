@@ -2,8 +2,9 @@
 import { callOdoo, callOdooJson2 } from "./index.service";
 
 /** Fields safe for portal-style users; do not include `barcode` (requires HR Officer in many DBs). */
-const EMPLOYEE_READ_FIELDS = ["id", "name", "image_1920", "mobile_phone", "work_phone"];
+const EMPLOYEE_READ_FIELDS = ["id", "name", "image_1920", "mobile_phone", "work_phone", "work_contact_id"];
 const EMPLOYEE_READ_FIELDS_LIGHT = ["id", "name", "mobile_phone", "work_phone"];
+const EMPLOYEE_WORK_CONTACT_FIELDS = ["id", "work_contact_id"];
 
 const CONTEXT = { lang: "en_US" };
 const PORTERS_CACHE_KEY = "@gastech_porters_cache_v1";
@@ -25,10 +26,15 @@ function isAccessLikeError(err) {
   );
 }
 
+function isWorkContactFieldError(err) {
+  const m = String(err?.message || err || "").toLowerCase();
+  return m.includes("work_contact_id") || m.includes("invalid field");
+}
+
 /**
  * search_read on hr.employee: try JSON-RPC execute_kw, then JSON 2 (same pattern as commission).
  */
-async function employeeSearchRead(domain, { limit = 500, fields = EMPLOYEE_READ_FIELDS } = {}) {
+async function employeeSearchReadOnce(domain, { limit = 500, fields = EMPLOYEE_READ_FIELDS } = {}) {
   const opts = { fields, limit, context: CONTEXT };
   try {
     const rows = await callOdoo("hr.employee", "search_read", [domain], opts);
@@ -41,6 +47,24 @@ async function employeeSearchRead(domain, { limit = 500, fields = EMPLOYEE_READ_
       limit,
     });
     return Array.isArray(result) ? result : [];
+  }
+}
+
+async function employeeSearchRead(domain, { limit = 500, fields = EMPLOYEE_READ_FIELDS } = {}) {
+  try {
+    return await employeeSearchReadOnce(domain, { limit, fields });
+  } catch (e) {
+    const canStripWorkContact =
+      Array.isArray(fields) &&
+      fields.includes("work_contact_id") &&
+      (isAccessLikeError(e) || isWorkContactFieldError(e));
+    if (canStripWorkContact) {
+      return employeeSearchReadOnce(domain, {
+        limit,
+        fields: fields.filter((f) => f !== "work_contact_id"),
+      });
+    }
+    throw e;
   }
 }
 
@@ -101,10 +125,6 @@ export function odooImageToUri(imageField) {
   return `data:image/png;base64,${s}`;
 }
 
-/**
- * @param {object} row — Odoo record (no barcode field required)
- * @param {string} [enteredDriverCode] — value the driver typed (stored as driver id / “password” for session)
- */
 /** Prefer mobile, then work phone — always a string for session / SQLite (never null). */
 function pickEmployeePhone(row) {
   if (!row) return "";
@@ -117,6 +137,25 @@ function pickEmployeePhone(row) {
   return "";
 }
 
+/** Odoo Many2one comes as [id, name], a bare id, or false. */
+export function parseWorkContactId(raw) {
+  if (raw == null || raw === false) return null;
+  if (Array.isArray(raw)) {
+    const n = Number(raw[0]);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }
+  if (typeof raw === "object" && raw.id != null) {
+    const n = Number(raw.id);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/**
+ * @param {object} row — Odoo record (no barcode field required)
+ * @param {string} [enteredDriverCode] — value the driver typed (stored as driver id / “password” for session)
+ */
 export function normalizeEmployee(row, enteredDriverCode = "") {
   if (!row || row.id == null) return null;
   const entered = String(enteredDriverCode || "").trim();
@@ -126,7 +165,23 @@ export function normalizeEmployee(row, enteredDriverCode = "") {
     barcode: entered,
     imageBase64: row.image_1920 != null && row.image_1920 !== false ? String(row.image_1920) : null,
     phone: pickEmployeePhone(row),
+    workContactId: parseWorkContactId(row.work_contact_id),
   };
+}
+
+/**
+ * fleet.vehicle.driver_id is res.partner. Resolve it from hr.employee.work_contact_id
+ * using the logged-in employee id.
+ */
+export async function getEmployeeWorkContactId(employeeId) {
+  const id = Number(employeeId);
+  if (!Number.isFinite(id) || id <= 0) return null;
+  const rows = await employeeSearchRead([["id", "=", id]], {
+    limit: 1,
+    fields: EMPLOYEE_WORK_CONTACT_FIELDS,
+  });
+  const row = Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
+  return parseWorkContactId(row?.work_contact_id);
 }
 
 /** All employees in the Driving department. */
@@ -215,5 +270,11 @@ export const getDriverByBarcode = async (driverCode) => {
   }
 
   if (!rows.length) return null;
-  return normalizeEmployee(rows[0], trimmed);
+  const driver = normalizeEmployee(rows[0], trimmed);
+  if (driver && driver.workContactId == null) {
+    try {
+      driver.workContactId = await getEmployeeWorkContactId(driver.id);
+    } catch (_) {}
+  }
+  return driver;
 };
