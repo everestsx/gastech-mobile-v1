@@ -1,4 +1,4 @@
-import { StyleSheet } from 'react-native';
+import { Platform, StyleSheet } from 'react-native';
 
 /** Shared bottom-sheet styles for Pre Check and Post Check modals. */
 export function createCheckSheetStyles(colors) {
@@ -250,6 +250,49 @@ export function createCheckSheetStyles(colors) {
       height: 1,
       backgroundColor: colors.border,
       marginVertical: 10,
+    },
+    odometerBlock: {
+      borderWidth: 1,
+      borderRadius: 14,
+      paddingHorizontal: 14,
+      paddingVertical: 12,
+      marginTop: 10,
+      marginBottom: 6,
+      backgroundColor: (colors.warning ?? '#f59e0b') + '12',
+      borderColor: (colors.warning ?? '#f59e0b') + '66',
+    },
+    odometerCaption: {
+      fontSize: 13,
+      fontWeight: '800',
+      color: colors.text,
+      marginBottom: 4,
+    },
+    odometerHint: {
+      fontSize: 12,
+      fontWeight: '600',
+      color: colors.textSecondary,
+      marginBottom: 8,
+    },
+    odometerInputWrap: {
+      borderWidth: 1,
+      borderRadius: 10,
+      paddingHorizontal: 12,
+      paddingVertical: Platform.OS === 'ios' ? 10 : 6,
+      backgroundColor: colors.background,
+      borderColor: colors.border,
+    },
+    odometerInput: {
+      fontSize: 18,
+      fontWeight: '800',
+      color: colors.text,
+      padding: 0,
+      minHeight: 28,
+    },
+    odometerError: {
+      fontSize: 12,
+      fontWeight: '700',
+      color: '#dc2626',
+      marginTop: 6,
     },
     preCheckSummarySheet: {
       width: '100%',

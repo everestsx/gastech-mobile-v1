@@ -13,6 +13,7 @@ import {
   InteractionManager,
   Image,
   DeviceEventEmitter,
+  Alert,
 } from 'react-native';
 import { BlurView } from 'expo-blur';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -56,6 +57,11 @@ import {
   getVehicleLocationId,
   inspectAndRecoverSyncQueueHealthOnStartDay,
 } from '../services/sync.service';
+import {
+  parseOdometerKm,
+  saveStartOdometer,
+  submitVehicleOdometerWrite,
+} from '../services/vehicleOdometer.service';
 import * as localPaymentsDb from '../database/localPayments.js';
 import * as localInvoicesDb from '../database/localInvoices.js';
 import * as syncQueueDb from '../database/syncQueue.js';
@@ -1631,11 +1637,46 @@ export default function DashboardScreen({ navigation }) {
     setPreCheckTodayOrdersCount(null);
   }, [preCheckSummaryModalVisible]);
 
-  const confirmPreCheckSummary = useCallback(async () => {
-    setPreCheckSummaryModalVisible(false);
+  const confirmPreCheckSummary = useCallback(async (startKm) => {
+    const parsed = parseOdometerKm(startKm);
+    if (parsed == null) {
+      Alert.alert(
+        t('dashboard.startKmRequiredTitle', 'Start KM required'),
+        t('dashboard.startKmRequiredBody', 'Enter the start KM of the lorry before starting delivery.')
+      );
+      return;
+    }
     const u = await getUserSession();
+    const vehicleId = Number(u?.vehicleId);
+    if (!Number.isFinite(vehicleId) || vehicleId <= 0) {
+      Alert.alert(
+        t('common.error', 'Error'),
+        t('dashboard.startKmMissingVehicle', 'Logged-in vehicle was not found. Please log in again.')
+      );
+      return;
+    }
+    try {
+      await saveStartOdometer({
+        vehicleId,
+        km: parsed,
+        loggedInAt: u?.loggedInAt,
+      });
+      await submitVehicleOdometerWrite({
+        vehicleId,
+        odometer: parsed,
+        source: 'precheck',
+      });
+    } catch (err) {
+      Alert.alert(
+        t('common.error', 'Error'),
+        t('dashboard.startKmSaveFailed', 'Could not save start KM. Please try again.')
+      );
+      console.warn('[PreCheck] start KM save failed', err?.message ?? err);
+      return;
+    }
+    setPreCheckSummaryModalVisible(false);
     await setPreCheckDone(true, u?.loggedInAt);
-  }, [setPreCheckDone]);
+  }, [setPreCheckDone, t]);
 
   const needsPreCheckGate = !preCheckDone && !preCheckSummaryModalVisible;
   const preCheckSyncInProgress =
@@ -3130,7 +3171,7 @@ export default function DashboardScreen({ navigation }) {
         totalOrdered={preCheckTotalOrderedGas}
         formatQty={formatPreCheckQty}
         partyCheckStatus={preCheckPartyStatus}
-        onConfirm={() => void confirmPreCheckSummary()}
+        onConfirm={(startKm) => void confirmPreCheckSummary(startKm)}
       />
 
     </View>

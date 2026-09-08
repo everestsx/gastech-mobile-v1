@@ -1431,6 +1431,12 @@ export async function logout() {
     KEY_DASHBOARD_INITIAL_LOAD,
     KEYS.PRECHECK_DONE,
   ]);
+  try {
+    const { clearStartOdometer } = await import('./vehicleOdometer.service.js');
+    await clearStartOdometer();
+  } catch (e) {
+    console.warn('[Logout] start odometer wipe failed', e?.message ?? e);
+  }
   // Clear local-only postcheck submissions (session-scoped until Odoo backend is ready)
   try {
     const { deleteAllPostCheckSubmissions } = await import('../database/postcheckSubmissions.js');
@@ -1445,6 +1451,10 @@ export async function clearPreCheckDoneState() {
   try {
     const storage = await getAsyncStorage();
     await storage.removeItem(KEYS.PRECHECK_DONE);
+  } catch (_) {}
+  try {
+    const { clearStartOdometer } = await import('./vehicleOdometer.service.js');
+    await clearStartOdometer();
   } catch (_) {}
 }
 
@@ -5017,6 +5027,45 @@ async function processOrderCancelQueueItems(items = null) {
 }
 
 /**
+ * Upload pending fleet.vehicle odometer writes (start KM / end KM).
+ * Independent of sale-order checkout so offline start/end day still drains.
+ */
+async function processVehicleOdometerQueueItems(items = null) {
+  const rows =
+    items ??
+    (await syncQueueDb.getPending()).filter((p) => p.action_type === syncQueueDb.ACTION_VEHICLE_ODOMETER);
+  if (!rows.length) return { synced: 0, failed: 0 };
+
+  const { writeVehicleOdometerJson2 } = await import('./vehicleOdometer.service.js');
+  let synced = 0;
+  let failed = 0;
+
+  for (const item of rows) {
+    try {
+      const p = item.payload || {};
+      const vehicleId = Number(p.vehicleId ?? p.vehicle_id);
+      const odometer = Number(p.odometer);
+      if (!Number.isFinite(vehicleId) || vehicleId <= 0 || !Number.isFinite(odometer) || odometer < 0) {
+        await syncQueueDb.markSynced(Number(item.id));
+        log('queue', `vehicle odometer skipped invalid payload id=${item.id}`);
+        continue;
+      }
+      await writeVehicleOdometerJson2(vehicleId, odometer);
+      await syncQueueDb.markSynced(Number(item.id));
+      log(
+        'queue',
+        `vehicle odometer synced id=${item.id} vehicle=${vehicleId} km=${odometer} source=${p.source || ''}`
+      );
+      synced += 1;
+    } catch (e) {
+      failed += 1;
+      logWarn('queue vehicle_odometer', e);
+    }
+  }
+  return { synced, failed };
+}
+
+/**
  * Best-effort immediate cancel RPC when back online (does not block UI).
  * Queue row stays until Odoo confirms cancel state.
  */
@@ -5099,7 +5148,16 @@ async function processSyncQueue(options = {}) {
           prioritySoId != null
             ? await syncQueueDb.getActionablePendingCountForSaleOrder(prioritySoId)
             : await syncQueueDb.getPendingCount();
-        if (pendingAtStart === 0) break;
+        if (pendingAtStart === 0) {
+          const leftover = await syncQueueDb.getPending();
+          const odoLeft = leftover.filter(
+            (p) => p.action_type === syncQueueDb.ACTION_VEHICLE_ODOMETER
+          );
+          if (odoLeft.length > 0) {
+            await processVehicleOdometerQueueItems(odoLeft);
+          }
+          break;
+        }
         perfLog('queue-pass-start', `pass=${pass} pending=${pendingAtStart} conc=${independentSaleOrderConcurrency()}`);
 
         try {
@@ -5109,6 +5167,12 @@ async function processSyncQueue(options = {}) {
       );
       if (allowGlobalCancelPass && cancelEarly.length > 0) {
         await processOrderCancelQueueItems(cancelEarly);
+      }
+      const odometerEarly = pendingSnapEarly.filter(
+        (p) => p.action_type === syncQueueDb.ACTION_VEHICLE_ODOMETER
+      );
+      if (odometerEarly.length > 0) {
+        await processVehicleOdometerQueueItems(odometerEarly);
       }
 
       let queueSnap = await syncQueueDb.getPending();
@@ -5188,6 +5252,12 @@ async function processSyncQueue(options = {}) {
         payment = payment.filter(matchesPrioritySo);
         inventoryUpdate = inventoryUpdate.filter(matchesPrioritySo);
         if (delivery.length === 0 && payment.length === 0 && inventoryUpdate.length === 0) {
+          const odoLeft = queueSnap.filter(
+            (p) => p.action_type === syncQueueDb.ACTION_VEHICLE_ODOMETER
+          );
+          if (odoLeft.length > 0) {
+            await processVehicleOdometerQueueItems(odoLeft);
+          }
           return;
         }
       }

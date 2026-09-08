@@ -21,6 +21,12 @@ import { formatCurrency } from '../../utils/format';
 import { insertPostCheckSubmission, markPostCheckSubmissionSynced } from '../../database/postcheckSubmissions.js';
 import { recordBulkSaleSummary } from '../../services/submitHandover.service';
 import { createCheckSheetStyles } from './checkSheetStyles';
+import OdometerKmField from './OdometerKmField';
+import {
+  parseOdometerKm,
+  getStartOdometer,
+  submitVehicleOdometerWrite,
+} from '../../services/vehicleOdometer.service';
 
 /** Dummy accountant directory for the handover dropdown — first entry is the default selection. */
 const HANDOVER_ACCOUNTANTS = [
@@ -60,6 +66,9 @@ export default function PostCheckHandoverModal({
   const [handedOverMenuVisible, setHandedOverMenuVisible] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [lockedStats, setLockedStats] = useState({ localCompleted: 0, syncedCompleted: 0 });
+  const [endKm, setEndKm] = useState('');
+  const [endKmTouched, setEndKmTouched] = useState(false);
+  const [startKmToday, setStartKmToday] = useState(null);
 
   const wasVisibleRef = useRef(false);
 
@@ -80,15 +89,47 @@ export default function PostCheckHandoverModal({
       setHandedOver(HANDOVER_ACCOUNTANTS[0]);
       setHandedOverMenuVisible(false);
       setSubmitting(false);
+      setEndKm('');
+      setEndKmTouched(false);
+      setStartKmToday(null);
       setLockedStats({
         localCompleted: orderSyncStats?.localCompleted ?? 0,
         syncedCompleted: orderSyncStats?.syncedCompleted ?? 0,
       });
+      void getStartOdometer().then((saved) => {
+        const sessionVehicleId = Number(user?.vehicleId);
+        if (
+          saved &&
+          Number.isFinite(sessionVehicleId) &&
+          sessionVehicleId > 0 &&
+          Number(saved.vehicleId) === sessionVehicleId &&
+          (user?.loggedInAt == null ||
+            saved.loggedInAt == null ||
+            String(saved.loggedInAt) === String(user.loggedInAt))
+        ) {
+          setStartKmToday(saved.km);
+        }
+      });
     }
     wasVisibleRef.current = visible;
-  }, [visible, initialCash, initialCheque, initialCredit, orderSyncStats]);
+  }, [visible, initialCash, initialCheque, initialCredit, orderSyncStats, user?.vehicleId, user?.loggedInAt]);
 
   const pendingUpload = (lockedStats.localCompleted ?? 0) > 0;
+  const parsedEndKm = parseOdometerKm(endKm);
+  const endKmTooLow =
+    parsedEndKm != null && startKmToday != null && parsedEndKm < Number(startKmToday);
+  const endKmValid = parsedEndKm != null && !endKmTooLow;
+  const endKmError = !endKmTouched
+    ? null
+    : parsedEndKm == null
+      ? t('dashboard.endKmRequired', 'Enter the end KM of the lorry to submit handover.')
+      : endKmTooLow
+        ? t(
+            'dashboard.endKmMustBeAtLeastStart',
+            'End KM must be at least the start KM ({{km}}).',
+            { km: startKmToday }
+          )
+        : null;
   const submitDisabled = pendingUpload || submitting;
 
   const handleSubmit = useCallback(async () => {
@@ -107,12 +148,49 @@ export default function PostCheckHandoverModal({
       return;
     }
 
+    const km = parseOdometerKm(endKm);
+    if (km == null) {
+      setEndKmTouched(true);
+      Alert.alert(
+        t('dashboard.endKmRequiredTitle', 'End KM required'),
+        t('dashboard.endKmRequiredBody', 'Enter the end KM of the lorry before submitting handover.')
+      );
+      return;
+    }
+    if (startKmToday != null && km < Number(startKmToday)) {
+      setEndKmTouched(true);
+      Alert.alert(
+        t('dashboard.endKmRequiredTitle', 'End KM required'),
+        t(
+          'dashboard.endKmMustBeAtLeastStart',
+          'End KM must be at least the start KM ({{km}}).',
+          { km: startKmToday }
+        )
+      );
+      return;
+    }
+
+    const vehicleId = Number(user?.vehicleId);
+    if (!Number.isFinite(vehicleId) || vehicleId <= 0) {
+      Alert.alert(
+        t('common.error', 'Error'),
+        t('dashboard.endKmMissingVehicle', 'Logged-in vehicle was not found. Please log in again.')
+      );
+      return;
+    }
+
     const finalCash = parseFloat(editCash) || 0;
     const finalCheque = parseFloat(editCheque) || 0;
     const finalCredit = parseFloat(editCredit) || 0;
 
     setSubmitting(true);
     try {
+      await submitVehicleOdometerWrite({
+        vehicleId,
+        odometer: km,
+        source: 'postcheck',
+      });
+
       const submittedAt = new Date();
       const insertedId = await insertPostCheckSubmission({
         submittedAt: submittedAt.toISOString(),
@@ -133,6 +211,7 @@ export default function PostCheckHandoverModal({
         finalCheque,
         finalCredit,
         dropoffLocation,
+        endKm: km,
       });
 
       // Local handover is already saved; push to back office best-effort so a flaky
@@ -177,6 +256,8 @@ export default function PostCheckHandoverModal({
     handedOver,
     routeName,
     user,
+    endKm,
+    startKmToday,
     onClose,
     onSubmitted,
     t,
@@ -237,6 +318,30 @@ export default function PostCheckHandoverModal({
               </View>
 
               <View style={styles.postCheckDivider} />
+
+              <OdometerKmField
+                caption={t('dashboard.endKmCaption', 'Enter the end KM of the lorry')}
+                hint={
+                  startKmToday != null
+                    ? t(
+                        'dashboard.endKmHintWithStart',
+                        'Start KM today was {{km}}. End KM must be the same or higher.',
+                        { km: startKmToday }
+                      )
+                    : t(
+                        'dashboard.endKmHint',
+                        'Read the odometer now. This is required before submitting handover.'
+                      )
+                }
+                value={endKm}
+                onChangeText={(text) => {
+                  setEndKm(text);
+                  if (!endKmTouched) setEndKmTouched(true);
+                }}
+                placeholder={t('dashboard.endKmPlaceholder', 'End KM')}
+                errorText={endKmError}
+                editable={!submitting}
+              />
 
               {pendingUpload ? (
                 <View style={styles.postCheckPendingWarning}>
@@ -525,7 +630,11 @@ export default function PostCheckHandoverModal({
 
             <View style={[styles.sheetFooter, { paddingBottom: Math.max(insets.bottom, 12) }]}>
               <TouchableOpacity
-                style={[styles.postCheckSubmitBtn, submitDisabled && styles.postCheckSubmitBtnDisabled]}
+                style={[
+                  styles.postCheckSubmitBtn,
+                  submitDisabled && styles.postCheckSubmitBtnDisabled,
+                  !endKmValid && !submitDisabled ? { opacity: 0.78 } : null,
+                ]}
                 disabled={submitDisabled}
                 activeOpacity={0.85}
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}

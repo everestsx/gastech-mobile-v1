@@ -8,12 +8,16 @@ import {
   ActivityIndicator,
   Platform,
   Dimensions,
+  KeyboardAvoidingView,
+  Alert,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from '../../context/ThemeContext';
 import { createCheckSheetStyles } from './checkSheetStyles';
+import OdometerKmField from './OdometerKmField';
+import { parseOdometerKm } from '../../services/vehicleOdometer.service';
 
 export default function PreCheckSummaryModal({
   visible,
@@ -41,18 +45,45 @@ export default function PreCheckSummaryModal({
   const [showSupplierDetails, setShowSupplierDetails] = useState(false);
   const [showCustomerDetails, setShowCustomerDetails] = useState(false);
   const [confirmEnabled, setConfirmEnabled] = useState(false);
+  const [startKm, setStartKm] = useState('');
+  const [startKmTouched, setStartKmTouched] = useState(false);
 
   useEffect(() => {
     if (!visible) {
       setConfirmEnabled(false);
+      setStartKm('');
+      setStartKmTouched(false);
       return;
     }
     setConfirmEnabled(false);
+    setStartKm('');
+    setStartKmTouched(false);
     const timer = setTimeout(() => {
       setConfirmEnabled(true);
     }, 40000);
     return () => clearTimeout(timer);
   }, [visible]);
+
+  const parsedStartKm = parseOdometerKm(startKm);
+  const startKmValid = parsedStartKm != null;
+  const startKmError =
+    startKmTouched && !startKmValid
+      ? t('dashboard.startKmRequired', 'Enter the start KM of the lorry to continue.')
+      : null;
+  const confirmReady = confirmEnabled && startKmValid;
+
+  const handleConfirm = () => {
+    if (!startKmValid) {
+      setStartKmTouched(true);
+      Alert.alert(
+        t('dashboard.startKmRequiredTitle', 'Start KM required'),
+        t('dashboard.startKmRequiredBody', 'Enter the start KM of the lorry before starting delivery.')
+      );
+      return;
+    }
+    if (!confirmEnabled) return;
+    onConfirm?.(parsedStartKm);
+  };
 
   const sheetLayout = useMemo(() => {
     const screenH = Dimensions.get('window').height;
@@ -64,6 +95,11 @@ export default function PreCheckSummaryModal({
 
   return (
     <Modal visible={visible} transparent animationType="slide" statusBarTranslucent onRequestClose={() => {}}>
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}
+      >
       <View style={styles.postCheckBackdrop}>
         <View style={[styles.postCheckSheet, styles.preCheckSummarySheet, { maxHeight: sheetLayout.sheetMax }]}>
           <ScrollView
@@ -103,6 +139,21 @@ export default function PreCheckSummaryModal({
             </View>
 
             <Text style={[styles.postCheckSubtitle, { marginBottom: 4 }]}>{todayDateStr}</Text>
+
+            <OdometerKmField
+              caption={t('dashboard.startKmCaption', 'Enter the start KM of the lorry')}
+              hint={t(
+                'dashboard.startKmHint',
+                'Read the odometer now. This is required before you can start delivery.'
+              )}
+              value={startKm}
+              onChangeText={(text) => {
+                setStartKm(text);
+                if (!startKmTouched) setStartKmTouched(true);
+              }}
+              placeholder={t('dashboard.startKmPlaceholder', 'Start KM')}
+              errorText={startKmError}
+            />
 
             {syncInProgress ? (
               <View style={styles.preCheckSyncBanner}>
@@ -454,10 +505,10 @@ export default function PreCheckSummaryModal({
             <TouchableOpacity
               style={[
                 styles.postCheckSubmitBtn,
-                !confirmEnabled ? { opacity: 0.78 } : null,
+                !confirmReady ? { opacity: 0.78 } : null,
               ]}
               activeOpacity={0.88}
-              onPress={onConfirm}
+              onPress={handleConfirm}
               disabled={!confirmEnabled}
             >
               {confirmEnabled ? (
@@ -472,6 +523,7 @@ export default function PreCheckSummaryModal({
           </View>
         </View>
       </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
