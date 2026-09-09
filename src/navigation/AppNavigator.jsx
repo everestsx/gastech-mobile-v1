@@ -16,6 +16,8 @@ import DeliveredOrdersScreen from '../screens/DeliveredOrdersScreen';
 import SaleOrderDetailsScreen from '../screens/SaleOrderDetailsScreen';
 import ProceedPaymentScreen from '../screens/ProceedPaymentScreen';
 import EmptyCylinderCollectionScreen from '../screens/EmptyCylinderCollectionScreen';
+import GasLeakageCollectScreen from '../screens/GasLeakageCollectScreen';
+import MyLeakageScreen from '../screens/MyLeakageScreen';
 import InvoiceScreen from '../screens/InvoiceScreen';
 import PaymentProofScreen from '../screens/PaymentProofScreen';
 import QrGenerateScreen from '../screens/QrGenerateScreen';
@@ -290,6 +292,16 @@ function MainStackScreen() {
         name="EmptyCylinderCollection"
         component={EmptyCylinderCollectionScreen}
         options={{ ...headerScreenOptions, title: t('navigation.emptyCylinders', 'Empty Cylinders') }}
+      />
+      <MainStack.Screen
+        name="GasLeakageCollect"
+        component={GasLeakageCollectScreen}
+        options={{ ...headerScreenOptions, title: t('navigation.gasLeakageCollect', 'Gas Leakage Collect') }}
+      />
+      <MainStack.Screen
+        name="MyLeakage"
+        component={MyLeakageScreen}
+        options={{ ...headerScreenOptions, title: t('navigation.myLeakage', 'My Leakage') }}
       />
       <MainStack.Screen
         name="InvoiceScreen"

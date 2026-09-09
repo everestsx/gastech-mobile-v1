@@ -16,6 +16,8 @@ export const ACTION_INVENTORY_UPDATE = 'inventory_update';
 export const ACTION_CANCEL_ORDER = 'order_cancel';
 /** Fleet vehicle odometer write (start KM / end KM). Payload: { vehicleId, odometer, driverId?, workContactId?, licensePlate?, source?, recordedAt? } */
 export const ACTION_VEHICLE_ODOMETER = 'vehicle_odometer';
+/** Leaked-items receipt picking create. Payload: { partnerId, reason, moves[], saleOrderId?, chatterBody? } */
+export const ACTION_GAS_LEAKAGE_COLLECT = 'gas_leakage_collect';
 
 function wakePendingUploadAfterQueueChange() {
   Promise.all([import('../services/sync.service.js'), import('./syncQueue.js')])
@@ -72,6 +74,25 @@ export async function getPending() {
     payload: safeParseJson(row.payload, {}),
     created_at: row.created_at,
   }));
+}
+
+export async function getQueueItemById(id) {
+  const rowId = num(id);
+  if (!Number.isFinite(rowId) || rowId <= 0) return null;
+  const db = await getDb();
+  const row = await db.getFirstAsync(
+    'SELECT id, action_type, payload, created_at, is_uploaded, synced_at FROM sync_queue WHERE id = ?',
+    [rowId]
+  );
+  if (!row) return null;
+  return {
+    id: row.id,
+    action_type: row.action_type,
+    payload: safeParseJson(row.payload, {}),
+    created_at: row.created_at,
+    is_uploaded: row.is_uploaded,
+    synced_at: row.synced_at,
+  };
 }
 
 export async function markSynced(id) {

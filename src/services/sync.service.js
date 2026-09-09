@@ -366,6 +366,7 @@ async function updatePaymentProofDrivePayloadState(
         _paymentProofChatterPosted: !!nextPayload._paymentProofChatterPosted,
         _paymentProofGasChatterPosted: !!nextPayload._paymentProofGasChatterPosted,
         _paymentProofEmptyCylinderChatterPosted: !!nextPayload._paymentProofEmptyCylinderChatterPosted,
+        _paymentProofGasLeakageChatterPosted: !!nextPayload._paymentProofGasLeakageChatterPosted,
       },
       { suppressWake: true }
     );
@@ -744,6 +745,23 @@ async function postDeferredCheckoutExtrasForSaleOrder(soIdRaw) {
       }
     }
 
+    await getFreshPayload();
+    if (abortIfCheckoutStarted()) return;
+    if (!p._paymentProofGasLeakageChatterPosted) {
+      const leakageRaw = String(p.gasLeakageChatterBody || '').trim();
+      if (leakageRaw) {
+        const leakageNote = /<\s*br/i.test(leakageRaw) ? leakageRaw : linesToOdooHtmlBody(leakageRaw.split('\n'));
+        const leakDedupe = await shouldSkipDuplicateSecondaryChatter(soId, 'gas_leakage', leakageNote);
+        if (!leakDedupe.skip) {
+          await postPaymentProofToChatterWithAttachmentIds(soId, { body: leakageNote, attachmentIds: [] });
+          rememberRecentSecondaryChatter(soId, leakDedupe.fingerprint);
+        }
+        p._paymentProofGasLeakageChatterPosted = true;
+        p = await updatePaymentProofDrivePayloadState(entry?.queueId, soId, p, []);
+        log('queue', `deferred gas leakage note SO ${soId}`);
+      }
+    }
+
     if (payloadDirty && entry?.queueId != null) {
       await syncQueueDb.updateQueueItemPayload(
         Number(entry.queueId),
@@ -752,6 +770,7 @@ async function postDeferredCheckoutExtrasForSaleOrder(soIdRaw) {
           _paymentProofDrivePosted: !!p._paymentProofDrivePosted,
           _paymentProofGasChatterPosted: !!p._paymentProofGasChatterPosted,
           _paymentProofEmptyCylinderChatterPosted: !!p._paymentProofEmptyCylinderChatterPosted,
+          _paymentProofGasLeakageChatterPosted: !!p._paymentProofGasLeakageChatterPosted,
         },
         { suppressWake: true }
       );
@@ -801,10 +820,12 @@ async function processSyncedPaymentsMissingSecondaryChatter() {
       const hasEmpty =
         !!(p.emptyCylinderChatterBody || '').trim() ||
         (Array.isArray(p.emptyCylinderEntries) && p.emptyCylinderEntries.length > 0);
+      const hasLeakage = !!(p.gasLeakageChatterBody || '').trim();
       const needsGas = !p._paymentProofGasChatterPosted && hasGasQty;
       const needsEmpty = !p._paymentProofEmptyCylinderChatterPosted && hasEmpty;
+      const needsLeakage = !p._paymentProofGasLeakageChatterPosted && hasLeakage;
       const needsDrive = p._paymentProofDrivePosted !== true;
-      if (needsGas || needsEmpty || needsDrive) soIds.add(soId);
+      if (needsGas || needsEmpty || needsLeakage || needsDrive) soIds.add(soId);
     }
     if (soIds.size === 0) return;
     for (const soId of soIds) {
@@ -846,6 +867,7 @@ async function processDeferredCheckoutInventoryForSaleOrder(soIdRaw) {
         q.action_type === syncQueueDb.ACTION_INVENTORY_UPDATE &&
         Number((q.payload || {}).saleOrderId ?? (q.payload || {}).sale_order_id) === soId
     );
+    await drainPendingGasLeakageUploads();
     if (!hasInventory) return;
     if (_checkoutUploadPriority) {
       _deferredCheckoutResumeSoIds.add(soId);
@@ -883,6 +905,7 @@ export async function uploadCompletedOrderNow(saleOrderId, options = {}) {
   }
   if (!canRunBackgroundUploadSync()) {
     _checkoutUploadPriority = false;
+    schedulePendingUploadSync({ immediate: false, queuePasses: 8, includeAttachments: true });
     return { pendingCount: null, skippedOffline: true };
   }
   const usageSessionId = createUsageSession(DATA_USAGE_SESSION_TYPES.ORDER_SYNC, {
@@ -904,13 +927,15 @@ export async function uploadCompletedOrderNow(saleOrderId, options = {}) {
       });
       const paymentRow = await syncQueueDb.getPendingPaymentItemBySaleOrderId(soId).catch(() => null);
       const deliveryRow = await syncQueueDb.getPendingDeliveryItemBySaleOrderId(soId).catch(() => null);
-      pendingCount = paymentRow || deliveryRow ? 1 : 0;
-      if (!paymentRow && !deliveryRow) break;
+      const leakagePending = await hasPendingGasLeakageUploads(soId);
+      pendingCount = paymentRow || deliveryRow || leakagePending ? 1 : 0;
+      if (!paymentRow && !deliveryRow && !leakagePending) break;
       log(
         'queue',
         `checkout upload SO ${soId} retry ${attempt + 1}/${maxImmediateAttempts} (${[
           paymentRow ? 'payment' : null,
           deliveryRow ? 'delivery' : null,
+          leakagePending ? 'leakage' : null,
         ]
           .filter(Boolean)
           .join('+')} still pending)`
@@ -950,6 +975,7 @@ export async function uploadCompletedOrderNow(saleOrderId, options = {}) {
       void postDeferredCheckoutExtrasForSaleOrder(soId);
       void processDeferredCheckoutInventoryForSaleOrder(soId);
     }
+    void drainPendingGasLeakageUploads();
     if (_deferredCheckoutResumeSoIds.size > 0) {
       const resumeIds = [..._deferredCheckoutResumeSoIds];
       _deferredCheckoutResumeSoIds.clear();
@@ -5105,6 +5131,22 @@ async function postSaleOrderCheckoutChatterMessages({
         p = await updatePaymentProofDrivePayloadState(queueItemId, soId, p, []);
         log('queue', `empty cylinder note message_post SO ${soId}`);
       }
+
+      const leakageNoteRaw = String(p.gasLeakageChatterBody || '').trim();
+      if (leakageNoteRaw && !p._paymentProofGasLeakageChatterPosted) {
+        const { linesToOdooHtmlBody: toHtml } = await import('./proofAttachment.service.js');
+        const leakageNote = /<\s*br/i.test(leakageNoteRaw)
+          ? leakageNoteRaw
+          : toHtml(leakageNoteRaw.split('\n'));
+        const leakDedupe = await shouldSkipDuplicateSecondaryChatter(soId, 'gas_leakage', leakageNote);
+        if (!leakDedupe.skip) {
+          await postPaymentProofToChatterWithAttachmentIds(soId, { body: leakageNote, attachmentIds: [] });
+          rememberRecentSecondaryChatter(soId, leakDedupe.fingerprint);
+        }
+        p._paymentProofGasLeakageChatterPosted = true;
+        p = await updatePaymentProofDrivePayloadState(queueItemId, soId, p, []);
+        log('queue', `gas leakage note message_post SO ${soId}`);
+      }
     }
 
     if (queueItemId != null) {
@@ -5190,6 +5232,7 @@ async function markPaymentQueueItemSyncedWhenBackendComplete(item, soId, payment
   if (!_checkoutUploadPriority) {
     void postDeferredCheckoutExtrasForSaleOrder(soId);
     void processDeferredCheckoutInventoryForSaleOrder(soId);
+    void drainPendingGasLeakageUploads();
   }
   try {
     const { clearCheckoutResume, pruneStaleCheckoutResumeEntries } = await import('./checkoutResume.service.js');
@@ -5287,6 +5330,60 @@ async function processVehicleOdometerQueueItems(items = null) {
 }
 
 /**
+ * Upload pending leaked-items receipts. Independent of delivery/payment so offline collect still drains.
+ */
+async function processGasLeakageQueueItems(items = null) {
+  const rows =
+    items ??
+    (await syncQueueDb.getPending()).filter((p) => p.action_type === syncQueueDb.ACTION_GAS_LEAKAGE_COLLECT);
+  if (!rows.length) return { synced: 0, failed: 0 };
+
+  const { flushGasLeakageQueueItem } = await import('./gasLeakage.service.js');
+  let synced = 0;
+  let failed = 0;
+
+  for (const item of rows) {
+    try {
+      const result = await flushGasLeakageQueueItem(item);
+      if (result?.skipped) {
+        log('queue', `gas leakage skipped invalid payload id=${item.id}`);
+        continue;
+      }
+      if (result?.alreadySynced) continue;
+      const p = item.payload || {};
+      log(
+        'queue',
+        `gas leakage synced id=${item.id} partner=${p.partnerId} so=${p.saleOrderId ?? ''}`
+      );
+      synced += 1;
+    } catch (e) {
+      failed += 1;
+      logWarn('queue gas_leakage_collect', e);
+    }
+  }
+  return { synced, failed };
+}
+
+async function drainPendingGasLeakageUploads() {
+  try {
+    await processGasLeakageQueueItems();
+  } catch (e) {
+    logWarn('queue gas_leakage drain', e);
+  }
+}
+
+async function hasPendingGasLeakageUploads(saleOrderId = null) {
+  const pending = (await syncQueueDb.getPending().catch(() => [])) || [];
+  const soId = saleOrderId != null ? Number(saleOrderId) : null;
+  return pending.some((q) => {
+    if (q.action_type !== syncQueueDb.ACTION_GAS_LEAKAGE_COLLECT) return false;
+    if (!Number.isFinite(soId) || soId <= 0) return true;
+    const rowSo = Number((q.payload || {}).saleOrderId ?? (q.payload || {}).sale_order_id);
+    return rowSo === soId;
+  });
+}
+
+/**
  * Best-effort immediate cancel RPC when back online (does not block UI).
  * Queue row stays until Odoo confirms cancel state.
  */
@@ -5340,7 +5437,13 @@ async function processSyncQueue(options = {}) {
       }
     } else {
       log('queue', 'already processing; awaiting same run');
-      return _processSyncQueuePromise;
+      const inFlight = _processSyncQueuePromise;
+      await inFlight;
+      // Leakage can be enqueued after the in-flight run already passed leakageEarly
+      // (offline checkout → reconnect coalesce). Drain leftover receipts without
+      // starting a second delivery/payment pipeline.
+      await drainPendingGasLeakageUploads();
+      return;
     }
   }
   _processSyncQueuePromise = (async () => {
@@ -5377,6 +5480,12 @@ async function processSyncQueue(options = {}) {
           if (odoLeft.length > 0) {
             await processVehicleOdometerQueueItems(odoLeft);
           }
+          const leakLeft = leftover.filter(
+            (p) => p.action_type === syncQueueDb.ACTION_GAS_LEAKAGE_COLLECT
+          );
+          if (leakLeft.length > 0) {
+            await processGasLeakageQueueItems(leakLeft);
+          }
           break;
         }
         perfLog('queue-pass-start', `pass=${pass} pending=${pendingAtStart} conc=${independentSaleOrderConcurrency()}`);
@@ -5394,6 +5503,12 @@ async function processSyncQueue(options = {}) {
       );
       if (odometerEarly.length > 0) {
         await processVehicleOdometerQueueItems(odometerEarly);
+      }
+      const leakageEarly = pendingSnapEarly.filter(
+        (p) => p.action_type === syncQueueDb.ACTION_GAS_LEAKAGE_COLLECT
+      );
+      if (leakageEarly.length > 0) {
+        await processGasLeakageQueueItems(leakageEarly);
       }
 
       let queueSnap = await syncQueueDb.getPending();
@@ -5478,6 +5593,12 @@ async function processSyncQueue(options = {}) {
           );
           if (odoLeft.length > 0) {
             await processVehicleOdometerQueueItems(odoLeft);
+          }
+          const leakLeft = queueSnap.filter(
+            (p) => p.action_type === syncQueueDb.ACTION_GAS_LEAKAGE_COLLECT
+          );
+          if (leakLeft.length > 0) {
+            await processGasLeakageQueueItems(leakLeft);
           }
           return;
         }
@@ -8167,7 +8288,12 @@ async function processSyncQueue(options = {}) {
           prioritySoId != null
             ? await syncQueueDb.getActionablePendingCountForSaleOrder(prioritySoId)
             : await syncQueueDb.getPendingCount();
-        if (pendingAfter === 0) break;
+        if (pendingAfter === 0) {
+          // SO-scoped count ignores leftover leakage (and leakage with no saleOrderId).
+          // Drain it before leaving or checkout upload will treat the order as fully synced.
+          await drainPendingGasLeakageUploads();
+          break;
+        }
         if (lastPending >= 0 && pendingAfter < lastPending) {
           lastPending = pendingAfter;
           if (pendingAfter > 0 && retryPassDelayMs > 0) {
@@ -8465,6 +8591,7 @@ export async function deleteLocalData(options = {}) {
     'offline_attachments',
     'local_payments',
     'local_invoices',
+    'gas_leakage_collects',
     'sync_log',
     'sync_queue',
   ];
@@ -9700,6 +9827,7 @@ export async function flushPendingUploadsNow(options = {}) {
       }
       lastPending = pending;
     }
+    await drainPendingGasLeakageUploads();
     if (!aggressive && !skipPaymentTypeRefresh) {
       try {
         const session = await getUserSession();

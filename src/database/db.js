@@ -769,6 +769,32 @@ async function runMigrations(db) {
     }
     await db.runAsync('PRAGMA user_version = 32');
   }
+
+  // Migration 33: local gas leakage collect history (My Leakage)
+  if (current < 33) {
+    try {
+      await db.execAsync(`
+        CREATE TABLE IF NOT EXISTS gas_leakage_collects (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          collected_at TEXT NOT NULL,
+          partner_id INTEGER,
+          partner_name TEXT,
+          sale_order_id INTEGER,
+          reason TEXT,
+          moves_json TEXT,
+          source TEXT,
+          queue_id INTEGER,
+          odoo_sync_status TEXT NOT NULL DEFAULT 'pending'
+        );
+        CREATE INDEX IF NOT EXISTS idx_gas_leakage_collects_at ON gas_leakage_collects(collected_at);
+        CREATE INDEX IF NOT EXISTS idx_gas_leakage_collects_partner ON gas_leakage_collects(partner_id);
+        CREATE INDEX IF NOT EXISTS idx_gas_leakage_collects_queue ON gas_leakage_collects(queue_id);
+      `);
+    } catch (e) {
+      console.warn('[Migration] gas_leakage_collects:', e);
+    }
+    await db.runAsync('PRAGMA user_version = 33');
+  }
 }
 
 /**

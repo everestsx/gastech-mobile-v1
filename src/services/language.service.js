@@ -31,6 +31,7 @@ function isTranslationCacheStale(cached) {
     if (!dash?.preCheckTitle) return true;
     if (!dash?.preCheckButton) return true;
     if (!dash?.postCheckButton) return true;
+    if (!cached?.[lng]?.translation?.gasleakagecollect?.title) return true;
   }
   return false;
 }
