@@ -3178,6 +3178,7 @@ async function writeStockMoveSaleLineId(moveId, saleLineId) {
   if (!Number.isFinite(mid) || mid <= 0 || !Number.isFinite(solId) || solId <= 0) return false;
   const { callOdoo, callOdooArgsKwargs } = await import('./index.service.js');
   const ctx = { skip_sms: true, tracking_disable: true, mail_notrack: true };
+  let wroteMove = false;
   try {
     await callOdooArgsKwargs(
       'stock.move',
@@ -3185,26 +3186,48 @@ async function writeStockMoveSaleLineId(moveId, saleLineId) {
       [[mid], { sale_line_id: solId }],
       { context: ctx }
     );
-    return true;
+    wroteMove = true;
   } catch (_) {
     try {
       await callOdoo('stock.move', 'write', [[mid], { sale_line_id: solId }]);
+      wroteMove = true;
+    } catch (_) {
+      wroteMove = false;
+    }
+  }
+  // Odoo computes qty_delivered from sale.order.line.move_ids, not from a dangling
+  // stock.move.sale_line_id. Done-move write can return success without updating the
+  // inverse (S10734: picking 4/12/45 Done, SOL Delivered 0/0/45). Always add the inverse.
+  try {
+    await callOdoo('sale.order.line', 'write', [[solId], { move_ids: [[4, mid]] }], {
+      context: ctx,
+    });
+    return true;
+  } catch (e) {
+    if (wroteMove) return true;
+    log(
+      'queue',
+      `delivery link move ${mid} to SOL ${solId} failed: ${String(e?.message || e).slice(0, 100)}`
+    );
+    return false;
+  }
+}
+
+/** Odoo sale_stock qty_delivered uses stock.move.quantity / quantity_done — not move-line qty. */
+async function syncStockMoveComputeQtyFromLines(moveId, lineQty) {
+  const mid = Number(moveId);
+  const q = roundDeliveredQty3(lineQty);
+  if (!Number.isFinite(mid) || mid <= 0 || !Number.isFinite(q) || q <= DELIVERED_QTY_VERIFY_TOL) return false;
+  const { callOdoo } = await import('./index.service.js');
+  try {
+    await callOdoo('stock.move', 'write', [[mid], { quantity: q }]);
+    return true;
+  } catch (_) {
+    try {
+      await callOdoo('stock.move', 'write', [[mid], { quantity_done: q }]);
       return true;
     } catch (_) {
-      // Done moves can reject stock.move.write. Inverse One2many link still sets sale_line_id
-      // so Odoo recomputes qty_delivered from this move instead of dropping it to 0.
-      try {
-        await callOdoo('sale.order.line', 'write', [[solId], { move_ids: [[4, mid]] }], {
-          context: ctx,
-        });
-        return true;
-      } catch (e) {
-        log(
-          'queue',
-          `delivery link move ${mid} to SOL ${solId} failed: ${String(e?.message || e).slice(0, 100)}`
-        );
-        return false;
-      }
+      return false;
     }
   }
 }
@@ -3311,31 +3334,50 @@ async function getUnboundDeliveredProductsOnOdoo(saleOrderId) {
   }
 
   const productHasUnlinkedQtyMove = new Set();
+  const boundComputeQtyByProduct = new Map();
   for (const mv of allMoves) {
     const st = String(mv?.state || '').toLowerCase();
     if (st === 'cancel') continue;
     const pid = odooRelId(mv?.product_id);
     if (!Number.isFinite(pid) || pid <= 0) continue;
     const mid = Number(mv?.id);
-    const q = Math.max(stockMoveDoneQty(mv), qtyByMoveId.get(mid) || 0);
-    if (q <= DELIVERED_QTY_VERIFY_TOL) continue;
+    const computeQty = stockMoveDoneQty(mv);
+    const displayQty = Math.max(computeQty, qtyByMoveId.get(mid) || 0);
+    if (displayQty <= DELIVERED_QTY_VERIFY_TOL) continue;
     const preferred = preferSaleLineRow(linesByProduct.get(pid) || []);
     const preferredId = Number(preferred?.id);
     const existingSol = odooRelId(mv?.sale_line_id);
     if (stockMoveSaleLineNeedsBind(existingSol, preferredId, pid, lineById, preferred)) {
       productHasUnlinkedQtyMove.add(pid);
+      continue;
+    }
+    // Only move.quantity / quantity_done counts toward sale.order.line Delivered.
+    // Line-only qty on an already-linked move looks bound here and then SOL stays 0 (S10734).
+    if (Number.isFinite(preferredId) && existingSol === preferredId && computeQty > DELIVERED_QTY_VERIFY_TOL) {
+      boundComputeQtyByProduct.set(
+        pid,
+        roundDeliveredQty3((boundComputeQtyByProduct.get(pid) || 0) + computeQty)
+      );
     }
   }
 
+  const unboundPids = new Set(productHasUnlinkedQtyMove);
+  for (const [pid, pickingQty] of pickingQtyByProduct.entries()) {
+    if (pickingQty <= DELIVERED_QTY_VERIFY_TOL) continue;
+    const boundQty = boundComputeQtyByProduct.get(pid) || 0;
+    if (pickingQty > boundQty + DELIVERED_QTY_VERIFY_TOL) unboundPids.add(pid);
+  }
+
   const unbound = [];
-  for (const pid of productHasUnlinkedQtyMove) {
+  for (const pid of unboundPids) {
     const pickingQty = pickingQtyByProduct.get(pid) || 0;
     const preferred = preferSaleLineRow(linesByProduct.get(pid) || []);
     const lineId = Number(preferred?.id);
+    const solQty = roundDeliveredQty3(preferred?.qty_delivered);
     unbound.push({
       productId: pid,
       pickingQty,
-      solQty: 0,
+      solQty: Number.isFinite(solQty) ? solQty : 0,
       lineId: Number.isFinite(lineId) && lineId > 0 ? lineId : null,
       unlinkedMove: true,
     });
@@ -3360,6 +3402,48 @@ async function forceBindUnboundDoneMovesToSaleOrderLines(saleOrderId) {
   const updates = unbound
     .filter((u) => u.lineId != null && roundDeliveredQty3(u.pickingQty) > DELIVERED_QTY_VERIFY_TOL)
     .map((u) => ({ lineId: u.lineId, qty_delivered: u.pickingQty }));
+  const unboundPids = new Set(
+    unbound.map((u) => Number(u.productId)).filter((pid) => Number.isFinite(pid) && pid > 0)
+  );
+  if (unboundPids.size > 0) {
+    const { getPickingBySaleOrder, getStockMovesByPickingId, getStockMoveLinesByMoveIds } =
+      await import('./delivery.service.js');
+    const picks = (await getPickingBySaleOrder(soId).catch(() => [])) || [];
+    for (const pk of picks) {
+      if (String(pk?.state || '').toLowerCase() === 'cancel') continue;
+      const pkId = Number(pk?.id);
+      if (!Number.isFinite(pkId) || pkId <= 0) continue;
+      const moves = (await getStockMovesByPickingId(pkId).catch(() => [])) || [];
+      const unread = [];
+      for (const mv of moves || []) {
+        const pid = odooRelId(mv?.product_id);
+        if (!unboundPids.has(pid)) continue;
+        if (stockMoveDoneQty(mv) > DELIVERED_QTY_VERIFY_TOL) continue;
+        const mid = Number(mv?.id);
+        if (Number.isFinite(mid) && mid > 0) unread.push(mid);
+      }
+      const qtyByMove = new Map();
+      if (unread.length) {
+        const mls = (await getStockMoveLinesByMoveIds(unread).catch(() => [])) || [];
+        for (const ml of mls) {
+          const mid = Number(Array.isArray(ml?.move_id) ? ml.move_id[0] : ml?.move_id);
+          const q = stockMoveLineDoneQty(ml);
+          if (!Number.isFinite(mid) || mid <= 0 || q <= 0) continue;
+          qtyByMove.set(mid, roundDeliveredQty3((qtyByMove.get(mid) || 0) + q));
+        }
+      }
+      for (const mv of moves || []) {
+        const pid = odooRelId(mv?.product_id);
+        if (!unboundPids.has(pid)) continue;
+        const mid = Number(mv?.id);
+        if (!Number.isFinite(mid) || mid <= 0) continue;
+        const lineQty = qtyByMove.get(mid) || 0;
+        if (stockMoveDoneQty(mv) <= DELIVERED_QTY_VERIFY_TOL && lineQty > DELIVERED_QTY_VERIFY_TOL) {
+          await syncStockMoveComputeQtyFromLines(mid, lineQty);
+        }
+      }
+    }
+  }
   if (updates.length) {
     try {
       await applySaleOrderLineDeliveredUpdates(updates, soId, { deferVerify: true });
@@ -3433,6 +3517,9 @@ async function forceBindSaleLinesFromDeliveredUpdates(saleOrderId, deliveredUpda
         if (!Number.isFinite(mid) || mid <= 0) continue;
         const q = Math.max(stockMoveDoneQty(mv), qtyByMove.get(mid) || 0);
         if (st !== 'done' && q <= DELIVERED_QTY_VERIFY_TOL) continue;
+        if (stockMoveDoneQty(mv) <= DELIVERED_QTY_VERIFY_TOL && q > DELIVERED_QTY_VERIFY_TOL) {
+          await syncStockMoveComputeQtyFromLines(mid, q);
+        }
         if (odooRelId(mv?.sale_line_id) === lid) continue;
         const ok = await writeStockMoveSaleLineId(mid, lid);
         if (ok) bound += 1;
@@ -5751,9 +5838,8 @@ async function processSyncQueue(options = {}) {
           const verifyPayload = finalSnap.payload || p;
           const runDeliveredQtyVerify = async () =>
             verifyDeliveryQtyBoundOnOdoo(saleOrderId, saleOrderLineDeliveredUpdates, verifyPayload);
-          // Fast checkout skips the SOL qty_delivered settle retry loop (compute lag).
-          // Bind gate is assertDonePickingSaleLinesBound below — picking qty vs SO Delivered.
-          if (!(fastCheckout && validatedAnyPicking)) {
+          // Always verify actual sale.order.line qty_delivered. Fast checkout used to skip this
+          // and only check sale_line_id, which left partial Done qty unbound (S10734 4/12 vs 0/0).
           try {
             saleOrderLineDeliveredUpdates = await runDeliveredQtyVerify();
           } catch (verifyErr) {
@@ -5798,7 +5884,6 @@ async function processSyncQueue(options = {}) {
                 saleOrderLineDeliveredUpdates = await runDeliveredQtyVerify();
               }
             }
-          }
           }
           if (
             validatedAnyPicking &&
