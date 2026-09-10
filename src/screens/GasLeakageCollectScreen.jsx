@@ -17,11 +17,12 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius } from '../constants/theme';
-import { getUserSession } from '../services/sync.service';
-import * as syncQueueDb from '../database/syncQueue.js';
+import { getCachedOrders, getUserSession } from '../services/sync.service';
 import { getAllPartners, getCustomersByVehicle } from '../database/partners';
 import { getLocalizedCustomerName } from '../utils/customerDisplayName';
 import { labelFromKg } from '../utils/cylinderCatalog';
+import { customersFromOrdersTab, indexPartnersById } from '../utils/orderTabCustomers';
+import { formatLocalYyyyMmDd } from '../utils/localDate';
 import {
   LEAKAGE_REASON_PRESETS,
   loadLeakageCylinderProducts,
@@ -53,13 +54,6 @@ const REASON_FALLBACKS = {
   },
 };
 
-function partnerFromRoute(params) {
-  const id = Number(params?.partnerId);
-  const name = String(params?.partnerName || '').trim();
-  if (!Number.isFinite(id) || id <= 0) return null;
-  return { id, name: name || `#${id}` };
-}
-
 function uniquePartners(lists) {
   const seen = new Set();
   const out = [];
@@ -86,26 +80,24 @@ function groupRowsByKg(productRows) {
   return [...map.values()].sort((a, b) => a.kg - b.kg);
 }
 
-export default function GasLeakageCollectScreen({ route, navigation }) {
+export default function GasLeakageCollectScreen({ navigation }) {
   const { t, i18n } = useTranslation();
   const { colors, appLanguage } = useTheme();
   const insets = useSafeAreaInsets();
-  const params = route.params || {};
-  const fromCheckout = Boolean(params.fromCheckout);
-  const invoiceNavParams = params.invoiceNavParams || null;
-  const saleOrderId = Number(params.saleOrderId ?? invoiceNavParams?.saleOrderId);
-  const presetPartner = partnerFromRoute(params);
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [productRows, setProductRows] = useState([]);
-  const [selectedPartner, setSelectedPartner] = useState(presetPartner);
+  const [selectedPartner, setSelectedPartner] = useState(null);
   const [customerModalVisible, setCustomerModalVisible] = useState(false);
-  const [partners, setPartners] = useState([]);
+  const [customerFilter, setCustomerFilter] = useState('today');
+  const [allPartners, setAllPartners] = useState([]);
+  const [saleOrders, setSaleOrders] = useState([]);
   const [partnerQuery, setPartnerQuery] = useState('');
   const [reasonModalVisible, setReasonModalVisible] = useState(false);
   const [selectedReasonKey, setSelectedReasonKey] = useState('');
   const [otherReason, setOtherReason] = useState('');
+  const todayStr = formatLocalYyyyMmDd(new Date());
 
   const resolvedLanguage = useMemo(
     () => String(i18n?.resolvedLanguage || i18n?.language || 'en').split('-')[0].toLowerCase(),
@@ -124,31 +116,28 @@ export default function GasLeakageCollectScreen({ route, navigation }) {
     [resolvedLanguage, t]
   );
 
-  useEffect(() => {
-    if (!fromCheckout) return;
-    navigation.setOptions({ headerBackVisible: false, gestureEnabled: false });
-  }, [fromCheckout, navigation]);
-
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const rows = await loadLeakageCylinderProducts({ allowRemote: false });
       setProductRows((rows || []).map((row) => ({ ...row, qty: 0 })));
-      if (!fromCheckout) {
-        const session = await getUserSession();
-        const vehicleId = session?.vehicleId;
-        const [byVehicle, all] = await Promise.all([
-          vehicleId != null ? getCustomersByVehicle(vehicleId) : Promise.resolve([]),
-          getAllPartners(),
-        ]);
-        setPartners(uniquePartners([byVehicle, all]));
-      }
+      const session = await getUserSession();
+      const vehicleId = session?.vehicleId;
+      const [byVehicle, all, orders] = await Promise.all([
+        vehicleId != null ? getCustomersByVehicle(vehicleId) : Promise.resolve([]),
+        getAllPartners(),
+        getCachedOrders(vehicleId ?? null),
+      ]);
+      setAllPartners(uniquePartners([byVehicle, all]));
+      setSaleOrders(Array.isArray(orders) ? orders : []);
     } catch {
       setProductRows([]);
+      setAllPartners([]);
+      setSaleOrders([]);
     } finally {
       setLoading(false);
     }
-  }, [fromCheckout]);
+  }, []);
 
   useEffect(() => {
     void load();
@@ -161,16 +150,23 @@ export default function GasLeakageCollectScreen({ route, navigation }) {
   );
   const hasCollection = totalCollected > 0;
 
+  const partnerLookup = useMemo(() => indexPartnersById(allPartners), [allPartners]);
+  const todayPartners = useMemo(
+    () => customersFromOrdersTab(saleOrders, todayStr, 'delivery_date', partnerLookup),
+    [partnerLookup, saleOrders, todayStr]
+  );
+  const catalogPartners = customerFilter === 'today' ? todayPartners : allPartners;
+
   const filteredPartners = useMemo(() => {
     const q = partnerQuery.trim().toLowerCase();
-    if (!q) return partners;
-    return partners.filter((p) => {
+    if (!q) return catalogPartners;
+    return catalogPartners.filter((p) => {
       const name = String(getLocalizedCustomerName(p, appLanguage) || '').toLowerCase();
       const phone = String(p.phone || '').toLowerCase();
       const city = String(p.city || '').toLowerCase();
       return name.includes(q) || phone.includes(q) || city.includes(q);
     });
-  }, [appLanguage, partnerQuery, partners]);
+  }, [appLanguage, catalogPartners, partnerQuery]);
 
   const setQty = useCallback((productKey, text) => {
     const cleaned = String(text || '').replace(/[^0-9]/g, '');
@@ -188,14 +184,6 @@ export default function GasLeakageCollectScreen({ route, navigation }) {
       })
     );
   }, []);
-
-  const goToInvoiceOrBack = useCallback(() => {
-    if (fromCheckout) {
-      navigation.replace('InvoiceScreen', invoiceNavParams || {});
-      return;
-    }
-    navigation.goBack();
-  }, [fromCheckout, invoiceNavParams, navigation]);
 
   const persistAndContinue = useCallback(
     async (reasonApi) => {
@@ -216,23 +204,6 @@ export default function GasLeakageCollectScreen({ route, navigation }) {
           );
         }
         const chatterBody = buildGasLeakageChatterBody(collected, reasonApi);
-        let chatterAttachedToPayment = false;
-
-        if (fromCheckout && Number.isFinite(saleOrderId) && saleOrderId > 0) {
-          const pendingPayment = await syncQueueDb.getPendingPaymentItemBySaleOrderId(saleOrderId);
-          if (pendingPayment?.id != null) {
-            await syncQueueDb.updateQueueItemPayload(
-              pendingPayment.id,
-              {
-                ...(pendingPayment.payload || {}),
-                gasLeakageChatterBody: chatterBody,
-                gasLeakageDriverReason: reasonApi,
-              },
-              { suppressWake: true }
-            );
-            chatterAttachedToPayment = true;
-          }
-        }
 
         await submitLeakageCollectOfflineFirst({
           partnerId,
@@ -244,15 +215,15 @@ export default function GasLeakageCollectScreen({ route, navigation }) {
             kind: r.kind,
             displayName: r.displayName,
           })),
-          saleOrderId: Number.isFinite(saleOrderId) && saleOrderId > 0 ? saleOrderId : null,
+          saleOrderId: null,
           chatterBody,
-          chatterAttachedToPayment,
+          chatterAttachedToPayment: false,
           partnerName: selectedPartner?.name || '',
-          source: fromCheckout ? 'checkout' : 'menu',
+          source: 'menu',
         });
 
         setReasonModalVisible(false);
-        goToInvoiceOrBack();
+        navigation.goBack();
       } catch (e) {
         Alert.alert(
           t('gasleakagecollect.error', 'Error'),
@@ -262,32 +233,28 @@ export default function GasLeakageCollectScreen({ route, navigation }) {
         setSaving(false);
       }
     },
-    [fromCheckout, goToInvoiceOrBack, productRows, saleOrderId, selectedPartner, t]
+    [navigation, productRows, selectedPartner, t]
   );
 
   const onPressContinue = useCallback(() => {
-    if (!fromCheckout && !selectedPartner?.id) {
+    if (!selectedPartner?.id) {
       Alert.alert(
         t('gasleakagecollect.customerRequired', 'Customer required'),
         t('gasleakagecollect.pleaseSelectACustomer', 'Please select a customer.')
       );
       return;
     }
-    if (!fromCheckout && !hasCollection) {
+    if (!hasCollection) {
       Alert.alert(
         t('gasleakagecollect.quantityRequired', 'Quantity required'),
         t('gasleakagecollect.pleaseCollectAtLeastOne', 'Please enter quantity for at least one product.')
       );
       return;
     }
-    if (!hasCollection) {
-      goToInvoiceOrBack();
-      return;
-    }
     setSelectedReasonKey('');
     setOtherReason('');
     setReasonModalVisible(true);
-  }, [fromCheckout, goToInvoiceOrBack, hasCollection, selectedPartner, t]);
+  }, [hasCollection, selectedPartner, t]);
 
   const onConfirmReason = useCallback(() => {
     const selected = reasonOptions.find((reason) => reason.key === selectedReasonKey);
@@ -492,6 +459,26 @@ export default function GasLeakageCollectScreen({ route, navigation }) {
           marginBottom: spacing.sm,
         },
         searchInput: { flex: 1, paddingVertical: 10, color: colors.text, fontSize: 15, fontWeight: '600' },
+        sourceRow: {
+          flexDirection: 'row',
+          gap: 8,
+          marginBottom: spacing.sm,
+        },
+        sourceTab: {
+          flex: 1,
+          paddingVertical: 8,
+          borderRadius: 10,
+          alignItems: 'center',
+          backgroundColor: colors.background,
+          borderWidth: 1,
+          borderColor: colors.border,
+        },
+        sourceTabActive: {
+          borderColor: colors.primary,
+          backgroundColor: colors.primarySurface || colors.primary + '14',
+        },
+        sourceTabText: { fontSize: 13, fontWeight: '700', color: colors.textSecondary },
+        sourceTabTextActive: { color: colors.primary },
         customerRow: {
           flexDirection: 'row',
           alignItems: 'center',
@@ -547,26 +534,21 @@ export default function GasLeakageCollectScreen({ route, navigation }) {
         <View style={styles.hero}>
           <Text style={styles.title}>{t('gasleakagecollect.title', 'Gas Leakage Collect')}</Text>
           <Text style={styles.heroText}>
-            {fromCheckout
-              ? t(
-                  'gasleakagecollect.heroCheckout',
-                  'Review leaked gas and empty quantities by size. If a size has no collection, it still appears as 0.'
-                )
-              : t(
-                  'gasleakagecollect.heroMenu',
-                  'Select the customer, then enter leaked gas and empty quantities by size.'
-                )}
+            {t(
+              'gasleakagecollect.heroMenu',
+              'Select the customer, then enter leaked gas and empty quantities by size.'
+            )}
           </Text>
         </View>
 
         <TouchableOpacity
           style={styles.customerChip}
           onPress={() => {
-            if (fromCheckout) return;
+            setCustomerFilter('today');
+            setPartnerQuery('');
             setCustomerModalVisible(true);
           }}
-          activeOpacity={fromCheckout ? 1 : 0.85}
-          disabled={fromCheckout}
+          activeOpacity={0.85}
         >
           <View style={styles.customerIcon}>
             <Ionicons name="person-outline" size={20} color={colors.primary} />
@@ -577,7 +559,7 @@ export default function GasLeakageCollectScreen({ route, navigation }) {
               {selectedPartner?.name || t('gasleakagecollect.selectCustomer', 'Select customer')}
             </Text>
           </View>
-          {fromCheckout ? null : <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />}
+          <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
         </TouchableOpacity>
 
         <View style={styles.cardsWrap}>
@@ -606,9 +588,7 @@ export default function GasLeakageCollectScreen({ route, navigation }) {
         <Text style={styles.hint}>
           {hasCollection
             ? t('gasleakagecollect.reasonRequiredBecauseCollected', 'You collected leakage, so a reason is required.')
-            : fromCheckout
-              ? t('gasleakagecollect.continueToInvoice', 'Continue to invoice.')
-              : t('gasleakagecollect.pleaseCollectAtLeastOne', 'Please enter quantity for at least one product.')}
+            : t('gasleakagecollect.pleaseCollectAtLeastOne', 'Please enter quantity for at least one product.')}
         </Text>
       </View>
 
@@ -662,6 +642,29 @@ export default function GasLeakageCollectScreen({ route, navigation }) {
         <Pressable style={styles.modalWrap} onPress={() => setCustomerModalVisible(false)}>
           <Pressable style={[styles.modalCard, { maxHeight: '85%', paddingBottom: Math.max(insets.bottom, spacing.md) }]} onPress={(e) => e.stopPropagation()}>
             <Text style={styles.modalTitle}>{t('gasleakagecollect.selectCustomer', 'Select customer')}</Text>
+            <View style={styles.sourceRow}>
+              {[
+                { key: 'today', label: t('gasleakagecollect.filterTodayOrders', "Today's orders") },
+                { key: 'all', label: t('gasleakagecollect.filterAllCustomers', 'All customers') },
+              ].map((opt) => {
+                const active = customerFilter === opt.key;
+                return (
+                  <TouchableOpacity
+                    key={opt.key}
+                    style={[styles.sourceTab, active && styles.sourceTabActive]}
+                    onPress={() => {
+                      setCustomerFilter(opt.key);
+                      setPartnerQuery('');
+                    }}
+                    activeOpacity={0.85}
+                  >
+                    <Text style={[styles.sourceTabText, active && styles.sourceTabTextActive]}>
+                      {opt.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
             <View style={styles.searchWrap}>
               <Ionicons name="search-outline" size={18} color={colors.textSecondary} />
               <TextInput
@@ -680,7 +683,12 @@ export default function GasLeakageCollectScreen({ route, navigation }) {
               style={{ maxHeight: 360 }}
               ListEmptyComponent={
                 <Text style={[styles.heroText, { paddingVertical: spacing.md }]}>
-                  {t('gasleakagecollect.noCustomers', 'No customers found. Sync from Menu and try again.')}
+                  {customerFilter === 'today'
+                    ? t(
+                        'gasleakagecollect.noTodayCustomers',
+                        "No customers with today's committed orders."
+                      )
+                    : t('gasleakagecollect.noCustomers', 'No customers found. Sync from Menu and try again.')}
                 </Text>
               }
               renderItem={({ item }) => (

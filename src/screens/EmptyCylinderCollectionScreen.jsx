@@ -444,21 +444,8 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
             ? { emptyCylinderChatterBody: String(emptyCylinderChatterBody).trim() }
             : {}),
         };
-        const partnerRaw = order.partner_id;
-        const partnerId = Array.isArray(partnerRaw)
-          ? Number(partnerRaw[0])
-          : Number(order.partner_id ?? 0);
-        const partnerName = Array.isArray(partnerRaw)
-          ? String(partnerRaw[1] || order.partner_name || '')
-          : String(order.partner_name || '');
 
-        navigation.replace('GasLeakageCollect', {
-          fromCheckout: true,
-          saleOrderId: Number(saleOrderId),
-          partnerId: Number.isFinite(partnerId) && partnerId > 0 ? partnerId : null,
-          partnerName,
-          invoiceNavParams: invoiceParams,
-        });
+        navigation.replace('InvoiceScreen', invoiceParams);
       } catch (e) {
         Alert.alert(
           t('emptycylindercollection.error', 'Error'),
@@ -735,7 +722,7 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
         <Text style={styles.hint}>
           {hasAdjustment
             ? t('emptycylindercollection.reasonRequiredBecauseQtyChanged', 'You changed quantity, so reason is required.')
-            : t('emptycylindercollection.continueToLeakage', 'Continue to leakage collection.')}
+            : t('emptycylindercollection.continueToInvoice', 'Continue to invoice.')}
         </Text>
       </View>
 

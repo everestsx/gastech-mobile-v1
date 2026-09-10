@@ -2282,6 +2282,26 @@ export default function DashboardScreen({ navigation }) {
         shopsGasTarget: { fontSize: 18, fontWeight: '700', color: colors.textSecondary },
         shopsGasLabel: { fontSize: 11, fontWeight: '700', color: colors.textSecondary, marginTop: 4, letterSpacing: 0.3 },
         shopsGasPct: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
+        leakageCollectBtn: {
+          marginHorizontal: spacing.md,
+          marginBottom: spacing.md,
+          backgroundColor: colors.surface,
+          borderRadius: borderRadius.lg,
+          borderWidth: 1.5,
+          borderColor: colors.primary,
+          paddingVertical: 12,
+          paddingHorizontal: spacing.md,
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 8,
+        },
+        leakageCollectBtnText: {
+          fontSize: 13,
+          fontWeight: '800',
+          color: colors.primary,
+          letterSpacing: 0.2,
+        },
         metricsRow: {
           flexDirection: 'row',
           gap: spacing.sm,
@@ -2902,6 +2922,18 @@ export default function DashboardScreen({ navigation }) {
             <Text style={styles.shopsGasPct}>{gasPct}% Complete</Text>
           </TouchableOpacity>
         </View>
+
+        <TouchableOpacity
+          style={styles.leakageCollectBtn}
+          onPress={() => navigation.navigate('GasLeakageCollect')}
+          activeOpacity={0.85}
+        >
+          <Ionicons name="water-outline" size={20} color={colors.primary} />
+          <Text style={styles.leakageCollectBtnText}>
+            {t('dashboard.leakageGasCollected', 'Leakage Gas Collected')}
+          </Text>
+          <Ionicons name="chevron-forward" size={18} color={colors.primary} />
+        </TouchableOpacity>
 
       {/* 5. Delivery Progress by Shop - bar chart with date picker (default today) */}
       <View style={{ paddingHorizontal: spacing.md }}>
