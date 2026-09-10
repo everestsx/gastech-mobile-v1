@@ -749,6 +749,7 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
     }
 
     try {
+      const { getLastNetworkQuality, NetworkQuality } = await import('../services/networkStatus.service.js');
       const {
         getPickingBySaleOrder,
         getStockMovesByPickingId,
@@ -757,6 +758,12 @@ export default function SaleOrderDetailsScreen({ route, navigation }) {
         materializeLocalDeliveryScaffoldForSaleOrder,
       } = await import('../services/delivery.service.js');
       const { callOdooArgs } = await import('../services/index.service.js');
+
+      // Weak/offline devices can sit on 60s Odoo timeouts here. Keep the live fetch on a
+      // good connection (existing happy path); otherwise scaffold from local SO lines.
+      if (getLastNetworkQuality() !== NetworkQuality.GOOD) {
+        return (await materializeLocalDeliveryScaffoldForSaleOrder(soId).catch(() => [])) || [];
+      }
 
       let livePickings = (await getPickingBySaleOrder(soId).catch(() => [])) || [];
       if (!livePickings.length) {
@@ -1488,9 +1495,9 @@ const getStockWarning = useCallback((lineId) => {
         const payloadWithHold = { ...payload, holdUntilPayment: true };
         const existing = await syncQueueDb.getPendingDeliveryItemBySaleOrderId(order.id);
         if (existing) {
-          await syncQueueDb.updateQueueItemPayload(existing.id, payloadWithHold);
+          await syncQueueDb.updateQueueItemPayload(existing.id, payloadWithHold, { suppressWake: true });
         } else {
-          await syncQueueDb.enqueue(syncQueueDb.ACTION_DELIVERY, payloadWithHold);
+          await syncQueueDb.enqueue(syncQueueDb.ACTION_DELIVERY, payloadWithHold, { suppressWake: true });
         }
       }
       const updatedLines = linesAfterDemandEditSave(lines, payload.orderLineUpdates);

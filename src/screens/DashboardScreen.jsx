@@ -377,6 +377,7 @@ export default function DashboardScreen({ navigation }) {
   const [initialLoadGateActive, setInitialLoadGateActive] = useState(
     () => !isDashboardInitialLoadMemoryDone()
   );
+  const stockOverviewGenRef = useRef(0);
   const dashboardSessionKeyRef = useRef(null);
   const routeSyncSentRef = useRef(new Set());
   const lastSyncNotificationRef = React.useRef(null);
@@ -391,7 +392,9 @@ export default function DashboardScreen({ navigation }) {
     setDashboardIndicatorsListener((ind) => {
       setOrderSyncStats((prev) => ({
         ...prev,
-        pendingOrders: ind.pendingOrders,
+        // Grey pending is owned by loadData. Upload emits (checkout latch / queue refresh)
+        // only update orange — applying stale pendingOrders here briefly put the just-
+        // completed order back into the pending count.
         localCompleted: ind.localCompleted,
       }));
     });
@@ -719,8 +722,8 @@ export default function DashboardScreen({ navigation }) {
           localCompleted,
           syncedCompleted,
         },
-        stockCards: Array.isArray(stockCards) ? stockCards : [],
-        emptyStockByKg: emptyStockByKg || {},
+        stockCards: lastDashboardSnapshot?.stockCards ?? [],
+        emptyStockByKg: lastDashboardSnapshot?.emptyStockByKg ?? {},
       };
     } catch (err) {
       // Keep last known dashboard data on transient read failures.
@@ -729,9 +732,12 @@ export default function DashboardScreen({ navigation }) {
       if (showLoading) setLoading(false);
     }
 
+    const stockGen = ++stockOverviewGenRef.current;
     const runStockOverview = async () => {
       try {
+        if (stockGen !== stockOverviewGenRef.current) return;
         if (vehicleIdForStock == null) {
+          if (stockGen !== stockOverviewGenRef.current) return;
           setStockCards((prev) => (prev?.length ? prev : []));
           return;
         }
@@ -803,6 +809,7 @@ export default function DashboardScreen({ navigation }) {
           const qty = Math.max(0, Number(inv?.quantity) || 0);
           nextEmptyStockByKg[kg] = (nextEmptyStockByKg[kg] || 0) + qty;
         }
+        if (stockGen !== stockOverviewGenRef.current) return;
         setEmptyStockByKg(nextEmptyStockByKg);
         const byProduct = {};
         for (const inv of inventories || []) {
@@ -819,6 +826,7 @@ export default function DashboardScreen({ navigation }) {
             remaining,
           };
         }
+        if (stockGen !== stockOverviewGenRef.current) return;
         const nextCards = buildDefaultGasDashboardStockCards(Object.values(byProduct), productNameMap || {});
         setStockCards(nextCards);
         lastDashboardSnapshot = {
@@ -827,6 +835,7 @@ export default function DashboardScreen({ navigation }) {
           emptyStockByKg: nextEmptyStockByKg,
         };
       } catch (_) {
+        if (stockGen !== stockOverviewGenRef.current) return;
         setStockCards((prev) => (prev?.length ? prev : []));
       }
     };

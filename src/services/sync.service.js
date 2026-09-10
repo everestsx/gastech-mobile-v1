@@ -1074,15 +1074,25 @@ export function signalDashboardPendingUploadStarted() {
   emitDashboardIndicatorsChanged();
 }
 
-/** Count pending payment queue rows (orange counter — not inventory / attachments). */
+function saleOrderIdFromPaymentQueuePayload(payload) {
+  const p = payload && typeof payload === 'object' ? payload : {};
+  const n = Number(p.saleOrderId ?? p.sale_order_id ?? p.sale_id);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/** Count unique sale orders with a non-held pending payment (orange counter). */
 export async function countPendingPaymentUploads() {
   try {
     const pending = await syncQueueDb.getPending().catch(() => []);
-    return (pending || []).filter(
-      (item) =>
-        item.action_type === syncQueueDb.ACTION_PAYMENT &&
-        !syncQueueDb.isSyncQueuePayloadHeld(item.payload || {})
-    ).length;
+    const ids = new Set();
+    for (const item of pending || []) {
+      if (item.action_type !== syncQueueDb.ACTION_PAYMENT) continue;
+      if (syncQueueDb.isSyncQueuePayloadHeld(item.payload || {})) continue;
+      const soId = saleOrderIdFromPaymentQueuePayload(item.payload);
+      if (soId == null) continue;
+      ids.add(soId);
+    }
+    return ids.size;
   } catch (_) {
     return 0;
   }
@@ -8196,14 +8206,15 @@ async function processSyncQueue(options = {}) {
             }
           }
 
-          if (alreadySyncedSaleOrderIds.has(soId) && p._paymentProofChatterPosted) {
-            // Leftover pending payment after a prior synced payment — clear safely (no re-invoice).
-            if (await markPaymentQueueItemSyncedWhenBackendComplete(item, soId, p, { pipelinePreVerified: true })) {
-              log(
-                'queue',
-                `payment synced id=${item.id} SO ${soId} (cleared leftover pending after prior synced payment)`
-              );
-            }
+          if (alreadySyncedSaleOrderIds.has(soId)) {
+            // Leftover pending payment after a prior synced payment — clear without re-invoice.
+            // Do not require chatter flags on the duplicate row (those stay false and used to pin orange forever).
+            await syncQueueDb.markSynced(Number(item.id));
+            await refreshDashboardUploadIndicatorsFromQueue().catch(() => {});
+            log(
+              'queue',
+              `payment leftover pending id=${item.id} SO ${soId} cleared (prior payment already synced)`
+            );
             return;
           }
 
@@ -8939,11 +8950,13 @@ function runStartDayBackgroundRefreshInBackground(sessionUser, vehicleId) {
   const vId = Number(vehicleId);
   if (!Number.isFinite(vId) || vId <= 0) return;
 
-  // If a refresh is already running for a *different* vehicle, queue this one so stock
-  // is never skipped after a quick vehicle switch / double start_day.
+  // If a refresh is already running, queue another pass so a later sync after a Back Office
+  // stock change is not dropped (same or different vehicle).
   if (_startDayBackgroundRefreshPromise) {
+    // Queue another pass even for the same vehicle — a second sync after a Back Office
+    // stock change was previously dropped while the first fetch was still in flight.
+    _startDayBackgroundRefreshQueued = { sessionUser, vehicleId: vId };
     if (_startDayBackgroundRefreshVehicleId !== vId) {
-      _startDayBackgroundRefreshQueued = { sessionUser, vehicleId: vId };
       log('sync', `start_day bg inventory queued for vehicle ${vId} (in-flight ${_startDayBackgroundRefreshVehicleId})`);
     }
     return;

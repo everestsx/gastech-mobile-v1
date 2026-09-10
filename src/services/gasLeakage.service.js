@@ -155,8 +155,8 @@ function pickingIdFromCreateResult(result) {
 
 function canAttemptLeakageUploadNow() {
   try {
-    const { isUploadSyncNetworkAvailable } = require('./networkStatus.service.js');
-    return isUploadSyncNetworkAvailable();
+    const { getLastNetworkQuality, NetworkQuality } = require('./networkStatus.service.js');
+    return getLastNetworkQuality() === NetworkQuality.GOOD;
   } catch (_) {
     return true;
   }
