@@ -61,6 +61,7 @@ import {
 import {
   ensureBackgroundOrderSyncKeepAlive,
   hideBackgroundOrderSyncNotificationIfIdle,
+  stopBackgroundOrderSyncNotification,
 } from '../services/backgroundSyncNotification.service';
 import * as syncQueueDb from '../database/syncQueue.js';
 import {
@@ -106,7 +107,7 @@ function MainTabs() {
 
   React.useEffect(() => {
     const sub = DeviceEventEmitter.addListener('preCheckStatusChanged', (status) => {
-      setPreCheckDone(status);
+      setPreCheckDone(status === true);
     });
     return () => sub.remove();
   }, []);
@@ -117,7 +118,7 @@ function MainTabs() {
     <Tab.Navigator
       screenListeners={{
         tabPress: (e) => {
-          if (!preCheckDone) {
+          if (preCheckDone !== true) {
             e.preventDefault();
           }
         },
@@ -353,6 +354,8 @@ export default function AppNavigator() {
           includeAttachments: true,
           chainRetry: false,
         });
+      } else if (snap.quality === NetworkQuality.OFFLINE && prev !== NetworkQuality.OFFLINE) {
+        stopBackgroundOrderSyncNotification();
       } else if (snap.quality === NetworkQuality.GOOD && prev !== NetworkQuality.GOOD) {
         wakePendingUploadSyncNow({
           queuePasses: 8,

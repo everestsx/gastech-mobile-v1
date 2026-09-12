@@ -611,15 +611,67 @@ function notifyOsSyncProgress(options = {}) {
 
 function startOsSyncKeepAlive(remaining = 1, extra = {}) {
   try {
+    if (!canRunBackgroundUploadSync()) {
+      osSyncNotify()?.stopBackgroundOrderSyncNotification?.();
+      return;
+    }
     const n = osSyncNotify();
     n?.startBackgroundOrderSyncNotification?.({
       remaining: Math.max(1, Number(remaining) || 1),
       saleOrderId: extra.saleOrderId,
+      customerName: extra.customerName,
       allowEmpty: extra.saleOrderId != null,
     });
   } catch (_) {
     /* OS keep-alive is best-effort */
   }
+}
+
+async function listUnheldPendingPaymentSaleOrderIds() {
+  try {
+    const pending = await syncQueueDb.getPending();
+    const ids = [];
+    const seen = new Set();
+    for (const item of pending || []) {
+      if (item.action_type !== syncQueueDb.ACTION_PAYMENT) continue;
+      const p = item.payload || {};
+      if (p.holdUntilComplete === true || p.holdUntilPayment === true) continue;
+      const soId = Number(p.saleOrderId ?? p.sale_id ?? p.sale_order_id);
+      if (!Number.isFinite(soId) || soId <= 0 || seen.has(soId)) continue;
+      seen.add(soId);
+      ids.push(soId);
+    }
+    return ids;
+  } catch (_) {
+    return [];
+  }
+}
+
+/** Same checkout pipeline as the last completed order — one SO at a time, no slow drain. */
+function continueCheckoutPipelineForRemainingOrders(justFinishedSoId) {
+  if (!canRunBackgroundUploadSync()) return;
+  if (_checkoutUploadRunActive) return;
+  void (async () => {
+    const ids = await listUnheldPendingPaymentSaleOrderIds();
+    if (!ids.length) {
+      void pullLatestVehicleStockFromBackOffice();
+      void drainPendingGasLeakageUploads();
+      return;
+    }
+    const finished = Number(justFinishedSoId);
+    const latched = Number(_checkoutPrioritySoId);
+    const next =
+      Number.isFinite(latched) && latched > 0 && ids.includes(latched) && latched !== finished
+        ? latched
+        : ids.find((id) => id !== finished) ?? null;
+    if (next == null) {
+      void pullLatestVehicleStockFromBackOffice();
+      void drainPendingGasLeakageUploads();
+      return;
+    }
+    log('queue', `checkout chain next SO ${next} after ${finished || '—'}`);
+    startCheckoutUploadInBackground(next, { includeAttachments: true });
+  })();
 }
 
 function runPendingUploadFlush(options = {}) {
@@ -997,10 +1049,14 @@ async function releaseQueueHoldsIfLocallyCompleted(soIdRaw) {
  */
 export function startCheckoutUploadInBackground(saleOrderId, options = {}) {
   const soId = Number(saleOrderId);
+  if (_checkoutUploadRunActive) {
+    log('queue', `checkout already running SO ${_checkoutPrioritySoId} — ${soId} will chain after`);
+    return;
+  }
   _checkoutUploadPriority = true;
   _checkoutPrioritySetAt = Date.now();
   if (Number.isFinite(soId) && soId > 0) _checkoutPrioritySoId = soId;
-  startOsSyncKeepAlive(1, { saleOrderId: soId });
+  startOsSyncKeepAlive(1, { saleOrderId: soId, customerName: options.customerName });
   void uploadCompletedOrderNow(saleOrderId, options);
 }
 
@@ -1049,19 +1105,16 @@ export async function uploadCompletedOrderNow(saleOrderId, options = {}) {
       });
       const paymentRow = await syncQueueDb.getPendingPaymentItemBySaleOrderId(soId).catch(() => null);
       const deliveryRow = await syncQueueDb.getPendingDeliveryItemBySaleOrderId(soId).catch(() => null);
-      const leakagePending = await hasPendingGasLeakageUploads(soId);
-      pendingCount = paymentRow || deliveryRow || leakagePending ? 1 : 0;
+      pendingCount = paymentRow || deliveryRow ? 1 : 0;
       notifyOsSyncProgress({
         allowStart: pendingCount > 0,
-        saleOrderId: soId,
       });
-      if (!paymentRow && !deliveryRow && !leakagePending) break;
+      if (!paymentRow && !deliveryRow) break;
       log(
         'queue',
         `checkout upload SO ${soId} retry ${attempt + 1}/${maxImmediateAttempts} (${[
           paymentRow ? 'payment' : null,
           deliveryRow ? 'delivery' : null,
-          leakagePending ? 'leakage' : null,
         ]
           .filter(Boolean)
           .join('+')} still pending)`
@@ -1098,17 +1151,19 @@ export async function uploadCompletedOrderNow(saleOrderId, options = {}) {
       title: `Order #${soId} sync`,
     }).catch(() => null);
     _checkoutDrivePrefetch.delete(soId);
+    const keepNewerLatch =
+      Number(_checkoutPrioritySoId) > 0 && Number(_checkoutPrioritySoId) !== soId;
     _checkoutUploadRunActive = false;
-    _checkoutUploadPriority = false;
-    _checkoutPrioritySoId = null;
-    _checkoutPrioritySetAt = 0;
+    if (!keepNewerLatch) {
+      _checkoutUploadPriority = false;
+      _checkoutPrioritySoId = null;
+      _checkoutPrioritySetAt = 0;
+    }
     void refreshDashboardUploadIndicatorsFromQueue().catch(() => {});
-    void pullLatestVehicleStockFromBackOffice();
     if (startDeferredExtras) {
       void postDeferredCheckoutExtrasForSaleOrder(soId);
       void processDeferredCheckoutInventoryForSaleOrder(soId);
     }
-    void drainPendingGasLeakageUploads();
     if (_deferredCheckoutResumeSoIds.size > 0) {
       const resumeIds = [..._deferredCheckoutResumeSoIds];
       _deferredCheckoutResumeSoIds.clear();
@@ -1118,20 +1173,37 @@ export async function uploadCompletedOrderNow(saleOrderId, options = {}) {
         void processDeferredCheckoutInventoryForSaleOrder(resumeId);
       }
     }
+    // Same fast checkout path for every remaining completed order. Do not start a
+    // stock/leakage drain here — that steals the radio from the next order.
+    if (pendingCount === 0) {
+      continueCheckoutPipelineForRemainingOrders(soId);
+    }
   }
 }
 
 /** Kick queue upload immediately (e.g. app entering background before JS is suspended). */
 export function wakePendingUploadSyncNow(options = {}) {
   if (!canRunBackgroundUploadSync()) return;
-  schedulePendingUploadSync({
-    immediate: true,
-    aggressive: true,
-    queuePasses: options.queuePasses ?? 24,
-    includeAttachments: options.includeAttachments !== false,
-    skipPaymentTypeRefresh: true,
-    chainRetry: options.chainRetry === true,
-  });
+  if (_checkoutUploadRunActive) return;
+  void (async () => {
+    const ids = await listUnheldPendingPaymentSaleOrderIds();
+    if (ids.length > 0) {
+      const latched = Number(_checkoutPrioritySoId);
+      const first = Number.isFinite(latched) && latched > 0 && ids.includes(latched) ? latched : ids[0];
+      startCheckoutUploadInBackground(first, {
+        includeAttachments: options.includeAttachments !== false,
+      });
+      return;
+    }
+    schedulePendingUploadSync({
+      immediate: true,
+      aggressive: true,
+      queuePasses: options.queuePasses ?? 24,
+      includeAttachments: options.includeAttachments !== false,
+      skipPaymentTypeRefresh: true,
+      chainRetry: options.chainRetry === true,
+    });
+  })();
 }
 
 /**
@@ -1164,13 +1236,18 @@ export function isCheckoutUploadActive() {
   return _checkoutUploadPriority === true;
 }
 
+/** Instant OS tray on Complete — does not start delivery/payment RPCs. */
+export function showCheckoutUploadNotification(saleOrderId, extra = {}) {
+  startOsSyncKeepAlive(1, { saleOrderId, customerName: extra.customerName });
+}
+
 /** Latch checkout-priority BEFORE local awaits so AppNavigator cannot steal the queue. */
-export function beginCheckoutUploadPriority(saleOrderId) {
+export function beginCheckoutUploadPriority(saleOrderId, extra = {}) {
   _checkoutUploadPriority = true;
   _checkoutPrioritySetAt = Date.now();
   const soId = Number(saleOrderId);
   _checkoutPrioritySoId = Number.isFinite(soId) && soId > 0 ? soId : _checkoutPrioritySoId;
-  startOsSyncKeepAlive(1, { saleOrderId: soId });
+  startOsSyncKeepAlive(1, { saleOrderId: soId, customerName: extra.customerName });
 }
 
 /** Clear the latch only when checkout upload never started (error before upload). */
@@ -1270,6 +1347,13 @@ export async function refreshDashboardUploadIndicatorsFromQueue() {
     localCompleted: paymentPendingCount,
   };
   emitDashboardIndicatorsChanged();
+  if (paymentPendingCount <= 0 && !isCheckoutUploadActive()) {
+    try {
+      osSyncNotify()?.stopBackgroundOrderSyncNotification?.();
+    } catch (_) {
+      /* tray hide is best-effort */
+    }
+  }
   return paymentPendingCount;
 }
 
@@ -1297,7 +1381,16 @@ export function setDashboardUploadIndicators(pendingOrders, localCompleted, opti
   // v7: if UI dropped to 0 but invoices are still queued, restore the real count.
   if (counted === 0 && hadUploadWork) {
     void countPendingPaymentUploads().then((paymentLeft) => {
-      if (paymentLeft <= 0) return;
+      if (paymentLeft <= 0) {
+        if (!isCheckoutUploadActive()) {
+          try {
+            osSyncNotify()?.stopBackgroundOrderSyncNotification?.();
+          } catch (_) {
+            /* tray hide is best-effort */
+          }
+        }
+        return;
+      }
       if (_dashboardUploadIndicators.localCompleted > 0) return;
       _dashboardUploadIndicators = { ..._dashboardUploadIndicators, localCompleted: paymentLeft };
       emitDashboardIndicatorsChanged();
@@ -6112,24 +6205,32 @@ async function processSyncQueue(options = {}) {
         perfLog('queue-pass-start', `pass=${pass} pending=${pendingAtStart} conc=${independentSaleOrderConcurrency()}`);
 
         try {
-      const pendingSnapEarly = await syncQueueDb.getPending();
-      const cancelEarly = pendingSnapEarly.filter(
-        (p) => p.action_type === syncQueueDb.ACTION_CANCEL_ORDER
-      );
-      if (allowGlobalCancelPass && cancelEarly.length > 0) {
-        await processOrderCancelQueueItems(cancelEarly);
+      if (shouldYieldQueueToCheckout(isCheckoutScoped)) {
+        log('queue', 'yield queue to checkout upload');
+        perfLog('queue-yield-checkout', 'before-sidecar');
+        return;
       }
-      const odometerEarly = pendingSnapEarly.filter(
-        (p) => p.action_type === syncQueueDb.ACTION_VEHICLE_ODOMETER
-      );
-      if (odometerEarly.length > 0) {
-        await processVehicleOdometerQueueItems(odometerEarly);
-      }
-      const leakageEarly = pendingSnapEarly.filter(
-        (p) => p.action_type === syncQueueDb.ACTION_GAS_LEAKAGE_COLLECT
-      );
-      if (leakageEarly.length > 0) {
-        await processGasLeakageQueueItems(leakageEarly);
+      const skipSidecarWork = checkoutSingleShot === true;
+      if (!skipSidecarWork) {
+        const pendingSnapEarly = await syncQueueDb.getPending();
+        const cancelEarly = pendingSnapEarly.filter(
+          (p) => p.action_type === syncQueueDb.ACTION_CANCEL_ORDER
+        );
+        if (allowGlobalCancelPass && cancelEarly.length > 0) {
+          await processOrderCancelQueueItems(cancelEarly);
+        }
+        const odometerEarly = pendingSnapEarly.filter(
+          (p) => p.action_type === syncQueueDb.ACTION_VEHICLE_ODOMETER
+        );
+        if (odometerEarly.length > 0) {
+          await processVehicleOdometerQueueItems(odometerEarly);
+        }
+        const leakageEarly = pendingSnapEarly.filter(
+          (p) => p.action_type === syncQueueDb.ACTION_GAS_LEAKAGE_COLLECT
+        );
+        if (leakageEarly.length > 0) {
+          await processGasLeakageQueueItems(leakageEarly);
+        }
       }
 
       let queueSnap = await syncQueueDb.getPending();
@@ -6209,6 +6310,10 @@ async function processSyncQueue(options = {}) {
         payment = payment.filter(matchesPrioritySo);
         inventoryUpdate = inventoryUpdate.filter(matchesPrioritySo);
         if (delivery.length === 0 && payment.length === 0 && inventoryUpdate.length === 0) {
+          if (checkoutSingleShot) {
+            log('queue', `checkout SO ${prioritySoId}: no delivery/payment rows yet — skip sidecar drain`);
+            return;
+          }
           const odoLeft = queueSnap.filter(
             (p) => p.action_type === syncQueueDb.ACTION_VEHICLE_ODOMETER
           );
@@ -8965,9 +9070,9 @@ async function processSyncQueue(options = {}) {
             ? await syncQueueDb.getActionablePendingCountForSaleOrder(prioritySoId)
             : await syncQueueDb.getPendingCount();
         if (pendingAfter === 0) {
-          // SO-scoped count ignores leftover leakage (and leakage with no saleOrderId).
-          // Drain it before leaving or checkout upload will treat the order as fully synced.
-          await drainPendingGasLeakageUploads();
+          if (!checkoutSingleShot) {
+            await drainPendingGasLeakageUploads();
+          }
           break;
         }
         if (lastPending >= 0 && pendingAfter < lastPending) {

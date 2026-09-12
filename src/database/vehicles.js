@@ -5,10 +5,11 @@
 import { getDb } from './db.js';
 
 function numOrNull(v) {
-  if (v == null) return null;
-  if (Array.isArray(v)) return v[0] != null ? Number(v[0]) : null;
+  if (v == null || v === false || v === '') return null;
+  if (Array.isArray(v)) return numOrNull(v[0]);
+  if (typeof v === 'object') return numOrNull(v.id);
   const n = Number(v);
-  return Number.isFinite(n) ? n : null;
+  return Number.isFinite(n) && n > 0 ? n : null;
 }
 
 /** Odoo sometimes returns id as number or [id, label]; normalize for SQLite PK + dedupe. */
@@ -95,9 +96,17 @@ export async function upsertVehicles(rows) {
          VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            name = excluded.name,
-           license_plate = excluded.license_plate,
-           cash_journal_id = excluded.cash_journal_id,
-           check_journal_id = excluded.check_journal_id,
+           license_plate = COALESCE(NULLIF(excluded.license_plate, ''), vehicles.license_plate),
+           cash_journal_id = CASE
+             WHEN typeof(excluded.cash_journal_id) IN ('integer', 'real') AND excluded.cash_journal_id > 0
+             THEN excluded.cash_journal_id
+             ELSE vehicles.cash_journal_id
+           END,
+           check_journal_id = CASE
+             WHEN typeof(excluded.check_journal_id) IN ('integer', 'real') AND excluded.check_journal_id > 0
+             THEN excluded.check_journal_id
+             ELSE vehicles.check_journal_id
+           END,
            updated_at = excluded.updated_at`,
         [id, r.name, r.license_plate, deterministicPIN, cashJid, checkJid, now]
       );
@@ -110,6 +119,10 @@ export async function upsertVehicles(rows) {
  * @param {string} licensePlate - Vehicle number (license_plate)
  * @returns {Promise<{ cashJournalId: number | null, chequeJournalId: number | null }>}
  */
+function plateKey(raw) {
+  return String(raw ?? '').trim().toLowerCase().replace(/[\s\-_.]/g, '');
+}
+
 export async function getVehicleJournalsByLicensePlate(licensePlate) {
   if (!licensePlate || String(licensePlate).trim() === '') return { cashJournalId: null, chequeJournalId: null };
   const db = await getDb();
@@ -123,6 +136,15 @@ export async function getVehicleJournalsByLicensePlate(licensePlate) {
       'SELECT cash_journal_id, check_journal_id FROM vehicles WHERE license_plate = ? LIMIT 1',
       [trimmed]
     );
+  }
+  if (!row) {
+    const all = await db.getAllAsync(
+      'SELECT license_plate, name, cash_journal_id, check_journal_id FROM vehicles'
+    );
+    const want = plateKey(trimmed);
+    row = (all || []).find(
+      (r) => plateKey(r.license_plate) === want || plateKey(r.name) === want
+    ) || null;
   }
   if (!row) return { cashJournalId: null, chequeJournalId: null };
   return {

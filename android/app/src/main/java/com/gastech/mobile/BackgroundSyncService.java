@@ -41,7 +41,6 @@ public class BackgroundSyncService extends Service {
     static final int NOTIFICATION_ID = 41001;
     static final String CHANNEL_ID = "gastech_order_sync";
 
-    private static final long COMPLETE_DISMISS_MS = 1800L;
     private static final long WAKELOCK_MS = 30 * 60 * 1000L;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -72,27 +71,15 @@ public class BackgroundSyncService extends Service {
         String action = intent.getAction();
         if (action == null) action = ACTION_START;
 
-        if (ACTION_STOP.equals(action)) {
+        if (ACTION_COMPLETE.equals(action) || ACTION_STOP.equals(action)) {
             stopSelfSafely();
             return START_NOT_STICKY;
         }
 
         applyExtras(intent);
         scheduleMidnightStop();
-
-        if (ACTION_COMPLETE.equals(action)) {
-            completed = true;
-            indeterminate = false;
-            if (max < 1) max = 1;
-            current = max;
-            lines.clear();
-            mainHandler.removeCallbacks(stopRunnable);
-            promoteToForeground();
-            mainHandler.postDelayed(stopRunnable, COMPLETE_DISMISS_MS);
-            return START_NOT_STICKY;
-        }
-
         completed = false;
+        indeterminate = true;
         mainHandler.removeCallbacks(stopRunnable);
         promoteToForeground();
         return START_NOT_STICKY;
@@ -230,7 +217,7 @@ public class BackgroundSyncService extends Service {
         } else {
             builder.setOngoing(true)
                 .setAutoCancel(false)
-                .setProgress(Math.max(1, max), Math.min(current, Math.max(1, max)), indeterminate);
+                .setProgress(0, 0, true);
         }
         return builder.build();
     }

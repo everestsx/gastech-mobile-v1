@@ -316,7 +316,10 @@ export default function DashboardScreen({ navigation }) {
   const pendingBackOfficeDismissedRef = useRef(false);
   const [notification, setNotification] = useState({ visible: false, title: '', message: '', type: 'info' });
   // PreCheck / PostCheck â€” per login session (cleared on logout)
-  const precheckDateKey = new Date().toISOString().slice(0, 10); // e.g. "2026-06-12"
+  const precheckDateKey = (() => {
+    const n = new Date();
+    return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
+  })();
   const [preCheckDone, setPreCheckDoneState] = useState(false);
   const setPreCheckDone = useCallback(async (val, loggedInAt) => {
     setPreCheckDoneState(val);
@@ -337,14 +340,14 @@ export default function DashboardScreen({ navigation }) {
   }, [precheckDateKey]);
 
   useEffect(() => {
+    let cancelled = false;
+    // Wait until the session is loaded. Emitting false while `user` is still
+    // hydrating locked every bottom tab even after Start Day was already done.
+    if (!user) return undefined;
     const sessionStamp = user?.loggedInAt != null ? String(user.loggedInAt) : '';
-    if (!sessionStamp) {
-      setPreCheckDoneState(false);
-      DeviceEventEmitter.emit('preCheckStatusChanged', false);
-      return;
-    }
     AsyncStorage.getItem(KEY_PRECHECK_DONE)
       .then((stored) => {
+        if (cancelled) return;
         if (!stored) {
           setPreCheckDoneState(false);
           DeviceEventEmitter.emit('preCheckStatusChanged', false);
@@ -352,9 +355,14 @@ export default function DashboardScreen({ navigation }) {
         }
         try {
           const parsed = JSON.parse(stored);
+          const sameSession =
+            !sessionStamp ||
+            !parsed?.loggedInAt ||
+            String(parsed.loggedInAt) === sessionStamp;
+          const utcKey = new Date().toISOString().slice(0, 10);
           const ok =
-            parsed?.date === precheckDateKey &&
-            String(parsed?.loggedInAt || '') === sessionStamp;
+            (parsed?.date === precheckDateKey || parsed?.date === utcKey) &&
+            sameSession;
           setPreCheckDoneState(ok);
           DeviceEventEmitter.emit('preCheckStatusChanged', ok);
         } catch {
@@ -363,10 +371,14 @@ export default function DashboardScreen({ navigation }) {
         }
       })
       .catch(() => {
+        if (cancelled) return;
         setPreCheckDoneState(false);
         DeviceEventEmitter.emit('preCheckStatusChanged', false);
       });
-  }, [precheckDateKey, user?.loggedInAt]);
+    return () => {
+      cancelled = true;
+    };
+  }, [precheckDateKey, user, user?.loggedInAt]);
   const [postCheckModalVisible, setPostCheckModalVisible] = useState(false);
   const [preCheckSummaryModalVisible, setPreCheckSummaryModalVisible] = useState(false);
   const [postCheckInitialAmounts, setPostCheckInitialAmounts] = useState({
@@ -422,6 +434,14 @@ export default function DashboardScreen({ navigation }) {
       }
       prevLocalCompletedRef.current = cur;
       return undefined;
+    }
+
+    if (prev > 0) {
+      try {
+        require('../services/backgroundSyncNotification.service.js').stopBackgroundOrderSyncNotification();
+      } catch (_) {
+        /* OS tray hide is best-effort */
+      }
     }
 
     const visibleMs = orangeVisibleSinceRef.current

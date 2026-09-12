@@ -24,7 +24,7 @@ import * as localInvoicesDb from '../database/localInvoices.js';
 import * as localPaymentsDb from '../database/localPayments.js';
 import * as stockPickingsDb from '../database/stockPickings.js';
 import * as syncQueueDb from '../database/syncQueue.js';
-import { getSaleOrderDetailsFromDB, notifyLocalInventoryChanged, signalDashboardPendingUploadStarted, startCheckoutUploadInBackground, beginCheckoutUploadPriority, endCheckoutUploadPriority } from '../services/sync.service';
+import { getSaleOrderDetailsFromDB, notifyLocalInventoryChanged, signalDashboardPendingUploadStarted, startCheckoutUploadInBackground, endCheckoutUploadPriority, showCheckoutUploadNotification } from '../services/sync.service';
 import {
   applyInventoryUpdatesToLocalDb,
   applyLocalGasInventoryForSaleOrder,
@@ -328,7 +328,7 @@ export default function PaymentProofScreen({ route, navigation }) {
     completeGuardRef.current = true;
     setSaving(true);
     let checkoutUploadStarted = false;
-    beginCheckoutUploadPriority(soId);
+    showCheckoutUploadNotification(soId, { customerName: customerLabel });
     try {
       await persistLocalInvoiceAtCheckout();
       await saleOrdersDb.updateSaleOrderInvoiceStatusLocal(soId, 'invoiced');
@@ -347,20 +347,26 @@ export default function PaymentProofScreen({ route, navigation }) {
       const persistPhotosNow = persistPhotos;
       void (async () => {
         try {
-          if (photos.length > 0) {
-            await persistPhotosNow();
-          }
           await applyLocalGasInventoryForSaleOrder(soId);
           await releaseQueueHoldsForSo();
           notifyLocalInventoryChanged();
-          startCheckoutUploadInBackground(soId, { includeAttachments });
+          startCheckoutUploadInBackground(soId, {
+            includeAttachments,
+            customerName: customerLabel,
+          });
+          if (photos.length > 0) {
+            await persistPhotosNow();
+          }
           await finalizeLocalCheckoutState();
           await clearCheckoutResume(soId);
         } catch (bgErr) {
           console.warn('[PaymentProof] background checkout', bgErr?.message || bgErr);
           try {
             await releaseQueueHoldsForSo();
-            startCheckoutUploadInBackground(soId, { includeAttachments });
+            startCheckoutUploadInBackground(soId, {
+              includeAttachments,
+              customerName: customerLabel,
+            });
           } catch (retryErr) {
             console.warn('[PaymentProof] background checkout retry', retryErr?.message || retryErr);
           }
@@ -384,6 +390,7 @@ export default function PaymentProofScreen({ route, navigation }) {
     persistLocalInvoiceAtCheckout,
     finalizeLocalCheckoutState,
     navigation,
+    customerLabel,
   ]);
 
   const styles = useMemo(

@@ -157,23 +157,28 @@ export async function fetchAndStoreVehicleJournals(licensePlate) {
   const trimmed = licensePlate != null ? String(licensePlate).trim() : '';
   if (!trimmed) return { cashJournalId: null, chequeJournalId: null };
   try {
-    const rows = await callOdoo(
-      "fleet.vehicle",
-      "search_read",
-      [[["license_plate", "=", trimmed]]],
-      { fields: VEHICLE_JOURNAL_FIELDS, limit: 1 }
-    );
-    const v = Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
+    const rows = await vehicleSearchRead([["license_plate", "=", trimmed]], {
+      fields: VEHICLE_JOURNAL_FIELDS,
+      limit: 1,
+    });
+    let v = Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
+    if (!v) {
+      const fuzzy = await vehicleSearchRead([["license_plate", "ilike", trimmed]], {
+        fields: VEHICLE_JOURNAL_FIELDS,
+        limit: 5,
+      });
+      v = pickBestVehicleRow(fuzzy, null, trimmed);
+    }
     if (!v) return { cashJournalId: null, chequeJournalId: null };
-    const cashId = v.cash_journal_id != null ? (Array.isArray(v.cash_journal_id) ? Number(v.cash_journal_id[0]) : Number(v.cash_journal_id)) : null;
-    const chequeId = v.check_journal_id != null ? (Array.isArray(v.check_journal_id) ? Number(v.check_journal_id[0]) : Number(v.check_journal_id)) : null;
+    const cashId = parsePositiveId(v.cash_journal_id);
+    const chequeId = parsePositiveId(v.check_journal_id);
     const vehiclesDb = await import('../database/vehicles.js');
     await vehiclesDb.upsertVehicles([{
       id: v.id,
       name: (v.license_plate || String(v.id)).trim(),
       license_plate: trimmed,
-      cash_journal_id: v.cash_journal_id,
-      check_journal_id: v.check_journal_id,
+      cash_journal_id: cashId,
+      check_journal_id: chequeId,
     }]);
     return { cashJournalId: cashId, chequeJournalId: chequeId };
   } catch (e) {
@@ -191,43 +196,91 @@ export async function fetchAndStoreVehicleJournals(licensePlate) {
  * @returns {Promise<{ cashJournalId: number | null, chequeJournalId: number | null }>}
  */
 export const getVehicleJournalsByLicensePlate = async (licensePlate, vehicleId = null) => {
-  if (!licensePlate || String(licensePlate).trim() === '') return { cashJournalId: null, chequeJournalId: null };
-  const trimmed = String(licensePlate).trim();
+  const trimmed = licensePlate != null ? String(licensePlate).trim() : '';
+  const vid = parsePositiveId(vehicleId);
+  if (!trimmed && vid == null) return { cashJournalId: null, chequeJournalId: null };
   let local = { cashJournalId: null, chequeJournalId: null };
   try {
     const vehiclesDb = await import('../database/vehicles.js');
-    local = await vehiclesDb.getVehicleJournalsByLicensePlate(trimmed);
-    if (local.cashJournalId != null || local.chequeJournalId != null) return local;
-    if (vehicleId != null) {
-      local = await vehiclesDb.getVehicleJournalsByVehicleId(vehicleId);
-      if (local.cashJournalId != null || local.chequeJournalId != null) return local;
+    if (trimmed) {
+      local = await vehiclesDb.getVehicleJournalsByLicensePlate(trimmed);
     }
+    local = {
+      cashJournalId: parsePositiveId(local.cashJournalId),
+      chequeJournalId: parsePositiveId(local.chequeJournalId),
+    };
+    if (vid != null && (local.cashJournalId == null || local.chequeJournalId == null)) {
+      const byId = await vehiclesDb.getVehicleJournalsByVehicleId(vid);
+      local = {
+        cashJournalId: local.cashJournalId ?? parsePositiveId(byId.cashJournalId),
+        chequeJournalId: local.chequeJournalId ?? parsePositiveId(byId.chequeJournalId),
+      };
+    }
+    if (local.cashJournalId != null && local.chequeJournalId != null) return local;
   } catch (e) {
     console.warn('getVehicleJournalsByLicensePlate local read', e?.message ?? e);
   }
   try {
-    const rows = await callOdoo(
-      "fleet.vehicle",
-      "search_read",
-      [[["license_plate", "=", trimmed]]],
-      { fields: VEHICLE_JOURNAL_FIELDS, limit: 1 }
-    );
-    const v = Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
-    if (!v) return local;
-    const cashId = v.cash_journal_id != null ? (Array.isArray(v.cash_journal_id) ? Number(v.cash_journal_id[0]) : Number(v.cash_journal_id)) : null;
-    const chequeId = v.check_journal_id != null ? (Array.isArray(v.check_journal_id) ? Number(v.check_journal_id[0]) : Number(v.check_journal_id)) : null;
-    const vehiclesDb = await import('../database/vehicles.js');
-    await vehiclesDb.upsertVehicles([{
-      id: v.id,
-      name: (v.license_plate || String(v.id)).trim(),
-      license_plate: trimmed,
-      cash_journal_id: v.cash_journal_id,
-      check_journal_id: v.check_journal_id,
-    }]);
-    return { cashJournalId: cashId, chequeJournalId: chequeId };
+    let v = null;
+    if (vid != null) {
+      v = await getVehicleById(vid).catch(() => null);
+    }
+    if (!v && trimmed) {
+      let rows = await vehicleSearchRead([["license_plate", "=", trimmed]], {
+        fields: VEHICLE_JOURNAL_FIELDS,
+        limit: 1,
+      });
+      v = Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
+      if (!v) {
+        rows = await vehicleSearchRead([["license_plate", "ilike", trimmed]], {
+          fields: VEHICLE_JOURNAL_FIELDS,
+          limit: 5,
+        });
+        v = pickBestVehicleRow(rows, vid, trimmed);
+      }
+    }
+    if (v) {
+      const cashId = parsePositiveId(v.cash_journal_id) ?? local.cashJournalId;
+      const chequeId = parsePositiveId(v.check_journal_id) ?? local.chequeJournalId;
+      const vehiclesDb = await import('../database/vehicles.js');
+      await vehiclesDb.upsertVehicles([{
+        id: v.id,
+        name: (v.license_plate || v.name || String(v.id)).trim(),
+        license_plate: trimmed || v.license_plate,
+        cash_journal_id: cashId,
+        check_journal_id: chequeId,
+      }]);
+      local = { cashJournalId: cashId, chequeJournalId: chequeId };
+    }
   } catch (e) {
-    return local;
+    console.warn('getVehicleJournalsByLicensePlate odoo', e?.message ?? e);
   }
+  if (local.cashJournalId != null && local.chequeJournalId != null) return local;
+  try {
+    const { getCashTypeJournalIds } = await import('./journal.service.js');
+    const fallback = await getCashTypeJournalIds();
+    const cashId = local.cashJournalId ?? parsePositiveId(fallback.cashJournalId);
+    const chequeId = local.chequeJournalId ?? parsePositiveId(fallback.chequeJournalId);
+    if (cashId != null || chequeId != null) {
+      local = { cashJournalId: cashId, chequeJournalId: chequeId };
+      if (vid != null || trimmed) {
+        const vehiclesDb = await import('../database/vehicles.js');
+        await vehiclesDb.updateVehicleJournals(trimmed || '', cashId, chequeId);
+        if (vid != null) {
+          await vehiclesDb.upsertVehicles([{
+            id: vid,
+            name: trimmed || String(vid),
+            license_plate: trimmed,
+            cash_journal_id: cashId,
+            check_journal_id: chequeId,
+          }]);
+        }
+      }
+    }
+  } catch (_) {
+    /* offline — keep whatever local ids we have */
+  }
+  return local;
 };
 
 /** True if the error is due to network unreachability (no response from server). */

@@ -38,6 +38,24 @@ const PAYMENT_CASH = 'cash';
 const PAYMENT_CHECK = 'cheque';
 const PAYMENT_CREDIT = 'credit';
 
+function cashChequeIdsFromCachedJournals(list) {
+  let cashJournalId = null;
+  let chequeJournalId = null;
+  for (const j of list || []) {
+    const id = sqliteIntegerFkOrNull(j.id);
+    if (id == null) continue;
+    const code = String(j.code || '').toUpperCase().trim();
+    const name = String(j.name || '').toLowerCase();
+    const type = String(j.type || '').toLowerCase();
+    if (code === JOURNAL_CODE_CHEQUE || name.includes('cheque') || name.includes('check')) {
+      if (chequeJournalId == null) chequeJournalId = id;
+    } else if (code === JOURNAL_CODE_CASH || (type === 'cash' && name.includes('cash'))) {
+      if (cashJournalId == null) cashJournalId = id;
+    }
+  }
+  return { cashJournalId, chequeJournalId };
+}
+
 function userFacingPaymentError(err) {
   const raw = String(err?.message || err || '').trim();
   if (isSqliteFullError(raw) || isSqliteFullError(err)) {
@@ -96,29 +114,31 @@ export default function ProceedPaymentScreen({ route, navigation }) {
     });
   }, [saleOrderId, orderTotalRounded, orderSubtotal, orderTax]);
 
+  const cashJournalIdNum = sqliteIntegerFkOrNull(vehicleJournalIds.cashJournalId);
+  const chequeJournalIdNum = sqliteIntegerFkOrNull(vehicleJournalIds.chequeJournalId);
+
   // Use only vehicle-specific journals for Cash and Cheque (cash_journal_id / check_journal_id from fleet.vehicle).
   const cashJournals = useMemo(() => {
-    if (vehicleJournalIds.cashJournalId == null) return [];
-    const match = (journals || []).filter((j) => j.id === vehicleJournalIds.cashJournalId);
-    return match;
-  }, [journals, vehicleJournalIds.cashJournalId]);
+    if (cashJournalIdNum == null) return [];
+    return (journals || []).filter((j) => sqliteIntegerFkOrNull(j.id) === cashJournalIdNum);
+  }, [journals, cashJournalIdNum]);
   const cashJournalPreferred = useMemo(() => {
-    if (vehicleJournalIds.cashJournalId != null && cashJournals.length > 0) {
-      return cashJournals.find((j) => j.id === vehicleJournalIds.cashJournalId) || cashJournals[0];
+    if (cashJournalIdNum != null && cashJournals.length > 0) {
+      return cashJournals.find((j) => sqliteIntegerFkOrNull(j.id) === cashJournalIdNum) || cashJournals[0];
     }
     return null;
-  }, [cashJournals, vehicleJournalIds.cashJournalId]);
+  }, [cashJournals, cashJournalIdNum]);
 
   const chequeJournals = useMemo(() => {
-    if (vehicleJournalIds.chequeJournalId == null) return [];
-    return (journals || []).filter((j) => j.id === vehicleJournalIds.chequeJournalId);
-  }, [journals, vehicleJournalIds.chequeJournalId]);
+    if (chequeJournalIdNum == null) return [];
+    return (journals || []).filter((j) => sqliteIntegerFkOrNull(j.id) === chequeJournalIdNum);
+  }, [journals, chequeJournalIdNum]);
   const chequeJournalInternal = useMemo(() => {
-    if (vehicleJournalIds.chequeJournalId != null && chequeJournals.length > 0) {
-      return chequeJournals.find((j) => j.id === vehicleJournalIds.chequeJournalId) || chequeJournals[0];
+    if (chequeJournalIdNum != null && chequeJournals.length > 0) {
+      return chequeJournals.find((j) => sqliteIntegerFkOrNull(j.id) === chequeJournalIdNum) || chequeJournals[0];
     }
     return null;
-  }, [chequeJournals, vehicleJournalIds.chequeJournalId]);
+  }, [chequeJournals, chequeJournalIdNum]);
   const bankJournals = useMemo(
     () => (journals || []).filter((j) => j.type === 'bank'),
     [journals]
@@ -209,14 +229,15 @@ export default function ProceedPaymentScreen({ route, navigation }) {
     if (!q) return SRI_LANKA_BANKS;
     return SRI_LANKA_BANKS.filter((b) => (b.name || '').toLowerCase().includes(q));
   }, [selectedLocalBankId, selectedLocalBank, bankSearchQuery]);
-  // Cash/Cheque require vehicle-specific journal IDs (cash_journal_id / check_journal_id)
+  // Amounts must match. Cash/Cheque journals are resolved on Confirm (retry from Odoo if
+  // only one id was cached). Do not treat a raw/NaN journal value as ready.
   const paymentComplete =
     selectedPaymentMethods.length > 0 &&
     hasAnyPayment &&
     !paymentAmounts.overpaid &&
     Math.abs(paymentAmounts.total - orderTotalRounded) <= 0.01 &&
-    (cashPayAmount <= 0 || vehicleJournalIds.cashJournalId != null) &&
-    (chequePayAmount <= 0 || (vehicleJournalIds.chequeJournalId != null && checkNumberTrimmed !== '' && selectedLocalBankId != null));
+    (cashPayAmount <= 0 || cashJournalIdNum != null) &&
+    (chequePayAmount <= 0 || (chequeJournalIdNum != null && checkNumberTrimmed !== '' && selectedLocalBankId != null));
 
   const canProceed = paymentComplete;
 
@@ -228,22 +249,25 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         getUserSession(),
         getLastSyncTime(),
       ]);
-      setJournals(Array.isArray(list) ? list : []);
+      const journalsList = Array.isArray(list) ? list : [];
+      setJournals(journalsList);
       setHasSyncedOnce(lastSync != null && String(lastSync).trim() !== '');
       const licensePlate = user?.licensePlate || user?.license_plate || '';
       const vehicleId = user?.vehicleId ?? null;
-      if (licensePlate) {
+      const cachedIds = cashChequeIdsFromCachedJournals(journalsList);
+      let cashJournalId = null;
+      let chequeJournalId = null;
+      if (licensePlate || vehicleId != null) {
         const vehicleJournals = await getVehicleJournalsByLicensePlate(licensePlate, vehicleId);
-        setVehicleJournalIds({
-          cashJournalId: vehicleJournals.cashJournalId ?? null,
-          chequeJournalId: vehicleJournals.chequeJournalId ?? null,
-        });
-      } else {
-        setVehicleJournalIds({ cashJournalId: null, chequeJournalId: null });
+        cashJournalId = sqliteIntegerFkOrNull(vehicleJournals.cashJournalId);
+        chequeJournalId = sqliteIntegerFkOrNull(vehicleJournals.chequeJournalId);
       }
+      setVehicleJournalIds({
+        cashJournalId: cashJournalId ?? cachedIds.cashJournalId,
+        chequeJournalId: chequeJournalId ?? cachedIds.chequeJournalId,
+      });
     } catch (_) {
-      setJournals([]);
-      setVehicleJournalIds({ cashJournalId: null, chequeJournalId: null });
+      /* keep last known journal ids — do not blank Cash/Cheque after a failed reload */
     } finally {
       setJournalsLoading(false);
     }
@@ -321,18 +345,107 @@ export default function ProceedPaymentScreen({ route, navigation }) {
   }, []);
 
   const handleProceed = async () => {
-    if (!canProceed) return;
+    if (proceedGuardRef.current || loading) return;
+
+    if (selectedPaymentMethods.length === 0) {
+      Alert.alert(
+        t('proceedpayment.selectMethodTitle', 'Select payment method'),
+        t('proceedpayment.selectMethodBody', 'Choose Cash, Cheque, or Credit before continuing.')
+      );
+      return;
+    }
+    if (!hasAnyPayment) {
+      Alert.alert(
+        t('proceedpayment.enterAmountTitle', 'Enter the payment amount'),
+        t('proceedpayment.enterAmountBody', 'Enter how much is being paid before continuing.')
+      );
+      return;
+    }
+    if (paymentAmounts.overpaid) {
+      Alert.alert(
+        t('proceedpayment.overpaidTitle', 'Amount is too high'),
+        t('proceedpayment.overpaidBody', 'Payment total cannot be more than the order total.')
+      );
+      return;
+    }
+    if (Math.abs(paymentAmounts.total - orderTotalRounded) > 0.01) {
+      Alert.alert(
+        t('proceedpayment.amountMismatchTitle', 'Amount does not match'),
+        t('proceedpayment.amountMismatchBody', 'Payment total must match the order total.')
+      );
+      return;
+    }
+    if (hasChequeSelected && chequePayAmount > 0 && !selectedLocalBankId) {
+      Alert.alert(
+        t('proceedpayment.selectBankTitle', 'Select cheque bank'),
+        t('proceedpayment.selectBankBody', 'Choose the bank for this cheque, then continue.')
+      );
+      return;
+    }
+    if (hasChequeSelected && chequePayAmount > 0 && !checkNumberTrimmed) {
+      Alert.alert(
+        t('proceedpayment.enterChequeNoTitle', 'Enter cheque number'),
+        t('proceedpayment.enterChequeNoBody', 'Type the cheque number, then continue.')
+      );
+      return;
+    }
+
     /** Signatures are captured on Invoice after payment. */
     const custSig = '';
     const drvSig = '';
     // Use only logged-in vehicle's cash_journal_id and check_journal_id (no default/fallback journals).
-    const cashJournalId = sqliteIntegerFkOrNull(vehicleJournalIds.cashJournalId);
-    const checkJournalId = sqliteIntegerFkOrNull(vehicleJournalIds.chequeJournalId);
-    const needsCash = cashPayAmount > 0 && cashJournalId != null;
-    const needsCheck = chequePayAmount > 0 && checkJournalId != null;
+    let cashJournalId = sqliteIntegerFkOrNull(vehicleJournalIds.cashJournalId);
+    let checkJournalId = sqliteIntegerFkOrNull(vehicleJournalIds.chequeJournalId);
+    const needsCashAmount = cashPayAmount > 0 && hasCashSelected;
+    const needsCheckAmount = chequePayAmount > 0 && hasChequeSelected;
+    if ((needsCashAmount && cashJournalId == null) || (needsCheckAmount && checkJournalId == null)) {
+      try {
+        const user = await getUserSession();
+        const licensePlate = user?.licensePlate || user?.license_plate || '';
+        const vehicleId = user?.vehicleId ?? null;
+        if (licensePlate) {
+          const fresh = await getVehicleJournalsByLicensePlate(licensePlate, vehicleId);
+          cashJournalId = sqliteIntegerFkOrNull(fresh.cashJournalId) ?? cashJournalId;
+          checkJournalId = sqliteIntegerFkOrNull(fresh.chequeJournalId) ?? checkJournalId;
+          setVehicleJournalIds({
+            cashJournalId,
+            chequeJournalId: checkJournalId,
+          });
+        }
+      } catch (_) {
+        /* retry is best-effort; missing journal is shown below */
+      }
+    }
+    if (needsCashAmount && cashJournalId == null) {
+      Alert.alert(
+        t('proceedpayment.cashJournalMissingTitle', 'Cash is not ready'),
+        t(
+          'proceedpayment.cashJournalMissingBody',
+          'This vehicle has no cash journal yet. Wait a moment and tap Confirm again, or sync once you are online.'
+        )
+      );
+      return;
+    }
+    if (needsCheckAmount && checkJournalId == null) {
+      Alert.alert(
+        t('proceedpayment.chequeJournalMissingTitle', 'Cheque is not ready'),
+        t(
+          'proceedpayment.chequeJournalMissingBody',
+          'This vehicle has no cheque journal yet. Wait a moment and tap Confirm again, or sync once you are online.'
+        )
+      );
+      return;
+    }
+    const needsCash = needsCashAmount && cashJournalId != null;
+    const needsCheck = needsCheckAmount && checkJournalId != null;
     const needsCredit = creditAmountNum > 0 && selectedPaymentMethods.includes(PAYMENT_CREDIT);
-    if (!needsCash && !needsCheck && !needsCredit) return;
-    if (proceedGuardRef.current) return;
+    if (!needsCash && !needsCheck && !needsCredit) {
+      Alert.alert(
+        t('proceedpayment.noPaymentTitle', 'No payment selected'),
+        t('proceedpayment.noPaymentBody', 'Choose Cash, Cheque, or Credit and enter the amount, then continue.')
+      );
+      return;
+    }
     proceedGuardRef.current = true;
     try {
       setLoading(true);
@@ -433,7 +546,13 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         payments.push({ type: 'credit', amount: creditAmountNum });
         paymentSplit.credit = creditAmountNum;
       }
-      if (payments.length === 0) return;
+      if (payments.length === 0) {
+        Alert.alert(
+          t('proceedpayment.noPaymentTitle', 'No payment selected'),
+          t('proceedpayment.noPaymentBody', 'Choose Cash, Cheque, or Credit and enter the amount, then continue.')
+        );
+        return;
+      }
 
       const paymentDateStr = new Date().toISOString().slice(0, 10);
 
@@ -1103,10 +1222,9 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         <TouchableOpacity
           style={[styles.payBtn, !canProceed && styles.payBtnDisabled]}
           onPress={() => {
-            if (!canProceed) return;
             void handleProceed();
           }}
-          disabled={loading || !canProceed}
+          disabled={loading}
           activeOpacity={0.8}
         >
           {loading ? (

@@ -84,66 +84,53 @@ async function ensureNotificationPermission() {
 function customerLabel(job) {
   const name = String(job?.customerName || '').trim();
   if (name) return name;
-  const orderName = String(job?.orderName || '').trim();
-  if (orderName) return orderName;
-  const soId = Number(job?.soId);
-  return Number.isFinite(soId) && soId > 0 ? `Order ${soId}` : t('sync.notifyCustomerFallback', 'Customer');
+  return t('sync.notifyCustomerFallback', 'Customer');
 }
 
-function buildCopy(jobs, remaining, total) {
+function buildCopy(jobs, remaining) {
   const list = Array.isArray(jobs) ? jobs : [];
   const left = Math.max(0, Number(remaining) || list.length || 0);
-  const max = Math.max(1, Number(total) || left || 1);
-  const done = Math.min(max, Math.max(0, max - left));
+  const names = list.map((job) => customerLabel(job)).filter(Boolean);
 
   if (left <= 0) {
     return {
-      title: t('sync.notifyCompleteTitle', 'Upload complete'),
-      text: t('sync.notifyCompleteBody', 'Order has been synced to the back office.'),
+      title: names[0] || t('sync.notifyCustomerFallback', 'Customer'),
+      text: t('sync.notifyUploadingBody', 'Uploading to the back office'),
       lines: [],
-      max,
-      current: max,
-      indeterminate: false,
+      max: 1,
+      current: 0,
+      indeterminate: true,
     };
   }
 
-  const lines = list.slice(0, 7).map((job, index) => {
-    const label = customerLabel(job);
-    const orderName = String(job?.orderName || '').trim();
-    const sending = index === 0;
-    const status = sending
-      ? t('sync.notifyLineSending', 'sending to back office')
-      : t('sync.notifyLineWaiting', 'waiting');
-    return orderName ? `${label} · ${orderName} — ${status}` : `${label} — ${status}`;
-  });
-
   if (list.length <= 1) {
-    const job = list[0] || {};
-    const label = customerLabel(job);
-    const orderName = String(job?.orderName || '').trim();
     return {
-      title: label,
-      text: orderName
-        ? t('sync.notifySingleBodyNamed', 'Sending {{order}} to the back office', { order: orderName })
-        : t('sync.notifySingleBody', 'Sending this order to the back office'),
+      title: names[0] || t('sync.notifyCustomerFallback', 'Customer'),
+      text: t('sync.notifyUploadingBody', 'Uploading to the back office'),
       lines: [],
-      max,
-      current: done,
-      indeterminate: done <= 0,
+      max: 1,
+      current: 0,
+      indeterminate: true,
     };
   }
 
   return {
-    title: t('sync.notifyBulkTitle', 'Syncing {{count}} orders', { count: left }),
-    text: t('sync.notifyBulkBody', '{{done}} of {{total}} sent to the back office', {
-      done,
-      total: max,
-    }),
-    lines,
-    max,
-    current: done,
-    indeterminate: false,
+    title: names[0] || t('sync.notifyCustomerFallback', 'Customer'),
+    text: t('sync.notifyUploadingBody', 'Uploading to the back office'),
+    lines: names.slice(0, 7),
+    max: 1,
+    current: 0,
+    indeterminate: true,
   };
+}
+
+function isOnlineForOrderSyncNotification() {
+  try {
+    const { isUploadSyncNetworkAvailable } = require('./networkStatus.service.js');
+    return isUploadSyncNetworkAvailable() !== false;
+  } catch (_) {
+    return true;
+  }
 }
 
 function callNative(method, payload) {
@@ -179,7 +166,7 @@ async function lookupSaleOrderJob(soIdRaw) {
 }
 
 /** Completed orders whose delivery/payment still needs to reach the back office. */
-export async function loadBackOfficeOrderSyncJobs(extraSaleOrderId) {
+export async function loadBackOfficeOrderSyncJobs(extraSaleOrderId, options = {}) {
   const jobs = new Map();
   try {
     const syncQueueDb = await import('../database/syncQueue.js');
@@ -207,7 +194,13 @@ export async function loadBackOfficeOrderSyncJobs(extraSaleOrderId) {
   }
 
   const extraId = Number(extraSaleOrderId);
-  if (Number.isFinite(extraId) && extraId > 0 && !jobs.has(extraId)) {
+  if (
+    options.keepAliveIfEmpty === true &&
+    Number.isFinite(extraId) &&
+    extraId > 0 &&
+    !jobs.has(extraId) &&
+    jobs.size === 0
+  ) {
     jobs.set(extraId, { soId: extraId, customerName: '', orderName: '' });
   }
 
@@ -237,59 +230,75 @@ function applyNativePayload(copy) {
 
 export async function startBackgroundOrderSyncNotification(options = {}) {
   if (!nativeAvailable()) return false;
+  if (!isOnlineForOrderSyncNotification()) {
+    stopBackgroundOrderSyncNotification();
+    return false;
+  }
   if (_startedOnDayKey && _startedOnDayKey !== localDayKey()) {
     stopBackgroundOrderSyncNotification();
   }
   void ensureNotificationPermission();
   const extraSoId = options.saleOrderId;
-  const jobs =
+  const hintName = String(options.customerName || '').trim();
+  const hintJobs =
     Array.isArray(options.jobs) && options.jobs.length > 0
       ? options.jobs
-      : await loadBackOfficeOrderSyncJobs(extraSoId);
-  if (jobs.length === 0 && extraSoId == null && options.allowEmpty !== true) {
+      : extraSoId != null
+        ? [{ soId: Number(extraSoId), customerName: hintName }]
+        : [];
+  const remaining = Math.max(
+    hintJobs.length,
+    Number(options.remaining) || 0,
+    extraSoId != null ? 1 : 0,
+    hintJobs.length > 0 ? 1 : 0
+  );
+  if (remaining <= 0 && options.allowEmpty !== true) {
+    stopBackgroundOrderSyncNotification();
     return false;
   }
-  const remaining = Math.max(jobs.length, Number(options.remaining) || 0, extraSoId != null ? 1 : 0);
-  if (remaining <= 0) return false;
-  _sessionTotal = Math.max(_sessionTotal, remaining, Number(options.total) || 0);
+  _sessionTotal = Math.max(_sessionTotal, remaining, Number(options.total) || 0, 1);
   _active = true;
   _completed = false;
   _startedOnDayKey = localDayKey();
   armMidnightDismiss();
-  const copy = buildCopy(jobs, remaining, _sessionTotal);
-  callNative('start', applyNativePayload(copy));
+  callNative('start', applyNativePayload(buildCopy(hintJobs, Math.max(1, remaining))));
+  void hydrateBackgroundOrderSyncNotification(options);
   return true;
+}
+
+async function hydrateBackgroundOrderSyncNotification(options = {}) {
+  if (!nativeAvailable() || !_active || _completed) return;
+  try {
+    const jobs = await loadBackOfficeOrderSyncJobs(options.saleOrderId, {
+      keepAliveIfEmpty: options.allowEmpty === true,
+    });
+    if (!nativeAvailable() || !_active || _completed) return;
+    if (jobs.length === 0) return;
+    updateBackgroundOrderSyncNotification({ jobs, remaining: jobs.length });
+  } catch (_) {
+    /* keep the instant tray */
+  }
 }
 
 export function updateBackgroundOrderSyncNotification(options = {}) {
   if (!nativeAvailable() || !_active || _completed) return;
+  if (!isOnlineForOrderSyncNotification()) {
+    stopBackgroundOrderSyncNotification();
+    return;
+  }
   const jobs = Array.isArray(options.jobs) ? options.jobs : [];
   const remaining = Math.max(jobs.length, Number(options.remaining) || 0);
   if (remaining > _sessionTotal) _sessionTotal = remaining;
   if (remaining <= 0) {
-    completeBackgroundOrderSyncNotification();
+    stopBackgroundOrderSyncNotification();
     return;
   }
-  const copy = buildCopy(jobs, remaining, _sessionTotal);
+  const copy = buildCopy(jobs, remaining);
   callNative('update', applyNativePayload(copy));
 }
 
-export function completeBackgroundOrderSyncNotification(options = {}) {
-  if (!nativeAvailable()) return;
-  if (!_active && !_completed) return;
-  _completed = true;
-  _active = false;
-  clearMidnightTimer();
-  const copy = buildCopy([], 0, Math.max(1, _sessionTotal));
-  callNative('complete', {
-    ...applyNativePayload({
-      ...copy,
-      title: options.title || copy.title,
-      text: options.text || copy.text,
-    }),
-  });
-  _sessionTotal = 0;
-  _startedOnDayKey = '';
+export function completeBackgroundOrderSyncNotification() {
+  stopBackgroundOrderSyncNotification();
 }
 
 export function stopBackgroundOrderSyncNotification() {
@@ -307,14 +316,18 @@ export function stopBackgroundOrderSyncNotification() {
  */
 export async function ensureBackgroundOrderSyncKeepAlive(remainingHint, options = {}) {
   if (!nativeAvailable()) return;
+  if (!isOnlineForOrderSyncNotification()) {
+    stopBackgroundOrderSyncNotification();
+    return;
+  }
   if (_startedOnDayKey && _startedOnDayKey !== localDayKey()) {
     stopBackgroundOrderSyncNotification();
     return;
   }
   const jobs = await loadBackOfficeOrderSyncJobs(options.saleOrderId);
   const remaining = jobs.length > 0 ? jobs.length : Number(remainingHint);
-  if (!Number.isFinite(remaining) || remaining <= 0) {
-    if (_active && !_completed) completeBackgroundOrderSyncNotification();
+  if (remaining <= 0) {
+    stopBackgroundOrderSyncNotification();
     return;
   }
   if (_active && !_completed) {
@@ -328,6 +341,10 @@ export async function ensureBackgroundOrderSyncKeepAlive(remainingHint, options 
 /** Update an already-visible tray; start only when allowStart and real BO order jobs exist. */
 export async function refreshBackgroundOrderSyncNotification(options = {}) {
   if (!nativeAvailable()) return;
+  if (!isOnlineForOrderSyncNotification()) {
+    stopBackgroundOrderSyncNotification();
+    return;
+  }
   if (_startedOnDayKey && _startedOnDayKey !== localDayKey()) {
     stopBackgroundOrderSyncNotification();
     return;
@@ -335,7 +352,7 @@ export async function refreshBackgroundOrderSyncNotification(options = {}) {
   const jobs = await loadBackOfficeOrderSyncJobs(options.saleOrderId);
   const remaining = jobs.length;
   if (remaining <= 0) {
-    if (_active && !_completed) completeBackgroundOrderSyncNotification();
+    stopBackgroundOrderSyncNotification();
     return;
   }
   if (_active && !_completed) {
@@ -363,7 +380,7 @@ export async function hideBackgroundOrderSyncNotificationIfIdle(isUploadRunning)
 export function syncBackgroundOrderSyncNotificationWithPending(remainingRaw) {
   const remaining = Math.max(0, Number(remainingRaw) || 0);
   if (remaining <= 0) {
-    if (_active && !_completed) completeBackgroundOrderSyncNotification();
+    stopBackgroundOrderSyncNotification();
     return;
   }
   void refreshBackgroundOrderSyncNotification({ allowStart: false });
