@@ -52,6 +52,7 @@ import {
   hasDashboardUploadQueueWork,
   shouldRunPendingUploadRetryLoop,
   isCheckoutUploadActive,
+  isPreCheckCompletedThisSession,
   wakePendingUploadSyncNow,
   recoverBackgroundUploadIfStalled,
   PENDING_QUEUE_FAST_RETRY_MS,
@@ -108,7 +109,16 @@ function MainTabs() {
 
   React.useEffect(() => {
     const sub = DeviceEventEmitter.addListener('preCheckStatusChanged', (status) => {
-      setPreCheckDone(status === true);
+      if (status === true) {
+        setPreCheckDone(true);
+        return;
+      }
+      // Ignore a later "not done" check after Start Day already succeeded this session.
+      if (isPreCheckCompletedThisSession()) {
+        setPreCheckDone(true);
+        return;
+      }
+      setPreCheckDone(false);
     });
     return () => sub.remove();
   }, []);

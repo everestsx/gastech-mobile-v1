@@ -1456,6 +1456,24 @@ const KEYS = {
 
 export const KEY_PRECHECK_DONE = KEYS.PRECHECK_DONE;
 
+/** In-memory: Start Day succeeded for this login. Do not re-check in a way that can lock the UI. */
+let _preCheckDoneSessionStamp = null;
+
+export function isPreCheckCompletedThisSession(loggedInAt) {
+  if (_preCheckDoneSessionStamp == null) return false;
+  if (loggedInAt == null || String(loggedInAt) === '') return true;
+  return String(_preCheckDoneSessionStamp) === String(loggedInAt);
+}
+
+export function markPreCheckDoneForSession(loggedInAt) {
+  _preCheckDoneSessionStamp =
+    loggedInAt != null && String(loggedInAt) !== '' ? String(loggedInAt) : '*';
+}
+
+export function clearPreCheckDoneSessionLatch() {
+  _preCheckDoneSessionStamp = null;
+}
+
 const KEY_POST_LOGIN_SYNC_OK = '@gastech_post_login_sync_ok';
 /** Persists the one-time dashboard "initial load" gate across process restarts (per driver+vehicle session key). */
 const KEY_DASHBOARD_INITIAL_LOAD = '@gastech_dash_init_load_v1';
@@ -1739,6 +1757,7 @@ export async function logout() {
   } catch (e) {
     console.warn('[Logout] driver login history notify failed', e?.message ?? e);
   }
+  clearPreCheckDoneSessionLatch();
   await storage.multiRemove([
     KEYS.USER,
     KEYS.USER_MEDIA,
@@ -1763,6 +1782,7 @@ export async function logout() {
 
 /** Cleared on logout — pre-check must run again after every new login session. */
 export async function clearPreCheckDoneState() {
+  clearPreCheckDoneSessionLatch();
   try {
     const storage = await getAsyncStorage();
     await storage.removeItem(KEYS.PRECHECK_DONE);

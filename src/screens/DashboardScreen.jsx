@@ -54,6 +54,9 @@ import {
   getDashboardUploadIndicatorSeq,
   isCheckoutUploadActive,
   KEY_PRECHECK_DONE,
+  isPreCheckCompletedThisSession,
+  markPreCheckDoneForSession,
+  clearPreCheckDoneSessionLatch,
   runSync,
   getVehicleLocationId,
   inspectAndRecoverSyncQueueHealthOnStartDay,
@@ -320,20 +323,30 @@ export default function DashboardScreen({ navigation }) {
     const n = new Date();
     return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
   })();
-  const [preCheckDone, setPreCheckDoneState] = useState(false);
+  const [preCheckDone, setPreCheckDoneState] = useState(() =>
+    isPreCheckCompletedThisSession(lastDashboardSnapshot?.user?.loggedInAt)
+  );
   const setPreCheckDone = useCallback(async (val, loggedInAt) => {
-    setPreCheckDoneState(val);
-    DeviceEventEmitter.emit('preCheckStatusChanged', val);
-    try {
-      if (val) {
+    if (val) {
+      markPreCheckDoneForSession(loggedInAt);
+      setPreCheckDoneState(true);
+      DeviceEventEmitter.emit('preCheckStatusChanged', true);
+      try {
         const sessionStamp = loggedInAt != null ? String(loggedInAt) : '';
         await AsyncStorage.setItem(
           KEY_PRECHECK_DONE,
           JSON.stringify({ date: precheckDateKey, loggedInAt: sessionStamp })
         );
-      } else {
-        await AsyncStorage.removeItem(KEY_PRECHECK_DONE);
+      } catch (e) {
+        console.warn('[PreCheck] AsyncStorage write failed', e);
       }
+      return;
+    }
+    clearPreCheckDoneSessionLatch();
+    setPreCheckDoneState(false);
+    DeviceEventEmitter.emit('preCheckStatusChanged', false);
+    try {
+      await AsyncStorage.removeItem(KEY_PRECHECK_DONE);
     } catch (e) {
       console.warn('[PreCheck] AsyncStorage write failed', e);
     }
@@ -341,13 +354,22 @@ export default function DashboardScreen({ navigation }) {
 
   useEffect(() => {
     let cancelled = false;
-    // Wait until the session is loaded. Emitting false while `user` is still
-    // hydrating locked every bottom tab even after Start Day was already done.
     if (!user) return undefined;
     const sessionStamp = user?.loggedInAt != null ? String(user.loggedInAt) : '';
+    // Once Start Day succeeded this login, never re-run a storage/date check that can lock tabs.
+    if (isPreCheckCompletedThisSession(sessionStamp)) {
+      setPreCheckDoneState(true);
+      DeviceEventEmitter.emit('preCheckStatusChanged', true);
+      return undefined;
+    }
     AsyncStorage.getItem(KEY_PRECHECK_DONE)
       .then((stored) => {
         if (cancelled) return;
+        if (isPreCheckCompletedThisSession(sessionStamp)) {
+          setPreCheckDoneState(true);
+          DeviceEventEmitter.emit('preCheckStatusChanged', true);
+          return;
+        }
         if (!stored) {
           setPreCheckDoneState(false);
           DeviceEventEmitter.emit('preCheckStatusChanged', false);
@@ -359,26 +381,32 @@ export default function DashboardScreen({ navigation }) {
             !sessionStamp ||
             !parsed?.loggedInAt ||
             String(parsed.loggedInAt) === sessionStamp;
-          const utcKey = new Date().toISOString().slice(0, 10);
-          const ok =
-            (parsed?.date === precheckDateKey || parsed?.date === utcKey) &&
-            sameSession;
-          setPreCheckDoneState(ok);
-          DeviceEventEmitter.emit('preCheckStatusChanged', ok);
+          if (sameSession) {
+            markPreCheckDoneForSession(parsed?.loggedInAt || sessionStamp);
+            setPreCheckDoneState(true);
+            DeviceEventEmitter.emit('preCheckStatusChanged', true);
+            return;
+          }
         } catch {
-          setPreCheckDoneState(false);
-          DeviceEventEmitter.emit('preCheckStatusChanged', false);
+          /* treat as not done */
         }
+        setPreCheckDoneState(false);
+        DeviceEventEmitter.emit('preCheckStatusChanged', false);
       })
       .catch(() => {
         if (cancelled) return;
+        if (isPreCheckCompletedThisSession(sessionStamp)) {
+          setPreCheckDoneState(true);
+          DeviceEventEmitter.emit('preCheckStatusChanged', true);
+          return;
+        }
         setPreCheckDoneState(false);
         DeviceEventEmitter.emit('preCheckStatusChanged', false);
       });
     return () => {
       cancelled = true;
     };
-  }, [precheckDateKey, user, user?.loggedInAt]);
+  }, [user?.loggedInAt]);
   const [postCheckModalVisible, setPostCheckModalVisible] = useState(false);
   const [preCheckSummaryModalVisible, setPreCheckSummaryModalVisible] = useState(false);
   const [postCheckInitialAmounts, setPostCheckInitialAmounts] = useState({
