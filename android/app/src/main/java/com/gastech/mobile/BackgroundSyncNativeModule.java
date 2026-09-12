@@ -1,5 +1,6 @@
 package com.gastech.mobile;
 
+import android.app.Activity;
 import android.content.Intent;
 import android.os.Build;
 
@@ -73,10 +74,22 @@ public class BackgroundSyncNativeModule extends ReactContextBaseJavaModule {
         Intent intent = new Intent(reactContext, BackgroundSyncService.class);
         intent.setAction(action);
         applyOptions(intent, options);
+        try {
+            startFrom(reactContext, intent);
+        } catch (Exception first) {
+            Activity activity = reactContext.getCurrentActivity();
+            if (activity == null) {
+                throw first;
+            }
+            startFrom(activity, intent);
+        }
+    }
+
+    private void startFrom(android.content.Context context, Intent intent) {
         if (Build.VERSION.SDK_INT >= 26) {
-            reactContext.startForegroundService(intent);
+            context.startForegroundService(intent);
         } else {
-            reactContext.startService(intent);
+            context.startService(intent);
         }
     }
 

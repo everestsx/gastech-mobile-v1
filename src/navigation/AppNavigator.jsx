@@ -61,6 +61,7 @@ import {
 import {
   ensureBackgroundOrderSyncKeepAlive,
   hideBackgroundOrderSyncNotificationIfIdle,
+  restoreBackgroundOrderSyncNotificationAfterOnline,
   stopBackgroundOrderSyncNotification,
 } from '../services/backgroundSyncNotification.service';
 import * as syncQueueDb from '../database/syncQueue.js';
@@ -349,6 +350,7 @@ export default function AppNavigator() {
       const prev = networkQualityRef.current;
       networkQualityRef.current = snap.quality;
       if (prev === NetworkQuality.OFFLINE && snap.quality !== NetworkQuality.OFFLINE) {
+        void restoreBackgroundOrderSyncNotificationAfterOnline();
         wakePendingUploadSyncNow({
           queuePasses: 8,
           includeAttachments: true,
@@ -357,6 +359,7 @@ export default function AppNavigator() {
       } else if (snap.quality === NetworkQuality.OFFLINE && prev !== NetworkQuality.OFFLINE) {
         stopBackgroundOrderSyncNotification();
       } else if (snap.quality === NetworkQuality.GOOD && prev !== NetworkQuality.GOOD) {
+        void restoreBackgroundOrderSyncNotificationAfterOnline();
         wakePendingUploadSyncNow({
           queuePasses: 8,
           includeAttachments: true,

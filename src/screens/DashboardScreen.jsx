@@ -436,7 +436,7 @@ export default function DashboardScreen({ navigation }) {
       return undefined;
     }
 
-    if (prev > 0) {
+    if (prev > 0 && !isCheckoutUploadActive()) {
       try {
         require('../services/backgroundSyncNotification.service.js').stopBackgroundOrderSyncNotification();
       } catch (_) {

@@ -1051,6 +1051,7 @@ export function startCheckoutUploadInBackground(saleOrderId, options = {}) {
   const soId = Number(saleOrderId);
   if (_checkoutUploadRunActive) {
     log('queue', `checkout already running SO ${_checkoutPrioritySoId} — ${soId} will chain after`);
+    startOsSyncKeepAlive(1, { saleOrderId: soId, customerName: options.customerName });
     return;
   }
   _checkoutUploadPriority = true;
@@ -1184,6 +1185,11 @@ export async function uploadCompletedOrderNow(saleOrderId, options = {}) {
 /** Kick queue upload immediately (e.g. app entering background before JS is suspended). */
 export function wakePendingUploadSyncNow(options = {}) {
   if (!canRunBackgroundUploadSync()) return;
+  try {
+    osSyncNotify()?.restoreBackgroundOrderSyncNotificationAfterOnline?.(_checkoutPrioritySoId);
+  } catch (_) {
+    /* tray restore is best-effort */
+  }
   if (_checkoutUploadRunActive) return;
   void (async () => {
     const ids = await listUnheldPendingPaymentSaleOrderIds();
@@ -1212,10 +1218,7 @@ export function wakePendingUploadSyncNow(options = {}) {
  */
 export function recoverBackgroundUploadIfStalled() {
   try {
-    osSyncNotify()?.ensureBackgroundOrderSyncKeepAlive?.(undefined, {
-      allowStart: _checkoutUploadPriority === true || _checkoutUploadRunActive === true,
-      saleOrderId: _checkoutPrioritySoId,
-    });
+    osSyncNotify()?.restoreBackgroundOrderSyncNotificationAfterOnline?.(_checkoutPrioritySoId);
   } catch (_) {
     /* best-effort */
   }

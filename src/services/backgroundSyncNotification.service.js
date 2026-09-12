@@ -330,12 +330,26 @@ export async function ensureBackgroundOrderSyncKeepAlive(remainingHint, options 
     stopBackgroundOrderSyncNotification();
     return;
   }
-  if (_active && !_completed) {
+  if (_active && !_completed && options.forceStart !== true) {
     updateBackgroundOrderSyncNotification({ jobs, remaining });
     return;
   }
   if (options.allowStart === false) return;
   await startBackgroundOrderSyncNotification({ jobs, remaining, saleOrderId: options.saleOrderId });
+}
+
+/**
+ * Offline dismisses the OS tray. Call this as soon as the radio is back so the
+ * notification returns without waiting for the user to leave and reopen the app.
+ */
+export async function restoreBackgroundOrderSyncNotificationAfterOnline(saleOrderId) {
+  if (!nativeAvailable()) return;
+  if (!isOnlineForOrderSyncNotification()) return;
+  await ensureBackgroundOrderSyncKeepAlive(undefined, {
+    allowStart: true,
+    forceStart: true,
+    saleOrderId,
+  });
 }
 
 /** Update an already-visible tray; start only when allowStart and real BO order jobs exist. */
@@ -368,7 +382,7 @@ export async function refreshBackgroundOrderSyncNotification(options = {}) {
 export async function hideBackgroundOrderSyncNotificationIfIdle(isUploadRunning) {
   if (!nativeAvailable()) return;
   if (isUploadRunning === true) {
-    await refreshBackgroundOrderSyncNotification({ allowStart: false });
+    await refreshBackgroundOrderSyncNotification({ allowStart: true });
     return;
   }
   if (_active || _completed) {
