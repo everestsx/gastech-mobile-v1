@@ -14,6 +14,7 @@ public class RongtaNativePackage implements ReactPackage {
     public List<NativeModule> createNativeModules(ReactApplicationContext reactContext) {
         List<NativeModule> modules = new ArrayList<>();
         modules.add(new RongtaNativeModule(reactContext));
+        modules.add(new BackgroundSyncNativeModule(reactContext));
         return modules;
     }
 

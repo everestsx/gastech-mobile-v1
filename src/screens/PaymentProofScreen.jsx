@@ -11,7 +11,6 @@ import {
   Alert,
   Modal,
   Pressable,
-  InteractionManager,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
@@ -346,29 +345,27 @@ export default function PaymentProofScreen({ route, navigation }) {
       checkoutUploadStarted = true;
       const includeAttachments = creditProofRequired || photos.length > 0;
       const persistPhotosNow = persistPhotos;
-      InteractionManager.runAfterInteractions(() => {
-        void (async () => {
-          try {
-            if (photos.length > 0) {
-              await persistPhotosNow();
-            }
-            await applyLocalGasInventoryForSaleOrder(soId);
-            await releaseQueueHoldsForSo();
-            notifyLocalInventoryChanged();
-            startCheckoutUploadInBackground(soId, { includeAttachments });
-            await finalizeLocalCheckoutState();
-            await clearCheckoutResume(soId);
-          } catch (bgErr) {
-            console.warn('[PaymentProof] background checkout', bgErr?.message || bgErr);
-            try {
-              await releaseQueueHoldsForSo();
-              startCheckoutUploadInBackground(soId, { includeAttachments });
-            } catch (retryErr) {
-              console.warn('[PaymentProof] background checkout retry', retryErr?.message || retryErr);
-            }
+      void (async () => {
+        try {
+          if (photos.length > 0) {
+            await persistPhotosNow();
           }
-        })();
-      });
+          await applyLocalGasInventoryForSaleOrder(soId);
+          await releaseQueueHoldsForSo();
+          notifyLocalInventoryChanged();
+          startCheckoutUploadInBackground(soId, { includeAttachments });
+          await finalizeLocalCheckoutState();
+          await clearCheckoutResume(soId);
+        } catch (bgErr) {
+          console.warn('[PaymentProof] background checkout', bgErr?.message || bgErr);
+          try {
+            await releaseQueueHoldsForSo();
+            startCheckoutUploadInBackground(soId, { includeAttachments });
+          } catch (retryErr) {
+            console.warn('[PaymentProof] background checkout retry', retryErr?.message || retryErr);
+          }
+        }
+      })();
     } catch (e) {
       if (!checkoutUploadStarted) endCheckoutUploadPriority();
       const msg = isSqliteFullError(e) ? sqliteFullUserMessage() : (e?.message || 'Something went wrong. Try again.');

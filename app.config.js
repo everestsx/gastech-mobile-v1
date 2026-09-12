@@ -1,4 +1,5 @@
 const { execSync } = require("child_process");
+const { getPublicEnvExtra, describeEnvForLog } = require("./scripts/loadBuildEnv");
 
 const SHARED_PERMISSIONS = [
   "android.permission.INTERNET",
@@ -15,6 +16,10 @@ const SHARED_PERMISSIONS = [
   "android.permission.WRITE_EXTERNAL_STORAGE",
   "android.permission.READ_MEDIA_IMAGES",
   "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
+  "android.permission.POST_NOTIFICATIONS",
+  "android.permission.FOREGROUND_SERVICE",
+  "android.permission.FOREGROUND_SERVICE_DATA_SYNC",
+  "android.permission.WAKE_LOCK",
 ];
 
 const APP_VARIANTS = {
@@ -77,6 +82,9 @@ module.exports = () => {
     `[app.config] Using ${variantKey} config: ${selectedVariant.name} (${selectedVariant.projectId})`
   );
 
+  const envExtra = getPublicEnvExtra();
+  console.log("[app.config] extra Odoo bake", describeEnvForLog(envExtra));
+
   return {
     expo: {
       name: selectedVariant.name,
@@ -130,6 +138,7 @@ module.exports = () => {
             granularPermissions: ["photo"],
           },
         ],
+        "./plugins/withBackgroundSyncService.js",
       ],
       build: {
         preview: {
@@ -142,6 +151,7 @@ module.exports = () => {
         eas: {
           projectId: selectedVariant.projectId,
         },
+        ...envExtra,
       },
     },
   };

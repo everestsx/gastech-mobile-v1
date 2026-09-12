@@ -27,7 +27,9 @@ npm-debug.*
 yarn-debug.*
 yarn-error.*
 
-# local env files (except .env)
+# local env files. `.env` is gitignored; re-include it last so EAS CLI
+# uploads the working-tree file for preview APK Metro inlining.
+.env
 .env*.local
 
 # typescript

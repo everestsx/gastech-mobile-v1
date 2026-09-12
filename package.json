@@ -16,7 +16,8 @@
     "test:report": "playwright show-report",
     "test:smoke": "playwright test tests/smoke",
     "test:auth": "playwright test tests/auth",
-    "test:api": "playwright test tests/api"
+    "test:api": "playwright test tests/api",
+    "eas-build-post-install": "node ./scripts/ensure-eas-env-file.js"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",

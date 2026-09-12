@@ -295,8 +295,23 @@
     },
     "common": {
       "loading": "Loading...",
+      "ok": "OK",
       "orderSyncCompletedTitle": "Order sync completed",
       "orderSyncCompletedBody": "{{customer}} order sync completed."
+    },
+    "sync": {
+      "notificationPermissionTitle": "Allow sync notifications",
+      "notificationPermissionBody": "Gas Tech can show upload progress in the notification area so you can leave the app while orders sync.",
+      "notifyProgressTitle": "Uploading order",
+      "notifyCustomerFallback": "Customer",
+      "notifySingleBody": "Sending this order to the back office",
+      "notifySingleBodyNamed": "Sending {{order}} to the back office",
+      "notifyBulkTitle": "Syncing {{count}} orders",
+      "notifyBulkBody": "{{done}} of {{total}} sent to the back office",
+      "notifyLineSending": "sending to back office",
+      "notifyLineWaiting": "waiting",
+      "notifyCompleteTitle": "Upload complete",
+      "notifyCompleteBody": "Order has been synced to the back office."
     },
     "saleorder": {
       "cancelThisOrder": "Cancel this order?",

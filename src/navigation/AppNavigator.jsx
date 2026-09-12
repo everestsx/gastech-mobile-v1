@@ -53,10 +53,15 @@ import {
   shouldRunPendingUploadRetryLoop,
   isCheckoutUploadActive,
   wakePendingUploadSyncNow,
+  recoverBackgroundUploadIfStalled,
   PENDING_QUEUE_FAST_RETRY_MS,
   PENDING_QUEUE_FAST_RETRY_WINDOW_MS,
   PENDING_QUEUE_IDLE_POLL_MS,
 } from '../services/sync.service';
+import {
+  ensureBackgroundOrderSyncKeepAlive,
+  hideBackgroundOrderSyncNotificationIfIdle,
+} from '../services/backgroundSyncNotification.service';
 import * as syncQueueDb from '../database/syncQueue.js';
 import {
   subscribeNetworkStatus,
@@ -433,6 +438,8 @@ export default function AppNavigator() {
       if (isActive && !wasActive) {
         void enforceSessionNotExpired();
         reclaimSqliteOnResumeIfDue();
+        recoverBackgroundUploadIfStalled();
+        void hideBackgroundOrderSyncNotificationIfIdle(isCheckoutUploadActive());
         void runScheduledSyncIfNeeded();
         syncIntervalRef.current = setInterval(() => {
           void runScheduledSyncIfNeeded();
@@ -443,6 +450,9 @@ export default function AppNavigator() {
           clearInterval(syncIntervalRef.current);
           syncIntervalRef.current = null;
         }
+        void ensureBackgroundOrderSyncKeepAlive(undefined, {
+          allowStart: isCheckoutUploadActive(),
+        });
         wakePendingUploadSyncNow({ queuePasses: 24, includeAttachments: true, chainRetry: false });
         void runFastPending();
       }

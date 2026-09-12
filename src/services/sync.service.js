@@ -133,6 +133,9 @@ let _pendingUploadWakePromise = null;
 let _queueSyncFastDrainActive = false;
 /** Checkout-complete upload: zero artificial settle delays, SO-scoped queue drain. */
 let _checkoutUploadPriority = false;
+/** True only while uploadCompletedOrderNow is actually executing (not the pre-start latch). */
+let _checkoutUploadRunActive = false;
+let _checkoutPrioritySetAt = 0;
 /** Sale order currently in checkout upload — excluded from orange pending-invoice count until the upload finishes. */
 let _checkoutPrioritySoId = null;
 /**
@@ -586,6 +589,39 @@ function canRunBackgroundUploadSync() {
   }
 }
 
+function osSyncNotify() {
+  try {
+    return require('./backgroundSyncNotification.service.js');
+  } catch (_) {
+    return null;
+  }
+}
+
+function notifyOsSyncProgress(options = {}) {
+  try {
+    const n = osSyncNotify();
+    n?.refreshBackgroundOrderSyncNotification?.({
+      allowStart: options.allowStart === true,
+      saleOrderId: options.saleOrderId,
+    });
+  } catch (_) {
+    /* OS notification is best-effort */
+  }
+}
+
+function startOsSyncKeepAlive(remaining = 1, extra = {}) {
+  try {
+    const n = osSyncNotify();
+    n?.startBackgroundOrderSyncNotification?.({
+      remaining: Math.max(1, Number(remaining) || 1),
+      saleOrderId: extra.saleOrderId,
+      allowEmpty: extra.saleOrderId != null,
+    });
+  } catch (_) {
+    /* OS keep-alive is best-effort */
+  }
+}
+
 function runPendingUploadFlush(options = {}) {
   if (!canRunBackgroundUploadSync()) return;
   if (_checkoutUploadPriority && options.checkoutMode !== true) {
@@ -915,12 +951,56 @@ async function processDeferredCheckoutInventoryForSaleOrder(soIdRaw) {
 }
 
 /**
+ * If Complete already wrote the local invoice, drop hold flags so checkout upload
+ * can run even when PaymentProof's post-complete callback was delayed or frozen.
+ */
+async function releaseQueueHoldsIfLocallyCompleted(soIdRaw) {
+  const soId = Number(soIdRaw);
+  if (!Number.isFinite(soId) || soId <= 0) return;
+  let locallyComplete = false;
+  try {
+    const localInvoicesDb = await import('../database/localInvoices.js');
+    const inv = await localInvoicesDb.getLocalInvoiceBySaleOrderId(soId);
+    if (inv) locallyComplete = true;
+  } catch (_) {
+    /* ignore */
+  }
+  if (!locallyComplete) {
+    try {
+      const so = await saleOrdersDb.getSaleOrderById(soId);
+      if (String(so?.invoice_status || '').toLowerCase() === 'invoiced') locallyComplete = true;
+    } catch (_) {
+      /* ignore */
+    }
+  }
+  if (!locallyComplete) return;
+  const pending = await syncQueueDb.getPending().catch(() => []);
+  for (const row of pending || []) {
+    const p = row.payload || {};
+    const rowSo = Number(p.saleOrderId ?? p.sale_order_id ?? p.sale_id);
+    if (rowSo !== soId) continue;
+    if (row.action_type === syncQueueDb.ACTION_INVENTORY_UPDATE) continue;
+    if (p.holdUntilComplete !== true && p.holdUntilPayment !== true) continue;
+    const next = { ...p };
+    delete next.holdUntilComplete;
+    delete next.holdUntilPayment;
+    try {
+      await syncQueueDb.updateQueueItemPayload(row.id, next, { suppressWake: true });
+    } catch (_) {
+      /* ignore */
+    }
+  }
+}
+
+/**
  * Push completed order to Odoo in background (non-blocking). Dashboard opens immediately.
  */
 export function startCheckoutUploadInBackground(saleOrderId, options = {}) {
   const soId = Number(saleOrderId);
   _checkoutUploadPriority = true;
+  _checkoutPrioritySetAt = Date.now();
   if (Number.isFinite(soId) && soId > 0) _checkoutPrioritySoId = soId;
+  startOsSyncKeepAlive(1, { saleOrderId: soId });
   void uploadCompletedOrderNow(saleOrderId, options);
 }
 
@@ -931,26 +1011,33 @@ export function startCheckoutUploadInBackground(saleOrderId, options = {}) {
 export async function uploadCompletedOrderNow(saleOrderId, options = {}) {
   const soId = Number(saleOrderId);
   _checkoutUploadPriority = true;
+  _checkoutPrioritySetAt = Date.now();
   if (Number.isFinite(soId) && soId > 0) _checkoutPrioritySoId = soId;
   if (!Number.isFinite(soId) || soId <= 0) {
     _checkoutUploadPriority = false;
     _checkoutPrioritySoId = null;
+    _checkoutUploadRunActive = false;
     return { pendingCount: null, skippedOffline: true };
   }
+  _checkoutUploadRunActive = true;
+  startOsSyncKeepAlive(1, { saleOrderId: soId });
   if (!canRunBackgroundUploadSync()) {
     _checkoutUploadPriority = false;
     _checkoutPrioritySoId = null;
+    _checkoutUploadRunActive = false;
+    notifyOsSyncProgress({ allowStart: false, saleOrderId: soId });
     schedulePendingUploadSync({ immediate: false, queuePasses: 8, includeAttachments: true });
     return { pendingCount: null, skippedOffline: true };
   }
+  await releaseQueueHoldsIfLocallyCompleted(soId);
   const usageSessionId = createUsageSession(DATA_USAGE_SESSION_TYPES.ORDER_SYNC, {
     saleOrderId: soId,
     source: 'uploadCompletedOrderNow',
   });
   let startDeferredExtras = false;
+  let pendingCount = 1;
   try {
     log('queue', `checkout upload start SO ${soId}`);
-    let pendingCount = 1;
     const includeAttachments = options.includeAttachments !== false;
     const maxImmediateAttempts = 2;
     for (let attempt = 0; attempt < maxImmediateAttempts; attempt++) {
@@ -964,6 +1051,10 @@ export async function uploadCompletedOrderNow(saleOrderId, options = {}) {
       const deliveryRow = await syncQueueDb.getPendingDeliveryItemBySaleOrderId(soId).catch(() => null);
       const leakagePending = await hasPendingGasLeakageUploads(soId);
       pendingCount = paymentRow || deliveryRow || leakagePending ? 1 : 0;
+      notifyOsSyncProgress({
+        allowStart: pendingCount > 0,
+        saleOrderId: soId,
+      });
       if (!paymentRow && !deliveryRow && !leakagePending) break;
       log(
         'queue',
@@ -980,6 +1071,7 @@ export async function uploadCompletedOrderNow(saleOrderId, options = {}) {
     log('queue', `checkout upload done SO ${soId} pending=${pendingCount}`);
     await refreshDashboardUploadIndicatorsFromQueue();
     if (pendingCount > 0) {
+      notifyOsSyncProgress({ allowStart: true, saleOrderId: soId });
       schedulePendingUploadSync({
         immediate: true,
         aggressive: true,
@@ -992,6 +1084,7 @@ export async function uploadCompletedOrderNow(saleOrderId, options = {}) {
       });
     } else {
       startDeferredExtras = true;
+      notifyOsSyncProgress({ allowStart: false, saleOrderId: soId });
       try {
         if (_syncCompleteListener) _syncCompleteListener(true);
       } catch (_) {
@@ -1005,8 +1098,10 @@ export async function uploadCompletedOrderNow(saleOrderId, options = {}) {
       title: `Order #${soId} sync`,
     }).catch(() => null);
     _checkoutDrivePrefetch.delete(soId);
+    _checkoutUploadRunActive = false;
     _checkoutUploadPriority = false;
     _checkoutPrioritySoId = null;
+    _checkoutPrioritySetAt = 0;
     void refreshDashboardUploadIndicatorsFromQueue().catch(() => {});
     void pullLatestVehicleStockFromBackOffice();
     if (startDeferredExtras) {
@@ -1039,6 +1134,31 @@ export function wakePendingUploadSyncNow(options = {}) {
   });
 }
 
+/**
+ * Keep JS alive and restart checkout if Complete latched priority but the upload never started
+ * (InteractionManager delay, screen off, or OS freeze). Does not change delivery RPC order.
+ */
+export function recoverBackgroundUploadIfStalled() {
+  try {
+    osSyncNotify()?.ensureBackgroundOrderSyncKeepAlive?.(undefined, {
+      allowStart: _checkoutUploadPriority === true || _checkoutUploadRunActive === true,
+      saleOrderId: _checkoutPrioritySoId,
+    });
+  } catch (_) {
+    /* best-effort */
+  }
+  if (_checkoutUploadRunActive) return;
+  if (_checkoutUploadPriority) {
+    const soId = Number(_checkoutPrioritySoId);
+    if (Number.isFinite(soId) && soId > 0) {
+      const ageMs = _checkoutPrioritySetAt > 0 ? Date.now() - _checkoutPrioritySetAt : 0;
+      log('queue', `checkout recover — upload had not started SO ${soId} latchAge=${ageMs}ms`);
+      startCheckoutUploadInBackground(soId, { includeAttachments: true });
+      return;
+    }
+  }
+}
+
 /** Whether a checkout upload is in progress — background flush loops must yield. */
 export function isCheckoutUploadActive() {
   return _checkoutUploadPriority === true;
@@ -1047,14 +1167,18 @@ export function isCheckoutUploadActive() {
 /** Latch checkout-priority BEFORE local awaits so AppNavigator cannot steal the queue. */
 export function beginCheckoutUploadPriority(saleOrderId) {
   _checkoutUploadPriority = true;
+  _checkoutPrioritySetAt = Date.now();
   const soId = Number(saleOrderId);
   _checkoutPrioritySoId = Number.isFinite(soId) && soId > 0 ? soId : _checkoutPrioritySoId;
+  startOsSyncKeepAlive(1, { saleOrderId: soId });
 }
 
 /** Clear the latch only when checkout upload never started (error before upload). */
 export function endCheckoutUploadPriority() {
+  if (_checkoutUploadRunActive) return;
   _checkoutUploadPriority = false;
   _checkoutPrioritySoId = null;
+  _checkoutPrioritySetAt = 0;
 }
 
 export function getCheckoutPrioritySaleOrderId() {
@@ -10338,6 +10462,12 @@ export async function flushPendingUploadsNow(options = {}) {
         })
       : null;
   let usagePendingEnd = null;
+  if (pendingPaymentStart > 0 || checkoutMode) {
+    notifyOsSyncProgress({
+      allowStart: true,
+      saleOrderId: prioritySoId,
+    });
+  }
   if (trackSpinner) syncActivityStart();
   const tFlushStart = Date.now();
   perfLog('flush-start', `pending=${Number(usagePendingStart) || 0}`);
@@ -10363,6 +10493,10 @@ export async function flushPendingUploadsNow(options = {}) {
         }
       }
       const pending = await countPending();
+      notifyOsSyncProgress({
+        allowStart: pendingPaymentStart > 0 || checkoutMode,
+        saleOrderId: prioritySoId,
+      });
       if (pending === 0) {
         try {
           if (_syncCompleteListener) _syncCompleteListener(true);
@@ -10419,6 +10553,10 @@ export async function flushPendingUploadsNow(options = {}) {
     }
     const pendingCount = await countPending();
     usagePendingEnd = pendingCount;
+    notifyOsSyncProgress({
+      allowStart: false,
+      saleOrderId: prioritySoId,
+    });
     const indicators = hasDashboardUploadIndicators();
     if (pendingCount === 0 && !indicators && _syncCompleteListener) {
       try {
