@@ -51,6 +51,7 @@ import {
   markDashboardInitialLoadComplete,
   setDashboardUploadIndicators,
   setDashboardIndicatorsListener,
+  getDashboardUploadIndicatorSeq,
   isCheckoutUploadActive,
   KEY_PRECHECK_DONE,
   runSync,
@@ -403,21 +404,56 @@ export default function DashboardScreen({ navigation }) {
     };
   }, []);
 
-  /** Toast only when orange pending-upload counter drops to zero (synced / green). */
+  /** Toast only after a real pending-invoice count was visible, then cleared (never on a flash). */
   const prevLocalCompletedRef = React.useRef(0);
+  const localCompletedNowRef = React.useRef(0);
+  const orangeVisibleSinceRef = React.useRef(0);
+  const zeroToastTimerRef = React.useRef(null);
+  localCompletedNowRef.current = orderSyncStats.localCompleted;
   useEffect(() => {
     const cur = orderSyncStats.localCompleted;
     const prev = prevLocalCompletedRef.current;
-    if (prev > 0 && cur === 0) {
-      setNotification({
-        visible: true,
-        title: t('common.syncCompletedTitle', 'Sync completed'),
-        message: t('common.syncCompletedBody', 'Pending uploads have been synced.'),
-        type: 'success',
-      });
+
+    if (cur > 0) {
+      if (prev === 0) orangeVisibleSinceRef.current = Date.now();
+      if (zeroToastTimerRef.current) {
+        clearTimeout(zeroToastTimerRef.current);
+        zeroToastTimerRef.current = null;
+      }
+      prevLocalCompletedRef.current = cur;
+      return undefined;
     }
+
+    const visibleMs = orangeVisibleSinceRef.current
+      ? Date.now() - orangeVisibleSinceRef.current
+      : 0;
+    const wasReallyPending = prev > 0 && visibleMs >= 1500;
+    if (wasReallyPending && !isCheckoutUploadActive() && !zeroToastTimerRef.current) {
+      zeroToastTimerRef.current = setTimeout(() => {
+        zeroToastTimerRef.current = null;
+        if (localCompletedNowRef.current === 0 && !isCheckoutUploadActive()) {
+          setNotification({
+            visible: true,
+            title: t('common.syncCompletedTitle', 'Sync completed'),
+            message: t('common.syncCompletedBody', 'Pending uploads have been synced.'),
+            type: 'success',
+          });
+        }
+      }, 400);
+    }
+    orangeVisibleSinceRef.current = 0;
     prevLocalCompletedRef.current = cur;
+    return undefined;
   }, [orderSyncStats.localCompleted, t]);
+  useEffect(
+    () => () => {
+      if (zeroToastTimerRef.current) {
+        clearTimeout(zeroToastTimerRef.current);
+        zeroToastTimerRef.current = null;
+      }
+    },
+    []
+  );
 
   const syncButtonActive =
     syncing ||
@@ -613,7 +649,6 @@ export default function DashboardScreen({ navigation }) {
       setQtyDoneBySaleId(qtyDoneMap || {});
       setTodayOrderLines(orderLines || []);
       setPaymentSplitsByOrderId(splits || {});
-      const pendingQueueItems = await syncQueueDb.getPending().catch(() => []);
       const queueSplits = {};
       for (const [soIdKey, row] of Object.entries(latestPaymentPayloads || {})) {
         const soId = Number(soIdKey);
@@ -624,11 +659,9 @@ export default function DashboardScreen({ navigation }) {
       setPaymentSplitsFromQueueByOrderId(queueSplits);
       const saleIdToPickState = mergePickingStateBySaleIdFromRows(pickings);
 
-      const pendingPaymentOrderIds = new Set(
-        (pendingQueueItems || [])
-          .filter((item) => item.action_type === syncQueueDb.ACTION_PAYMENT)
-          .map((item) => Number(item.payload?.saleOrderId ?? item.payload?.sale_order_id))
-          .filter((id) => Number.isFinite(id))
+      const paymentCountSeq = getDashboardUploadIndicatorSeq();
+      const pendingPaymentOrderIds = await syncQueueDb.getPendingPaymentUploadSaleOrderIds().catch(
+        () => new Set()
       );
 
       const localInvoiceSaleOrderIds = await localInvoicesDb.getSaleOrderIdsWithLocalInvoices().catch(() => new Set());
@@ -704,7 +737,7 @@ export default function DashboardScreen({ navigation }) {
         localCompleted,
         syncedCompleted,
       });
-      setDashboardUploadIndicators(pendingOrders, localCompleted);
+      setDashboardUploadIndicators(pendingOrders, localCompleted, { capturedSeq: paymentCountSeq });
 
       vehicleIdForStock = vehicleId;
       ordersForStock = Array.isArray(data) ? data : [];
@@ -2926,7 +2959,7 @@ export default function DashboardScreen({ navigation }) {
         <TouchableOpacity
           style={styles.leakageCollectBtn}
           onPress={() => navigation.navigate('GasLeakageCollect')}
-          activeOpacity={0.85}
+          activeOpacity={0.7}
         >
           <Ionicons name="water-outline" size={20} color={colors.primary} />
           <Text style={styles.leakageCollectBtnText}>

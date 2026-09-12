@@ -329,7 +329,7 @@ export default function PaymentProofScreen({ route, navigation }) {
     completeGuardRef.current = true;
     setSaving(true);
     let checkoutUploadStarted = false;
-    beginCheckoutUploadPriority();
+    beginCheckoutUploadPriority(soId);
     try {
       await persistLocalInvoiceAtCheckout();
       await saleOrdersDb.updateSaleOrderInvoiceStatusLocal(soId, 'invoiced');

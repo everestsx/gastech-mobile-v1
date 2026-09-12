@@ -35,6 +35,7 @@ import {
 import { setCheckoutResumeFromPayment } from '../services/checkoutResume.service';
 import { getMandatoryEmptyCylinderProducts } from '../services/product.service';
 import { buildEmptyCylinderChatterBody } from '../services/proofAttachment.service';
+import { isSqliteFullError, sqliteFullUserMessage } from '../database/sqliteMaintenance.js';
 import {
   canonicalKgFromName,
   findEmptyCylinderProductIdForKg,
@@ -447,6 +448,19 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
 
         navigation.replace('InvoiceScreen', invoiceParams);
       } catch (e) {
+        if (isSqliteFullError(e)) {
+          try {
+            const { reclaimSqliteSpace } = await import('../database/db.js');
+            await reclaimSqliteSpace({ aggressive: true });
+          } catch (_) {
+            /* space reclaim is best-effort; user message below still applies */
+          }
+          Alert.alert(
+            t('emptycylindercollection.error', 'Error'),
+            sqliteFullUserMessage()
+          );
+          return;
+        }
         Alert.alert(
           t('emptycylindercollection.error', 'Error'),
           e?.message || t('emptycylindercollection.couldNotSaveEmptyCylinderDetails', 'Could not save empty cylinder details.')

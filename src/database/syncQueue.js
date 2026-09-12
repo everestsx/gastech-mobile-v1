@@ -16,7 +16,7 @@ export const ACTION_INVENTORY_UPDATE = 'inventory_update';
 export const ACTION_CANCEL_ORDER = 'order_cancel';
 /** Fleet vehicle odometer write (start KM / end KM). Payload: { vehicleId, odometer, driverId?, workContactId?, licensePlate?, source?, recordedAt? } */
 export const ACTION_VEHICLE_ODOMETER = 'vehicle_odometer';
-/** Leaked-items receipt picking create. Payload: { partnerId, reason, moves[], saleOrderId?, chatterBody? } */
+/** Leaked-items receipt: create picking then button_validate with { ids: [pickingId] }. Payload: { partnerId, reason, moves[], saleOrderId?, chatterBody? } */
 export const ACTION_GAS_LEAKAGE_COLLECT = 'gas_leakage_collect';
 
 function wakePendingUploadAfterQueueChange() {
@@ -141,18 +141,56 @@ export async function getOldestPendingQueueAgeMs() {
   return Math.max(0, Date.now() - t);
 }
 
+function saleOrderIdFromPaymentPayload(payload) {
+  const p = payload && typeof payload === 'object' ? payload : {};
+  const n = Number(p.saleOrderId ?? p.sale_order_id ?? p.sale_id);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 /** Get sale order ids that already have a synced payment (avoid duplicate payments on retry). */
 export async function getSyncedPaymentSaleOrderIds() {
+  const latest = await getLatestSyncedPaymentQueueIdBySaleOrder();
+  return new Set(latest.keys());
+}
+
+/** Highest synced payment queue id per sale order (leftover pending rows are older than this). */
+export async function getLatestSyncedPaymentQueueIdBySaleOrder() {
   const db = await getDb();
   const rows = await db.getAllAsync(
-    `SELECT payload FROM sync_queue WHERE action_type = ? AND (COALESCE(is_uploaded, 0) = 1 OR synced_at IS NOT NULL)`,
+    `SELECT id, payload FROM sync_queue WHERE action_type = ? AND (COALESCE(is_uploaded, 0) = 1 OR synced_at IS NOT NULL)`,
     [ACTION_PAYMENT]
   );
-  const ids = new Set();
+  const latest = new Map();
   for (const row of rows || []) {
-    const p = safeParseJson(row.payload, {});
-    const soId = p.saleOrderId ?? p.sale_order_id;
-    if (soId != null) ids.add(Number(soId));
+    const soId = saleOrderIdFromPaymentPayload(safeParseJson(row.payload, {}));
+    if (soId == null) continue;
+    const qid = Number(row.id);
+    if (!Number.isFinite(qid)) continue;
+    const prev = latest.get(soId);
+    if (prev == null || qid > prev) latest.set(soId, qid);
+  }
+  return latest;
+}
+
+/**
+ * Unique sale orders whose payment still needs upload (orange counter).
+ * Includes held in-flight checkout rows. Excludes leftover pending rows that are
+ * older than a payment already marked synced for the same order.
+ */
+export async function getPendingPaymentUploadSaleOrderIds() {
+  const [pending, latestSyncedId] = await Promise.all([
+    getPending(),
+    getLatestSyncedPaymentQueueIdBySaleOrder(),
+  ]);
+  const ids = new Set();
+  for (const item of pending || []) {
+    if (item.action_type !== ACTION_PAYMENT) continue;
+    const soId = saleOrderIdFromPaymentPayload(item.payload);
+    if (soId == null) continue;
+    const pendingId = Number(item.id);
+    const syncedId = latestSyncedId.get(soId);
+    if (syncedId != null && Number.isFinite(pendingId) && pendingId < syncedId) continue;
+    ids.add(soId);
   }
   return ids;
 }

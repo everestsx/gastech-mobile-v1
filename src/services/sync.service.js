@@ -34,7 +34,7 @@ import { getDb } from '../database/db.js';
 import { recordDriverLogout } from './driverLoginHistory.service';
 import { normalizeSmsEnabled, shouldWriteInvoiceSmsFlag } from './smsPreference.service';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
-import { applyCheckoutInvoiceQtyCapToPayload } from '../utils/deliverySync.js';
+import { applyCheckoutInvoiceQtyCapToPayload, coerceDeliveredQty } from '../utils/deliverySync.js';
 import {
   createUsageSession,
   finishUsageSession,
@@ -77,6 +77,34 @@ export function notifyLocalInventoryChanged() {
     /* non-fatal */
   }
 }
+
+/** Pull latest vehicle stock from Back Office and persist it (same path as master-data refresh). */
+async function pullLatestVehicleStockFromBackOffice() {
+  try {
+    const session = await getUserSession();
+    const vId = session?.vehicleId != null ? Number(session.vehicleId) : NaN;
+    if (Number.isFinite(vId) && vId > 0) {
+      runStartDayBackgroundRefreshInBackground(session, vId);
+    }
+  } catch (_) {
+    /* UI already notified from local flags when applicable */
+  }
+}
+async function refreshStockAfterInventoryQueueSynced(locationId, productIds = []) {
+  const loc = locationId != null ? Number(locationId) : NaN;
+  const ids = [...new Set((productIds || []).map((id) => Number(id)).filter((n) => Number.isFinite(n) && n > 0))];
+  if (Number.isFinite(loc) && loc > 0) {
+    for (const pid of ids) {
+      try {
+        await vehicleInventoriesDb.clearLocalModificationFlagByLocation(loc, pid);
+      } catch (_) {
+        /* non-fatal */
+      }
+    }
+  }
+  notifyLocalInventoryChanged();
+  void pullLatestVehicleStockFromBackOffice();
+}
 /** In-flight queue processor; concurrent callers await the same promise (do not skip uploads). */
 let _processSyncQueuePromise = null;
 /** Prevents the same delivery queue row from running two Odoo apply passes concurrently (reconnect / double wake). */
@@ -105,6 +133,8 @@ let _pendingUploadWakePromise = null;
 let _queueSyncFastDrainActive = false;
 /** Checkout-complete upload: zero artificial settle delays, SO-scoped queue drain. */
 let _checkoutUploadPriority = false;
+/** Sale order currently in checkout upload — excluded from orange pending-invoice count until the upload finishes. */
+let _checkoutPrioritySoId = null;
 /**
  * Only `uploadCompletedOrderNow` (checkoutSingleShot) is checkout-scoped.
  * Leftover inventory/flush must not inherit checkout priority — otherwise the next
@@ -888,7 +918,9 @@ async function processDeferredCheckoutInventoryForSaleOrder(soIdRaw) {
  * Push completed order to Odoo in background (non-blocking). Dashboard opens immediately.
  */
 export function startCheckoutUploadInBackground(saleOrderId, options = {}) {
+  const soId = Number(saleOrderId);
   _checkoutUploadPriority = true;
+  if (Number.isFinite(soId) && soId > 0) _checkoutPrioritySoId = soId;
   void uploadCompletedOrderNow(saleOrderId, options);
 }
 
@@ -899,12 +931,15 @@ export function startCheckoutUploadInBackground(saleOrderId, options = {}) {
 export async function uploadCompletedOrderNow(saleOrderId, options = {}) {
   const soId = Number(saleOrderId);
   _checkoutUploadPriority = true;
+  if (Number.isFinite(soId) && soId > 0) _checkoutPrioritySoId = soId;
   if (!Number.isFinite(soId) || soId <= 0) {
     _checkoutUploadPriority = false;
+    _checkoutPrioritySoId = null;
     return { pendingCount: null, skippedOffline: true };
   }
   if (!canRunBackgroundUploadSync()) {
     _checkoutUploadPriority = false;
+    _checkoutPrioritySoId = null;
     schedulePendingUploadSync({ immediate: false, queuePasses: 8, includeAttachments: true });
     return { pendingCount: null, skippedOffline: true };
   }
@@ -917,11 +952,11 @@ export async function uploadCompletedOrderNow(saleOrderId, options = {}) {
     log('queue', `checkout upload start SO ${soId}`);
     let pendingCount = 1;
     const includeAttachments = options.includeAttachments !== false;
-    const maxImmediateAttempts = 4;
+    const maxImmediateAttempts = 2;
     for (let attempt = 0; attempt < maxImmediateAttempts; attempt++) {
       await processSyncQueue({
         fastDrain: true,
-        maxPasses: attempt === 0 ? 3 : 2,
+        maxPasses: 2,
         prioritySaleOrderId: soId,
         checkoutSingleShot: true,
       });
@@ -971,6 +1006,9 @@ export async function uploadCompletedOrderNow(saleOrderId, options = {}) {
     }).catch(() => null);
     _checkoutDrivePrefetch.delete(soId);
     _checkoutUploadPriority = false;
+    _checkoutPrioritySoId = null;
+    void refreshDashboardUploadIndicatorsFromQueue().catch(() => {});
+    void pullLatestVehicleStockFromBackOffice();
     if (startDeferredExtras) {
       void postDeferredCheckoutExtrasForSaleOrder(soId);
       void processDeferredCheckoutInventoryForSaleOrder(soId);
@@ -1007,13 +1045,20 @@ export function isCheckoutUploadActive() {
 }
 
 /** Latch checkout-priority BEFORE local awaits so AppNavigator cannot steal the queue. */
-export function beginCheckoutUploadPriority() {
+export function beginCheckoutUploadPriority(saleOrderId) {
   _checkoutUploadPriority = true;
+  const soId = Number(saleOrderId);
+  _checkoutPrioritySoId = Number.isFinite(soId) && soId > 0 ? soId : _checkoutPrioritySoId;
 }
 
 /** Clear the latch only when checkout upload never started (error before upload). */
 export function endCheckoutUploadPriority() {
   _checkoutUploadPriority = false;
+  _checkoutPrioritySoId = null;
+}
+
+export function getCheckoutPrioritySaleOrderId() {
+  return _checkoutUploadPriority === true && _checkoutPrioritySoId != null ? _checkoutPrioritySoId : null;
 }
 
 /** Whether auto-retry loop should drain uploads (actionable queue / attachments). */
@@ -1031,6 +1076,12 @@ export async function shouldRunPendingUploadRetryLoop() {
 let _dashboardUploadIndicators = { pendingOrders: 0, localCompleted: 0 };
 let _dashboardIndicatorsListener = null;
 let _checkoutCompleteNotificationListener = null;
+/** Bumped on queue refresh / checkout latch so a slow dashboard loadData cannot overwrite a newer orange value. */
+let _dashboardUploadIndicatorSeq = 0;
+
+export function getDashboardUploadIndicatorSeq() {
+  return _dashboardUploadIndicatorSeq;
+}
 
 function emitDashboardIndicatorsChanged() {
   try {
@@ -1065,33 +1116,21 @@ export function getDashboardUploadIndicators() {
   return { ..._dashboardUploadIndicators };
 }
 
-/** Call when checkout completes — orange counter + spinner before Dashboard loadData catches up. */
+/** Refresh orange from real pending invoices only — never invent a count of 1. */
 export function signalDashboardPendingUploadStarted() {
-  _dashboardUploadIndicators = {
-    ..._dashboardUploadIndicators,
-    localCompleted: Math.max(1, _dashboardUploadIndicators.localCompleted),
-  };
-  emitDashboardIndicatorsChanged();
+  void refreshDashboardUploadIndicatorsFromQueue();
 }
 
-function saleOrderIdFromPaymentQueuePayload(payload) {
-  const p = payload && typeof payload === 'object' ? payload : {};
-  const n = Number(p.saleOrderId ?? p.sale_order_id ?? p.sale_id);
-  return Number.isFinite(n) && n > 0 ? n : null;
-}
-
-/** Count unique sale orders with a non-held pending payment (orange counter). */
+/** Count unique sale orders whose invoice/payment still needs upload (v7 orange rule). */
 export async function countPendingPaymentUploads() {
   try {
-    const pending = await syncQueueDb.getPending().catch(() => []);
-    const ids = new Set();
-    for (const item of pending || []) {
-      if (item.action_type !== syncQueueDb.ACTION_PAYMENT) continue;
-      if (syncQueueDb.isSyncQueuePayloadHeld(item.payload || {})) continue;
-      const soId = saleOrderIdFromPaymentQueuePayload(item.payload);
-      if (soId == null) continue;
-      ids.add(soId);
-    }
+    const ids = await syncQueueDb.getPendingPaymentUploadSaleOrderIds();
+    const { getCheckoutResumeMap, pendingCheckoutSaleOrderIdsFromResumeMap } = await import(
+      './checkoutResume.service.js'
+    );
+    const resumeMap = await getCheckoutResumeMap().catch(() => ({}));
+    const checkoutIds = pendingCheckoutSaleOrderIdsFromResumeMap(resumeMap);
+    for (const id of checkoutIds) ids.delete(id);
     return ids.size;
   } catch (_) {
     return 0;
@@ -1101,6 +1140,7 @@ export async function countPendingPaymentUploads() {
 /** Immediately refresh orange counter from payment queue (not deferred inventory). */
 export async function refreshDashboardUploadIndicatorsFromQueue() {
   const paymentPendingCount = await countPendingPaymentUploads();
+  _dashboardUploadIndicatorSeq += 1;
   _dashboardUploadIndicators = {
     ..._dashboardUploadIndicators,
     localCompleted: paymentPendingCount,
@@ -1109,9 +1149,18 @@ export async function refreshDashboardUploadIndicatorsFromQueue() {
   return paymentPendingCount;
 }
 
-export function setDashboardUploadIndicators(pendingOrders, localCompleted) {
-  const hadUploadWork = _dashboardUploadIndicators.localCompleted > 0;
+export function setDashboardUploadIndicators(pendingOrders, localCompleted, options = {}) {
+  const capturedSeq = options?.capturedSeq;
+  if (capturedSeq != null && capturedSeq !== _dashboardUploadIndicatorSeq) {
+    // Queue refresh already published a newer orange value. Keep it.
+    _dashboardUploadIndicators = {
+      ..._dashboardUploadIndicators,
+      pendingOrders: Math.max(0, Number(pendingOrders) || 0),
+    };
+    return;
+  }
   const counted = Math.max(0, Number(localCompleted) || 0);
+  const hadUploadWork = _dashboardUploadIndicators.localCompleted > 0;
   _dashboardUploadIndicators = {
     pendingOrders: Math.max(0, Number(pendingOrders) || 0),
     localCompleted: counted,
@@ -1121,7 +1170,7 @@ export function setDashboardUploadIndicators(pendingOrders, localCompleted) {
   if (hasUploadWork && !hadUploadWork && canRunBackgroundUploadSync()) {
     schedulePendingUploadSync({ immediate: true, aggressive: true, queuePasses: 4, includeAttachments: true });
   }
-  // Orange = payment upload pending only. Do not re-latch when inventory/attachments still drain.
+  // v7: if UI dropped to 0 but invoices are still queued, restore the real count.
   if (counted === 0 && hadUploadWork) {
     void countPendingPaymentUploads().then((paymentLeft) => {
       if (paymentLeft <= 0) return;
@@ -2394,7 +2443,7 @@ async function enrichDeliveredUpdatesForSaleOrder(soId, baseUpdates, queuePayloa
  * Also requires every positive mobile line (payload / invoiceLineQtys / requestedQty) to be present —
  * prevents "2 products delivered, 1 SOL bound".
  */
-async function verifyDeliveryQtyBoundOnOdoo(soId, updates, queuePayload) {
+async function verifyDeliveryQtyBoundOnOdoo(soId, updates, queuePayload, options = {}) {
   const enriched = await enrichDeliveredUpdatesForSaleOrder(soId, updates, queuePayload);
   if (payloadHasPositiveDeliveredQty(queuePayload)) {
     const positive = enriched.filter((u) => roundDeliveredQty3(u.qty_delivered) > DELIVERED_QTY_VERIFY_TOL);
@@ -2452,12 +2501,26 @@ async function verifyDeliveryQtyBoundOnOdoo(soId, updates, queuePayload) {
       }
     }
     await verifySaleOrderLineDeliveredOnOdoo(enriched);
+    if (options.skipPickingMoveBindScan !== true) {
+      await assertPickingQtyBoundToSaleOrderMoves(soId);
+    }
     return enriched;
   }
   if (enriched.length > 0) {
     await verifySaleOrderLineDeliveredOnOdoo(enriched);
   }
   return enriched;
+}
+
+/** Picking qty must sit on the original SOL-linked move — not an extra with only sale_line_id. */
+async function assertPickingQtyBoundToSaleOrderMoves(saleOrderId) {
+  const leftover = await getUnboundDeliveredProductsOnOdoo(saleOrderId);
+  if (!leftover.length) return;
+  throw new Error(
+    `Delivery incomplete: SO ${saleOrderId} picking qty is not bound to this sale order for product(s) ${leftover
+      .map((u) => u.productId)
+      .join(', ')}. Sync will retry.`
+  );
 }
 
 async function collectAuthoritativeDeliveredUpdates(saleOrderId, queuePayload = null) {
@@ -2761,33 +2824,38 @@ async function buildOdooRepairContextFromAuthoritativeUpdates(saleOrderId, deliv
   const pickingIds = [];
   const deliveryLines = [];
   const lastMoveByProduct = new Map();
+  const linkedMoveByProduct = new Map();
 
   for (const pk of usable) {
     const pickingId = Number(pk?.id);
     if (!Number.isFinite(pickingId) || pickingId <= 0) continue;
     pickingIds.push(pickingId);
     const moves = await getStockMovesByPickingId(pickingId).catch(() => []);
+    const pref = preferredMoveIdByProduct(moves);
     for (const mv of moves || []) {
       const productId = Number(Array.isArray(mv?.product_id) ? mv.product_id[0] : mv?.product_id);
       const mid = Number(mv?.id);
       if (!Number.isFinite(productId) || !Number.isFinite(mid) || mid <= 0) continue;
       lastMoveByProduct.set(productId, mid);
-      const rem = Number(remaining.get(productId)) || 0;
+      if (pref.has(productId)) linkedMoveByProduct.set(productId, pref.get(productId));
+    }
+    // release/v7 heal wrote one qty per product onto a picking move, then SOL qty_delivered.
+    // Put the full delivered qty on the original sale-linked move (not a later extra).
+    for (const [productId, remRaw] of [...remaining.entries()]) {
+      const rem = roundDeliveredQty3(remRaw);
       if (rem <= 0.0001) continue;
-      const demand = Number(mv?.product_uom_qty);
-      const cap = Number.isFinite(demand) && demand > 0 ? demand : rem;
-      const alloc = roundDeliveredQty3(Math.min(rem, cap));
-      if (alloc <= 0.0001) continue;
-      deliveryLines.push({ moveId: mid, productId, qty_done: alloc });
-      remaining.set(productId, roundDeliveredQty3(rem - alloc));
+      const mid = Number(pref.get(productId) || lastMoveByProduct.get(productId));
+      if (!Number.isFinite(mid) || mid <= 0) continue;
+      deliveryLines.push({ moveId: mid, productId, qty_done: rem });
+      remaining.set(productId, 0);
     }
   }
 
-  // True holes (0-demand moves / missing lines): drain leftover onto last known move per product.
+  // True holes (0-demand moves / missing lines): drain leftover onto the sale-linked move.
   for (const [productId, remRaw] of remaining.entries()) {
     const rem = roundDeliveredQty3(remRaw);
     if (rem <= 0.0001) continue;
-    const mid = lastMoveByProduct.get(productId);
+    const mid = linkedMoveByProduct.get(productId) || lastMoveByProduct.get(productId);
     if (!Number.isFinite(mid) || mid <= 0) continue;
     const existing = deliveryLines.find(
       (l) => Number(l.moveId) === mid && Number(l.productId) === Number(productId)
@@ -3184,6 +3252,124 @@ function odooRelId(value) {
 }
 
 /**
+ * Prefer the original procurement move (lowest id). Extras from Validate / createMissingMove
+ * always have a later id. Preferring any sale_line_id stamp let a Done extra steal the
+ * mapping after inverse failed (S11141 12.5kg/37.5kg Delivered 0 while 5kg bound).
+ */
+function preferredMoveIdByProduct(moves) {
+  const seen = new Map();
+  for (const mv of moves || []) {
+    if (String(mv?.state || '').toLowerCase() === 'cancel') continue;
+    const pid = odooRelId(mv?.product_id);
+    const mid = Number(mv?.id);
+    if (!Number.isFinite(pid) || pid <= 0 || !Number.isFinite(mid) || mid <= 0) continue;
+    const prev = seen.get(pid);
+    if (!prev || mid < prev) seen.set(pid, mid);
+  }
+  return seen;
+}
+
+/**
+ * True when picking display qty is not on a Done move that sale_stock will count
+ * (sale.order.line.move_ids + stock.move.quantity).
+ *
+ * Oldest-live-has-qty is not a bind: Validate can cancel the procurement move and
+ * leave qty on a later extra that is not on move_ids (S11141 12.5/37.5 Delivered 0).
+ * That is the remaining ~1/50 case after writing quantity on apply.
+ */
+function pickingQtyOffSaleLinkedMoves(
+  moveLists,
+  lineQtyByMove = new Map(),
+  linkedMoveIds = new Set(),
+  moveIdsFieldPresent = false
+) {
+  for (const list of moveLists || []) {
+    const all = list || [];
+    if (!all.length) continue;
+    const live = all.filter((mv) => String(mv?.state || '').toLowerCase() !== 'cancel');
+    const prefLive = preferredMoveIdByProduct(live);
+    const oldestAnyByProduct = preferredMoveIdByProduct(all);
+    const totalByProduct = new Map();
+    const boundQtyByProduct = new Map();
+    for (const mv of live) {
+      const pid = odooRelId(mv?.product_id);
+      const mid = Number(mv?.id);
+      if (!Number.isFinite(pid) || pid <= 0 || !Number.isFinite(mid) || mid <= 0) continue;
+      const computeQ = stockMoveDoneQty(mv);
+      const displayQ = Math.max(computeQ, Number(lineQtyByMove.get(mid)) || 0);
+      if (displayQ <= DELIVERED_QTY_VERIFY_TOL) continue;
+      totalByProduct.set(pid, roundDeliveredQty3((totalByProduct.get(pid) || 0) + displayQ));
+      const st = String(mv?.state || '').toLowerCase();
+      const onSol = moveIdsFieldPresent
+        ? linkedMoveIds.has(mid)
+        : mid === prefLive.get(pid) && mid === oldestAnyByProduct.get(pid);
+      if (onSol && st === 'done' && computeQ > DELIVERED_QTY_VERIFY_TOL) {
+        boundQtyByProduct.set(pid, roundDeliveredQty3((boundQtyByProduct.get(pid) || 0) + computeQ));
+      }
+    }
+    for (const [pid, total] of totalByProduct.entries()) {
+      if (total > (boundQtyByProduct.get(pid) || 0) + DELIVERED_QTY_VERIFY_TOL) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Put delivered qty on the original sale-linked move (not a later extra move).
+ * Does not change demand or validate — only which move id qty_done is written to.
+ */
+async function ensureDeliveryLinesUseSaleLinkedMoves(pickingId, deliveryLines, moveUpdates, saleOrderId) {
+  const pidPk = Number(pickingId);
+  const linesIn = Array.isArray(deliveryLines) ? deliveryLines : [];
+  const updatesIn = Array.isArray(moveUpdates) ? moveUpdates : [];
+  if (!Number.isFinite(pidPk) || pidPk <= 0 || linesIn.length === 0) {
+    return { deliveryLines: linesIn, moveUpdates: updatesIn };
+  }
+  const { getStockMovesByPickingId } = await import('./delivery.service.js');
+  const moves = (await getStockMovesByPickingId(pidPk).catch(() => [])) || [];
+  if (!moves.length) return { deliveryLines: linesIn, moveUpdates: updatesIn };
+  const pref = preferredMoveIdByProduct(moves);
+  const moveById = new Map();
+  for (const mv of moves) {
+    const mid = Number(mv?.id);
+    if (Number.isFinite(mid) && mid > 0) moveById.set(mid, mv);
+  }
+  const qtyByProduct = new Map();
+  const unmatched = [];
+  for (const line of linesIn) {
+    const pid = Number(line?.productId ?? line?.product_id);
+    const q = coerceDeliveredQty(line?.qty_done);
+    if (!Number.isFinite(pid) || pid <= 0 || !Number.isFinite(q)) {
+      unmatched.push(line);
+      continue;
+    }
+    qtyByProduct.set(pid, roundDeliveredQty3((qtyByProduct.get(pid) || 0) + q));
+  }
+  const nextLines = [...unmatched];
+
+  for (const [pid, qty] of qtyByProduct.entries()) {
+    const preferredId = pref.get(pid);
+    const fallbackLine = linesIn.find((l) => Number(l?.productId ?? l?.product_id) === pid);
+    const fallbackMid = Number(fallbackLine?.moveId ?? fallbackLine?.move_id);
+    const mid = Number.isFinite(preferredId) && preferredId > 0 ? preferredId : fallbackMid;
+    if (!Number.isFinite(mid) || mid <= 0) {
+      for (const line of linesIn) {
+        if (Number(line?.productId ?? line?.product_id) === pid) nextLines.push(line);
+      }
+      continue;
+    }
+    nextLines.push({ moveId: mid, productId: pid, qty_done: qty });
+    const mv = moveById.get(mid);
+    const existingSol = odooRelId(mv?.sale_line_id);
+    if ((!Number.isFinite(existingSol) || existingSol <= 0) && saleOrderId != null) {
+      const lid = await resolveSaleLineIdForProduct(saleOrderId, pid);
+      if (lid) await writeStockMoveSaleLineId(mid, lid);
+    }
+  }
+  return { deliveryLines: nextLines, moveUpdates: updatesIn };
+}
+
+/**
  * Resolve sale.order.line id for a product on an SO (prefer positive ordered qty).
  * Required so stock.move.sale_line_id binds qty_done → qty_delivered (S09200).
  */
@@ -3214,7 +3400,46 @@ async function writeStockMoveSaleLineId(moveId, saleLineId) {
   if (!Number.isFinite(mid) || mid <= 0 || !Number.isFinite(solId) || solId <= 0) return false;
   const { callOdoo, callOdooArgsKwargs } = await import('./index.service.js');
   const ctx = { skip_sms: true, tracking_disable: true, mail_notrack: true };
-  let wroteMove = false;
+  const inverseVals = { move_ids: [[4, mid]] };
+
+  const inverseOntoSaleLine = async () => {
+    try {
+      await callOdooArgsKwargs('sale.order.line', 'write', [[solId], inverseVals], { context: ctx });
+      return true;
+    } catch (_) {
+      try {
+        await callOdoo('sale.order.line', 'write', [[solId], inverseVals], { context: ctx });
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+  };
+
+  /** Inverse RPC can succeed while Odoo ignores [[4, extra]] on a Done move (S10734 / S11141). */
+  const inverseStuckOnSaleLine = async () => {
+    try {
+      const rows =
+        (await callOdoo('sale.order.line', 'read', [[solId]], { fields: ['move_ids'] })) || [];
+      const row = Array.isArray(rows) ? rows[0] : rows;
+      if (!Array.isArray(row?.move_ids)) return null;
+      return row.move_ids.some((m) => odooRelId(m) === mid);
+    } catch (_) {
+      return null;
+    }
+  };
+
+  const inverseOk = async () => {
+    if (!(await inverseOntoSaleLine())) return false;
+    const stuck = await inverseStuckOnSaleLine();
+    if (stuck === false) return false;
+    return true;
+  };
+
+  // qty_delivered is computed from sale.order.line.move_ids. sale_line_id alone is not a bind
+  // (S11030 / S10734: extra Done move showed sale_line_id, Delivered stayed 0).
+  if (await inverseOk()) return true;
+
   try {
     await callOdooArgsKwargs(
       'stock.move',
@@ -3222,31 +3447,17 @@ async function writeStockMoveSaleLineId(moveId, saleLineId) {
       [[mid], { sale_line_id: solId }],
       { context: ctx }
     );
-    wroteMove = true;
   } catch (_) {
     try {
       await callOdoo('stock.move', 'write', [[mid], { sale_line_id: solId }]);
-      wroteMove = true;
     } catch (_) {
-      wroteMove = false;
+      /* inverse is the bind; move write is only a second chance for Odoo to accept [[4, mid]] */
     }
   }
-  // Odoo computes qty_delivered from sale.order.line.move_ids, not from a dangling
-  // stock.move.sale_line_id. Done-move write can return success without updating the
-  // inverse (S10734: picking 4/12/45 Done, SOL Delivered 0/0/45). Always add the inverse.
-  try {
-    await callOdoo('sale.order.line', 'write', [[solId], { move_ids: [[4, mid]] }], {
-      context: ctx,
-    });
-    return true;
-  } catch (e) {
-    if (wroteMove) return true;
-    log(
-      'queue',
-      `delivery link move ${mid} to SOL ${solId} failed: ${String(e?.message || e).slice(0, 100)}`
-    );
-    return false;
-  }
+
+  if (await inverseOk()) return true;
+  log('queue', `delivery link move ${mid} to SOL ${solId} failed: inverse move_ids not set`);
+  return false;
 }
 
 /** Odoo sale_stock qty_delivered uses stock.move.quantity / quantity_done — not move-line qty. */
@@ -3299,7 +3510,7 @@ async function getUnboundDeliveredProductsOnOdoo(saleOrderId) {
     'sale.order.line',
     'search_read',
     [[['order_id', '=', soId]]],
-    { fields: ['id', 'product_id', 'product_uom_qty', 'qty_delivered'], limit: 200 }
+    { fields: ['id', 'product_id', 'product_uom_qty', 'qty_delivered', 'move_ids'], limit: 200 }
   ).catch(() => []);
   const pickings = (await getPickingBySaleOrder(soId).catch(() => [])) || [];
   const pickingQtyByProduct = new Map();
@@ -3358,17 +3569,32 @@ async function getUnboundDeliveredProductsOnOdoo(saleOrderId) {
   const soLines = (await soLinesPromise) || [];
   const linesByProduct = new Map();
   const lineById = new Map();
+  const linkedMoveIds = new Set();
+  let moveIdsFieldPresent = false;
   for (const row of soLines || []) {
     const pid = odooRelId(row?.product_id);
     const lid = Number(row?.id);
     if (!Number.isFinite(lid) || lid <= 0) continue;
     lineById.set(lid, row);
+    if (Array.isArray(row.move_ids)) {
+      moveIdsFieldPresent = true;
+      for (const m of row.move_ids) {
+        const mid = odooRelId(m);
+        if (Number.isFinite(mid) && mid > 0) linkedMoveIds.add(mid);
+      }
+    }
     if (!Number.isFinite(pid) || pid <= 0) continue;
     const list = linesByProduct.get(pid) || [];
     list.push(row);
     linesByProduct.set(pid, list);
   }
+  // SO-created pickings always have procurement moves on move_ids. An empty set
+  // means the field is not usable — do not fail-close every valid order.
+  if (moveIdsFieldPresent && linkedMoveIds.size === 0) {
+    moveIdsFieldPresent = false;
+  }
 
+  const prefMoveByProduct = preferredMoveIdByProduct(allMoves);
   const productHasUnlinkedQtyMove = new Set();
   const boundComputeQtyByProduct = new Map();
   for (const mv of allMoves) {
@@ -3387,9 +3613,15 @@ async function getUnboundDeliveredProductsOnOdoo(saleOrderId) {
       productHasUnlinkedQtyMove.add(pid);
       continue;
     }
-    // Only move.quantity / quantity_done counts toward sale.order.line Delivered.
-    // Line-only qty on an already-linked move looks bound here and then SOL stays 0 (S10734).
-    if (Number.isFinite(preferredId) && existingSol === preferredId && computeQty > DELIVERED_QTY_VERIFY_TOL) {
+    // Bound only when the move is actually on sale.order.line.move_ids.
+    // sale_line_id alone can look set while Delivered stays 0 (S11030 extra move).
+    // If move_ids is unreadable, only the original procurement move counts — a later extra
+    // with a stamped sale_line_id is not a bind (S11118 / S11119 / S11120 / S11135).
+    const onSolMoves = moveIdsFieldPresent
+      ? linkedMoveIds.has(mid)
+      : existingSol === preferredId && mid === prefMoveByProduct.get(pid);
+    // Odoo sale_stock qty_delivered only counts done moves.
+    if (Number.isFinite(preferredId) && onSolMoves && st === 'done' && computeQty > DELIVERED_QTY_VERIFY_TOL) {
       boundComputeQtyByProduct.set(
         pid,
         roundDeliveredQty3((boundComputeQtyByProduct.get(pid) || 0) + computeQty)
@@ -3444,12 +3676,14 @@ async function forceBindUnboundDoneMovesToSaleOrderLines(saleOrderId) {
   if (unboundPids.size > 0) {
     const { getPickingBySaleOrder, getStockMovesByPickingId, getStockMoveLinesByMoveIds } =
       await import('./delivery.service.js');
+    const { callOdoo } = await import('./index.service.js');
     const picks = (await getPickingBySaleOrder(soId).catch(() => [])) || [];
     for (const pk of picks) {
       if (String(pk?.state || '').toLowerCase() === 'cancel') continue;
       const pkId = Number(pk?.id);
       if (!Number.isFinite(pkId) || pkId <= 0) continue;
       const moves = (await getStockMovesByPickingId(pkId).catch(() => [])) || [];
+      const pref = preferredMoveIdByProduct(moves);
       const unread = [];
       for (const mv of moves || []) {
         const pid = odooRelId(mv?.product_id);
@@ -3468,14 +3702,34 @@ async function forceBindUnboundDoneMovesToSaleOrderLines(saleOrderId) {
           qtyByMove.set(mid, roundDeliveredQty3((qtyByMove.get(mid) || 0) + q));
         }
       }
+      const pickingQtyByProduct = new Map();
       for (const mv of moves || []) {
         const pid = odooRelId(mv?.product_id);
         if (!unboundPids.has(pid)) continue;
         const mid = Number(mv?.id);
         if (!Number.isFinite(mid) || mid <= 0) continue;
-        const lineQty = qtyByMove.get(mid) || 0;
-        if (stockMoveDoneQty(mv) <= DELIVERED_QTY_VERIFY_TOL && lineQty > DELIVERED_QTY_VERIFY_TOL) {
-          await syncStockMoveComputeQtyFromLines(mid, lineQty);
+        const q = Math.max(stockMoveDoneQty(mv), qtyByMove.get(mid) || 0);
+        if (q <= DELIVERED_QTY_VERIFY_TOL) continue;
+        pickingQtyByProduct.set(pid, roundDeliveredQty3((pickingQtyByProduct.get(pid) || 0) + q));
+      }
+      // Put the product total on the original sale-linked move. Writing extra.quantity
+      // made getUnbound treat extras as bound while SOL Delivered stayed 0 (S11118–S11120).
+      for (const [pid, pickingQty] of pickingQtyByProduct.entries()) {
+        const keeperId = Number(pref.get(pid));
+        if (!Number.isFinite(keeperId) || keeperId <= 0) continue;
+        const keeperWrote = await syncStockMoveComputeQtyFromLines(keeperId, pickingQty);
+        if (!keeperWrote) continue;
+        for (const mv of moves || []) {
+          if (odooRelId(mv?.product_id) !== pid) continue;
+          const mid = Number(mv?.id);
+          if (!Number.isFinite(mid) || mid <= 0 || mid === keeperId) continue;
+          const q = Math.max(stockMoveDoneQty(mv), qtyByMove.get(mid) || 0);
+          if (q <= DELIVERED_QTY_VERIFY_TOL) continue;
+          try {
+            await callOdoo('stock.move', 'write', [[mid], { quantity: 0 }]);
+          } catch (_) {
+            /* extra qty-zero is best-effort; keeper already has the delivered qty */
+          }
         }
       }
     }
@@ -3527,6 +3781,7 @@ async function forceBindSaleLinesFromDeliveredUpdates(saleOrderId, deliveredUpda
       const pkId = Number(pk?.id);
       if (!Number.isFinite(pkId) || pkId <= 0) continue;
       const moves = (await getStockMovesByPickingId(pkId).catch(() => [])) || [];
+      const pref = preferredMoveIdByProduct(moves);
       const unread = [];
       for (const mv of moves) {
         if (odooRelId(mv?.product_id) !== pid) continue;
@@ -3545,6 +3800,8 @@ async function forceBindSaleLinesFromDeliveredUpdates(saleOrderId, deliveredUpda
           qtyByMove.set(mid, roundDeliveredQty3((qtyByMove.get(mid) || 0) + q));
         }
       }
+      let productPickingQty = 0;
+      const qtyMoveIds = [];
       for (const mv of moves) {
         if (odooRelId(mv?.product_id) !== pid) continue;
         const st = String(mv?.state || '').toLowerCase();
@@ -3553,11 +3810,13 @@ async function forceBindSaleLinesFromDeliveredUpdates(saleOrderId, deliveredUpda
         if (!Number.isFinite(mid) || mid <= 0) continue;
         const q = Math.max(stockMoveDoneQty(mv), qtyByMove.get(mid) || 0);
         if (st !== 'done' && q <= DELIVERED_QTY_VERIFY_TOL) continue;
-        if (stockMoveDoneQty(mv) <= DELIVERED_QTY_VERIFY_TOL && q > DELIVERED_QTY_VERIFY_TOL) {
-          await syncStockMoveComputeQtyFromLines(mid, q);
-        }
-        if (odooRelId(mv?.sale_line_id) === lid) continue;
-        const ok = await writeStockMoveSaleLineId(mid, lid);
+        productPickingQty = roundDeliveredQty3(productPickingQty + q);
+        qtyMoveIds.push(mid);
+      }
+      const keeperId = Number(pref.get(pid) || qtyMoveIds[0]);
+      if (Number.isFinite(keeperId) && keeperId > 0 && productPickingQty > DELIVERED_QTY_VERIFY_TOL) {
+        await syncStockMoveComputeQtyFromLines(keeperId, productPickingQty);
+        const ok = await writeStockMoveSaleLineId(keeperId, lid);
         if (ok) bound += 1;
       }
     }
@@ -3611,43 +3870,203 @@ async function assertDonePickingSaleLinesBound(saleOrderId) {
 }
 
 /**
- * Odoo computes sale.order.line.qty_delivered from stock.move rows with sale_line_id set.
- * Moves created/updated without sale_line_id leave picking Done while SO Delivered stays 0 (S09200).
- * Link any unlinked moves on this SO's pickings to the matching SO line by product.
- * Also re-point a Done move that was linked to a 0-qty duplicate or wrong-product line.
+ * After Validate, decrease / extra-product qty can sit on a later extra move while the
+ * original procurement move (already on sale.order.line.move_ids) still has 0.
+ * Inverse of that extra often fails once the picking is Done (S10995: 12.5 / 37.5 / 5kg
+ * Delivered 0 while 2.4 kg 12→14 bound). Put the picking qty on the original SOL move.
+ * Open pickings and already-matching products are a no-op (S11050 happy path).
+ */
+async function putDoneExtraQtyOntoSaleLinkedMoves({
+  saleOrderId,
+  pids,
+  moveLists,
+  linesByProduct,
+  linkedMoveIds,
+  moveIdsFieldPresent,
+  lineQtyByMove,
+}) {
+  const { callOdoo } = await import('./index.service.js');
+  const { updateStockMoveQuantityDone } = await import('./delivery.service.js');
+  const moveQty = (mv) =>
+    Math.max(stockMoveDoneQty(mv), lineQtyByMove.get(Number(mv?.id)) || 0);
+
+  for (let i = 0; i < pids.length; i++) {
+    const pkAll = moveLists[i] || [];
+    const pkMoves = pkAll.filter(
+      (mv) => String(mv?.state || '').toLowerCase() !== 'cancel'
+    );
+    if (!pkMoves.some((mv) => String(mv?.state || '').toLowerCase() === 'done')) continue;
+    if (
+      !pickingQtyOffSaleLinkedMoves(
+        [pkAll],
+        lineQtyByMove,
+        linkedMoveIds,
+        moveIdsFieldPresent
+      )
+    ) {
+      continue;
+    }
+
+    const pref = preferredMoveIdByProduct(pkMoves);
+    const qtyByProduct = new Map();
+    for (const mv of pkMoves) {
+      const pid = odooRelId(mv?.product_id);
+      const q = moveQty(mv);
+      if (!Number.isFinite(pid) || pid <= 0 || q <= DELIVERED_QTY_VERIFY_TOL) continue;
+      qtyByProduct.set(pid, roundDeliveredQty3((qtyByProduct.get(pid) || 0) + q));
+    }
+
+    for (const [pid, pickingQty] of qtyByProduct.entries()) {
+      const preferred = preferSaleLineRow(linesByProduct.get(pid) || []);
+      const solId = Number(preferred?.id);
+      if (!Number.isFinite(solId) || solId <= 0) continue;
+
+      const sameProduct = pkMoves.filter((mv) => odooRelId(mv?.product_id) === pid);
+      const sameProductAll = pkAll.filter((mv) => odooRelId(mv?.product_id) === pid);
+      let keeperId = 0;
+      for (const mv of sameProduct) {
+        const mid = Number(mv?.id);
+        if (!Number.isFinite(mid) || mid <= 0) continue;
+        const onSol = moveIdsFieldPresent && linkedMoveIds.has(mid);
+        if (onSol && (!keeperId || mid < keeperId)) keeperId = mid;
+      }
+      if (!keeperId && moveIdsFieldPresent) {
+        // Procurement move was cancelled/replaced. Qty sits on a later extra.
+        // Inverse that extra onto the SOL — writing qty on the extra without
+        // move_ids is not a bind (S11141 vs S11143).
+        let inversed = false;
+        for (const mv of sameProduct) {
+          const mid = Number(mv?.id);
+          if (!Number.isFinite(mid) || mid <= 0) continue;
+          if (moveQty(mv) <= DELIVERED_QTY_VERIFY_TOL) continue;
+          const ok = await writeStockMoveSaleLineId(mid, solId);
+          if (ok) {
+            linkedMoveIds.add(mid);
+            inversed = true;
+          }
+        }
+        if (inversed) continue;
+        for (const mv of sameProductAll) {
+          const mid = Number(mv?.id);
+          const st = String(mv?.state || '').toLowerCase();
+          if (!Number.isFinite(mid) || mid <= 0 || st !== 'cancel') continue;
+          if (!(moveIdsFieldPresent && linkedMoveIds.has(mid))) continue;
+          if (!keeperId || mid < keeperId) keeperId = mid;
+        }
+      }
+      if (!keeperId) keeperId = Number(pref.get(pid) || sameProduct[0]?.id);
+      if (!Number.isFinite(keeperId) || keeperId <= 0) continue;
+      const keeper = sameProduct.find((mv) => Number(mv?.id) === keeperId);
+      // Odoo qty_delivered uses stock.move.quantity on the original procurement move.
+      // Extra-move line qty / a just-stamped sale_line_id is not a bind — skipping here
+      // left 12.5kg and 37.5kg Delivered 0 while 5kg/2.4kg bound (S11118–S11120 / S11135).
+      const keeperComputeQty = keeper ? stockMoveDoneQty(keeper) : 0;
+      if (pickingQty <= keeperComputeQty + DELIVERED_QTY_VERIFY_TOL) continue;
+
+      const linkedOk = await writeStockMoveSaleLineId(keeperId, solId);
+      if (linkedOk) linkedMoveIds.add(keeperId);
+      // Odoo 17 Delivered is computed from stock.move.quantity on the SOL-linked move.
+      // quantity_done-only is not a bind — do not treat that write as success or zero extras.
+      const keeperWrote = await syncStockMoveComputeQtyFromLines(keeperId, pickingQty);
+      if (!keeperWrote) {
+        try {
+          await updateStockMoveQuantityDone(keeperId, pickingQty);
+        } catch (_) {
+          /* confirm via re-read below */
+        }
+      }
+      let keeperNowQty = keeperComputeQty;
+      try {
+        const { getStockMovesByPickingId } = await import('./delivery.service.js');
+        const refreshed = (await getStockMovesByPickingId(pids[i]).catch(() => [])) || [];
+        const keeperNow = refreshed.find((row) => Number(row?.id) === keeperId);
+        if (keeperNow) keeperNowQty = stockMoveDoneQty(keeperNow);
+      } catch (_) {
+        /* keep previous qty */
+      }
+      if (keeperNowQty + DELIVERED_QTY_VERIFY_TOL < pickingQty) continue;
+
+      try {
+        const { updateSaleOrderLineQtyDelivered } = await import('./saleOrderLine.service.js');
+        await updateSaleOrderLineQtyDelivered(solId, pickingQty);
+      } catch (_) {
+        /* finalize still writes/verifies SOL qty */
+      }
+
+      for (const mv of sameProduct) {
+        const mid = Number(mv?.id);
+        if (!Number.isFinite(mid) || mid <= 0 || mid === keeperId) continue;
+        if (moveQty(mv) <= DELIVERED_QTY_VERIFY_TOL) continue;
+        try {
+          await callOdoo('stock.move', 'write', [[mid], { quantity: 0 }]);
+        } catch (_) {
+          try {
+            await updateStockMoveQuantityDone(mid, 0);
+          } catch (_) {
+            /* extra qty-zero is best-effort; keeper already has the delivered qty */
+          }
+        }
+      }
+      log(
+        'queue',
+        `delivery SO ${saleOrderId}: put product ${pid} qty ${pickingQty} on sale-linked move ${keeperId} (extra Done move was off SOL)`
+      );
+    }
+  }
+}
+
+/**
+ * Put every qty-bearing stock.move onto sale.order.line.move_ids.
+ * Odoo computes Delivered from that inverse — not from a dangling sale_line_id.
+ * Happy path (original procurement move already on move_ids) is a no-op.
+ * Increase/decrease extras created at Validate are linked here so Delivered never stays 0.
+ * Never throws — a failed inverse must not stop an otherwise valid delivery.
  */
 async function ensureStockMovesLinkedToSaleOrderLines(saleOrderId, pickingIds = []) {
   const soId = Number(saleOrderId);
-  if (!Number.isFinite(soId) || soId <= 0) return { linked: 0 };
+  if (!Number.isFinite(soId) || soId <= 0) return { linked: 0, extrasOffOriginal: false };
   const { callOdoo } = await import('./index.service.js');
-  const { getPickingBySaleOrder, getStockMovesByPickingId } = await import('./delivery.service.js');
+  const { getPickingBySaleOrder, getStockMovesByPickingId, getStockMoveLinesByMoveIds } =
+    await import('./delivery.service.js');
   let pids = (pickingIds || []).map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0);
   if (!pids.length) {
     const picks = (await getPickingBySaleOrder(soId).catch(() => [])) || [];
     pids = picks.map((p) => Number(p?.id)).filter((id) => Number.isFinite(id) && id > 0);
   }
-  if (!pids.length) return { linked: 0 };
+  if (!pids.length) return { linked: 0, extrasOffOriginal: false };
 
   const soLinesPromise = callOdoo(
     'sale.order.line',
     'search_read',
     [[['order_id', '=', soId]]],
-    { fields: ['id', 'product_id', 'product_uom_qty'], limit: 200 }
+    { fields: ['id', 'product_id', 'product_uom_qty', 'move_ids'], limit: 200 }
   ).catch(() => []);
   const moveLists = await Promise.all(pids.map((pid) => getStockMovesByPickingId(pid).catch(() => [])));
   const [soLinesRaw] = await Promise.all([soLinesPromise]);
   const soLines = soLinesRaw || [];
   const linesByProduct = new Map();
   const lineById = new Map();
+  const linkedMoveIds = new Set();
+  let moveIdsFieldPresent = false;
   for (const row of soLines || []) {
     const lid = Number(row?.id);
     const pid = odooRelId(row?.product_id);
     if (!Number.isFinite(lid) || lid <= 0) continue;
     lineById.set(lid, row);
+    if (Array.isArray(row.move_ids)) {
+      moveIdsFieldPresent = true;
+      for (const m of row.move_ids) {
+        const mid = odooRelId(m);
+        if (Number.isFinite(mid) && mid > 0) linkedMoveIds.add(mid);
+      }
+    }
     if (!Number.isFinite(pid) || pid <= 0) continue;
     const list = linesByProduct.get(pid) || [];
     list.push(row);
     linesByProduct.set(pid, list);
+  }
+  if (moveIdsFieldPresent && linkedMoveIds.size === 0) {
+    moveIdsFieldPresent = false;
   }
 
   const moves = [];
@@ -3658,7 +4077,25 @@ async function ensureStockMovesLinkedToSaleOrderLines(saleOrderId, pickingIds = 
     }
   }
 
+  const unread = [];
+  for (const mv of moves) {
+    if (stockMoveDoneQty(mv) > DELIVERED_QTY_VERIFY_TOL) continue;
+    const mid = Number(mv?.id);
+    if (Number.isFinite(mid) && mid > 0) unread.push(mid);
+  }
+  const lineQtyByMove = new Map();
+  if (unread.length) {
+    const mls = (await getStockMoveLinesByMoveIds(unread).catch(() => [])) || [];
+    for (const ml of mls) {
+      const mid = Number(Array.isArray(ml?.move_id) ? ml.move_id[0] : ml?.move_id);
+      const q = stockMoveLineDoneQty(ml);
+      if (!Number.isFinite(mid) || mid <= 0 || q <= 0) continue;
+      lineQtyByMove.set(mid, roundDeliveredQty3((lineQtyByMove.get(mid) || 0) + q));
+    }
+  }
+
   let linked = 0;
+  const prefByProduct = preferredMoveIdByProduct(moves);
   for (const mv of moves) {
     const mid = Number(mv?.id);
     const pid = odooRelId(mv?.product_id);
@@ -3667,15 +4104,58 @@ async function ensureStockMovesLinkedToSaleOrderLines(saleOrderId, pickingIds = 
     const preferredId = Number(preferred?.id);
     if (!Number.isFinite(preferredId) || preferredId <= 0) continue;
 
+    const prefMid = Number(prefByProduct.get(pid));
+    const prefMv = moves.find((row) => Number(row?.id) === prefMid);
+    const originalHasComputeQty =
+      Number.isFinite(prefMid) &&
+      prefMid > 0 &&
+      stockMoveDoneQty(prefMv) > DELIVERED_QTY_VERIFY_TOL &&
+      (!moveIdsFieldPresent || linkedMoveIds.has(prefMid));
+    // Inverse extras only when the original SOL move does not already hold compute qty.
+    if (Number.isFinite(prefMid) && prefMid > 0 && mid !== prefMid && originalHasComputeQty) continue;
+
     const existingSol = odooRelId(mv?.sale_line_id);
-    if (!stockMoveSaleLineNeedsBind(existingSol, preferredId, pid, lineById, preferred)) continue;
+    const computeQty = Math.max(stockMoveDoneQty(mv), lineQtyByMove.get(mid) || 0);
+    const needs = stockMoveSaleLineNeedsBind(existingSol, preferredId, pid, lineById, preferred);
+    const alreadyOnSol = moveIdsFieldPresent && linkedMoveIds.has(mid);
+    // Original procurement move is already on the sale order line — leave it alone.
+    if (alreadyOnSol && !needs) continue;
+    // Skip 0-qty accessories (HOSE/PACK). Qty-bearing extras always bind, even if
+    // sale_line_id already looks set (S11030: extra move not on move_ids).
+    if (!needs && computeQty <= DELIVERED_QTY_VERIFY_TOL) continue;
 
     const ok = await writeStockMoveSaleLineId(mid, preferredId);
     if (!ok) continue;
     linked += 1;
+    linkedMoveIds.add(mid);
     log('queue', `delivery linked stock.move ${mid} → sale.order.line ${preferredId} (product ${pid}) SO ${soId}`);
   }
-  return { linked };
+
+  try {
+    await putDoneExtraQtyOntoSaleLinkedMoves({
+      saleOrderId: soId,
+      pids,
+      moveLists,
+      linesByProduct,
+      linkedMoveIds,
+      moveIdsFieldPresent,
+      lineQtyByMove,
+    });
+  } catch (putErr) {
+    log(
+      'queue',
+      `delivery SO ${soId}: put extra qty on sale-linked move (non-fatal): ${String(putErr?.message || putErr).slice(0, 100)}`
+    );
+  }
+  return {
+    linked,
+    extrasOffOriginal: pickingQtyOffSaleLinkedMoves(
+      moveLists,
+      lineQtyByMove,
+      linkedMoveIds,
+      moveIdsFieldPresent
+    ),
+  };
 }
 
 /** Products that already have an explicit deliveryLine in any picking block (intentional split). */
@@ -3705,13 +4185,12 @@ async function remapDeliveryBlockMoveIdsFromOdoo(block, getStockMovesByPickingId
   if (!lines.length) return block;
 
   const moves = await getStockMovesByPickingId(pickingId).catch(() => []);
-  const moveByProduct = new Map();
+  const moveByProduct = preferredMoveIdByProduct(moves);
   const productByMove = new Map();
   for (const mv of moves || []) {
     const pid = Number(Array.isArray(mv?.product_id) ? mv.product_id[0] : mv?.product_id);
     const mid = Number(mv?.id);
     if (!Number.isFinite(pid) || !Number.isFinite(mid) || mid <= 0) continue;
-    moveByProduct.set(pid, mid);
     productByMove.set(mid, pid);
   }
   block.deliveryLines = lines
@@ -3720,10 +4199,11 @@ async function remapDeliveryBlockMoveIdsFromOdoo(block, getStockMovesByPickingId
       const midExisting = Number(l?.moveId ?? l?.move_id);
       const qty_done = roundDeliveredQty3(l?.qty_done);
       if (!Number.isFinite(qty_done)) return null;
-      let mid = Number.isFinite(midExisting) && midExisting > 0 ? midExisting : null;
       let pid = Number.isFinite(pidExisting) && pidExisting > 0 ? pidExisting : null;
-      if (!mid && pid) mid = moveByProduct.get(pid) || null;
+      let mid = Number.isFinite(midExisting) && midExisting > 0 ? midExisting : null;
       if (!pid && mid) pid = productByMove.get(mid) || null;
+      if (pid && moveByProduct.has(pid)) mid = moveByProduct.get(pid);
+      else if (!mid && pid) mid = moveByProduct.get(pid) || null;
       if (mid) return { moveId: mid, productId: pid, qty_done };
       if (pid) return { moveId: null, productId: pid, qty_done };
       return null;
@@ -3768,16 +4248,22 @@ async function rebuildDeliveryBlocksFromRequestedQty(blocks, requestedQtyByProdu
   }
 
   const lastMoveByProduct = new Map();
+  const linkedMoveByProduct = new Map();
   for (const block of working) {
     const pickingId = Number(block?.pickingId ?? block?.picking_id);
     if (!Number.isFinite(pickingId) || pickingId <= 0) continue;
     const moves = await getStockMovesByPickingId(pickingId).catch(() => []);
+    const pref = preferredMoveIdByProduct(moves);
     const lines = [];
     for (const mv of moves || []) {
       const productId = Number(Array.isArray(mv?.product_id) ? mv.product_id[0] : mv?.product_id);
       const mid = Number(mv?.id);
       if (!Number.isFinite(productId) || !Number.isFinite(mid) || mid <= 0) continue;
       lastMoveByProduct.set(productId, mid);
+      if (pref.has(productId)) linkedMoveByProduct.set(productId, pref.get(productId));
+      // Extra same-product moves (demand 0) must not take leftover qty — that left
+      // 12.5kg/37.5kg on a later move while only 5kg bound (S11141 vs S11143).
+      if (pref.has(productId) && mid !== pref.get(productId)) continue;
       const rem = Number(remaining.get(productId)) || 0;
       if (rem <= 0.0001) continue;
       const demand = Number(mv?.product_uom_qty);
@@ -3794,7 +4280,7 @@ async function rebuildDeliveryBlocksFromRequestedQty(blocks, requestedQtyByProdu
   for (const [productId, remRaw] of remaining.entries()) {
     const rem = roundDeliveredQty3(remRaw);
     if (rem <= 0.0001) continue;
-    const mid = lastMoveByProduct.get(productId);
+    const mid = linkedMoveByProduct.get(productId) || lastMoveByProduct.get(productId);
     if (!Number.isFinite(mid) || mid <= 0) continue;
     const targetBlock = working.find((b) =>
       (b.deliveryLines || []).some((l) => Number(l.moveId) === mid)
@@ -4757,7 +5243,7 @@ async function buildGasDeliveredCountChatterBody(soId, paymentPayload) {
   const { linesToOdooHtmlBody } = await import('./proofAttachment.service.js');
   const sep = '────────────────────────────────────────';
   const lines = [];
-  lines.push('Gas Delivered Count updated throuh mobile..');
+  lines.push('Gas Delivered Count updated flash update V9');
   lines.push(sep);
   for (const [label, qty] of qtyByProductLabel.entries()) {
     lines.push(`${label}: ${formatQty(qty)}`);
@@ -5465,6 +5951,7 @@ async function processSyncQueue(options = {}) {
     let pass = 0;
     let lastPending = -1;
     const alreadySyncedSaleOrderIds = new Set(await syncQueueDb.getSyncedPaymentSaleOrderIds());
+    const latestSyncedPaymentQueueIdBySo = await syncQueueDb.getLatestSyncedPaymentQueueIdBySaleOrder();
     if (shouldYieldQueueToCheckout(isCheckoutScoped)) {
       log('queue', 'yield queue to checkout upload');
       return;
@@ -5938,21 +6425,33 @@ async function processSyncQueue(options = {}) {
           if (!(fastSync && validatedAnyPicking)) {
             await verifyAllSaleOrderPickingsAreTerminal(saleOrderId);
           }
-          if (mustVerifyDeliveredQty) {
+          if (mustVerifyDeliveredQty && !validatedAnyPicking) {
             await assertMobileQtyHasDonePickingOnOdoo(saleOrderId, p);
           }
           // Link stock.move → sale.order.line so Odoo fills Delivered (S09200).
           // Fast checkout used to skip this; picking went Done while some SO lines stayed 0 (S10372).
+          let extrasOffOriginal = false;
           try {
             const linkPickIds = (blocks || [])
               .map((b) => Number(b?.pickingId ?? b?.picking_id))
               .filter((id) => Number.isFinite(id) && id > 0);
             const linkResult = await ensureStockMovesLinkedToSaleOrderLines(saleOrderId, linkPickIds);
+            extrasOffOriginal = linkResult?.extrasOffOriginal === true;
             if (linkResult?.linked > 0) {
               log('queue', `delivery SO ${saleOrderId}: linked ${linkResult.linked} stock.move(s) to sale lines`);
             }
           } catch (linkErr) {
             logWarn('queue delivery (link moves to SOL)', linkErr);
+            extrasOffOriginal = true;
+          }
+          // Bind extras onto the original SOL move before any qty_delivered write.
+          // Skip the extra Odoo scan when qty is already on the original move (happy path).
+          if (
+            extrasOffOriginal &&
+            validatedAnyPicking &&
+            (payloadHasPositiveDeliveredQty(p) || (saleOrderLineDeliveredUpdates || []).length > 0)
+          ) {
+            await assertDonePickingSaleLinesBound(saleOrderId);
           }
           const finalSnap = await resolveDeliveredSnapshotForSync(saleOrderId, p);
           saleOrderLineDeliveredUpdates = await enrichDeliveredUpdatesForSaleOrder(
@@ -5968,45 +6467,55 @@ async function processSyncQueue(options = {}) {
           }
           const verifyPayload = finalSnap.payload || p;
           const runDeliveredQtyVerify = async () =>
-            verifyDeliveryQtyBoundOnOdoo(saleOrderId, saleOrderLineDeliveredUpdates, verifyPayload);
+            verifyDeliveryQtyBoundOnOdoo(saleOrderId, saleOrderLineDeliveredUpdates, verifyPayload, {
+              skipPickingMoveBindScan: !extrasOffOriginal,
+            });
           // Always verify actual sale.order.line qty_delivered. Fast checkout used to skip this
           // and only check sale_line_id, which left partial Done qty unbound (S10734 4/12 vs 0/0).
           try {
             saleOrderLineDeliveredUpdates = await runDeliveredQtyVerify();
           } catch (verifyErr) {
-            // One repair attempt: re-link + rewrite (fixes intermittent SOL bind).
+            // release/v7: if picking is already Done, heal by putting mobile qty back on the
+            // original moves and rewriting sale.order.line qty_delivered.
+            let pickingsTerminal = false;
             try {
-              await ensureStockMovesLinkedToSaleOrderLines(
-                saleOrderId,
-                (blocks || [])
-                  .map((b) => Number(b?.pickingId ?? b?.picking_id))
-                  .filter((id) => Number.isFinite(id) && id > 0)
-              );
-              await applyMobileDeliveredQtyToOdooOnce({});
+              await verifyAllSaleOrderPickingsAreTerminal(saleOrderId);
+              pickingsTerminal = true;
+            } catch (_) {
+              pickingsTerminal = false;
+            }
+            if (!pickingsTerminal) throw verifyErr;
+            const heal = await attemptDeliveredQtyHealForSaleOrder(saleOrderId, verifyPayload, {
+              maxRounds: 2,
+              pickingIds: (blocks || [])
+                .map((b) => Number(b?.pickingId ?? b?.picking_id))
+                .filter((id) => Number.isFinite(id) && id > 0),
+              deliveryLines: (blocks || []).flatMap((b) => b?.deliveryLines || []),
+            });
+            if (heal.ok) {
+              await applyMobileDeliveredQtyToOdooOnce();
               await new Promise((r) => setTimeout(r, deliveredSolSettleMs()));
               saleOrderLineDeliveredUpdates = await runDeliveredQtyVerify();
-            } catch (retryErr) {
-              let pickingsTerminal = false;
+            } else {
               try {
-                await verifyAllSaleOrderPickingsAreTerminal(saleOrderId);
-                pickingsTerminal = true;
-              } catch (_) {
-                pickingsTerminal = false;
-              }
-              if (!pickingsTerminal) throw verifyErr;
-              // Picking Done with stock qty but SOL Delivered still 0: force sale_line_id bind.
-              // Do NOT markSynced while any Done product remains unbound (S10028 GAS5).
-              const force = await forceBindUnboundDoneMovesToSaleOrderLines(saleOrderId);
-              if (force.still?.length) {
-                throw new Error(
-                  `Delivery incomplete: SO ${saleOrderId} picking is Done but sale order line Delivered is still 0 for product(s) ${force.still
-                    .map((u) => u.productId)
-                    .join(', ')}. Sync will retry.`
+                await ensureStockMovesLinkedToSaleOrderLines(
+                  saleOrderId,
+                  (blocks || [])
+                    .map((b) => Number(b?.pickingId ?? b?.picking_id))
+                    .filter((id) => Number.isFinite(id) && id > 0)
                 );
-              }
-              try {
+                await applyMobileDeliveredQtyToOdooOnce({});
+                await new Promise((r) => setTimeout(r, deliveredSolSettleMs()));
                 saleOrderLineDeliveredUpdates = await runDeliveredQtyVerify();
-              } catch (afterBindErr) {
+              } catch (retryErr) {
+                const force = await forceBindUnboundDoneMovesToSaleOrderLines(saleOrderId);
+                if (force.still?.length) {
+                  throw new Error(
+                    `Delivery incomplete: SO ${saleOrderId} picking is Done but sale order line Delivered is still 0 for product(s) ${force.still
+                      .map((u) => u.productId)
+                      .join(', ')}. Sync will retry.`
+                  );
+                }
                 await forceBindSaleLinesFromDeliveredUpdates(
                   saleOrderId,
                   saleOrderLineDeliveredUpdates
@@ -6017,6 +6526,7 @@ async function processSyncQueue(options = {}) {
             }
           }
           if (
+            extrasOffOriginal &&
             validatedAnyPicking &&
             (payloadHasPositiveDeliveredQty(p) || (saleOrderLineDeliveredUpdates || []).length > 0)
           ) {
@@ -6207,13 +6717,7 @@ async function processSyncQueue(options = {}) {
             moveUpdates.some((u) => Number(u?.moveId) <= 0);
           if (hasSyntheticMoveRefs && Number(pickingId) > 0) {
             const liveMoves = await getStockMovesByPickingId(Number(pickingId)).catch(() => []);
-            const moveByProduct = new Map();
-            for (const mv of liveMoves || []) {
-              const pid = Number(Array.isArray(mv?.product_id) ? mv.product_id[0] : mv?.product_id);
-              const mid = Number(mv?.id);
-              if (!Number.isFinite(pid) || !Number.isFinite(mid) || mid <= 0) continue;
-              moveByProduct.set(pid, mid);
-            }
+            const moveByProduct = preferredMoveIdByProduct(liveMoves);
             const qtyByProduct = new Map();
             for (const line of deliveryLines) {
               const pid = Number(line?.productId ?? line?.product_id);
@@ -6251,6 +6755,18 @@ async function processSyncQueue(options = {}) {
               );
             }
           }
+          if (Number(pickingId) > 0 && deliveryLines.length > 0) {
+            const aligned = await ensureDeliveryLinesUseSaleLinkedMoves(
+              pickingId,
+              deliveryLines,
+              moveUpdates,
+              saleOrderId
+            );
+            deliveryLines = aligned.deliveryLines;
+            moveUpdates = aligned.moveUpdates;
+            block.deliveryLines = deliveryLines;
+            block.moveUpdates = moveUpdates;
+          }
 
           let pickingStateKnown = '';
           try {
@@ -6258,42 +6774,21 @@ async function processSyncQueue(options = {}) {
             const pick = Array.isArray(stateRows) ? stateRows[0] : stateRows;
             pickingStateKnown = String(pick?.state || '').toLowerCase();
             if (pickingStateKnown === 'done') {
-              const mobilePositive = (deliveryLines || []).some(
-                (line) => coerceDeliveredQty(line?.qty_done) > 0.0001
+              // release/v7: always align Done picking qty_done from the mobile snapshot.
+              // Skipping that rewrite left decrease/extra-product qty on a later move while
+              // Sale Order Delivered stayed 0 (S10995 vs S11050).
+              log(
+                'queue',
+                `delivery picking ${pickingId} already done — align move qty_done from mobile snapshot`
               );
-              let odooHasPositive = false;
               try {
-                const doneMoves = await getStockMovesByPickingId(Number(pickingId)).catch(() => []);
-                for (const mv of doneMoves || []) {
-                  if (stockMoveDoneQty(mv) > DELIVERED_QTY_VERIFY_TOL) {
-                    odooHasPositive = true;
-                    break;
-                  }
-                }
+                await applyPickingDeliverySnapshotIdempotent(
+                  pickingId,
+                  { deliveryLines },
+                  { deliveryTxnId: p.deliveryTxnId, deviceId: p.deviceId }
+                );
               } catch (_) {
-                odooHasPositive = false;
-              }
-              // Never rewrite a Done transfer downward. That logged
-              // "The done move line has been corrected" (12→0 / 15→0) on retry/align.
-              if (mobilePositive && !odooHasPositive) {
-                log(
-                  'queue',
-                  `delivery picking ${pickingId} already done with qty 0 — repair from mobile snapshot`
-                );
-                try {
-                  await applyPickingDeliverySnapshotIdempotent(
-                    pickingId,
-                    { deliveryLines },
-                    { deliveryTxnId: p.deliveryTxnId, deviceId: p.deviceId }
-                  );
-                } catch (_) {
-                  /* readonly on some done transfers */
-                }
-              } else {
-                log(
-                  'queue',
-                  `delivery picking ${pickingId} already done — skip qty rewrite`
-                );
+                /* readonly on some done transfers */
               }
               // Never absorb remaining until Odoo matches frozen mobile qty (prevents partial SOL cases).
               try {
@@ -6423,11 +6918,13 @@ async function processSyncQueue(options = {}) {
                   'stock.picking',
                   'search_read',
                   [[['id', '=', Number(pickingId)]]],
-                  { fields: ['id', 'location_id', 'location_dest_id'], limit: 1 }
+                  { fields: ['id', 'location_id', 'location_dest_id', 'group_id', 'origin'], limit: 1 }
                 );
                 const pick = Array.isArray(picks) ? picks[0] : null;
                 const srcLoc = Array.isArray(pick?.location_id) ? pick.location_id[0] : pick?.location_id;
                 const dstLoc = Array.isArray(pick?.location_dest_id) ? pick.location_dest_id[0] : pick?.location_dest_id;
+                const groupId = Array.isArray(pick?.group_id) ? pick.group_id[0] : pick?.group_id;
+                const origin = pick?.origin ? String(pick.origin) : '';
                 if (!srcLoc || !dstLoc) return null;
                 let productUomId = null;
                 try {
@@ -6451,11 +6948,18 @@ async function processSyncQueue(options = {}) {
                   ...(productUomId ? { product_uom: Number(productUomId) } : {}),
                   location_id: Number(srcLoc),
                   location_dest_id: Number(dstLoc),
+                  ...(Number.isFinite(Number(groupId)) && Number(groupId) > 0
+                    ? { group_id: Number(groupId) }
+                    : {}),
+                  ...(origin ? { origin } : {}),
                   // Without sale_line_id, picking can go Done while SO Delivered stays 0 (S09200).
                   ...(saleLineId ? { sale_line_id: Number(saleLineId) } : {}),
                 }]]);
                 const mid = Number(moveId);
                 if (!Number.isFinite(mid) || mid <= 0) return null;
+                if (saleLineId) {
+                  await writeStockMoveSaleLineId(mid, Number(saleLineId));
+                }
                 const list = moveIdsByProduct.get(Number(productId)) || [];
                 list.push(mid);
                 moveIdsByProduct.set(Number(productId), list);
@@ -6511,8 +7015,11 @@ async function processSyncQueue(options = {}) {
               }
               if (mids.length === 0) continue;
 
-              // Attach the missing quantity to the last move for this product in this picking.
-              const targetMoveId = Number(mids[mids.length - 1]);
+              // Attach missing qty to the sale-linked move, not the newest extra move.
+              const prefMid = preferredMoveIdByProduct(moves).get(Number(productId));
+              const targetMoveId = Number(
+                (Number.isFinite(prefMid) && prefMid > 0 ? prefMid : null) || mids[0] || mids[mids.length - 1]
+              );
               const existingLine = deliveryLines.find((l) => Number(l?.moveId ?? l?.move_id) === targetMoveId);
               if (existingLine) {
                 // ABSOLUTE target from remaining hole — never prev+missing (stacks on retry).
@@ -6551,6 +7058,18 @@ async function processSyncQueue(options = {}) {
           let linkMovesBeforeValidatePromise = Promise.resolve({ linked: 0 });
           try {
             await topUpDeliveryLinesFromRequested();
+            if (Number(pickingId) > 0 && deliveryLines.length > 0) {
+              const alignedAfterTopUp = await ensureDeliveryLinesUseSaleLinkedMoves(
+                pickingId,
+                deliveryLines,
+                moveUpdates,
+                saleOrderId
+              );
+              deliveryLines = alignedAfterTopUp.deliveryLines;
+              moveUpdates = alignedAfterTopUp.moveUpdates;
+              block.deliveryLines = deliveryLines;
+              block.moveUpdates = moveUpdates;
+            }
             // Do NOT assert unresolved qty here — remaining is shared across pickings and is
             // only meaningful after all blocks are processed (finalizeDeliveryConsistencyCheck).
             /**
@@ -6654,7 +7173,6 @@ async function processSyncQueue(options = {}) {
               );
             }
           }
-
           if (Number(syncOptions.queuePass) > 1 && deliveryLines.length > 0 && !_queueSyncFastDrainActive) {
             await new Promise((r) => setTimeout(r, 400));
             log(
@@ -7436,7 +7954,7 @@ async function processSyncQueue(options = {}) {
               const isGasDeduction = !(Number.isFinite(inc) && inc > 0);
 
               if (syncedProducts.has(productId)) {
-                if (!isGasDeduction || !stockAlreadyReduced) {
+                if (isGasDeduction && !stockAlreadyReduced) {
                   await vehicleInventoriesDb.clearLocalModificationFlagByLocation(locationId, productId);
                 }
                 continue;
@@ -7450,7 +7968,6 @@ async function processSyncQueue(options = {}) {
                   await applyInventoryQueueUpdateOnOdoo(locationId, productId, u);
                   syncedProducts.add(productId);
                   updates[ui] = { ...u, odooDeductionApplied: true };
-                  await vehicleInventoriesDb.clearLocalModificationFlagByLocation(locationId, productId);
                 } catch (invErr) {
                   allInventoryUpdatesSynced = false;
                   logWarn('queue inventory_update empty increment', invErr);
@@ -7530,6 +8047,8 @@ async function processSyncQueue(options = {}) {
             for (const u of updates) {
               const productId = u?.productId != null ? Number(u.productId) : null;
               if (productId == null) continue;
+              const inc = Number(u?.incrementQuantity);
+              if (Number.isFinite(inc) && inc > 0) continue;
               await vehicleInventoriesDb.clearLocalModificationFlagByLocation(locationId, productId);
             }
           }
@@ -7537,6 +8056,10 @@ async function processSyncQueue(options = {}) {
           if (allInventoryUpdatesSynced) {
             await syncQueueDb.markSynced(Number(item.id));
             log('queue', `inventory synced id=${item.id} location=${locationId} items=${updates.length}`);
+            await refreshStockAfterInventoryQueueSynced(
+              locationId,
+              (updates || []).map((u) => u?.productId)
+            );
           } else {
             log(
               'queue',
@@ -7573,12 +8096,28 @@ async function processSyncQueue(options = {}) {
         let postedInvoiceId = null;
         try {
           const p = item.payload || {};
+          const saleOrderId = p.saleOrderId ?? p.sale_id;
+          const soId = typeof saleOrderId === 'number' ? saleOrderId : parseInt(saleOrderId, 10);
+          const pendingQueueId = Number(item.id);
+          const syncedQueueId = latestSyncedPaymentQueueIdBySo.get(soId);
+          if (
+            Number.isFinite(soId) &&
+            Number.isFinite(pendingQueueId) &&
+            syncedQueueId != null &&
+            pendingQueueId < syncedQueueId
+          ) {
+            await syncQueueDb.markSynced(pendingQueueId);
+            await refreshDashboardUploadIndicatorsFromQueue().catch(() => {});
+            log(
+              'queue',
+              `payment leftover pending id=${item.id} SO ${soId} cleared (newer payment already synced id=${syncedQueueId})`
+            );
+            return;
+          }
           if (p.holdUntilComplete === true) {
             log('queue', `payment id=${item.id} SO ${p.saleOrderId ?? p.sale_id} held until complete — skip`);
             return;
           }
-          const saleOrderId = p.saleOrderId ?? p.sale_id;
-          const soId = typeof saleOrderId === 'number' ? saleOrderId : parseInt(saleOrderId, 10);
           if (saleOrderId == null || Number.isNaN(soId)) {
             logWarn('queue payment', new Error('Invalid sale_order_id'));
             return;
@@ -7895,7 +8434,8 @@ async function processSyncQueue(options = {}) {
 
           const payments = p.payments || [];
           const orderName = p.orderName ?? `Order ${saleOrderId}`;
-          const skipPaymentCreation = alreadySyncedSaleOrderIds.has(soId);
+          const skipPaymentCreation =
+            syncedQueueId != null && Number.isFinite(pendingQueueId) && pendingQueueId < syncedQueueId;
           let pipelinePreVerified = skipPaymentCreation;
 
           if (!skipPaymentCreation) {
@@ -8206,14 +8746,13 @@ async function processSyncQueue(options = {}) {
             }
           }
 
-          if (alreadySyncedSaleOrderIds.has(soId)) {
-            // Leftover pending payment after a prior synced payment — clear without re-invoice.
-            // Do not require chatter flags on the duplicate row (those stay false and used to pin orange forever).
+          if (syncedQueueId != null && Number.isFinite(pendingQueueId) && pendingQueueId < syncedQueueId) {
+            // Leftover pending payment older than a payment already marked synced for this SO.
             await syncQueueDb.markSynced(Number(item.id));
             await refreshDashboardUploadIndicatorsFromQueue().catch(() => {});
             log(
               'queue',
-              `payment leftover pending id=${item.id} SO ${soId} cleared (prior payment already synced)`
+              `payment leftover pending id=${item.id} SO ${soId} cleared (prior payment already synced id=${syncedQueueId})`
             );
             return;
           }
@@ -8225,6 +8764,7 @@ async function processSyncQueue(options = {}) {
             }
             if (await markPaymentQueueItemSyncedWhenBackendComplete(item, soId, p, { pipelinePreVerified })) {
               alreadySyncedSaleOrderIds.add(soId);
+              latestSyncedPaymentQueueIdBySo.set(soId, pendingQueueId);
               log('queue', `payment synced id=${item.id} (chatter already posted for SO ${soId})`);
             }
             return;
@@ -8279,6 +8819,7 @@ async function processSyncQueue(options = {}) {
           }
           if (await markPaymentQueueItemSyncedWhenBackendComplete(item, soId, p, { pipelinePreVerified })) {
             alreadySyncedSaleOrderIds.add(soId);
+            latestSyncedPaymentQueueIdBySo.set(soId, pendingQueueId);
             log('queue', `payment synced id=${item.id}`);
           }
           perfLog('payment-item', `id=${item.id} ms=${Date.now() - tPay}`);
@@ -8814,7 +9355,7 @@ async function fetchVehicleInventoryQuantsWithRetry(locationId) {
   return { quants: [], ok: false, error: lastErr };
 }
 
-/** Product ids with pending local inventory uploads — keep local gas qty until queue drains. */
+/** Freeze local qty only before Complete. During order sync, Back Office stock must apply immediately. */
 async function getPendingInventoryProtectProductIds(locationId) {
   const protectedIds = new Set();
   try {
@@ -8830,13 +9371,11 @@ async function getPendingInventoryProtectProductIds(locationId) {
       const held =
         p.holdUntilComplete === true ||
         (saleOrderId != null && checkoutHeldSaleOrderIds.has(saleOrderId));
+      if (!held) continue;
       for (const u of p.updates || []) {
         const pid = u?.productId != null ? Number(u.productId) : null;
         if (!Number.isFinite(pid) || pid <= 0) continue;
         protectedIds.add(pid);
-      }
-      if (held && saleOrderId != null) {
-        log('sync', `inventory pull: protect ${protectedIds.size} product(s) for held SO ${saleOrderId}`);
       }
     }
   } catch (e) {
@@ -8852,7 +9391,9 @@ async function persistVehicleInventoryForLocation({ vehicleId, locationId, quant
     vehicle_id: vehicleId,
   }));
   if (fetchOk) {
-    const protectProductIds = await getPendingInventoryProtectProductIds(locationId);
+    const protectProductIds = isCheckoutUploadActive()
+      ? new Set()
+      : await getPendingInventoryProtectProductIds(locationId);
 
     // Guard: a successful empty pull at location B must not erase / remap away
     // existing positive stock this vehicle already holds at a different location A
@@ -9097,9 +9638,13 @@ async function runSyncInternal(options = {}) {
     }
 
     if (!isLightPullMode) {
-      const uploadPending = await hasActionablePendingUploadWork().catch(() => false);
-      await processSyncQueue({ fastDrain: true, maxPasses: uploadPending ? 2 : 1 });
-      void processStandaloneOfflineAttachmentsInBackground();
+      if (isCheckoutUploadActive()) {
+        log('sync', 'order upload in flight — pull master/stock without waiting on the delivery queue');
+      } else {
+        const uploadPending = await hasActionablePendingUploadWork().catch(() => false);
+        await processSyncQueue({ fastDrain: true, maxPasses: uploadPending ? 2 : 1 });
+        void processStandaloneOfflineAttachmentsInBackground();
+      }
     }
 
     const user = await getUserSession();
@@ -9546,7 +10091,7 @@ async function runSyncInternal(options = {}) {
       if (allVehicleInventories.length > 0) log('db', 'vehicle_inventories');
     }
     /** Second pass: retry queue after data pull (unblocks payment/delivery that depended on server state). */
-    if (!isLightPullMode) {
+    if (!isLightPullMode && !isCheckoutUploadActive()) {
       try {
         const uploadStillPending = await hasActionablePendingUploadWork().catch(() => false);
         await processSyncQueue({ fastDrain: true, maxPasses: uploadStillPending ? 2 : 1 });

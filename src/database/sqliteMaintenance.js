@@ -53,7 +53,7 @@ async function deleteOldSyncedNonPaymentQueue(db, { aggressive = false } = {}) {
   } catch (_) {
     return;
   }
-  const cutoffMs = Date.now() - (aggressive ? 0 : 3 * 24 * 60 * 60 * 1000);
+  const cutoffMs = Date.now() - (aggressive ? 0 : 24 * 60 * 60 * 1000);
   const ids = [];
   for (const row of rows || []) {
     const t = Date.parse(String(row.synced_at || row.created_at || ''));
@@ -74,7 +74,9 @@ async function pruneSyncLog(db) {
 
 async function pruneDeliveryQtyAudit(db) {
   try {
-    await db.runAsync('DELETE FROM delivery_qty_audit WHERE created_at < ?', [daysAgoIso(14)]);
+    await db.runAsync(
+      `DELETE FROM delivery_qty_audit WHERE id NOT IN (SELECT id FROM delivery_qty_audit ORDER BY id DESC LIMIT 80)`
+    );
   } catch (_) {
     /* table added in later migrations */
   }

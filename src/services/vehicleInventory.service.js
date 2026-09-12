@@ -61,12 +61,9 @@ export async function applyTargetQuantityIdempotent(locationId, productId, targe
  * One inventory queue row → Odoo: absolute target preferred; increments only when no target.
  */
 export async function applyInventoryQueueUpdateOnOdoo(locationId, productId, update = {}, options = {}) {
-  const targetQty = Number(update?.newQuantity);
   const inc = Number(update?.incrementQuantity);
-  if (Number.isFinite(targetQty)) {
-    return applyTargetQuantityIdempotent(locationId, productId, targetQty, options);
-  }
-  if (Number.isFinite(inc) && inc !== 0) {
+  // Empty-cylinder collection: send this order's increment only — never write the full local empty stock.
+  if (Number.isFinite(inc) && inc > 0) {
     const cur = await readQuantQuantityAtLocation(locationId, productId);
     const expected = Math.max(0, cur + inc);
     if (Math.abs(cur - expected) <= (options.tolerance ?? QTY_TOL)) {
@@ -74,6 +71,10 @@ export async function applyInventoryQueueUpdateOnOdoo(locationId, productId, upd
     }
     const res = await adjustQuantQuantityAtLocation(locationId, productId, inc);
     return { ok: !!res?.ok, mode: 'increment', odooQty: cur, targetQty: res?.targetQty ?? expected };
+  }
+  const targetQty = Number(update?.newQuantity);
+  if (Number.isFinite(targetQty)) {
+    return applyTargetQuantityIdempotent(locationId, productId, targetQty, options);
   }
   return { ok: true, mode: 'noop' };
 }

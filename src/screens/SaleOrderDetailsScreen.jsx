@@ -1251,7 +1251,9 @@ const validateQuantities = useCallback(() => {
         } else if (cap > 0) {
           alloc = Math.min(remainingAmt, cap);
         } else {
-          alloc = remainingAmt;
+          // 0-demand extra slots must not take leftover — Validate then creates a later
+          // extra move that is not on sale.order.line.move_ids (S11141 37.5kg / 2.4kg).
+          alloc = 0;
         }
         remainingByProduct[pidKey] = remainingAmt - alloc;
         slot.allocatedQty = alloc;
@@ -1263,7 +1265,7 @@ const validateQuantities = useCallback(() => {
         const leftover = Number(remainingByProduct[pidKey]) || 0;
         if (leftover <= 0.0001) continue;
         let drained = false;
-        for (let i = allocationSlots.length - 1; i >= 0; i--) {
+        for (let i = 0; i < allocationSlots.length; i++) {
           if (String(allocationSlots[i].productId) !== pidKey) continue;
           allocationSlots[i].allocatedQty = (Number(allocationSlots[i].allocatedQty) || 0) + leftover;
           drained = true;

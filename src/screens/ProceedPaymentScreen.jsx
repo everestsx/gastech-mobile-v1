@@ -32,6 +32,7 @@ import { getOrAssignInvoiceNumber } from '../utils/invoiceNumber';
 import { empty, sqliteIntegerFkOrNull, num, odooRecordId } from '../database/dbHelpers.js';
 import { parseOdooDateToIso } from '../utils/invoiceDeliveryDate';
 import { getRouteNameById } from '../database/routes.js';
+import { isSqliteFullError, sqliteFullUserMessage } from '../database/sqliteMaintenance.js';
 
 const PAYMENT_CASH = 'cash';
 const PAYMENT_CHECK = 'cheque';

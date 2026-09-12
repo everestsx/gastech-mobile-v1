@@ -211,6 +211,21 @@ export async function createLeakagePicking({ partnerId, reason, moves }) {
   return pickingId;
 }
 
+/**
+ * Validate a leaked-items receipt. Create returns `[13402]`; send that id as `{ ids: [13402] }`.
+ * POST /json/2/stock.picking/button_validate
+ */
+export async function validateLeakagePicking(pickingId) {
+  const id = Number(pickingId);
+  if (!Number.isFinite(id) || id <= 0) {
+    throw new Error('Leaked-items receipt id is required to validate.');
+  }
+  await callOdooJson2('stock.picking', 'button_validate', {
+    ids: [id],
+  });
+  return id;
+}
+
 async function findPendingLeakageItem({ saleOrderId, queueId }) {
   const pending = (await syncQueueDb.getPending().catch(() => [])) || [];
   const qid = Number(queueId);
@@ -261,6 +276,7 @@ export async function submitLeakageCollectOfflineFirst({
     chatterBody: String(chatterBody || '').trim(),
     chatterAttachedToPayment: chatterAttachedToPayment === true,
     pickingSynced: false,
+    pickingValidated: false,
     chatterSynced: chatterAttachedToPayment === true || !String(chatterBody || '').trim(),
     recordedAt: new Date().toISOString(),
   };
@@ -329,11 +345,12 @@ export async function flushGasLeakageQueueItem(item) {
           : {};
 
     let pickingSynced = p.pickingSynced === true;
+    let pickingValidated = p.pickingValidated === true;
     let chatterSynced = p.chatterSynced === true || p.chatterAttachedToPayment === true;
 
-    if (uploaded && pickingSynced) {
+    if (uploaded && pickingSynced && pickingValidated) {
       await gasLeakageCollectsDb.markGasLeakageCollectSyncedByQueueId(id);
-      return { ok: true, alreadySynced: true, pickingSynced, chatterSynced };
+      return { ok: true, alreadySynced: true, pickingSynced, pickingValidated, chatterSynced };
     }
 
     if (!pickingSynced) {
@@ -345,6 +362,17 @@ export async function flushGasLeakageQueueItem(item) {
       pickingSynced = true;
       p.pickingSynced = true;
       p.odooPickingId = pickingId;
+      await syncQueueDb.updateQueueItemPayload(id, p, { suppressWake: true });
+    }
+
+    if (!pickingValidated) {
+      const pickingId = Number(p.odooPickingId);
+      if (!Number.isFinite(pickingId) || pickingId <= 0) {
+        throw new Error('Leaked-items receipt was not created on the server.');
+      }
+      await validateLeakagePicking(pickingId);
+      pickingValidated = true;
+      p.pickingValidated = true;
       await syncQueueDb.updateQueueItemPayload(id, p, { suppressWake: true });
     }
 
@@ -364,11 +392,11 @@ export async function flushGasLeakageQueueItem(item) {
       p.chatterSynced = true;
     }
 
-    if (pickingSynced && chatterSynced) {
+    if (pickingSynced && pickingValidated && chatterSynced) {
       await syncQueueDb.markSynced(id);
       await gasLeakageCollectsDb.markGasLeakageCollectSyncedByQueueId(id);
     }
-    return { ok: true, pickingSynced, chatterSynced };
+    return { ok: true, pickingSynced, pickingValidated, chatterSynced };
   })();
 
   inFlightLeakageFlushes.set(id, run);

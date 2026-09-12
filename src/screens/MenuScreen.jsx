@@ -350,7 +350,7 @@ export default function MenuScreen({ navigation }) {
       <TouchableOpacity
         style={[styles.menuItem, { backgroundColor: colors.surface, borderColor: colors.border }]}
         onPress={() => navigation.navigate('GasLeakageCollect')}
-        activeOpacity={0.8}
+        activeOpacity={0.7}
       >
         <Ionicons name="water-outline" size={24} color={colors.primary} />
         <Text style={[styles.menuItemText, { color: colors.text }]}>

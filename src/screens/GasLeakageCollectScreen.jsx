@@ -8,11 +8,11 @@ import {
   TouchableOpacity,
   TextInput,
   ActivityIndicator,
-  Alert,
   Modal,
   Pressable,
   FlatList,
 } from 'react-native';
+import CustomAlert from '../components/CustomAlert';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../context/ThemeContext';
@@ -97,7 +97,33 @@ export default function GasLeakageCollectScreen({ navigation }) {
   const [reasonModalVisible, setReasonModalVisible] = useState(false);
   const [selectedReasonKey, setSelectedReasonKey] = useState('');
   const [otherReason, setOtherReason] = useState('');
+  const [alertConfig, setAlertConfig] = useState({
+    visible: false,
+    title: '',
+    message: '',
+    type: 'default',
+    buttons: [],
+  });
   const todayStr = formatLocalYyyyMmDd(new Date());
+
+  const hideAlert = useCallback(() => {
+    setAlertConfig((prev) => ({ ...prev, visible: false }));
+  }, []);
+
+  const showAlert = useCallback((title, message, { type = 'default', buttons } = {}) => {
+    setAlertConfig({
+      visible: true,
+      title,
+      message,
+      type,
+      buttons: buttons || [
+        {
+          text: t('common.ok', 'OK'),
+          onPress: () => setAlertConfig((prev) => ({ ...prev, visible: false })),
+        },
+      ],
+    });
+  }, [t]);
 
   const resolvedLanguage = useMemo(
     () => String(i18n?.resolvedLanguage || i18n?.language || 'en').split('-')[0].toLowerCase(),
@@ -223,38 +249,56 @@ export default function GasLeakageCollectScreen({ navigation }) {
         });
 
         setReasonModalVisible(false);
-        navigation.goBack();
+        showAlert(
+          t('gasleakagecollect.successTitle', 'Collection saved'),
+          t('gasleakagecollect.successBody', 'Gas leakage collection was saved and will sync to Back Office.'),
+          {
+            type: 'success',
+            buttons: [
+              {
+                text: t('common.ok', 'OK'),
+                onPress: () => {
+                  hideAlert();
+                  navigation.goBack();
+                },
+              },
+            ],
+          }
+        );
       } catch (e) {
-        Alert.alert(
+        showAlert(
           t('gasleakagecollect.error', 'Error'),
-          e?.message || t('gasleakagecollect.submitFailed', 'Could not submit gas leakage collection.')
+          e?.message || t('gasleakagecollect.submitFailed', 'Could not submit gas leakage collection.'),
+          { type: 'error' }
         );
       } finally {
         setSaving(false);
       }
     },
-    [navigation, productRows, selectedPartner, t]
+    [hideAlert, navigation, productRows, selectedPartner, showAlert, t]
   );
 
   const onPressContinue = useCallback(() => {
     if (!selectedPartner?.id) {
-      Alert.alert(
+      showAlert(
         t('gasleakagecollect.customerRequired', 'Customer required'),
-        t('gasleakagecollect.pleaseSelectACustomer', 'Please select a customer.')
+        t('gasleakagecollect.pleaseSelectACustomer', 'Please select a customer.'),
+        { type: 'warning' }
       );
       return;
     }
     if (!hasCollection) {
-      Alert.alert(
+      showAlert(
         t('gasleakagecollect.quantityRequired', 'Quantity required'),
-        t('gasleakagecollect.pleaseCollectAtLeastOne', 'Please enter quantity for at least one product.')
+        t('gasleakagecollect.pleaseCollectAtLeastOne', 'Please enter quantity for at least one product.'),
+        { type: 'warning' }
       );
       return;
     }
     setSelectedReasonKey('');
     setOtherReason('');
     setReasonModalVisible(true);
-  }, [hasCollection, selectedPartner, t]);
+  }, [hasCollection, selectedPartner, showAlert, t]);
 
   const onConfirmReason = useCallback(() => {
     const selected = reasonOptions.find((reason) => reason.key === selectedReasonKey);
@@ -263,16 +307,17 @@ export default function GasLeakageCollectScreen({ navigation }) {
         ? String(otherReason || '').trim()
         : String(selected?.apiValue || '').trim();
     if (!apiValue) {
-      Alert.alert(
+      showAlert(
         t('gasleakagecollect.reasonRequired', 'Reason required'),
         selectedReasonKey === 'others'
           ? t('gasleakagecollect.pleaseTypeOtherReason', 'Please type the other reason.')
-          : t('gasleakagecollect.pleaseSelectAReason', 'Please select a reason.')
+          : t('gasleakagecollect.pleaseSelectAReason', 'Please select a reason.'),
+        { type: 'warning' }
       );
       return;
     }
     void persistAndContinue(apiValue);
-  }, [otherReason, persistAndContinue, reasonOptions, selectedReasonKey, t]);
+  }, [otherReason, persistAndContinue, reasonOptions, selectedReasonKey, showAlert, t]);
 
   const styles = useMemo(
     () =>
@@ -725,6 +770,14 @@ export default function GasLeakageCollectScreen({ navigation }) {
           </Pressable>
         </Pressable>
       </Modal>
+      <CustomAlert
+        visible={alertConfig.visible}
+        title={alertConfig.title}
+        message={alertConfig.message}
+        type={alertConfig.type}
+        buttons={alertConfig.buttons}
+        onClose={hideAlert}
+      />
     </View>
   );
 }

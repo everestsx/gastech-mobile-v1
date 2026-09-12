@@ -699,6 +699,10 @@ export function buildPickingDeliveryWritePayload({
   const updatedMoveIds = new Set();
   const moveLineIdsCommands = [];
   const moveIdsCommands = [];
+  // Odoo 17 sale_stock qty_delivered sums stock.move.quantity on SOL-linked moves.
+  // qty_done on move lines can make the picking look Done while Delivered stays 0
+  // (S11141 vs S11143). Unknown/true → write quantity; Odoo 16 falls back below.
+  const useQuantity = _stockMoveHasQuantityField !== false;
 
   for (const u of moveUpdates || []) {
     if (u?.moveId == null || u?.product_uom_qty == null) continue;
@@ -713,18 +717,22 @@ export function buildPickingDeliveryWritePayload({
     }
   }
 
-  const qtyDoneByMoveId = new Map();
+  const qtyByMoveId = new Map();
+  for (const u of moveLineUpdates || []) {
+    const moveId = Number(u?.moveId);
+    const qtyN = u?.qty_done != null ? Number(u.qty_done) : NaN;
+    if (!Number.isFinite(moveId) || moveId <= 0 || !Number.isFinite(qtyN) || qtyN <= 0) continue;
+    qtyByMoveId.set(moveId, qtyN);
+  }
   for (const line of deliveryLines || []) {
     const moveId = line.moveId ?? line.move_id;
     const productId = line.productId ?? line.product_id;
     const qtyN = line.qty_done != null ? Number(line.qty_done) : NaN;
     if (moveId == null || productId == null || !Number.isFinite(qtyN) || qtyN <= 0) continue;
-    qtyDoneByMoveId.set(Number(moveId), qtyN);
-    // CREATE only when enrich left this move without an existing line write.
-    // Retry stacking happens if we CREATE while a line already exists — enrich +
-    // already-applied guard must run first. Do not also SET quantity_done below
-    // (that double-counts).
-    if (!updatedMoveIds.has(Number(moveId))) {
+    qtyByMoveId.set(Number(moveId), qtyN);
+    // Odoo 17: SET move.quantity instead of CREATE a line. CREATE left qty on a line
+    // (or a later extra move) that sale.order.line.move_ids does not count.
+    if (!useQuantity && !updatedMoveIds.has(Number(moveId))) {
       moveLineIdsCommands.push([
         0,
         0,
@@ -743,8 +751,11 @@ export function buildPickingDeliveryWritePayload({
       createdMoveLineForMove.add(Number(cmd[2].move_id));
     }
   }
-  /** Set quantity_done only when qty was not already applied via move_line_ids (avoids double-count on retry). */
-  for (const [moveId, qty] of qtyDoneByMoveId) {
+  for (const [moveId, qty] of qtyByMoveId) {
+    if (useQuantity) {
+      moveIdsCommands.push([1, moveId, { quantity: qty }]);
+      continue;
+    }
     if (updatedMoveIds.has(moveId) || createdMoveLineForMove.has(moveId)) continue;
     moveIdsCommands.push([1, moveId, { quantity_done: qty }]);
   }
@@ -808,6 +819,16 @@ export async function applyPickingDeliverySnapshotSequential(pickingId, snapshot
       updatedMoveIds.add(Number(u.moveId));
     }
   }
+  // Odoo 17 Delivered is stock.move.quantity — line qty_done alone is not a SOL bind.
+  const qtyByMove = qtyByMoveFromDeliverySnapshot(enriched);
+  for (const [moveId, qty] of qtyByMove) {
+    try {
+      await writeMoveDoneQuantityOdoo17Aware(moveId, qty);
+      updatedMoveIds.add(Number(moveId));
+    } catch (_) {
+      /* SET below still attempted per leftover deliveryLine */
+    }
+  }
   const lineErrors = [];
   for (const line of deliveryLines || []) {
     const moveId = line.moveId ?? line.move_id;
@@ -817,7 +838,7 @@ export async function applyPickingDeliverySnapshotSequential(pickingId, snapshot
     if (updatedMoveIds.has(Number(moveId))) continue;
     // Absolute SET first — never create-add when a move already exists.
     try {
-      await updateStockMoveQuantityDone(Number(moveId), qtyN);
+      await writeMoveDoneQuantityOdoo17Aware(Number(moveId), qtyN);
       updatedMoveIds.add(Number(moveId));
       continue;
     } catch (qtyErr) {
