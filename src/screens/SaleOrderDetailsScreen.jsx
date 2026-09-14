@@ -1208,29 +1208,37 @@ const validateQuantities = useCallback(() => {
       }
       const sortedTargets = [...targets].sort((a, b) => Number(a?.id ?? 0) - Number(b?.id ?? 0));
 
+      const pickingPrepList = await Promise.all(
+        sortedTargets.map(async (picking) => {
+          const moves = await stockMovesDb.getStockMovesByPickingId(picking.id);
+          if (!moves?.length) {
+            return { picking, moves: [], moveLines: [], moveIdToMoveLineId: {} };
+          }
+          const idsForLines = moves.map((m) => m.id).filter((id) => id != null);
+          const moveLines = await stockMoveLinesDb.getStockMoveLinesByMoveIds(idsForLines);
+          const moveIdToMoveLineId = {};
+          for (const ml of moveLines || []) {
+            const mid = Array.isArray(ml.move_id) ? ml.move_id[0] : ml.move_id;
+            if (mid == null) continue;
+            if (moveIdToMoveLineId[mid] == null) moveIdToMoveLineId[mid] = ml.id;
+          }
+          return { picking, moves, moveLines: moveLines || [], moveIdToMoveLineId };
+        })
+      );
+
       const allocationSlots = [];
-      for (const picking of sortedTargets) {
-        const moves = await stockMovesDb.getStockMovesByPickingId(picking.id);
-        if (!moves?.length) continue;
-        const idsForLines = moves.map((m) => m.id).filter((id) => id != null);
-        const moveLines = await stockMoveLinesDb.getStockMoveLinesByMoveIds(idsForLines);
-        const moveIdToMoveLineId = {};
-        for (const ml of moveLines || []) {
-          const mid = Array.isArray(ml.move_id) ? ml.move_id[0] : ml.move_id;
-          if (mid == null) continue;
-          if (moveIdToMoveLineId[mid] == null) moveIdToMoveLineId[mid] = ml.id;
-        }
-        const sortedMoves = [...(moves || [])].sort((a, b) => Number(a?.id ?? 0) - Number(b?.id ?? 0));
+      for (const prep of pickingPrepList) {
+        const sortedMoves = [...(prep.moves || [])].sort((a, b) => Number(a?.id ?? 0) - Number(b?.id ?? 0));
         for (const moveRow of sortedMoves) {
           const productIdRaw = Array.isArray(moveRow.product_id) ? moveRow.product_id[0] : moveRow.product_id;
           const productId = Number(productIdRaw);
           if (!Number.isFinite(productId)) continue;
           if (!Object.prototype.hasOwnProperty.call(requestedQtyByProductId, String(productId))) continue;
           allocationSlots.push({
-            pickingId: picking.id,
+            pickingId: prep.picking.id,
             moveId: moveRow.id,
             moveRow,
-            moveLineId: moveIdToMoveLineId[moveRow.id],
+            moveLineId: prep.moveIdToMoveLineId[moveRow.id],
             productId,
             cap: Number(moveRow.product_uom_qty) || 0,
           });
@@ -1265,11 +1273,18 @@ const validateQuantities = useCallback(() => {
         const leftover = Number(remainingByProduct[pidKey]) || 0;
         if (leftover <= 0.0001) continue;
         let drained = false;
-        for (let i = 0; i < allocationSlots.length; i++) {
-          if (String(allocationSlots[i].productId) !== pidKey) continue;
-          allocationSlots[i].allocatedQty = (Number(allocationSlots[i].allocatedQty) || 0) + leftover;
+        const sameSlots = allocationSlots
+          .map((slot, i) => ({ slot, i }))
+          .filter(({ slot }) => String(slot.productId) === pidKey)
+          .sort((a, b) => Number(a.slot.moveId ?? 0) - Number(b.slot.moveId ?? 0));
+        // Overflow belongs on the original procurement move (cap>0). Dumping it on a
+        // 0-demand extra lets Validate create a later move that is not on move_ids
+        // (S11141 / S11582: 12.5kg / 2.4kg Delivered 0 while 5kg bound).
+        const preferred = sameSlots.find(({ slot }) => Number(slot.cap) > 0.0001) || sameSlots[0];
+        if (preferred) {
+          allocationSlots[preferred.i].allocatedQty =
+            (Number(allocationSlots[preferred.i].allocatedQty) || 0) + leftover;
           drained = true;
-          break;
         }
         if (drained) {
           remainingByProduct[pidKey] = 0;
@@ -1286,22 +1301,22 @@ const validateQuantities = useCallback(() => {
         slotsByPickingId[pk].push(slot);
       }
 
+      const prepByPickingId = {};
+      for (const prep of pickingPrepList) {
+        prepByPickingId[prep.picking.id] = prep;
+      }
+
       for (const picking of sortedTargets) {
         const slots = slotsByPickingId[picking.id];
         if (!slots?.length) continue;
 
-        const moves = await stockMovesDb.getStockMovesByPickingId(picking.id);
+        const prep = prepByPickingId[picking.id];
+        const moves = prep?.moves;
         if (!moves?.length) continue;
-        const idsForLines = moves.map((m) => m.id).filter((id) => id != null);
-        const moveLines = await stockMoveLinesDb.getStockMoveLinesByMoveIds(idsForLines);
-        const moveIdToMoveLineId = {};
-        for (const ml of moveLines || []) {
-          const mid = Array.isArray(ml.move_id) ? ml.move_id[0] : ml.move_id;
-          if (mid == null) continue;
-          if (moveIdToMoveLineId[mid] == null) moveIdToMoveLineId[mid] = ml.id;
-        }
+        const moveIdToMoveLineId = prep.moveIdToMoveLineId || {};
+        const moveLines = prep.moveLines || [];
         const qtyDoneByMoveLineId = {};
-        for (const ml of moveLines || []) {
+        for (const ml of moveLines) {
           qtyDoneByMoveLineId[ml.id] = Number(ml.qty_done) || 0;
         }
 

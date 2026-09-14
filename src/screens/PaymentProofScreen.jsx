@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { useState, useMemo, useCallback, useRef } from 'react';
+import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import {
   View,
   Text,
@@ -37,6 +37,7 @@ import { clearCheckoutResume } from '../services/checkoutResume.service';
 import { finalizeLocalInvoiceSnapshotFromPayment } from '../utils/localInvoiceSnapshot.js';
 
 const MAX_PHOTOS = 3;
+const PROOF_PHOTO_QUALITY = 0.55;
 
 export default function PaymentProofScreen({ route, navigation }) {
   const { t } = useTranslation();
@@ -48,6 +49,19 @@ export default function PaymentProofScreen({ route, navigation }) {
   const [saving, setSaving] = useState(false);
   const [confirmVisible, setConfirmVisible] = useState(false);
   const completeGuardRef = useRef(false);
+  const cameraGrantedRef = useRef(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void ImagePicker.getCameraPermissionsAsync()
+      .then((current) => {
+        if (!cancelled && current?.status === 'granted') cameraGrantedRef.current = true;
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const canComplete = !creditProofRequired || photos.length > 0;
 
@@ -564,15 +578,20 @@ export default function PaymentProofScreen({ route, navigation }) {
               style={styles.pickBtn}
               onPress={async () => {
                 if (photos.length >= MAX_PHOTOS) return;
-                const { status } = await ImagePicker.requestCameraPermissionsAsync();
-                if (status !== 'granted') {
-                  Alert.alert('Permission', 'Allow camera to take a photo.');
-                  return;
+                if (!cameraGrantedRef.current) {
+                  const { status } = await ImagePicker.requestCameraPermissionsAsync();
+                  if (status !== 'granted') {
+                    Alert.alert('Permission', 'Allow camera to take a photo.');
+                    return;
+                  }
+                  cameraGrantedRef.current = true;
                 }
                 const result = await ImagePicker.launchCameraAsync({
                   mediaTypes: ['images'],
                   allowsEditing: false,
-                  quality: 0.85,
+                  quality: PROOF_PHOTO_QUALITY,
+                  exif: false,
+                  base64: false,
                 });
                 if (!result.canceled && result.assets?.[0]?.uri) {
                   setPhotos((p) => (p.length < MAX_PHOTOS ? [...p, result.assets[0].uri] : p));
@@ -595,7 +614,9 @@ export default function PaymentProofScreen({ route, navigation }) {
                 const result = await ImagePicker.launchImageLibraryAsync({
                   mediaTypes: ['images'],
                   allowsEditing: false,
-                  quality: 0.85,
+                  quality: PROOF_PHOTO_QUALITY,
+                  exif: false,
+                  base64: false,
                 });
                 if (!result.canceled && result.assets?.[0]?.uri) {
                   setPhotos((p) => (p.length < MAX_PHOTOS ? [...p, result.assets[0].uri] : p));
