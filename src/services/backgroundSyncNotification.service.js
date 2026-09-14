@@ -5,6 +5,7 @@
  */
 import { NativeModules, PermissionsAndroid, Platform } from 'react-native';
 import i18n from '../i18n';
+import { formatLocalYyyyMmDd, localDateKeyFromTimestamp } from '../utils/localDate.js';
 
 const Native = Platform.OS === 'android' ? NativeModules.BackgroundSyncNativeModule : null;
 
@@ -28,10 +29,15 @@ function nativeAvailable() {
 }
 
 function localDayKey(date = new Date()) {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, '0');
-  const d = String(date.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
+  return formatLocalYyyyMmDd(date instanceof Date ? date : new Date());
+}
+
+function jobDeliveredOnLocalDay(job, dayKey) {
+  const created = localDateKeyFromTimestamp(job?.queueCreatedAt);
+  if (created) return created === dayKey;
+  const orderDay =
+    localDateKeyFromTimestamp(job?.commitmentDate) || localDateKeyFromTimestamp(job?.dateOrder);
+  return orderDay === dayKey;
 }
 
 function msUntilNextLocalMidnight() {
@@ -159,6 +165,9 @@ async function lookupSaleOrderJob(soIdRaw) {
       soId,
       customerName: partnerName,
       orderName: String(so.name || '').trim(),
+      dateOrder: so.date_order,
+      commitmentDate: so.commitment_date,
+      vehicleId: Number(Array.isArray(so.vehicle_id) ? so.vehicle_id[0] : so.vehicle_id) || null,
     };
   } catch (_) {
     return { soId, customerName: '', orderName: '' };
@@ -168,6 +177,7 @@ async function lookupSaleOrderJob(soIdRaw) {
 /** Completed orders whose delivery/payment still needs to reach the back office. */
 export async function loadBackOfficeOrderSyncJobs(extraSaleOrderId, options = {}) {
   const jobs = new Map();
+  const todayKey = localDayKey();
   try {
     const syncQueueDb = await import('../database/syncQueue.js');
     const pending = await syncQueueDb.getPending().catch(() => []);
@@ -187,6 +197,12 @@ export async function loadBackOfficeOrderSyncJobs(extraSaleOrderId, options = {}
       existing.customerName =
         existing.customerName ||
         String(p.partnerName || p.partner_name || p.customerName || p.customer_name || '').trim();
+      existing.queueCreatedAt = existing.queueCreatedAt || row.created_at;
+      existing.paymentDate = existing.paymentDate || p.paymentDate;
+      existing.commitmentDate = existing.commitmentDate || p.commitmentDateRaw || p.commitment_date;
+      existing.dateOrder = existing.dateOrder || p.dateOrder || p.date_order;
+      existing.vehicleId =
+        existing.vehicleId || syncQueueDb.vehicleIdFromQueuePayload(p);
       jobs.set(soId, existing);
     }
   } catch (_) {
@@ -201,19 +217,43 @@ export async function loadBackOfficeOrderSyncJobs(extraSaleOrderId, options = {}
     !jobs.has(extraId) &&
     jobs.size === 0
   ) {
-    jobs.set(extraId, { soId: extraId, customerName: '', orderName: '' });
+    jobs.set(extraId, {
+      soId: extraId,
+      customerName: '',
+      orderName: '',
+      queueCreatedAt: new Date().toISOString(),
+    });
   }
 
-  const out = [...jobs.values()];
+  let out = [...jobs.values()];
   await Promise.all(
     out.map(async (job) => {
-      if (job.customerName && job.orderName) return;
+      if (job.customerName && job.orderName && job.dateOrder && job.commitmentDate && job.vehicleId) return;
       const looked = await lookupSaleOrderJob(job.soId);
       if (!looked) return;
       job.customerName = job.customerName || looked.customerName;
       job.orderName = job.orderName || looked.orderName;
+      job.dateOrder = job.dateOrder || looked.dateOrder;
+      job.commitmentDate = job.commitmentDate || looked.commitmentDate;
+      job.vehicleId = job.vehicleId || looked.vehicleId;
     })
   );
+  // Display only: older pending rows stay in sync_queue and still upload in background.
+  out = out.filter((job) => jobDeliveredOnLocalDay(job, todayKey));
+  try {
+    const { getUserSession } = await import('./sync.service.js');
+    const session = await getUserSession().catch(() => null);
+    if (session && session.isAdmin !== true) {
+      const vid = Number(session.vehicleId);
+      if (Number.isFinite(vid) && vid > 0) {
+        out = out.filter(
+          (job) => Number(job.soId) === extraId || Number(job.vehicleId) === vid
+        );
+      }
+    }
+  } catch (_) {
+    /* keep today's jobs if session read fails */
+  }
   return out;
 }
 
@@ -236,6 +276,12 @@ export async function startBackgroundOrderSyncNotification(options = {}) {
   }
   if (_startedOnDayKey && _startedOnDayKey !== localDayKey()) {
     stopBackgroundOrderSyncNotification();
+  }
+  // Already showing — do not native-start again per order (resets remaining to 1
+  // and can re-prompt POST_NOTIFICATIONS). Hydrate the full job list instead.
+  if (_active && !_completed) {
+    void hydrateBackgroundOrderSyncNotification(options);
+    return true;
   }
   void ensureNotificationPermission();
   const extraSoId = options.saleOrderId;

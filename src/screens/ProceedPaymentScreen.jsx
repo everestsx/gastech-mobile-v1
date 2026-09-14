@@ -487,6 +487,13 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         session?.driverId != null && Number.isFinite(Number(session.driverId))
           ? Number(session.driverId)
           : null;
+      const payloadVehicleId = Number(
+        session?.vehicleId ??
+          (Array.isArray(orderInfo?.vehicle_id) ? orderInfo.vehicle_id[0] : orderInfo?.vehicle_id)
+      );
+      const vehicleStamp =
+        Number.isFinite(payloadVehicleId) && payloadVehicleId > 0 ? { vehicleId: payloadVehicleId } : {};
+
       const crewFields = {
         porterEmployeeIds: Array.isArray(porterEmployeeIds) ? porterEmployeeIds : [],
         ...(driverEmployeeId != null && Number.isFinite(driverEmployeeId) && driverEmployeeId > 0
@@ -513,6 +520,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
           ...deliveryPayload,
           holdUntilPayment: true,
           ...crewFields,
+          ...vehicleStamp,
           ...(Array.isArray(invoiceLineQtys) && invoiceLineQtys.length > 0 ? { invoiceLineQtys } : {}),
           ...(invoiceDateIso ? { invoiceDateIso } : {}),
           ...(orderInfo?.commitment_date ? { commitmentDateRaw: orderInfo.commitment_date } : {}),
@@ -581,6 +589,7 @@ export default function ProceedPaymentScreen({ route, navigation }) {
         checkNumber: chequeNo,
         holdUntilComplete: true,
         ...crewFields,
+        ...vehicleStamp,
       };
       const existingPending = await syncQueueDb.getPendingPaymentItemBySaleOrderId(soId);
       if (existingPending) {

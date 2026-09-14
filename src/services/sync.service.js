@@ -138,6 +138,10 @@ let _checkoutUploadRunActive = false;
 let _checkoutPrioritySetAt = 0;
 /** Sale order currently in checkout upload — excluded from orange pending-invoice count until the upload finishes. */
 let _checkoutPrioritySoId = null;
+/** Locally completed SOs waiting while another checkout upload is in-flight. */
+const _checkoutChainSoIds = [];
+/** Stuck SOs (bind/upload still pending) — retry after other completed orders. */
+const _checkoutDeferRetrySoIds = new Set();
 /**
  * Only `uploadCompletedOrderNow` (checkoutSingleShot) is checkout-scoped.
  * Leftover inventory/flush must not inherit checkout priority — otherwise the next
@@ -616,6 +620,16 @@ function startOsSyncKeepAlive(remaining = 1, extra = {}) {
       return;
     }
     const n = osSyncNotify();
+    // Restarting the native tray on every Complete (remaining: 1) made it look like
+    // only the current SO was uploading and re-ran POST_NOTIFICATIONS. Keep the
+    // existing tray and hydrate all unheld payment/delivery jobs.
+    if (n?.isBackgroundOrderSyncNotificationActive?.()) {
+      n.refreshBackgroundOrderSyncNotification?.({
+        allowStart: true,
+        saleOrderId: extra.saleOrderId,
+      });
+      return;
+    }
     n?.startBackgroundOrderSyncNotification?.({
       remaining: Math.max(1, Number(remaining) || 1),
       saleOrderId: extra.saleOrderId,
@@ -647,29 +661,84 @@ async function listUnheldPendingPaymentSaleOrderIds() {
   }
 }
 
+function enqueueCheckoutChainSoId(soIdRaw) {
+  const soId = Number(soIdRaw);
+  if (!Number.isFinite(soId) || soId <= 0) return;
+  if (_checkoutChainSoIds.includes(soId)) return;
+  _checkoutChainSoIds.push(soId);
+}
+
+let _checkoutChainTick = 0;
+
 /** Same checkout pipeline as the last completed order — one SO at a time, no slow drain. */
-function continueCheckoutPipelineForRemainingOrders(justFinishedSoId) {
+function continueCheckoutPipelineForRemainingOrders(justFinishedSoId, options = {}) {
   if (!canRunBackgroundUploadSync()) return;
   if (_checkoutUploadRunActive) return;
+  const tick = ++_checkoutChainTick;
   void (async () => {
+    const finished = Number(justFinishedSoId);
+    const finishedStillPending = options.finishedStillPending === true;
+    if (Number.isFinite(finished) && finished > 0) {
+      if (finishedStillPending) _checkoutDeferRetrySoIds.add(finished);
+      else _checkoutDeferRetrySoIds.delete(finished);
+    }
     const ids = await listUnheldPendingPaymentSaleOrderIds();
+    if (tick !== _checkoutChainTick || _checkoutUploadRunActive) return;
     if (!ids.length) {
+      _checkoutChainSoIds.length = 0;
+      _checkoutDeferRetrySoIds.clear();
       void pullLatestVehicleStockFromBackOffice();
       void drainPendingGasLeakageUploads();
       return;
     }
-    const finished = Number(justFinishedSoId);
+    const chained = _checkoutChainSoIds.filter((id) => id !== finished && ids.includes(id));
+    _checkoutChainSoIds.length = 0;
     const latched = Number(_checkoutPrioritySoId);
-    const next =
-      Number.isFinite(latched) && latched > 0 && ids.includes(latched) && latched !== finished
+    const pickNext = (list) =>
+      (list || []).find(
+        (id) =>
+          Number(id) !== finished &&
+          !_checkoutDeferRetrySoIds.has(Number(id)) &&
+          ids.includes(Number(id))
+      ) ?? null;
+    let next =
+      Number.isFinite(latched) &&
+      latched > 0 &&
+      latched !== finished &&
+      !_checkoutDeferRetrySoIds.has(latched) &&
+      ids.includes(latched)
         ? latched
-        : ids.find((id) => id !== finished) ?? null;
+        : pickNext(chained) ?? pickNext(ids);
+    if (next == null) {
+      next = ids.find((id) => id !== finished) ?? (ids.includes(finished) ? finished : null);
+    }
     if (next == null) {
       void pullLatestVehicleStockFromBackOffice();
       void drainPendingGasLeakageUploads();
       return;
     }
-    log('queue', `checkout chain next SO ${next} after ${finished || '—'}`);
+    if (tick !== _checkoutChainTick || _checkoutUploadRunActive) return;
+    const allRemainingDeferred = ids.every((id) => _checkoutDeferRetrySoIds.has(Number(id)));
+    // No untried completed order left — do not tight-loop checkout on stuck SOs
+    // (a new Complete must still be able to start). Existing queue flush retries.
+    if (allRemainingDeferred || (next === finished && finishedStillPending)) {
+      log(
+        'queue',
+        `checkout chain: leftover SO ${next} after others — retry via queue flush`
+      );
+      schedulePendingUploadSync({
+        immediate: true,
+        aggressive: true,
+        queuePasses: 8,
+        includeAttachments: true,
+        skipPaymentTypeRefresh: true,
+      });
+      return;
+    }
+    log(
+      'queue',
+      `checkout chain next SO ${next} after ${finished || '—'} (deferred=${[..._checkoutDeferRetrySoIds].join(',') || 'none'})`
+    );
     startCheckoutUploadInBackground(next, { includeAttachments: true });
   })();
 }
@@ -1050,7 +1119,8 @@ async function releaseQueueHoldsIfLocallyCompleted(soIdRaw) {
 export function startCheckoutUploadInBackground(saleOrderId, options = {}) {
   const soId = Number(saleOrderId);
   if (_checkoutUploadRunActive) {
-    log('queue', `checkout already running SO ${_checkoutPrioritySoId} — ${soId} will chain after`);
+    enqueueCheckoutChainSoId(soId);
+    log('queue', `checkout already running SO ${_checkoutPrioritySoId} — ${soId} queued to chain after`);
     startOsSyncKeepAlive(1, { saleOrderId: soId, customerName: options.customerName });
     return;
   }
@@ -1126,18 +1196,10 @@ export async function uploadCompletedOrderNow(saleOrderId, options = {}) {
     await refreshDashboardUploadIndicatorsFromQueue();
     if (pendingCount > 0) {
       notifyOsSyncProgress({ allowStart: true, saleOrderId: soId });
-      schedulePendingUploadSync({
-        immediate: true,
-        aggressive: true,
-        queuePasses: 5,
-        includeAttachments,
-        prioritySaleOrderId: soId,
-        checkoutMode: true,
-        skipPaymentTypeRefresh: true,
-        chainRetry: false,
-      });
+      _checkoutDeferRetrySoIds.add(soId);
     } else {
       startDeferredExtras = true;
+      _checkoutDeferRetrySoIds.delete(soId);
       notifyOsSyncProgress({ allowStart: false, saleOrderId: soId });
       try {
         if (_syncCompleteListener) _syncCompleteListener(true);
@@ -1174,11 +1236,11 @@ export async function uploadCompletedOrderNow(saleOrderId, options = {}) {
         void processDeferredCheckoutInventoryForSaleOrder(resumeId);
       }
     }
-    // Same fast checkout path for every remaining completed order. Do not start a
-    // stock/leakage drain here — that steals the radio from the next order.
-    if (pendingCount === 0) {
-      continueCheckoutPipelineForRemainingOrders(soId);
-    }
+    // Always move to the next locally completed order. A stuck bind/upload on this
+    // SO stays queued and is retried after the rest (do not 5-pass-retry here).
+    continueCheckoutPipelineForRemainingOrders(soId, {
+      finishedStillPending: pendingCount > 0,
+    });
   }
 }
 
@@ -1195,7 +1257,11 @@ export function wakePendingUploadSyncNow(options = {}) {
     const ids = await listUnheldPendingPaymentSaleOrderIds();
     if (ids.length > 0) {
       const latched = Number(_checkoutPrioritySoId);
-      const first = Number.isFinite(latched) && latched > 0 && ids.includes(latched) ? latched : ids[0];
+      const notDeferred = (id) => !_checkoutDeferRetrySoIds.has(Number(id));
+      const first =
+        Number.isFinite(latched) && latched > 0 && ids.includes(latched) && notDeferred(latched)
+          ? latched
+          : ids.find(notDeferred) ?? ids[0];
       startCheckoutUploadInBackground(first, {
         includeAttachments: options.includeAttachments !== false,
       });
@@ -1335,10 +1401,49 @@ export async function countPendingPaymentUploads() {
     const resumeMap = await getCheckoutResumeMap().catch(() => ({}));
     const checkoutIds = pendingCheckoutSaleOrderIdsFromResumeMap(resumeMap);
     for (const id of checkoutIds) ids.delete(id);
-    return ids.size;
+    const scoped = await filterSaleOrderIdsToSessionVehicle(ids);
+    return scoped.size;
   } catch (_) {
     return 0;
   }
+}
+
+/** Dashboard/notification only — background sync still processes every vehicle's queue. */
+async function filterSaleOrderIdsToSessionVehicle(ids) {
+  const src = ids instanceof Set ? ids : new Set(ids || []);
+  if (src.size === 0) return src;
+  let session = null;
+  try {
+    session = await getUserSession();
+  } catch (_) {
+    session = null;
+  }
+  if (!session || session.isAdmin === true) return src;
+  const vid = Number(session.vehicleId);
+  if (!Number.isFinite(vid) || vid <= 0) return new Set();
+  const payloadVid = new Map();
+  try {
+    const pending = await syncQueueDb.getPending();
+    for (const row of pending || []) {
+      const soId = Number((row.payload || {}).saleOrderId ?? (row.payload || {}).sale_id);
+      const pv = syncQueueDb.vehicleIdFromQueuePayload(row.payload);
+      if (Number.isFinite(soId) && soId > 0 && pv != null) payloadVid.set(soId, pv);
+    }
+  } catch (_) {
+    /* sale_orders join below still applies */
+  }
+  let soVehicle = new Map();
+  try {
+    soVehicle = await saleOrdersDb.getVehicleIdsForSaleOrders([...src]);
+  } catch (_) {
+    soVehicle = new Map();
+  }
+  const out = new Set();
+  for (const id of src) {
+    const owner = payloadVid.get(Number(id)) || soVehicle.get(Number(id));
+    if (Number(owner) === vid) out.add(id);
+  }
+  return out;
 }
 
 /** Immediately refresh orange counter from payment queue (not deferred inventory). */
@@ -3625,9 +3730,11 @@ async function ensureDeliveryLinesUseSaleLinkedMoves(pickingId, deliveryLines, m
 }
 
 /**
- * 0-demand catalog moves (2.4 / 12.5 / extra 37.5) must have demand >= delivered qty
- * before Validate. Otherwise Odoo `_create_extra_move` puts qty on a later extra that
- * is not on sale.order.line.move_ids (S11141 / S11582). Ordered lines keep their demand.
+ * Odoo `_create_extra_move` / `_set_quantity` splits whenever done qty > move demand.
+ * That extra is not copied onto sale.order.line.move_ids (sale_line_id copy=False), so
+ * picking Operations look correct while SOL Delivered stays 0
+ * (S11118 12.5kg 12→34 / 37.5kg 15→64; S11141 vs S11143).
+ * Raise stock.move demand to the delivered qty. Does not change sale.order.line ordered qty.
  */
 async function collectZeroDemandQtyBumps(pickingId, deliveryLines) {
   const pidPk = Number(pickingId);
@@ -3650,8 +3757,9 @@ async function collectZeroDemandQtyBumps(pickingId, deliveryLines) {
     if (seen.has(mid)) continue;
     const mv = byId.get(mid);
     if (!mv) continue;
+    if (String(mv?.state || '').toLowerCase() === 'cancel') continue;
     const demand = Number(mv?.product_uom_qty) || 0;
-    if (demand > 0.0001) continue;
+    if (q <= demand + DELIVERED_QTY_VERIFY_TOL) continue;
     seen.add(mid);
     bumps.push({ moveId: mid, productId: pid, product_uom_qty: q });
   }
@@ -3781,15 +3889,22 @@ async function syncStockMoveComputeQtyFromLines(moveId, lineQty) {
   const q = roundDeliveredQty3(lineQty);
   if (!Number.isFinite(mid) || mid <= 0 || !Number.isFinite(q) || q <= DELIVERED_QTY_VERIFY_TOL) return false;
   const { callOdoo } = await import('./index.service.js');
+  // Demand must be >= quantity in the same write. Quantity-only re-triggers `_create_extra_move`
+  // and the extra is not on sale.order.line.move_ids (S11118 / S11141).
   try {
-    await callOdoo('stock.move', 'write', [[mid], { quantity: q }]);
+    await callOdoo('stock.move', 'write', [[mid], { product_uom_qty: q, quantity: q }]);
     return true;
   } catch (_) {
     try {
-      await callOdoo('stock.move', 'write', [[mid], { quantity_done: q }]);
+      await callOdoo('stock.move', 'write', [[mid], { quantity: q }]);
       return true;
     } catch (_) {
-      return false;
+      try {
+        await callOdoo('stock.move', 'write', [[mid], { quantity_done: q }]);
+        return true;
+      } catch (_) {
+        return false;
+      }
     }
   }
 }
@@ -7494,8 +7609,27 @@ async function processSyncQueue(options = {}) {
               block.moveUpdates = moveUpdates;
               log(
                 'queue',
-                `delivery picking ${pickingId}: set demand on ${zeroDemandBumps.length} 0-qty move(s) so Validate does not create an unbound extra`
+                `delivery picking ${pickingId}: set demand on ${zeroDemandBumps.length} overflow move(s) so Validate does not create an unbound extra`
               );
+              // Waiting/confirmed: raise demand before quantity so `_set_quantity` cannot
+              // split first. Assigned/Ready keeps both fields in the same picking write —
+              // a demand-only RPC would unreserve and wipe qty_done.
+              const stBump = String(pickingStateKnown || '').toLowerCase();
+              const demandFirst =
+                stBump === 'draft' ||
+                stBump === 'waiting' ||
+                stBump === 'confirmed' ||
+                stBump === 'partially_available';
+              if (demandFirst) {
+                const { updateStockMoveQty } = await import('./delivery.service.js');
+                for (const u of zeroDemandBumps) {
+                  try {
+                    await updateStockMoveQty(u.moveId, u.product_uom_qty);
+                  } catch (_) {
+                    /* atomic picking write still includes the bump */
+                  }
+                }
+              }
             }
             // Do NOT assert unresolved qty here — remaining is shared across pickings and is
             // only meaningful after all blocks are processed (finalizeDeliveryConsistencyCheck).
@@ -8096,6 +8230,18 @@ async function processSyncQueue(options = {}) {
         } catch (e) {
           logWarn('queue delivery', e);
           const errMsg = String(e?.message || e).toLowerCase();
+          const soId = Number(p0.saleOrderId ?? p0.sale_id);
+          const isBindIncomplete =
+            errMsg.includes('not bound') ||
+            errMsg.includes('picking qty is not bound') ||
+            errMsg.includes('delivered is still 0') ||
+            errMsg.includes('sale order line delivered');
+          if (isBindIncomplete) {
+            log(
+              'queue',
+              `delivery id=${item.id} SO ${Number.isFinite(soId) ? soId : '—'} bind incomplete — skip this order, continue queue`
+            );
+          }
           const isQtyMismatch =
             errMsg.includes('delivered qty mismatch') ||
             errMsg.includes('mismatch on so line') ||

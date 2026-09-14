@@ -340,6 +340,7 @@ export async function getSaleOrderById(id) {
       partner_name_tamil: row.partner_name_tamil ?? null,
       partner_name_sinhala: row.partner_name_sinhala ?? null,
       partner_id: row.partner_id != null ? [row.partner_id, row.partner_name ?? ''] : null,
+      vehicle_id: row.vehicle_id != null ? [row.vehicle_id, row.vehicle_name ?? ''] : null,
       order_line: safeParseJson(row.order_line, []),
     };
   } catch (e) {
@@ -359,6 +360,25 @@ export async function getSaleOrderById(id) {
       throw fallbackErr;
     }
   }
+}
+
+/** Map sale order id → vehicle_id for dashboard/notification display filters (sync is unchanged). */
+export async function getVehicleIdsForSaleOrders(saleOrderIds = []) {
+  const ids = [...new Set((saleOrderIds || []).map((id) => num(id)).filter((id) => id != null && id > 0))];
+  const out = new Map();
+  if (!ids.length) return out;
+  const db = await getDb();
+  const placeholders = ids.map(() => '?').join(',');
+  const rows = await db.getAllAsync(
+    `SELECT id, vehicle_id FROM sale_orders WHERE id IN (${placeholders})`,
+    ids
+  );
+  for (const row of rows || []) {
+    const soId = num(row?.id);
+    const vid = num(row?.vehicle_id);
+    if (soId != null && soId > 0 && vid != null && vid > 0) out.set(soId, vid);
+  }
+  return out;
 }
 
 /**

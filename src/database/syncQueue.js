@@ -147,6 +147,12 @@ function saleOrderIdFromPaymentPayload(payload) {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+export function vehicleIdFromQueuePayload(payload) {
+  const p = payload && typeof payload === 'object' ? payload : {};
+  const n = Number(p.vehicleId ?? p.vehicle_id);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 /** Get sale order ids that already have a synced payment (avoid duplicate payments on retry). */
 export async function getSyncedPaymentSaleOrderIds() {
   const latest = await getLatestSyncedPaymentQueueIdBySaleOrder();

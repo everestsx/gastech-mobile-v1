@@ -420,6 +420,7 @@ export default function DashboardScreen({ navigation }) {
   );
   const stockOverviewGenRef = useRef(0);
   const dashboardSessionKeyRef = useRef(null);
+  const lastVehicleStatsSessionKeyRef = useRef(null);
   const routeSyncSentRef = useRef(new Set());
   const lastSyncNotificationRef = React.useRef(null);
   const preCheckPartyWarmupRunRef = useRef(0);
@@ -518,6 +519,15 @@ export default function DashboardScreen({ navigation }) {
   // Re-arm initial load gate when session changes (user/vehicle switched)
   useEffect(() => {
     if (!sessionKey) return;
+    if (
+      lastVehicleStatsSessionKeyRef.current &&
+      lastVehicleStatsSessionKeyRef.current !== sessionKey
+    ) {
+      setOrderSyncStats({ pendingOrders: 0, localCompleted: 0, syncedCompleted: 0 });
+      setDashboardUploadIndicators(0, 0);
+      lastDashboardSnapshot = null;
+    }
+    lastVehicleStatsSessionKeyRef.current = sessionKey;
     if (dashboardSessionKeyRef.current === sessionKey) return;
     dashboardSessionKeyRef.current = sessionKey;
     void (async () => {

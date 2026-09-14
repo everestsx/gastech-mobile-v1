@@ -564,6 +564,24 @@ export async function forceDoneQtyOnWaitingPickingMoves(pickingId, snapshot = {}
   const qtyByMove = qtyByMoveFromDeliverySnapshot(snapshot);
   if (!qtyByMove.size) return { ok: true, skipped: true };
 
+  const moves = await getStockMovesByPickingId(pid).catch(() => []);
+  const demandByMove = new Map();
+  for (const mv of moves || []) {
+    const mid = Number(mv?.id);
+    if (!Number.isFinite(mid) || mid <= 0) continue;
+    demandByMove.set(mid, Number(mv?.product_uom_qty) || 0);
+  }
+  for (const [moveId, qty] of qtyByMove) {
+    const demand = demandByMove.get(Number(moveId)) || 0;
+    if (qty <= demand + QTY_DONE_MATCH_TOL) continue;
+    try {
+      await updateStockMoveQty(moveId, qty);
+      demandByMove.set(Number(moveId), qty);
+    } catch (_) {
+      /* quantity write below still attempted */
+    }
+  }
+
   let written = 0;
   for (const [moveId, qty] of qtyByMove) {
     try {
