@@ -119,6 +119,7 @@ export async function applyLocalGasInventoryForSaleOrder(saleOrderId) {
   payload._localGasInventoryApplied = true;
   payload._stockAlreadyReduced = true;
   payload.updates = updates;
-  await syncQueueDb.updateQueueItemPayload(inventoryRow.id, payload);
+  // Local flag only — do not wake a 16-pass global flush (that delayed checkout RPC).
+  await syncQueueDb.updateQueueItemPayload(inventoryRow.id, payload, { suppressWake: true });
   return true;
 }

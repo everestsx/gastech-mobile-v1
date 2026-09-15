@@ -24,7 +24,7 @@ import * as localInvoicesDb from '../database/localInvoices.js';
 import * as localPaymentsDb from '../database/localPayments.js';
 import * as stockPickingsDb from '../database/stockPickings.js';
 import * as syncQueueDb from '../database/syncQueue.js';
-import { getSaleOrderDetailsFromDB, notifyLocalInventoryChanged, signalDashboardPendingUploadStarted, startCheckoutUploadInBackground, endCheckoutUploadPriority, showCheckoutUploadNotification } from '../services/sync.service';
+import { getSaleOrderDetailsFromDB, notifyLocalInventoryChanged, signalDashboardPendingUploadStarted, startCheckoutUploadInBackground, beginCheckoutUploadPriority, endCheckoutUploadPriority, showCheckoutUploadNotification } from '../services/sync.service';
 import {
   applyInventoryUpdatesToLocalDb,
   applyLocalGasInventoryForSaleOrder,
@@ -342,12 +342,29 @@ export default function PaymentProofScreen({ route, navigation }) {
     completeGuardRef.current = true;
     setSaving(true);
     let checkoutUploadStarted = false;
+    // Latch before local SQLite / Dashboard focus so AppNavigator cannot start a
+    // 4–16 pass global flush that checkout then waits on (slow vs ~1s orders).
+    beginCheckoutUploadPriority(soId, { customerName: customerLabel });
     showCheckoutUploadNotification(soId, { customerName: customerLabel });
     try {
       await persistLocalInvoiceAtCheckout();
       await saleOrdersDb.updateSaleOrderInvoiceStatusLocal(soId, 'invoiced');
       await clearCheckoutResume(soId);
       markSaleOrderDeliveredInUi(soId);
+
+      const includeAttachments = creditProofRequired || photos.length > 0;
+      const persistPhotosNow = persistPhotos;
+      // Holds must drop before the queue will send this SO. Do that, then start the
+      // existing checkout upload *before* Dashboard remount — loadData's orange-count
+      // scan used to run first and delay the first Odoo RPC.
+      await releaseQueueHoldsForSo();
+      notifyLocalInventoryChanged();
+      startCheckoutUploadInBackground(soId, {
+        includeAttachments,
+        customerName: customerLabel,
+        holdsReleased: true,
+      });
+      checkoutUploadStarted = true;
       signalDashboardPendingUploadStarted();
 
       navigation.reset({
@@ -356,18 +373,13 @@ export default function PaymentProofScreen({ route, navigation }) {
       });
       setSaving(false);
 
-      checkoutUploadStarted = true;
-      const includeAttachments = creditProofRequired || photos.length > 0;
-      const persistPhotosNow = persistPhotos;
+      void applyLocalGasInventoryForSaleOrder(soId)
+        .then(() => notifyLocalInventoryChanged())
+        .catch((invErr) => {
+          console.warn('[PaymentProof] local inventory', invErr?.message || invErr);
+        });
       void (async () => {
         try {
-          await applyLocalGasInventoryForSaleOrder(soId);
-          await releaseQueueHoldsForSo();
-          notifyLocalInventoryChanged();
-          startCheckoutUploadInBackground(soId, {
-            includeAttachments,
-            customerName: customerLabel,
-          });
           if (photos.length > 0) {
             await persistPhotosNow();
           }
@@ -375,15 +387,6 @@ export default function PaymentProofScreen({ route, navigation }) {
           await clearCheckoutResume(soId);
         } catch (bgErr) {
           console.warn('[PaymentProof] background checkout', bgErr?.message || bgErr);
-          try {
-            await releaseQueueHoldsForSo();
-            startCheckoutUploadInBackground(soId, {
-              includeAttachments,
-              customerName: customerLabel,
-            });
-          } catch (retryErr) {
-            console.warn('[PaymentProof] background checkout retry', retryErr?.message || retryErr);
-          }
         }
       })();
     } catch (e) {

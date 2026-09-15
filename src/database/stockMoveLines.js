@@ -13,7 +13,7 @@ export async function upsertStockMoveLines(rows) {
       const moveId = Array.isArray(r.move_id) ? r.move_id[0] : r.move_id;
       await tx.runAsync(
         `INSERT OR REPLACE INTO stock_move_lines (id, move_id, qty_done, updated_at) VALUES (?, ?, ?, ?)`,
-        [num(r.id), numOrNull(moveId), num(r.qty_done), now]
+        [num(r.id), numOrNull(moveId), num(r.qty_done ?? r.quantity), now]
       );
     }
   });

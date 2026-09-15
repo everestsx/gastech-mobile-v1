@@ -1,6 +1,11 @@
 import { callOdoo, callOdooArgs, callOdooArgsKwargs } from "./index.service";
 import { coerceDeliveredQty } from "../utils/deliverySync.js";
 
+/** null = unknown; cache so older Odoo DBs don't pay an invalid-field error on every read. */
+let _stockMoveHasQuantityField = null;
+/** null = unknown; Odoo 19 uses `quantity` on stock.move.line. A custom `qty_done` may exist but is not stored. */
+let _stockMoveLineHasQuantityField = null;
+
 function dedupeMoveLineUpdatesByLineId(updates = []) {
   const byLine = new Map();
   for (const u of updates || []) {
@@ -11,15 +16,43 @@ function dedupeMoveLineUpdatesByLineId(updates = []) {
   return [...byLine.values()];
 }
 
-/** Prefer the line that already has qty_done — lowest-id empty lines must not steal/zero the real qty. */
+/**
+ * Odoo 19 stores done qty on stock.move.line.quantity (and stock.move.quantity).
+ * A non-stored `qty_done` may still exist on custom DBs; reading it returns 0 while
+ * Operations "Quantity" is correct. Always prefer `quantity`.
+ */
+export function odooMoveLineDoneQty(ml) {
+  const raw =
+    ml?.quantity != null && ml.quantity !== false
+      ? ml.quantity
+      : ml?.qty_done != null && ml.qty_done !== false
+        ? ml.qty_done
+        : 0;
+  const q = coerceDeliveredQty(raw);
+  return Number.isFinite(q) ? q : 0;
+}
+
+function normalizeOdooMoveLineRow(row) {
+  if (!row || typeof row !== "object") return row;
+  const q = odooMoveLineDoneQty(row);
+  return { ...row, qty_done: q };
+}
+
+function moveLineQtyWriteVals(qty) {
+  const q = Number(qty);
+  if (_stockMoveLineHasQuantityField !== false) return { quantity: q };
+  return { qty_done: q };
+}
+
+/** Prefer the line that already has done qty — lowest-id empty lines must not steal/zero the real qty. */
 function pickKeeperMoveLine(rows = []) {
   const list = Array.isArray(rows) ? rows : [];
   if (!list.length) return null;
   let keeper = list[0];
-  let best = coerceDeliveredQty(keeper?.qty_done);
+  let best = odooMoveLineDoneQty(keeper);
   if (!Number.isFinite(best)) best = -1;
   for (let i = 1; i < list.length; i++) {
-    const q = coerceDeliveredQty(list[i]?.qty_done);
+    const q = odooMoveLineDoneQty(list[i]);
     const qn = Number.isFinite(q) ? q : -1;
     if (qn > best) {
       keeper = list[i];
@@ -91,7 +124,7 @@ export async function enrichDeliverySnapshotWithExistingMoveLines(pickingId, sna
     if (Number.isFinite(target) && target > 0.0001) {
       for (const row of rows) {
         if (Number(row?.id) === Number(keeper.id)) continue;
-        const extraQty = coerceDeliveredQty(row?.qty_done);
+        const extraQty = odooMoveLineDoneQty(row);
         if (!Number.isFinite(extraQty) || extraQty <= 0.0001) continue;
         moveLineUpdates.push({
           moveLineId: row.id,
@@ -215,76 +248,112 @@ export const getPickingsBySaleIds = (saleOrderIds) => {
   );
 };
 
-/** null = unknown; cache so older Odoo DBs don't pay an invalid-field error on every move read. */
-let _stockMoveHasQuantityField = null;
-
 /** Get stock moves for a picking (to map products to move lines) */
 export const getStockMovesByPickingId = async (pickingId) => {
   const domain = [[["picking_id", "=", pickingId]]];
-  const baseFields = [
-    "id",
-    "product_uom_qty",
-    "product_id",
-    "state",
-    "quantity_done",
-    "sale_line_id",
-    "picking_id",
-  ];
+  const baseFields = ["id", "product_uom_qty", "product_id", "state", "sale_line_id", "picking_id"];
   if (_stockMoveHasQuantityField === false) {
-    return callOdoo("stock.move", "search_read", domain, { fields: baseFields });
+    const rows = await callOdoo("stock.move", "search_read", domain, {
+      fields: [...baseFields, "quantity_done"],
+      limit: 500,
+    });
+    return Array.isArray(rows) ? rows : [];
   }
   try {
-    // Odoo 17+ stores done qty on `quantity`; older DBs only have `quantity_done`.
+    // Odoo 19 stores done qty on `quantity`. Do not request `quantity_done` in the
+    // same read — that field is gone and would fail the whole search_read.
     const rows = await callOdoo("stock.move", "search_read", domain, {
       fields: [...baseFields, "quantity"],
+      limit: 500,
     });
     _stockMoveHasQuantityField = true;
-    return rows;
+    return Array.isArray(rows) ? rows : [];
   } catch (e) {
     const msg = String(e?.message || e);
     if (!/invalid field ['"]?quantity['"]?/i.test(msg)) throw e;
     _stockMoveHasQuantityField = false;
-    return callOdoo("stock.move", "search_read", domain, { fields: baseFields });
+    const rows = await callOdoo("stock.move", "search_read", domain, {
+      fields: [...baseFields, "quantity_done"],
+      limit: 500,
+    });
+    return Array.isArray(rows) ? rows : [];
   }
 };
 
-/** null = unknown; Odoo 17+ uses `quantity` on stock.move.line, older DBs use `qty_done`. */
-let _stockMoveLineHasQuantityField = null;
-
-/** Get stock move lines by move ids (for updating qty_done) */
+/** Get stock move lines by move ids. Returns rows with qty_done filled from Odoo 19 `quantity`. */
 export const getStockMoveLinesByMoveIds = async (moveIds) => {
   const ids = (Array.isArray(moveIds) ? moveIds : [])
     .map((id) => Number(id))
     .filter((id) => Number.isFinite(id) && id > 0);
   if (!ids.length) return [];
   const domain = [[["move_id", "in", ids]]];
-  const baseFields = ["id", "move_id", "qty_done"];
+  const baseFields = ["id", "move_id", "product_id"];
+  const mapRows = (rows) => (Array.isArray(rows) ? rows.map(normalizeOdooMoveLineRow) : []);
   if (_stockMoveLineHasQuantityField === false) {
-    return callOdoo("stock.move.line", "search_read", domain, { fields: baseFields });
+    const rows = await callOdoo("stock.move.line", "search_read", domain, {
+      fields: [...baseFields, "qty_done"],
+      limit: 5000,
+    });
+    return mapRows(rows);
   }
   try {
     const rows = await callOdoo("stock.move.line", "search_read", domain, {
       fields: [...baseFields, "quantity"],
+      limit: 5000,
     });
     _stockMoveLineHasQuantityField = true;
-    return rows;
+    return mapRows(rows);
   } catch (e) {
     const msg = String(e?.message || e);
     if (!/invalid field ['"]?quantity['"]?/i.test(msg)) throw e;
     _stockMoveLineHasQuantityField = false;
-    return callOdoo("stock.move.line", "search_read", domain, { fields: baseFields });
+    const rows = await callOdoo("stock.move.line", "search_read", domain, {
+      fields: [...baseFields, "qty_done"],
+      limit: 5000,
+    });
+    return mapRows(rows);
   }
 };
 
 /** Legacy: get move lines by ids (read) */
-export const getMoveLines = (ids) =>
-  callOdoo("stock.move.line", "read", [ids], {
-    fields: ["id", "move_id", "product_id", "product_uom_qty", "qty_done"],
-  });
+export const getMoveLines = async (ids) => {
+  const list = Array.isArray(ids) ? ids : [];
+  if (!list.length) return [];
+  if (_stockMoveLineHasQuantityField === false) {
+    const rows = await callOdoo("stock.move.line", "read", [list], {
+      fields: ["id", "move_id", "product_id", "product_uom_qty", "qty_done"],
+    });
+    return (Array.isArray(rows) ? rows : []).map(normalizeOdooMoveLineRow);
+  }
+  try {
+    const rows = await callOdoo("stock.move.line", "read", [list], {
+      fields: ["id", "move_id", "product_id", "product_uom_qty", "quantity"],
+    });
+    _stockMoveLineHasQuantityField = true;
+    return (Array.isArray(rows) ? rows : []).map(normalizeOdooMoveLineRow);
+  } catch (e) {
+    const msg = String(e?.message || e);
+    if (!/invalid field ['"]?quantity['"]?/i.test(msg)) throw e;
+    _stockMoveLineHasQuantityField = false;
+    const rows = await callOdoo("stock.move.line", "read", [list], {
+      fields: ["id", "move_id", "product_id", "product_uom_qty", "qty_done"],
+    });
+    return (Array.isArray(rows) ? rows : []).map(normalizeOdooMoveLineRow);
+  }
+};
 
-/** Update one stock.move.line qty_done */
-export const updateMoveLineQty = (lineId, qty) =>
-  callOdoo("stock.move.line", "write", [[lineId], { qty_done: qty }]);
+/** Update one stock.move.line done qty (Odoo 19: `quantity`). */
+export const updateMoveLineQty = async (lineId, qty) => {
+  const vals = moveLineQtyWriteVals(qty);
+  try {
+    return await callOdoo("stock.move.line", "write", [[lineId], vals]);
+  } catch (e) {
+    const msg = String(e?.message || e);
+    if (vals.quantity == null || !/invalid field ['"]?quantity['"]?/i.test(msg)) throw e;
+    _stockMoveLineHasQuantityField = false;
+    return callOdoo("stock.move.line", "write", [[lineId], { qty_done: Number(qty) }]);
+  }
+};
 
 /** Update stock.move demand (product_uom_qty) so delivery can accept higher qty_done */
 export const updateStockMoveQty = (moveId, qty) =>
@@ -415,11 +484,19 @@ export const validatePickingWithContext = async (pickingId, context = {}) => {
   return consumeStockValidateWizards(pid, result, mergedContext, 0);
 };
 
-/** Create stock.move.line with qty_done (for offline sync: set delivered qty per move). */
-export const createMoveLine = (pickingId, moveId, productId, qtyDone) =>
-  callOdooArgs("stock.move.line", "create", [
-    [{ move_id: moveId, picking_id: pickingId, product_id: productId, qty_done: Number(qtyDone) }],
-  ]);
+/** Create stock.move.line with Odoo 19 `quantity` (falls back to qty_done). */
+export const createMoveLine = async (pickingId, moveId, productId, qtyDone) => {
+  const qty = Number(qtyDone);
+  const base = { move_id: moveId, picking_id: pickingId, product_id: productId };
+  try {
+    return await callOdooArgs("stock.move.line", "create", [[{ ...base, ...moveLineQtyWriteVals(qty) }]]);
+  } catch (e) {
+    const msg = String(e?.message || e);
+    if (!/invalid field ['"]?quantity['"]?/i.test(msg)) throw e;
+    _stockMoveLineHasQuantityField = false;
+    return callOdooArgs("stock.move.line", "create", [[{ ...base, qty_done: qty }]]);
+  }
+};
 
 /**
  * Zero unexpected / orphan move lines on a picking that are not in the mobile product qty map.
@@ -442,18 +519,36 @@ export async function scrubUnexpectedPickingMoveLines(pickingId, expectedQtyByPr
     // logged "The done move line has been corrected" 18→0 / 10→0 (S10373).
     return { scrubbed: 0 };
   }
-  const rows =
-    (await callOdoo(
-      'stock.move.line',
-      'search_read',
-      [[['picking_id', '=', pid]]],
-      { fields: ['id', 'product_id', 'qty_done', 'move_id'], limit: 500 }
-    )) || [];
+  let rows = [];
+  const qtyFields =
+    _stockMoveLineHasQuantityField === false
+      ? ["id", "product_id", "qty_done", "move_id"]
+      : ["id", "product_id", "quantity", "move_id"];
+  try {
+    rows =
+      (await callOdoo("stock.move.line", "search_read", [[["picking_id", "=", pid]]], {
+        fields: qtyFields,
+        limit: 500,
+      })) || [];
+    if (_stockMoveLineHasQuantityField !== false) _stockMoveLineHasQuantityField = true;
+  } catch (e) {
+    const msg = String(e?.message || e);
+    if (_stockMoveLineHasQuantityField === false || !/invalid field ['"]?quantity['"]?/i.test(msg)) {
+      rows = [];
+    } else {
+      _stockMoveLineHasQuantityField = false;
+      rows =
+        (await callOdoo("stock.move.line", "search_read", [[["picking_id", "=", pid]]], {
+          fields: ["id", "product_id", "qty_done", "move_id"],
+          limit: 500,
+        })) || [];
+    }
+  }
   let scrubbed = 0;
   for (const ml of rows) {
     const productId = Number(Array.isArray(ml?.product_id) ? ml.product_id[0] : ml?.product_id);
     const lineId = Number(ml?.id);
-    const actual = coerceDeliveredQty(ml?.qty_done);
+    const actual = odooMoveLineDoneQty(ml);
     if (!Number.isFinite(lineId) || lineId <= 0 || !Number.isFinite(productId) || productId <= 0) continue;
     if (!Number.isFinite(actual) || actual <= 0.0001) continue;
     const expected = Number(expectedQtyByProduct.get(productId));
@@ -519,6 +614,7 @@ function qtyByMoveFromDeliverySnapshot(snapshot = {}) {
   return qtyByMove;
 }
 
+/** Write stock.move.quantity only (Odoo 19 SOL Delivered). Never write product_uom_qty — Demand stays the original order demand (S11801). */
 async function writeMoveDoneQuantityOdoo17Aware(moveId, qty) {
   const mid = Number(moveId);
   const q = coerceDeliveredQty(qty);
@@ -530,14 +626,7 @@ async function writeMoveDoneQuantityOdoo17Aware(moveId, qty) {
       return;
     } catch (e) {
       const msg = String(e?.message || e);
-      if (!/invalid field ['"]?quantity['"]?/i.test(msg)) {
-        try {
-          await callOdoo("stock.move", "write", [[mid], { quantity_done: q }]);
-          return;
-        } catch (_) {
-          throw e;
-        }
-      }
+      if (!/invalid field ['"]?quantity['"]?/i.test(msg)) throw e;
       _stockMoveHasQuantityField = false;
     }
   }
@@ -548,8 +637,8 @@ async function writeMoveDoneQuantityOdoo17Aware(moveId, qty) {
  * Rare Waiting / Not Available recovery only.
  * Check Availability (`action_assign`) on a Ready picking (or after a demand write) can
  * unreserve vehicle stock: Ready → Waiting, Quantity 0, Validate never reaches Done.
- * Odoo 17 Operations "Quantity" is stock.move.quantity — qty_done on lines is ignored
- * until reserved. Write `quantity` so Validate can finish without reservation.
+ * Odoo 19 Operations "Quantity" is stock.move.quantity — a custom non-stored
+ * qty_done on lines does not bind SOL Delivered. Write `quantity` so Validate can finish.
  * Never call this on Ready/Done pickings.
  */
 export async function forceDoneQtyOnWaitingPickingMoves(pickingId, snapshot = {}) {
@@ -564,24 +653,6 @@ export async function forceDoneQtyOnWaitingPickingMoves(pickingId, snapshot = {}
   const qtyByMove = qtyByMoveFromDeliverySnapshot(snapshot);
   if (!qtyByMove.size) return { ok: true, skipped: true };
 
-  const moves = await getStockMovesByPickingId(pid).catch(() => []);
-  const demandByMove = new Map();
-  for (const mv of moves || []) {
-    const mid = Number(mv?.id);
-    if (!Number.isFinite(mid) || mid <= 0) continue;
-    demandByMove.set(mid, Number(mv?.product_uom_qty) || 0);
-  }
-  for (const [moveId, qty] of qtyByMove) {
-    const demand = demandByMove.get(Number(moveId)) || 0;
-    if (qty <= demand + QTY_DONE_MATCH_TOL) continue;
-    try {
-      await updateStockMoveQty(moveId, qty);
-      demandByMove.set(Number(moveId), qty);
-    } catch (_) {
-      /* quantity write below still attempted */
-    }
-  }
-
   let written = 0;
   for (const [moveId, qty] of qtyByMove) {
     try {
@@ -592,14 +663,14 @@ export async function forceDoneQtyOnWaitingPickingMoves(pickingId, snapshot = {}
       if (Array.isArray(lines) && lines.length > 0) {
         const keeper = pickKeeperMoveLine(lines) || lines[0];
         try {
-          await callOdoo("stock.move.line", "write", [
-            [Number(keeper.id)],
-            { qty_done: qty, quantity: qty },
-          ]);
+          await updateMoveLineQty(Number(keeper.id), qty);
           written += 1;
         } catch (_) {
           try {
-            await updateMoveLineQty(Number(keeper.id), qty);
+            await callOdoo("stock.move.line", "write", [
+              [Number(keeper.id)],
+              { qty_done: qty },
+            ]);
             written += 1;
           } catch (_) {
             /* validate will retry */
@@ -717,9 +788,9 @@ export function buildPickingDeliveryWritePayload({
   const updatedMoveIds = new Set();
   const moveLineIdsCommands = [];
   const moveIdsCommands = [];
-  // Odoo 17 sale_stock qty_delivered sums stock.move.quantity on SOL-linked moves.
-  // qty_done on move lines can make the picking look Done while Delivered stays 0
-  // (S11141 vs S11143). Unknown/true → write quantity; Odoo 16 falls back below.
+  // Odoo 19 sale_stock qty_delivered sums stock.move.quantity on SOL-linked moves.
+  // A custom non-stored qty_done on lines does not update that field, so SOL
+  // Delivered stays 0 while Operations can look filled (S11141 vs S11143).
   const useQuantity = _stockMoveHasQuantityField !== false;
 
   for (const u of moveUpdates || []) {
@@ -727,12 +798,43 @@ export function buildPickingDeliveryWritePayload({
     moveIdsCommands.push([1, Number(u.moveId), { product_uom_qty: Number(u.product_uom_qty) }]);
   }
 
+  const overflowMoveIds = new Set();
+  const demandByMove = new Map();
+  for (const u of moveUpdates || []) {
+    const mid = Number(u?.moveId);
+    const demand = Number(u?.product_uom_qty);
+    if (!Number.isFinite(mid) || mid <= 0 || !Number.isFinite(demand)) continue;
+    demandByMove.set(mid, demand);
+  }
+  const targetByMove = new Map();
+  for (const u of moveLineUpdates || []) {
+    const mid = Number(u?.moveId);
+    const q = Number(u?.qty_done);
+    if (!Number.isFinite(mid) || mid <= 0 || !Number.isFinite(q) || q <= 0) continue;
+    targetByMove.set(mid, q);
+  }
+  for (const line of deliveryLines || []) {
+    const mid = Number(line?.moveId ?? line?.move_id);
+    const q = Number(line?.qty_done);
+    if (!Number.isFinite(mid) || mid <= 0 || !Number.isFinite(q) || q <= 0) continue;
+    targetByMove.set(mid, q);
+  }
+  for (const [mid, target] of targetByMove.entries()) {
+    const demand = demandByMove.get(mid);
+    if (Number.isFinite(demand) && Math.abs(demand - target) <= 0.0001) overflowMoveIds.add(mid);
+  }
+
   for (const u of moveLineUpdates || []) {
     if (u?.moveLineId == null || u?.qty_done == null) continue;
-    moveLineIdsCommands.push([1, Number(u.moveLineId), { qty_done: Number(u.qty_done) }]);
     if (u?.moveId != null && Number.isFinite(Number(u.moveId))) {
       updatedMoveIds.add(Number(u.moveId));
     }
+    // Odoo 19 Ready: writing reserved move-line qty when it differs from Demand
+    // splits the procurement move. cancel_backorder then cancels the SOL-linked
+    // original (S11141 Ready→Done vs S11143 Waiting→Ready→Done). Done qty belongs
+    // on stock.move.quantity. Keep line writes only for zeroing duplicates / Odoo 16.
+    if (useQuantity && Number(u.qty_done) > 0.0001) continue;
+    moveLineIdsCommands.push([1, Number(u.moveLineId), moveLineQtyWriteVals(Number(u.qty_done))]);
   }
 
   const qtyByMoveId = new Map();
@@ -748,8 +850,8 @@ export function buildPickingDeliveryWritePayload({
     const qtyN = line.qty_done != null ? Number(line.qty_done) : NaN;
     if (moveId == null || productId == null || !Number.isFinite(qtyN) || qtyN <= 0) continue;
     qtyByMoveId.set(Number(moveId), qtyN);
-    // Odoo 17: SET move.quantity instead of CREATE a line. CREATE left qty on a line
-    // (or a later extra move) that sale.order.line.move_ids does not count.
+    // Odoo 19: SET move.quantity instead of CREATE a line. CREATE on a Ready
+    // picking can leave qty off the procurement move that SOL move_ids counts.
     if (!useQuantity && !updatedMoveIds.has(Number(moveId))) {
       moveLineIdsCommands.push([
         0,
@@ -757,7 +859,7 @@ export function buildPickingDeliveryWritePayload({
         {
           move_id: Number(moveId),
           product_id: Number(productId),
-          qty_done: qtyN,
+          ...moveLineQtyWriteVals(qtyN),
         },
       ]);
     }
@@ -771,6 +873,8 @@ export function buildPickingDeliveryWritePayload({
   }
   for (const [moveId, qty] of qtyByMoveId) {
     if (useQuantity) {
+      // Delivered qty only. Never copy delivered onto product_uom_qty — that is Demand
+      // (S11801 GAS2.4 17→30, GAS12.5 15→150, GAS5 15→10 after Done).
       moveIdsCommands.push([1, moveId, { quantity: qty }]);
       continue;
     }
@@ -830,14 +934,16 @@ export async function applyPickingDeliverySnapshotSequential(pickingId, snapshot
     await updateStockMoveQty(u.moveId, u.product_uom_qty);
   }
   const updatedMoveIds = new Set();
+  const useQuantity = _stockMoveHasQuantityField !== false;
   for (const u of moveLineUpdates || []) {
     if (u?.moveLineId == null || u?.qty_done == null) continue;
+    if (useQuantity && Number(u.qty_done) > 0.0001) continue;
     await updateMoveLineQty(u.moveLineId, u.qty_done);
     if (u?.moveId != null && Number.isFinite(Number(u.moveId))) {
       updatedMoveIds.add(Number(u.moveId));
     }
   }
-  // Odoo 17 Delivered is stock.move.quantity — line qty_done alone is not a SOL bind.
+  // Odoo 19 Delivered is stock.move.quantity — a dummy line qty_done is not a SOL bind.
   const qtyByMove = qtyByMoveFromDeliverySnapshot(enriched);
   for (const [moveId, qty] of qtyByMove) {
     try {
@@ -870,7 +976,7 @@ export async function applyPickingDeliverySnapshotSequential(pickingId, snapshot
           if (!pickingIsDone) {
             for (const row of existing) {
               if (Number(row?.id) === Number(keeper.id)) continue;
-              const extraQty = coerceDeliveredQty(row?.qty_done);
+              const extraQty = odooMoveLineDoneQty(row);
               if (!Number.isFinite(extraQty) || extraQty <= 0.0001) continue;
               await updateMoveLineQty(row.id, 0);
             }
@@ -938,7 +1044,7 @@ async function stripDownwardQtyWritesIfPickingDone(pickingId, snapshot = {}) {
   const qtyByLine = new Map();
   for (const ml of lineRows || []) {
     const lid = Number(ml?.id);
-    const q = coerceDeliveredQty(ml?.qty_done);
+    const q = odooMoveLineDoneQty(ml);
     if (Number.isFinite(lid) && lid > 0) qtyByLine.set(lid, Number.isFinite(q) ? q : 0);
   }
 
@@ -1111,15 +1217,32 @@ export async function fetchOdooDeliveredQtySnapshot(pickingBlocks = [], delivere
   const moveIds = [...moveTarget.keys()];
   if (moveIds.length) {
     try {
-      const moveRows =
-        (await callOdoo('stock.move', 'read', [moveIds], { fields: ['id', 'quantity_done'] })) || [];
+      let moveRows = [];
+      if (_stockMoveHasQuantityField === false) {
+        moveRows =
+          (await callOdoo("stock.move", "read", [moveIds], { fields: ["id", "quantity_done"] })) || [];
+      } else {
+        try {
+          moveRows =
+            (await callOdoo("stock.move", "read", [moveIds], { fields: ["id", "quantity"] })) || [];
+          _stockMoveHasQuantityField = true;
+        } catch (e) {
+          const msg = String(e?.message || e);
+          if (!/invalid field ['"]?quantity['"]?/i.test(msg)) throw e;
+          _stockMoveHasQuantityField = false;
+          moveRows =
+            (await callOdoo("stock.move", "read", [moveIds], { fields: ["id", "quantity_done"] })) || [];
+        }
+      }
       for (const mv of Array.isArray(moveRows) ? moveRows : []) {
         const mid = Number(mv?.id);
-        let actual = coerceDeliveredQty(mv?.quantity_done);
+        let actual = coerceDeliveredQty(
+          mv?.quantity != null && mv.quantity !== false ? mv.quantity : mv?.quantity_done
+        );
         if (!Number.isFinite(actual)) {
           const mls = await getStockMoveLinesByMoveIds([mid]).catch(() => []);
           actual = coerceDeliveredQty(
-            (mls || []).reduce((sum, ml) => sum + (Number(ml?.qty_done) || 0), 0)
+            (mls || []).reduce((sum, ml) => sum + odooMoveLineDoneQty(ml), 0)
           );
         }
         byMove[String(mid)] = {

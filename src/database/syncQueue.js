@@ -162,20 +162,43 @@ export async function getSyncedPaymentSaleOrderIds() {
 /** Highest synced payment queue id per sale order (leftover pending rows are older than this). */
 export async function getLatestSyncedPaymentQueueIdBySaleOrder() {
   const db = await getDb();
-  const rows = await db.getAllAsync(
-    `SELECT id, payload FROM sync_queue WHERE action_type = ? AND (COALESCE(is_uploaded, 0) = 1 OR synced_at IS NOT NULL)`,
-    [ACTION_PAYMENT]
-  );
   const latest = new Map();
-  for (const row of rows || []) {
-    const soId = saleOrderIdFromPaymentPayload(safeParseJson(row.payload, {}));
-    if (soId == null) continue;
-    const qid = Number(row.id);
-    if (!Number.isFinite(qid)) continue;
+  const foldRow = (soIdRaw, idRaw) => {
+    const soId = Number(soIdRaw);
+    const qid = Number(idRaw);
+    if (!Number.isFinite(soId) || soId <= 0 || !Number.isFinite(qid)) return;
     const prev = latest.get(soId);
     if (prev == null || qid > prev) latest.set(soId, qid);
+  };
+  try {
+    // Extract sale-order id in SQLite so Complete / Dashboard do not JSON.parse every
+    // historical payment payload on the JS thread before the first Odoo RPC.
+    const rows = await db.getAllAsync(
+      `SELECT id,
+              COALESCE(
+                json_extract(payload, '$.saleOrderId'),
+                json_extract(payload, '$.sale_order_id'),
+                json_extract(payload, '$.sale_id')
+              ) AS so_id
+       FROM sync_queue
+       WHERE action_type = ? AND (COALESCE(is_uploaded, 0) = 1 OR synced_at IS NOT NULL)`,
+      [ACTION_PAYMENT]
+    );
+    for (const row of rows || []) foldRow(row.so_id, row.id);
+    if ((rows || []).length > 0 && latest.size === 0) {
+      throw new Error('json_extract produced no sale order ids');
+    }
+    return latest;
+  } catch (_) {
+    const rows = await db.getAllAsync(
+      `SELECT id, payload FROM sync_queue WHERE action_type = ? AND (COALESCE(is_uploaded, 0) = 1 OR synced_at IS NOT NULL)`,
+      [ACTION_PAYMENT]
+    );
+    for (const row of rows || []) {
+      foldRow(saleOrderIdFromPaymentPayload(safeParseJson(row.payload, {})), row.id);
+    }
+    return latest;
   }
-  return latest;
 }
 
 /**
@@ -365,7 +388,7 @@ export async function getActionablePendingCountForSaleOrder(saleOrderId) {
   let count = 0;
   for (const row of rows || []) {
     const payload = row.payload || {};
-    const rowSo = Number(payload.saleOrderId ?? payload.sale_order_id);
+    const rowSo = Number(payload.saleOrderId ?? payload.sale_order_id ?? payload.sale_id);
     if (rowSo !== soId) continue;
     if (!isSyncQueuePayloadHeld(payload)) count += 1;
   }

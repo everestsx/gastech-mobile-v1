@@ -109,7 +109,9 @@ import { odooImageToUri } from '../services/employee.service';
 import { updateDriverLoginRoute } from '../services/driverLoginHistory.service';
 import {
   mergePickingStateBySaleIdFromRows,
-  orderIsDeliveryDoneForProgress,
+  ordersTabPickingStateBySaleId,
+  orderIsOpenOnOrdersTab,
+  orderIsCompletedLikeOrdersTab,
   orderCountsAsDeliveredForDashboard,
   effectiveDeliveredQtyForLine,
   chartProgressQtyForLine,
@@ -715,7 +717,6 @@ export default function DashboardScreen({ navigation }) {
         if (localPaymentsDb.paymentSplitHasAmount(split)) queueSplits[soId] = split;
       }
       setPaymentSplitsFromQueueByOrderId(queueSplits);
-      const saleIdToPickState = mergePickingStateBySaleIdFromRows(pickings);
 
       const paymentCountSeq = getDashboardUploadIndicatorSeq();
       const pendingPaymentOrderIds = await syncQueueDb.getPendingPaymentUploadSaleOrderIds().catch(
@@ -727,65 +728,50 @@ export default function DashboardScreen({ navigation }) {
 
       setPendingCheckoutOrderIds(pendingCheckoutSaleOrderIds);
 
-      function orderCountsAsCompletedToday(order) {
-        const oid = Number(order?.id);
-        if (Number.isFinite(oid) && pendingCheckoutSaleOrderIds.has(oid)) return false;
-        if (Number.isFinite(oid) && pendingPaymentOrderIds.has(oid)) {
-          const deliveryDone = orderIsDeliveryDoneForProgress(
-            order,
-            saleIdToPickState,
-            qtyDoneMap,
-            backendDeliveredSet,
-            pendingCheckoutSaleOrderIds
-          );
-          const isInvoiced =
-            String(order?.invoice_status || '').toLowerCase() === 'invoiced' ||
-            localInvoiceSaleOrderIds.has(oid);
-          return isInvoiced || deliveryDone;
-        }
-        if (Number.isFinite(oid) && localInvoiceSaleOrderIds.has(oid)) return true;
-        return orderIsDeliveryDoneForProgress(
-          order,
-          saleIdToPickState,
-          qtyDoneMap,
-          backendDeliveredSet,
-          pendingCheckoutSaleOrderIds
+      // Top pills must match the Orders tab. Do not use qty_done / qty_delivered —
+      // after a back-office pull those are often reserved qty on Ready pickings.
+      const indicatorOrders = (Array.isArray(data) ? data : []).filter((o) => {
+        if (String(o?.state || '') === 'cancel') return false;
+        const selectedDateValue =
+          syncDateField === 'delivery_date'
+            ? o.commitment_date || o.date_order
+            : o.date_order || o.commitment_date;
+        if (String(selectedDateValue || '').startsWith(today)) return true;
+        return (
+          syncDateField === 'delivery_date' &&
+          !o.commitment_date &&
+          String(o?.invoice_status || '').toLowerCase() !== 'invoiced'
         );
-      }
-
-      // Dashboard top indicators:
-      // Active â€” not cancelled and not yet â€œdelivery touchedâ€ (invoiced / picking / move qty_done / Odoo qty_delivered / local invoice / pay queue).
-      // Pay pending (orange) â€” payment upload still queued, and (invoiced OR any delivery activity).
-      // Synced (green) â€” no payment queue pending, and (invoiced OR any delivery activity) â€” includes partial backend delivery without full invoice.
+      });
+      const indicatorOrderIds = indicatorOrders.map((o) => o.id);
+      const todayIdSet = new Set((orderIds || []).map((id) => Number(id)));
+      const extraIndicatorIds = indicatorOrderIds.filter((id) => !todayIdSet.has(Number(id)));
+      const extraPickings = extraIndicatorIds.length
+        ? await getPickingsBySaleIdsFromDB(extraIndicatorIds)
+        : [];
+      const ordersTabPickState = ordersTabPickingStateBySaleId([
+        ...(pickings || []),
+        ...(extraPickings || []),
+      ]);
+      const resumeById = resumeMap && typeof resumeMap === 'object' ? resumeMap : {};
 
       let pendingOrders = 0;
       let localCompleted = 0;
       let syncedCompleted = 0;
 
-      for (const order of todayOrders) {
-        if (String(order?.state || '') === 'cancel') continue;
-        if (!orderCountsAsCompletedToday(order)) pendingOrders += 1;
-      }
-
-      for (const order of todayOrders) {
-        if (String(order?.state || '') === 'cancel') continue;
+      for (const order of indicatorOrders) {
         const orderId = Number(order?.id);
         if (!Number.isFinite(orderId)) continue;
-        if (pendingCheckoutSaleOrderIds.has(orderId)) continue;
-        const deliveryDone = orderIsDeliveryDoneForProgress(
-          order,
-          saleIdToPickState,
-          qtyDoneMap,
-          backendDeliveredSet,
-          pendingCheckoutSaleOrderIds
-        );
-        const isInvoiced =
-          String(order?.invoice_status || '').toLowerCase() === 'invoiced' ||
-          localInvoiceSaleOrderIds.has(orderId);
+        const resumeEntry = resumeById[String(orderId)] || resumeById[orderId];
+        const pickSt = ordersTabPickState[order.id] ?? ordersTabPickState[orderId] ?? '';
         const payPending = pendingPaymentOrderIds.has(orderId);
         if (payPending) {
           localCompleted += 1;
-        } else if (isInvoiced || deliveryDone) {
+          continue;
+        }
+        if (orderIsOpenOnOrdersTab(order, pickSt, resumeEntry)) {
+          pendingOrders += 1;
+        } else {
           syncedCompleted += 1;
         }
       }
@@ -934,7 +920,7 @@ export default function DashboardScreen({ navigation }) {
     InteractionManager.runAfterInteractions(() => {
       void runStockOverview();
     });
-  }, [formatLocalDate, getOrderDateForSyncMode]);
+  }, [formatLocalDate, getOrderDateForSyncMode, syncDateField]);
 
 
   const loadCommissionData = useCallback(async (options = {}) => {
@@ -1347,61 +1333,29 @@ export default function DashboardScreen({ navigation }) {
     });
   }, [todayOrders, selectedRouteId]);
 
-  const pickingStateBySaleId = useMemo(
-    () => mergePickingStateBySaleIdFromRows(pickingsBySaleId),
+  const ordersTabPickStateBySaleId = useMemo(
+    () => ordersTabPickingStateBySaleId(pickingsBySaleId),
     [pickingsBySaleId]
   );
 
   /**
-   * Delivery progress: count as delivered when any qty was recorded on move lines, picking is done/cancel, or order is invoiced.
-   * Does not require full Odoo invoice â€” matches â€œany delivery on this orderâ€ for progress bars and totals.
+   * Orders Completed / Gas Delivered / progress bars: same completed rule as the Orders tab.
+   * Do not use reserved qty_done or qty_delivered after a back-office pull.
    */
   const deliveredTodayOrders = useMemo(
     () =>
       todayOrdersForDashboard.filter((o) =>
-        orderCountsAsDeliveredForDashboard(
-          o,
-          pickingStateBySaleId,
-          qtyDoneBySaleId,
-          backendQtyDeliveredOrderIds,
-          pendingCheckoutOrderIds,
-          localInvoicedSaleOrderIds,
-          todayOrderLines
-        )
+        orderIsCompletedLikeOrdersTab(o, ordersTabPickStateBySaleId, pendingCheckoutOrderIds)
       ),
-    [
-      todayOrdersForDashboard,
-      pickingStateBySaleId,
-      qtyDoneBySaleId,
-      backendQtyDeliveredOrderIds,
-      pendingCheckoutOrderIds,
-      localInvoicedSaleOrderIds,
-      todayOrderLines,
-    ]
+    [todayOrdersForDashboard, ordersTabPickStateBySaleId, pendingCheckoutOrderIds]
   );
 
   const deliveredTodayOrdersAllRoutes = useMemo(
     () =>
       todayOrders.filter((o) =>
-        orderCountsAsDeliveredForDashboard(
-          o,
-          pickingStateBySaleId,
-          qtyDoneBySaleId,
-          backendQtyDeliveredOrderIds,
-          pendingCheckoutOrderIds,
-          localInvoicedSaleOrderIds,
-          todayOrderLines
-        )
+        orderIsCompletedLikeOrdersTab(o, ordersTabPickStateBySaleId, pendingCheckoutOrderIds)
       ),
-    [
-      todayOrders,
-      pickingStateBySaleId,
-      qtyDoneBySaleId,
-      backendQtyDeliveredOrderIds,
-      pendingCheckoutOrderIds,
-      localInvoicedSaleOrderIds,
-      todayOrderLines,
-    ]
+    [todayOrders, ordersTabPickStateBySaleId, pendingCheckoutOrderIds]
   );
 
   const todayOrderLinesForDashboard = useMemo(() => {
@@ -1564,7 +1518,7 @@ export default function DashboardScreen({ navigation }) {
   const commissionPct = commissionProgress.percentage;
 
   const shopsCompleted = deliveredTodayOrdersAllRoutes.length;
-  const totalShopsToday = todayOrders.length;
+  const totalShopsToday = todayOrders.filter((o) => String(o?.state || '') !== 'cancel').length;
 
   const {
     activeOrdersToday,
@@ -1840,14 +1794,16 @@ export default function DashboardScreen({ navigation }) {
       const soId = orderId != null ? Number(orderId) : null;
       if (soId == null || !orderById[soId]) continue;
       const isInvoiced = String(orderById[soId]?.invoice_status || '').toLowerCase() === 'invoiced';
-      sum += effectiveDeliveredQtyForLine(line, { isInvoiced });
+      const delivered = effectiveDeliveredQtyForLine(line, { isInvoiced });
+      const ordered = Number(line.product_uom_qty) || 0;
+      sum += delivered > 0 ? delivered : ordered;
     }
     return sum;
   }, [deliveredTodayOrdersAllRoutes, todayOrderLines]);
-  const totalGasInOrders = todayOrders.reduce(
-      (s, o) => s + (Number(lineTotalsByOrder[o.id]) || 0),
-      0
-  );
+  const totalGasInOrders = todayOrders.reduce((s, o) => {
+    if (String(o?.state || '') === 'cancel') return s;
+    return s + (Number(lineTotalsByOrder[o.id]) || 0);
+  }, 0);
   const gasPct = totalGasInOrders > 0 ? Math.min(100, Math.round((totalGasDelivered / totalGasInOrders) * 100)) : 0;
 
   const chartDateOrders = useMemo(
@@ -1855,7 +1811,7 @@ export default function DashboardScreen({ navigation }) {
       [orders, selectedChartDate, getOrderDateForSyncMode]
   );
   const chartPickingStateBySaleId = useMemo(
-    () => mergePickingStateBySaleIdFromRows(chartPickingsBySaleId),
+    () => ordersTabPickingStateBySaleId(chartPickingsBySaleId),
     [chartPickingsBySaleId]
   );
   const chartDeliveryByShop = useMemo(() => {
@@ -1873,6 +1829,7 @@ export default function DashboardScreen({ navigation }) {
 
     const orderById = {};
     chartDateOrders.forEach((o) => {
+      if (String(o?.state || '') === 'cancel') return;
       orderById[Number(o.id)] = o;
       const partnerId = o.partner_id?.[0] ?? o.partner_id;
       const partnerName = getLocalizedCustomerNameFromOrder(o, appLanguage) || `Shop ${partnerId}`;
@@ -1910,14 +1867,10 @@ export default function DashboardScreen({ navigation }) {
           ? `${Number(parsedKg)}kg`
           : 'Other';
 
-      const isDone = orderCountsAsDeliveredForDashboard(
+      const isDone = orderIsCompletedLikeOrdersTab(
         order,
         chartPickingStateBySaleId,
-        chartQtyDoneBySaleId,
-        backendQtyDeliveredOrderIds,
-        pendingCheckoutOrderIds,
-        localInvoicedSaleOrderIds,
-        chartOrderLines
+        pendingCheckoutOrderIds
       );
       const isInvoiced = String(order?.invoice_status || '').toLowerCase() === 'invoiced';
       const q = chartProgressQtyForLine(line, { isDone, isInvoiced });
@@ -1947,10 +1900,7 @@ export default function DashboardScreen({ navigation }) {
     chartDateOrders,
     chartOrderLines,
     chartPickingStateBySaleId,
-    chartQtyDoneBySaleId,
-    backendQtyDeliveredOrderIds,
     pendingCheckoutOrderIds,
-    localInvoicedSaleOrderIds,
     appLanguage,
   ]);
 

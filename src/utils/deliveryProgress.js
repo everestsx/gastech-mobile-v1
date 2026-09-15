@@ -2,6 +2,8 @@
  * Shared rules for “delivery done” / progress (dashboard, charts, lists).
  */
 
+import { isSaleOrderDeliveredInUi } from './completedOrderUi';
+
 /** Cylinder qty delivered on one SO line (Odoo qty_delivered; full ordered qty only when invoiced and no partial qty on file). */
 export function effectiveDeliveredQtyForLine(line, { isInvoiced = false } = {}) {
   const qd = Number(line?.qty_delivered) || 0;
@@ -19,7 +21,7 @@ export function chartProgressQtyForLine(line, { isDone = false, isInvoiced = fal
   const orderedQty = Math.round(Number(line?.product_uom_qty) || 0);
   const deliveredQty = Math.round(effectiveDeliveredQtyForLine(line, { isInvoiced }));
   if (isDone) {
-    const q = deliveredQty > 0 ? deliveredQty : 0;
+    const q = deliveredQty > 0 ? deliveredQty : orderedQty;
     return { stack: q, delivered: q, pending: 0 };
   }
   if (orderedQty <= 0) return { stack: 0, delivered: 0, pending: 0 };
@@ -91,6 +93,47 @@ export function mergePickingStateBySaleIdFromRows(pickings) {
     else map[sid] = p.state;
   });
   return map;
+}
+
+/**
+ * Same picking merge as the Orders tab: a Done picking wins; a leftover Cancelled
+ * remainder must not hide a still-assigned delivery (dashboard counters were treating
+ * cancel as complete after back-office pull).
+ */
+export function ordersTabPickingStateBySaleId(pickings) {
+  const map = {};
+  (pickings || []).forEach((p) => {
+    const saleId = Array.isArray(p?.sale_id) ? p.sale_id[0] : p?.sale_id;
+    if (saleId == null) return;
+    if (String(p.state || '').toLowerCase() === 'done') map[saleId] = 'done';
+    else if (String(map[saleId] || '').toLowerCase() !== 'done') map[saleId] = p.state;
+  });
+  return map;
+}
+
+/** True when this order would still appear on the Orders tab (not qty_done / qty_delivered). */
+export function orderIsOpenOnOrdersTab(order, pickingState, resumeEntry) {
+  if (isSaleOrderDeliveredInUi(Number(order?.id))) return false;
+  if (String(order?.state || '') === 'cancel') return false;
+  if (resumeEntry?.invoiceParams || resumeEntry?.phase === 'payment') return true;
+  const inv = String(order?.invoice_status || '').toLowerCase() === 'invoiced';
+  const st = String(pickingState || '').toLowerCase();
+  return !(inv || st === 'done' || st === 'cancel');
+}
+
+/** Completed for dashboard cards / progress bars — same rule as Orders tab, not reserved qty. */
+export function orderIsCompletedLikeOrdersTab(order, pickingState, pendingCheckoutSaleOrderIds) {
+  if (String(order?.state || '') === 'cancel') return false;
+  const oid = Number(order?.id);
+  const resume =
+    pendingCheckoutSaleOrderIds instanceof Set && Number.isFinite(oid) && pendingCheckoutSaleOrderIds.has(oid)
+      ? { phase: 'payment' }
+      : null;
+  const pickSt =
+    pickingState && typeof pickingState === 'object' && !Array.isArray(pickingState)
+      ? pickingState[order?.id] ?? pickingState[oid] ?? ''
+      : pickingState;
+  return !orderIsOpenOnOrdersTab(order, pickSt, resume);
 }
 
 /**
