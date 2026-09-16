@@ -52,6 +52,7 @@ import {
   hasDashboardUploadQueueWork,
   shouldRunPendingUploadRetryLoop,
   isCheckoutUploadActive,
+  getCheckoutPrioritySaleOrderId,
   isPreCheckCompletedThisSession,
   wakePendingUploadSyncNow,
   recoverBackgroundUploadIfStalled,
@@ -466,8 +467,13 @@ export default function AppNavigator() {
           clearInterval(syncIntervalRef.current);
           syncIntervalRef.current = null;
         }
+        // Leaving the app must keep the Android foreground service up so JS can
+        // finish the same checkout/queue upload that runs while the app is open.
+        // Gating on isCheckoutUploadActive() stopped the keep-alive after the
+        // 2-shot checkout latch dropped, so pending orders waited for reopen.
         void ensureBackgroundOrderSyncKeepAlive(undefined, {
-          allowStart: isCheckoutUploadActive(),
+          allowStart: true,
+          saleOrderId: getCheckoutPrioritySaleOrderId(),
         });
         wakePendingUploadSyncNow({ queuePasses: 24, includeAttachments: true, chainRetry: false });
         void runFastPending();

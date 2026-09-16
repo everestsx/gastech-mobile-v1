@@ -246,9 +246,14 @@ export async function loadBackOfficeOrderSyncJobs(extraSaleOrderId, options = {}
     if (session && session.isAdmin !== true) {
       const vid = Number(session.vehicleId);
       if (Number.isFinite(vid) && vid > 0) {
-        out = out.filter(
-          (job) => Number(job.soId) === extraId || Number(job.vehicleId) === vid
-        );
+        out = out.filter((job) => {
+          if (Number(job.soId) === extraId) return true;
+          const jobVid = Number(job.vehicleId);
+          // Missing vehicle on the queue row must not drop a live upload — that
+          // used to stop the Android foreground service when leaving the app.
+          if (!Number.isFinite(jobVid) || jobVid <= 0) return true;
+          return jobVid === vid;
+        });
       }
     }
   } catch (_) {
@@ -266,6 +271,36 @@ function applyNativePayload(copy) {
     current: Math.max(0, Number(copy.current) || 0),
     indeterminate: copy.indeterminate === true,
   };
+}
+
+function checkoutUploadIsLive() {
+  try {
+    const sync = require('./sync.service.js');
+    return sync.isCheckoutUploadActive() === true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function liveCheckoutSaleOrderId() {
+  try {
+    const sync = require('./sync.service.js');
+    const id = Number(sync.getCheckoutPrioritySaleOrderId?.());
+    return Number.isFinite(id) && id > 0 ? id : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/** Keep the native FGS up while checkout/upload is still running, even if the tray list is empty. */
+async function keepNativeAliveForLiveCheckout(saleOrderId) {
+  const soId = Number(saleOrderId) > 0 ? Number(saleOrderId) : liveCheckoutSaleOrderId();
+  if (_active && !_completed) return true;
+  return startBackgroundOrderSyncNotification({
+    remaining: 1,
+    saleOrderId: soId,
+    allowEmpty: soId != null,
+  });
 }
 
 export async function startBackgroundOrderSyncNotification(options = {}) {
@@ -372,7 +407,11 @@ export async function ensureBackgroundOrderSyncKeepAlive(remainingHint, options 
   }
   const jobs = await loadBackOfficeOrderSyncJobs(options.saleOrderId);
   const remaining = jobs.length > 0 ? jobs.length : Number(remainingHint);
-  if (remaining <= 0) {
+  if (!(remaining > 0)) {
+    if (checkoutUploadIsLive()) {
+      await keepNativeAliveForLiveCheckout(options.saleOrderId);
+      return;
+    }
     stopBackgroundOrderSyncNotification();
     return;
   }
@@ -412,6 +451,12 @@ export async function refreshBackgroundOrderSyncNotification(options = {}) {
   const jobs = await loadBackOfficeOrderSyncJobs(options.saleOrderId);
   const remaining = jobs.length;
   if (remaining <= 0) {
+    if (checkoutUploadIsLive()) {
+      if (options.allowStart === true) {
+        await keepNativeAliveForLiveCheckout(options.saleOrderId);
+      }
+      return;
+    }
     stopBackgroundOrderSyncNotification();
     return;
   }

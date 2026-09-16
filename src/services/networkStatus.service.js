@@ -5,7 +5,6 @@ import NetInfo from '@react-native-community/netinfo';
 import {
   PENDING_QUEUE_ACTIVE_RETRY_MS,
   PENDING_QUEUE_FAST_RETRY_MS,
-  PENDING_QUEUE_BACKGROUND_RETRY_MS,
 } from './sync.service.js';
 
 export const NetworkQuality = {
@@ -182,7 +181,6 @@ export function getPendingRetryDelayMsForQuality(quality) {
 
 /** Poll interval for pending-upload loop (foreground vs background / screen off). */
 export function getPendingRetryDelayMsForAppState(appState, quality) {
-  const base = getPendingRetryDelayMsForQuality(quality);
-  if (appState === 'active') return base;
-  return Math.min(3000, Math.max(PENDING_QUEUE_BACKGROUND_RETRY_MS, base));
+  void appState;
+  return getPendingRetryDelayMsForQuality(quality);
 }

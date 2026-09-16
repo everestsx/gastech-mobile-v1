@@ -1179,6 +1179,7 @@ export async function uploadCompletedOrderNow(saleOrderId, options = {}) {
       pendingCount = paymentRow || deliveryRow ? 1 : 0;
       notifyOsSyncProgress({
         allowStart: pendingCount > 0,
+        saleOrderId: soId,
       });
       if (!paymentRow && !deliveryRow) break;
       log(
