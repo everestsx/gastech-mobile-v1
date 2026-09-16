@@ -1095,6 +1095,39 @@ function snapshotHasQtyWrites(snapshot = {}) {
   );
 }
 
+/** Mobile qty by product: deliveryLines, then requested, then SOL, invoice last (invoice 0 wins). */
+function mobileQtyByProductFromSnapshot(snapshot = {}) {
+  const map = new Map();
+  const setQty = (pid, q) => {
+    const prodId = Number(pid);
+    const qty = coerceDeliveredQty(q);
+    if (!Number.isFinite(prodId) || prodId <= 0 || !Number.isFinite(qty) || qty < 0) return;
+    map.set(prodId, qty);
+  };
+  for (const line of snapshot.deliveryLines || []) {
+    const prodId = Number(line?.productId ?? line?.product_id);
+    const q = coerceDeliveredQty(line?.qty_done);
+    if (!Number.isFinite(prodId) || prodId <= 0 || !Number.isFinite(q) || q < 0) continue;
+    map.set(prodId, coerceDeliveredQty((map.get(prodId) || 0) + q));
+  }
+  for (const [k, v] of Object.entries(snapshot.requestedQtyByProduct || {})) setQty(k, v);
+  for (const u of snapshot.saleOrderLineDeliveredUpdates || []) {
+    setQty(u?.productId ?? u?.product_id, u?.qty_delivered);
+  }
+  for (const row of snapshot.invoiceLineQtys || []) {
+    setQty(row?.productId ?? row?.product_id, row?.qty ?? row?.quantity);
+  }
+  return map;
+}
+
+function collectMobileZeroProductIds(snapshot = {}) {
+  const zeros = new Set();
+  for (const [pid, q] of mobileQtyByProductFromSnapshot(snapshot)) {
+    if (q <= 0.0001) zeros.add(pid);
+  }
+  return zeros;
+}
+
 /** True when Odoo already matches the mobile snapshot (skip re-write on queue retry/heal). */
 export async function pickingDeliverySnapshotAlreadyApplied(pickingId, snapshot = {}, tolerance = QTY_DONE_MATCH_TOL) {
   const pid = Number(pickingId);
@@ -1146,6 +1179,26 @@ export async function pickingDeliverySnapshotAlreadyApplied(pickingId, snapshot 
       if (fromLines > tolerance) return false;
     }
   }
+  // S12009: positives already matched reserved Demand (24/23/26) so apply was skipped
+  // while GAS2.4 was missing from the snapshot. Ready Validate then copied Demand 11.
+  const zeroProductIds = collectMobileZeroProductIds(snapshot);
+  if (zeroProductIds.size > 0) {
+    for (const mv of Array.isArray(moves) ? moves : []) {
+      const st = String(mv?.state || "").toLowerCase();
+      if (st === "cancel") continue;
+      const prodId = Number(Array.isArray(mv?.product_id) ? mv.product_id[0] : mv?.product_id);
+      if (!zeroProductIds.has(prodId)) continue;
+      const demand = Number(mv?.product_uom_qty) || 0;
+      const done = coerceDeliveredQty(
+        mv?.quantity != null && mv.quantity !== false
+          ? mv.quantity
+          : mv?.quantity_done != null && mv.quantity_done !== false
+            ? mv.quantity_done
+            : mv?.qty_done
+      );
+      if (demand > 0.0001 || (Number.isFinite(done) && done > 0.0001)) return false;
+    }
+  }
   return true;
 }
 
@@ -1155,14 +1208,7 @@ export async function pickingDeliverySnapshotAlreadyApplied(pickingId, snapshot 
  * Never changes Demand, never adds positive qty, never runs on Done pickings.
  */
 async function attachMissingZeroQtyLinesForRequestedProducts(pickingId, snapshot = {}) {
-  const requested = snapshot.requestedQtyByProduct || {};
-  const zeroProductIds = [];
-  for (const [k, v] of Object.entries(requested)) {
-    const prodId = Number(k);
-    const q = coerceDeliveredQty(v);
-    if (!Number.isFinite(prodId) || prodId <= 0 || !Number.isFinite(q) || q > 0.0001) continue;
-    zeroProductIds.push(prodId);
-  }
+  const zeroProductIds = [...collectMobileZeroProductIds(snapshot)];
   if (!zeroProductIds.length) return snapshot;
 
   const pid = Number(pickingId);
@@ -1174,12 +1220,13 @@ async function attachMissingZeroQtyLinesForRequestedProducts(pickingId, snapshot
   if (!live.length) return snapshot;
 
   const lines = [...(snapshot.deliveryLines || [])];
-  const claimedPositive = new Set();
-  for (const line of lines) {
-    const prodId = Number(line?.productId ?? line?.product_id);
-    const q = coerceDeliveredQty(line?.qty_done);
-    if (!Number.isFinite(prodId) || prodId <= 0 || !Number.isFinite(q) || q <= 0.0001) continue;
-    claimedPositive.add(prodId);
+  for (let i = 0; i < lines.length; i++) {
+    const prodId = Number(lines[i]?.productId ?? lines[i]?.product_id);
+    if (!zeroProductIds.includes(prodId)) continue;
+    const q = coerceDeliveredQty(lines[i]?.qty_done);
+    if (Number.isFinite(q) && q > 0.0001) {
+      lines[i] = { ...lines[i], qty_done: 0 };
+    }
   }
 
   const byProduct = new Map();
@@ -1192,9 +1239,16 @@ async function attachMissingZeroQtyLinesForRequestedProducts(pickingId, snapshot
     byProduct.set(prodId, list);
   }
 
-  let changed = false;
+  let changed = lines.some((line, i) => {
+    const prodId = Number(line?.productId ?? line?.product_id);
+    const orig = (snapshot.deliveryLines || [])[i];
+    return (
+      zeroProductIds.includes(prodId) &&
+      coerceDeliveredQty(orig?.qty_done) > 0.0001 &&
+      coerceDeliveredQty(line?.qty_done) <= 0.0001
+    );
+  });
   for (const prodId of zeroProductIds) {
-    if (claimedPositive.has(prodId)) continue;
     const list = byProduct.get(prodId);
     if (!list?.length) continue;
     const sorted = [...list].sort((a, b) => Number(a.id) - Number(b.id));
@@ -1208,6 +1262,56 @@ async function attachMissingZeroQtyLinesForRequestedProducts(pickingId, snapshot
   }
   if (!changed) return snapshot;
   return { ...snapshot, deliveryLines: lines };
+}
+
+/**
+ * Ready Validate copies reserved Demand when quantity is still the reserved amount (S11915 / S12009).
+ * Write 0 on those moves and reserved lines on an OPEN picking only. Does not change Demand or bind.
+ */
+export async function forceZeroMobileQtyOnOpenPickingMoves(pickingId, snapshot = {}) {
+  const pid = Number(pickingId);
+  if (!Number.isFinite(pid) || pid <= 0) return { ok: true, skipped: true };
+  const stateRows = await getPickingState(pid).catch(() => []);
+  const pick = Array.isArray(stateRows) ? stateRows[0] : stateRows;
+  const state = String(pick?.state || "").toLowerCase();
+  if (state === "done" || state === "cancel") return { ok: true, skipped: true };
+  const zeroProductIds = collectMobileZeroProductIds(snapshot);
+  if (!zeroProductIds.size) return { ok: true, skipped: true };
+
+  const moves = await getStockMovesByPickingId(pid).catch(() => []);
+  const live = (Array.isArray(moves) ? moves : []).filter((mv) => {
+    const st = String(mv?.state || "").toLowerCase();
+    return st !== "cancel";
+  });
+  const moveIds = [];
+  for (const mv of live) {
+    const prodId = Number(Array.isArray(mv.product_id) ? mv.product_id[0] : mv.product_id);
+    const mid = Number(mv.id);
+    if (!zeroProductIds.has(prodId) || !Number.isFinite(mid) || mid <= 0) continue;
+    moveIds.push(mid);
+    try {
+      await writeMoveDoneQuantityOdoo17Aware(mid, 0);
+    } catch (_) {
+      /* line write below */
+    }
+  }
+  if (!moveIds.length) return { ok: true, skipped: true };
+  const lines = await getStockMoveLinesByMoveIds(moveIds).catch(() => []);
+  for (const ml of Array.isArray(lines) ? lines : []) {
+    const lid = Number(ml?.id);
+    if (!Number.isFinite(lid) || lid <= 0) continue;
+    if (odooMoveLineDoneQty(ml) <= 0.0001) continue;
+    try {
+      await updateMoveLineQty(lid, 0);
+    } catch (_) {
+      try {
+        await callOdoo("stock.move.line", "write", [[lid], { qty_done: 0 }]);
+      } catch (__) {
+        /* validate still attempted */
+      }
+    }
+  }
+  return { ok: true, skipped: false, written: moveIds.length };
 }
 
 /** Idempotent: skip Odoo write when snapshot already matches; otherwise atomic write + sequential fallback. */

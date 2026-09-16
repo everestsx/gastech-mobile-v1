@@ -41,10 +41,12 @@ import * as stockPickingsDb from '../database/stockPickings.js';
 import * as syncQueueDb from '../database/syncQueue.js';
 import * as deliveryQtyDb from '../database/deliveryQty.js';
 import * as localPaymentsDb from '../database/localPayments.js';
+import * as localInvoicesDb from '../database/localInvoices.js';
 import * as offlineAttachmentsDb from '../database/offlineAttachments.js';
 import { getCheckoutResumeMap, pruneStaleCheckoutResumeEntries } from '../services/checkoutResume.service';
 import { useSync } from '../context/SyncContext';
-import { isSaleOrderDeliveredInUi, subscribeUiDeliveredOrders } from '../utils/completedOrderUi';
+import { subscribeUiDeliveredOrders } from '../utils/completedOrderUi';
+import { orderIsOpenOnOrdersTab } from '../utils/deliveryProgress';
 
 const TAB_TO_DELIVER = 'to_deliver';
 
@@ -62,6 +64,10 @@ function isToday(d) {
 
 /** Keeps last Orders tab list visible instantly when switching tabs (UI cache only). */
 let lastSaleOrdersListSnapshot = null;
+
+function setFromSnapshot(arr) {
+  return new Set((Array.isArray(arr) ? arr : []).map(Number).filter((n) => Number.isFinite(n) && n > 0));
+}
 
 export default function SaleOrderListScreen({ route, navigation }) {
   const { t } = useTranslation();
@@ -97,24 +103,27 @@ export default function SaleOrderListScreen({ route, navigation }) {
   const [listLoading, setListLoading] = useState(() => !lastSaleOrdersListSnapshot?.orders?.length);
   const { syncCompleteTimestamp } = useSync();
   const [uiDeliveredTick, setUiDeliveredTick] = useState(0);
+  const [localInvoicedSaleOrderIds, setLocalInvoicedSaleOrderIds] = useState(() =>
+    setFromSnapshot(lastSaleOrdersListSnapshot?.localInvoicedSaleOrderIds)
+  );
+  const [syncedPaymentSaleOrderIds, setSyncedPaymentSaleOrderIds] = useState(() =>
+    setFromSnapshot(lastSaleOrdersListSnapshot?.syncedPaymentSaleOrderIds)
+  );
 
   useEffect(() => subscribeUiDeliveredOrders(() => setUiDeliveredTick((n) => n + 1)), []);
 
-  // Orders tab: hide once invoiced or delivered — unless checkout (invoice / payment photo) is still in progress.
+  // Orders tab: only undelivered jobs. Driver complete (invoice / local invoice / payment) moves to Delivered.
   const filteredOrders = useMemo(
     () =>
       orders.filter((o) => {
-        if (isSaleOrderDeliveredInUi(Number(o.id))) return false;
-        if (String(o.state || '') === 'cancel') return false;
         const rid = String(o.id);
-        const resumeEntry = checkoutResumeMap[rid];
-        if (resumeEntry?.invoiceParams || resumeEntry?.phase === 'payment') return true;
-        const inv = String(o.invoice_status || '').toLowerCase() === 'invoiced';
-        const st = String(o.pickingState || '').toLowerCase();
-        // Do not treat qty_done > 0 as delivered before explicit completion.
-        return !(inv || st === 'done' || st === 'cancel');
+        const resumeEntry = checkoutResumeMap[rid] || checkoutResumeMap[o.id];
+        return orderIsOpenOnOrdersTab(o, o.pickingState, resumeEntry, {
+          localInvoicedSaleOrderIds,
+          syncedPaymentSaleOrderIds,
+        });
       }),
-    [orders, checkoutResumeMap, uiDeliveredTick]
+    [orders, checkoutResumeMap, uiDeliveredTick, localInvoicedSaleOrderIds, syncedPaymentSaleOrderIds]
   );
   const searchFieldLabels = { customer: 'Customer', orderId: 'Order ID' };
   const ordersFilteredBySearch = useMemo(() => {
@@ -502,8 +511,17 @@ export default function SaleOrderListScreen({ route, navigation }) {
       }
       const orderIds = list.map((o) => o.id);
       const resumeForSort = resumeMap && typeof resumeMap === 'object' ? resumeMap : {};
-      const [totals, pickings, allLines, qtyDoneMap, paymentSplits, attachCounts, pendingUploadSet] =
-        await Promise.all([
+      const [
+        totals,
+        pickings,
+        allLines,
+        qtyDoneMap,
+        paymentSplits,
+        attachCounts,
+        pendingUploadSet,
+        nextLocalInvoiced,
+        nextSyncedPayment,
+      ] = await Promise.all([
         getOrderLineTotalsFromDB(list),
         getPickingsBySaleIdsFromDB(orderIds),
         getOrderLinesByOrderIdsFromDB(orderIds),
@@ -513,7 +531,15 @@ export default function SaleOrderListScreen({ route, navigation }) {
         orderIds.length
           ? offlineAttachmentsDb.getSaleOrderIdsWithPendingAttachmentUploads()
           : Promise.resolve(new Set()),
+        localInvoicesDb.getSaleOrderIdsWithLocalInvoices().catch(() => new Set()),
+        syncQueueDb.getSyncedPaymentSaleOrderIds().catch(() => new Set()),
       ]);
+      const localInvoicedSet =
+        nextLocalInvoiced instanceof Set ? nextLocalInvoiced : new Set(Array.from(nextLocalInvoiced || []));
+      const syncedPaymentSet =
+        nextSyncedPayment instanceof Set ? nextSyncedPayment : new Set(Array.from(nextSyncedPayment || []));
+      setLocalInvoicedSaleOrderIds(localInvoicedSet);
+      setSyncedPaymentSaleOrderIds(syncedPaymentSet);
       const listPriority = (o) => {
         const id = Number(o.id);
         const rid = String(id);
@@ -572,11 +598,15 @@ export default function SaleOrderListScreen({ route, navigation }) {
       lastSaleOrdersListSnapshot = {
         orders: enriched,
         checkoutResumeMap: resumeMap && typeof resumeMap === 'object' ? resumeMap : {},
+        localInvoicedSaleOrderIds: Array.from(localInvoicedSet),
+        syncedPaymentSaleOrderIds: Array.from(syncedPaymentSet),
       };
     } catch (err) {
       console.error('Sale Order Error:', err);
       setOrders([]);
       setCheckoutResumeMap({});
+      setLocalInvoicedSaleOrderIds(new Set());
+      setSyncedPaymentSaleOrderIds(new Set());
     } finally {
       setListLoading(false);
     }

@@ -7,7 +7,9 @@ import { useTheme } from '../context/ThemeContext';
 import { getCustomerByRef, getPartnersByIds } from '../services/customer.service';
 import { getCachedCustomers, getCachedOrders, getPickingsBySaleIdsFromDB, getUserSession } from '../services/sync.service';
 import { getCheckoutResumeMap } from '../services/checkoutResume.service';
-import { isSaleOrderDeliveredInUi } from '../utils/completedOrderUi';
+import { orderIsOpenOnOrdersTab } from '../utils/deliveryProgress';
+import * as localInvoicesDb from '../database/localInvoices.js';
+import * as syncQueueDb from '../database/syncQueue.js';
 
 const CUSTOMER_PREFIX = 'CUSTOMER:';
 
@@ -64,15 +66,6 @@ function pickingStateBySaleId(pickings) {
   return map;
 }
 
-function isOrderVisibleOnOrdersTab(order, pickingState, resumeEntry) {
-  if (isSaleOrderDeliveredInUi(Number(order?.id))) return false;
-  if (String(order?.state || '') === 'cancel') return false;
-  if (resumeEntry?.invoiceParams || resumeEntry?.phase === 'payment') return true;
-  const inv = String(order?.invoice_status || '').toLowerCase() === 'invoiced';
-  const st = String(pickingState || '').toLowerCase();
-  return !(inv || st === 'done' || st === 'cancel');
-}
-
 /**
  * Orders-tab scan: only open an order that is still on the Orders tab.
  * Already delivered → already_delivered. None for today → not_available.
@@ -81,18 +74,21 @@ async function resolveOrdersTabScanForCustomer(customerId, syncDateField) {
   const list = await getTodayOrdersForCustomer(customerId, syncDateField);
   if (!list.length) return { status: 'not_available', customerName: null };
 
-  const [resumeMap, pickings] = await Promise.all([
+  const [resumeMap, pickings, localInvoicedSaleOrderIds, syncedPaymentSaleOrderIds] = await Promise.all([
     getCheckoutResumeMap().catch(() => ({})),
     getPickingsBySaleIdsFromDB(list.map((o) => o.id)),
+    localInvoicesDb.getSaleOrderIdsWithLocalInvoices().catch(() => new Set()),
+    syncQueueDb.getSyncedPaymentSaleOrderIds().catch(() => new Set()),
   ]);
   const saleIdToPickingState = pickingStateBySaleId(pickings);
   const resume = resumeMap && typeof resumeMap === 'object' ? resumeMap : {};
+  const extra = { localInvoicedSaleOrderIds, syncedPaymentSaleOrderIds };
 
   const available = [];
   const delivered = [];
   for (const o of list) {
-    const resumeEntry = resume[String(o.id)];
-    if (isOrderVisibleOnOrdersTab(o, saleIdToPickingState[o.id], resumeEntry)) {
+    const resumeEntry = resume[String(o.id)] || resume[o.id];
+    if (orderIsOpenOnOrdersTab(o, saleIdToPickingState[o.id], resumeEntry, extra)) {
       available.push(o);
     } else {
       delivered.push(o);

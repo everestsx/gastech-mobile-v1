@@ -6710,6 +6710,7 @@ async function processSyncQueue(options = {}) {
         actionCancelPicking,
         validatePickingWithContext,
         forceDoneQtyOnWaitingPickingMoves,
+        forceZeroMobileQtyOnOpenPickingMoves,
       } = await import('./delivery.service');
       const {
         getSaleOrderForPayment,
@@ -7591,6 +7592,9 @@ async function processSyncQueue(options = {}) {
             moveLineUpdates,
             deliveryLines,
             requestedQtyByProduct,
+            invoiceLineQtys: p.invoiceLineQtys || p.mobileQtySnapshot?.invoiceLineQtys || [],
+            saleOrderLineDeliveredUpdates:
+              p.saleOrderLineDeliveredUpdates || p.mobileQtySnapshot?.saleOrderLineDeliveredUpdates || [],
           };
           let verifyBlocks = frozenDeliveryBlocksForVerify(p, [{ pickingId, ...blockSnapshot }]);
           let linkMovesBeforeValidatePromise = Promise.resolve({ linked: 0 });
@@ -7620,6 +7624,9 @@ async function processSyncQueue(options = {}) {
               moveLineUpdates,
               deliveryLines,
               requestedQtyByProduct,
+              invoiceLineQtys: p.invoiceLineQtys || p.mobileQtySnapshot?.invoiceLineQtys || [],
+              saleOrderLineDeliveredUpdates:
+                p.saleOrderLineDeliveredUpdates || p.mobileQtySnapshot?.saleOrderLineDeliveredUpdates || [],
             };
             verifyBlocks = frozenDeliveryBlocksForVerify(p, [{ pickingId, ...blockSnapshot }]);
             const pickingAlreadyOpen =
@@ -7746,6 +7753,29 @@ async function processSyncQueue(options = {}) {
                   'queue',
                   `delivery pre-validate force qty (waiting) picking ${pickingId} state=${stateBefore}`
                 );
+              } catch (_) {
+                /* validate below */
+              }
+            }
+            if (stateBefore !== 'done' && stateBefore !== 'cancel') {
+              try {
+                const z = await forceZeroMobileQtyOnOpenPickingMoves(pickingId, blockSnapshot);
+                if (z?.skipped === false) {
+                  log(
+                    'queue',
+                    `delivery pre-validate zero reserved qty picking ${pickingId} moves=${z?.written ?? 0}`
+                  );
+                  const stRowsZ = await getPickingState(pickingId).catch(() => []);
+                  const stZ = Array.isArray(stRowsZ) ? stRowsZ[0] : stRowsZ;
+                  const afterZero = String(stZ?.state || '').toLowerCase();
+                  if (
+                    afterZero === 'waiting' ||
+                    afterZero === 'confirmed' ||
+                    afterZero === 'partially_available'
+                  ) {
+                    await forceDoneQtyOnWaitingPickingMoves(pickingId, blockSnapshot);
+                  }
+                }
               } catch (_) {
                 /* validate below */
               }

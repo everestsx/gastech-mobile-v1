@@ -242,7 +242,8 @@ export default function DeliveredOrdersScreen({ route, navigation }) {
   );
 
   /**
-   * Same rule as dashboard: invoiced, picking done/cancel, move qty_done, or Odoo line qty_delivered (partial delivery).
+   * Delivered tab: only orders the driver completed (invoice / local invoice / synced payment).
+   * Ready reserved qty and Back Office qty_delivered must not put undelivered jobs here.
    */
   const deliveredOrders = useMemo(
     () =>

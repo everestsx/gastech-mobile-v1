@@ -111,18 +111,38 @@ export function ordersTabPickingStateBySaleId(pickings) {
   return map;
 }
 
-/** True when this order would still appear on the Orders tab (not qty_done / qty_delivered). */
-export function orderIsOpenOnOrdersTab(order, pickingState, resumeEntry) {
+function invoiceStatusLooksInvoiced(order) {
+  const inv = String(order?.invoice_status || '').toLowerCase();
+  return inv === 'invoiced' || inv === 'gastech_invoiced';
+}
+
+/** True when this order would still appear on the Orders tab (not reserved qty_done / qty_delivered). */
+export function orderIsOpenOnOrdersTab(order, pickingState, resumeEntry, extra = {}) {
   if (isSaleOrderDeliveredInUi(Number(order?.id))) return false;
   if (String(order?.state || '') === 'cancel') return false;
   if (resumeEntry?.invoiceParams || resumeEntry?.phase === 'payment') return true;
-  const inv = String(order?.invoice_status || '').toLowerCase() === 'invoiced';
-  const st = String(pickingState || '').toLowerCase();
-  return !(inv || st === 'done' || st === 'cancel');
+  const oid = Number(order?.id);
+  if (
+    extra.localInvoicedSaleOrderIds instanceof Set &&
+    Number.isFinite(oid) &&
+    extra.localInvoicedSaleOrderIds.has(oid)
+  ) {
+    return false;
+  }
+  if (
+    extra.syncedPaymentSaleOrderIds instanceof Set &&
+    Number.isFinite(oid) &&
+    extra.syncedPaymentSaleOrderIds.has(oid)
+  ) {
+    return false;
+  }
+  if (invoiceStatusLooksInvoiced(order)) return false;
+  void pickingState;
+  return true;
 }
 
 /** Completed for dashboard cards / progress bars — same rule as Orders tab, not reserved qty. */
-export function orderIsCompletedLikeOrdersTab(order, pickingState, pendingCheckoutSaleOrderIds) {
+export function orderIsCompletedLikeOrdersTab(order, pickingState, pendingCheckoutSaleOrderIds, extra = {}) {
   if (String(order?.state || '') === 'cancel') return false;
   const oid = Number(order?.id);
   const resume =
@@ -133,7 +153,7 @@ export function orderIsCompletedLikeOrdersTab(order, pickingState, pendingChecko
     pickingState && typeof pickingState === 'object' && !Array.isArray(pickingState)
       ? pickingState[order?.id] ?? pickingState[oid] ?? ''
       : pickingState;
-  return !orderIsOpenOnOrdersTab(order, pickSt, resume);
+  return !orderIsOpenOnOrdersTab(order, pickSt, resume, extra);
 }
 
 /**
@@ -171,11 +191,9 @@ export function orderIsDeliveryDoneForProgress(
 }
 
 /**
- * Delivered Orders tab: completed work the driver should see here (not only strict SQLite invoice_status).
- * - Invoiced locally or on cached Odoo header, or
- * - Payment queue row already synced (mobile completion uploaded), or
- * - Same delivery signals as dashboard (picking done / qty_done / Odoo qty_delivered / invoiced).
- * Checkout in progress (resume) is always excluded.
+ * Delivered Orders tab: only orders the driver actually completed.
+ * Do not use reserved qty_done / Odoo qty_delivered / Ready picking — those put
+ * undelivered jobs on this tab (S12009-class Ready reserved qty).
  */
 export function orderAppearsInDeliveredTab(
   order,
@@ -186,30 +204,17 @@ export function orderAppearsInDeliveredTab(
   localInvoicedSaleOrderIds,
   syncedPaymentSaleOrderIds
 ) {
+  void pickingStateBySaleIdMap;
+  void qtyDoneBySaleIdMap;
+  void saleOrderIdsWithBackendQtyDelivered;
+  if (String(order?.state || '') === 'cancel') return false;
   const oid = Number(order?.id);
-  if (
-    pendingCheckoutSaleOrderIds instanceof Set &&
-    Number.isFinite(oid) &&
-    pendingCheckoutSaleOrderIds.has(oid)
-  ) {
-    return false;
-  }
-  const odooInvoiced = String(order?.invoice_status || '').toLowerCase() === 'invoiced';
-  const localInvoiced =
-    localInvoicedSaleOrderIds instanceof Set && Number.isFinite(oid) && localInvoicedSaleOrderIds.has(oid);
-  if (odooInvoiced || localInvoiced) return true;
-  if (
-    syncedPaymentSaleOrderIds instanceof Set &&
-    Number.isFinite(oid) &&
-    syncedPaymentSaleOrderIds.has(oid)
-  ) {
-    return true;
-  }
-  return orderIsDeliveryDoneForProgress(
-    order,
-    pickingStateBySaleIdMap,
-    qtyDoneBySaleIdMap,
-    saleOrderIdsWithBackendQtyDelivered,
-    pendingCheckoutSaleOrderIds
-  );
+  const resume =
+    pendingCheckoutSaleOrderIds instanceof Set && Number.isFinite(oid) && pendingCheckoutSaleOrderIds.has(oid)
+      ? { phase: 'payment' }
+      : null;
+  return !orderIsOpenOnOrdersTab(order, '', resume, {
+    localInvoicedSaleOrderIds,
+    syncedPaymentSaleOrderIds,
+  });
 }

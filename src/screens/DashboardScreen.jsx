@@ -769,7 +769,9 @@ export default function DashboardScreen({ navigation }) {
           localCompleted += 1;
           continue;
         }
-        if (orderIsOpenOnOrdersTab(order, pickSt, resumeEntry)) {
+        if (orderIsOpenOnOrdersTab(order, pickSt, resumeEntry, {
+          localInvoicedSaleOrderIds: localInvoiceSaleOrderIds,
+        })) {
           pendingOrders += 1;
         } else {
           syncedCompleted += 1;
@@ -1338,6 +1340,11 @@ export default function DashboardScreen({ navigation }) {
     [pickingsBySaleId]
   );
 
+  const tabMembershipExtra = useMemo(
+    () => ({ localInvoicedSaleOrderIds }),
+    [localInvoicedSaleOrderIds]
+  );
+
   /**
    * Orders Completed / Gas Delivered / progress bars: same completed rule as the Orders tab.
    * Do not use reserved qty_done or qty_delivered after a back-office pull.
@@ -1345,17 +1352,27 @@ export default function DashboardScreen({ navigation }) {
   const deliveredTodayOrders = useMemo(
     () =>
       todayOrdersForDashboard.filter((o) =>
-        orderIsCompletedLikeOrdersTab(o, ordersTabPickStateBySaleId, pendingCheckoutOrderIds)
+        orderIsCompletedLikeOrdersTab(
+          o,
+          ordersTabPickStateBySaleId,
+          pendingCheckoutOrderIds,
+          tabMembershipExtra
+        )
       ),
-    [todayOrdersForDashboard, ordersTabPickStateBySaleId, pendingCheckoutOrderIds]
+    [todayOrdersForDashboard, ordersTabPickStateBySaleId, pendingCheckoutOrderIds, tabMembershipExtra]
   );
 
   const deliveredTodayOrdersAllRoutes = useMemo(
     () =>
       todayOrders.filter((o) =>
-        orderIsCompletedLikeOrdersTab(o, ordersTabPickStateBySaleId, pendingCheckoutOrderIds)
+        orderIsCompletedLikeOrdersTab(
+          o,
+          ordersTabPickStateBySaleId,
+          pendingCheckoutOrderIds,
+          tabMembershipExtra
+        )
       ),
-    [todayOrders, ordersTabPickStateBySaleId, pendingCheckoutOrderIds]
+    [todayOrders, ordersTabPickStateBySaleId, pendingCheckoutOrderIds, tabMembershipExtra]
   );
 
   const todayOrderLinesForDashboard = useMemo(() => {
@@ -1870,7 +1887,8 @@ export default function DashboardScreen({ navigation }) {
       const isDone = orderIsCompletedLikeOrdersTab(
         order,
         chartPickingStateBySaleId,
-        pendingCheckoutOrderIds
+        pendingCheckoutOrderIds,
+        tabMembershipExtra
       );
       const isInvoiced = String(order?.invoice_status || '').toLowerCase() === 'invoiced';
       const q = chartProgressQtyForLine(line, { isDone, isInvoiced });
@@ -1901,6 +1919,7 @@ export default function DashboardScreen({ navigation }) {
     chartOrderLines,
     chartPickingStateBySaleId,
     pendingCheckoutOrderIds,
+    tabMembershipExtra,
     appLanguage,
   ]);
 
