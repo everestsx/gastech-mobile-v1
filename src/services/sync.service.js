@@ -4682,7 +4682,15 @@ async function rebuildDeliveryBlocksFromRequestedQty(blocks, requestedQtyByProdu
       .map(([pidRaw, qtyRaw]) => [Number(pidRaw), roundDeliveredQty3(qtyRaw)])
       .filter(([pid, qty]) => Number.isFinite(pid) && pid > 0 && Number.isFinite(qty) && qty > 0)
   );
-  if (remaining.size === 0) return blocks || [];
+  const zeroProductIds = [
+    ...new Set(
+      Object.entries(requestedQtyByProduct || {})
+        .map(([pidRaw, qtyRaw]) => [Number(pidRaw), roundDeliveredQty3(qtyRaw)])
+        .filter(([pid, qty]) => Number.isFinite(pid) && pid > 0 && Number.isFinite(qty) && qty <= 0.0001)
+        .map(([pid]) => pid)
+    ),
+  ];
+  if (remaining.size === 0 && zeroProductIds.length === 0) return blocks || [];
 
   const { getPickingBySaleOrder, getStockMovesByPickingId } = await import('./delivery.service.js');
   let working = Array.isArray(blocks) ? blocks.map((b) => ({ ...b })) : [];
@@ -4758,6 +4766,28 @@ async function rebuildDeliveryBlocksFromRequestedQty(blocks, requestedQtyByProdu
       ];
     }
     remaining.set(productId, 0);
+  }
+
+  for (const productId of zeroProductIds) {
+    if ((remaining.get(productId) || 0) > 0.0001) continue;
+    const mid = linkedMoveByProduct.get(productId) || lastMoveByProduct.get(productId);
+    if (!Number.isFinite(mid) || mid <= 0) continue;
+    const targetBlock =
+      working.find((b) => (b.deliveryLines || []).some((l) => Number(l.moveId) === mid)) ||
+      working[0];
+    if (!targetBlock) continue;
+    const existing = (targetBlock.deliveryLines || []).find(
+      (l) => Number(l.productId) === Number(productId) || Number(l.moveId) === mid
+    );
+    if (existing && roundDeliveredQty3(existing.qty_done) > 0.0001) continue;
+    if (existing) {
+      existing.qty_done = 0;
+      continue;
+    }
+    targetBlock.deliveryLines = [
+      ...(targetBlock.deliveryLines || []),
+      { moveId: mid, productId, qty_done: 0 },
+    ];
   }
 
   return working;
@@ -6829,7 +6859,7 @@ async function processSyncQueue(options = {}) {
           if (needsRebuild) {
             blocks = await rebuildDeliveryBlocksFromRequestedQty(
               blocks,
-              Object.fromEntries(requestedDeliveryRemainingByProduct),
+              requestedQtyByProduct,
               saleOrderId
             );
             log(
@@ -7556,7 +7586,12 @@ async function processSyncQueue(options = {}) {
             }
           };
 
-          let blockSnapshot = { moveUpdates, moveLineUpdates, deliveryLines };
+          let blockSnapshot = {
+            moveUpdates,
+            moveLineUpdates,
+            deliveryLines,
+            requestedQtyByProduct,
+          };
           let verifyBlocks = frozenDeliveryBlocksForVerify(p, [{ pickingId, ...blockSnapshot }]);
           let linkMovesBeforeValidatePromise = Promise.resolve({ linked: 0 });
           try {
@@ -7580,7 +7615,12 @@ async function processSyncQueue(options = {}) {
              * (single Odoo transaction). Falls back to legacy per-line RPCs if the server rejects it.
              * Retry passes: verify first; on mismatch absolute re-apply (idempotent) to heal partial writes.
              */
-            blockSnapshot = { moveUpdates, moveLineUpdates, deliveryLines };
+            blockSnapshot = {
+              moveUpdates,
+              moveLineUpdates,
+              deliveryLines,
+              requestedQtyByProduct,
+            };
             verifyBlocks = frozenDeliveryBlocksForVerify(p, [{ pickingId, ...blockSnapshot }]);
             const pickingAlreadyOpen =
               Number(syncOptions.queuePass) <= 1 &&

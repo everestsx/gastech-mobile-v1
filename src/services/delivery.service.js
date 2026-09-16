@@ -602,13 +602,14 @@ function qtyByMoveFromDeliverySnapshot(snapshot = {}) {
   for (const line of snapshot.deliveryLines || []) {
     const mid = Number(line?.moveId ?? line?.move_id);
     const qty = coerceDeliveredQty(line?.qty_done);
-    if (!Number.isFinite(mid) || mid <= 0 || !Number.isFinite(qty) || qty <= 0.0001) continue;
+    // Include 0: skipping it left Ready reserved Demand as Done (S11915 GAS2.4 4→0).
+    if (!Number.isFinite(mid) || mid <= 0 || !Number.isFinite(qty) || qty < 0) continue;
     qtyByMove.set(mid, qty);
   }
   for (const u of snapshot.moveLineUpdates || []) {
     const mid = Number(u?.moveId);
     const qty = coerceDeliveredQty(u?.qty_done);
-    if (!Number.isFinite(mid) || mid <= 0 || !Number.isFinite(qty) || qty <= 0.0001) continue;
+    if (!Number.isFinite(mid) || mid <= 0 || !Number.isFinite(qty) || qty < 0) continue;
     if (!qtyByMove.has(mid)) qtyByMove.set(mid, qty);
   }
   return qtyByMove;
@@ -618,7 +619,9 @@ function qtyByMoveFromDeliverySnapshot(snapshot = {}) {
 async function writeMoveDoneQuantityOdoo17Aware(moveId, qty) {
   const mid = Number(moveId);
   const q = coerceDeliveredQty(qty);
-  if (!Number.isFinite(mid) || mid <= 0 || !Number.isFinite(q) || q <= 0) return;
+  // 0 is a real delivery (product not delivered). Skipping it let Validate copy reserved Demand
+  // onto Done qty (S11915 7115/OUT/01269 GAS2.4 mobile 0 / BO 4). Callers strip 4→0 on Done pickings.
+  if (!Number.isFinite(mid) || mid <= 0 || !Number.isFinite(q) || q < 0) return;
   if (_stockMoveHasQuantityField !== false) {
     try {
       await callOdoo("stock.move", "write", [[mid], { quantity: q }]);
@@ -684,7 +687,7 @@ export async function forceDoneQtyOnWaitingPickingMoves(pickingId, snapshot = {}
             break;
           }
         }
-        if (Number.isFinite(productId) && productId > 0) {
+        if (Number.isFinite(productId) && productId > 0 && Number(qty) > 0.0001) {
           try {
             await createMoveLine(pid, moveId, productId, qty);
             written += 1;
@@ -810,13 +813,13 @@ export function buildPickingDeliveryWritePayload({
   for (const u of moveLineUpdates || []) {
     const mid = Number(u?.moveId);
     const q = Number(u?.qty_done);
-    if (!Number.isFinite(mid) || mid <= 0 || !Number.isFinite(q) || q <= 0) continue;
+    if (!Number.isFinite(mid) || mid <= 0 || !Number.isFinite(q) || q < 0) continue;
     targetByMove.set(mid, q);
   }
   for (const line of deliveryLines || []) {
     const mid = Number(line?.moveId ?? line?.move_id);
     const q = Number(line?.qty_done);
-    if (!Number.isFinite(mid) || mid <= 0 || !Number.isFinite(q) || q <= 0) continue;
+    if (!Number.isFinite(mid) || mid <= 0 || !Number.isFinite(q) || q < 0) continue;
     targetByMove.set(mid, q);
   }
   for (const [mid, target] of targetByMove.entries()) {
@@ -841,18 +844,19 @@ export function buildPickingDeliveryWritePayload({
   for (const u of moveLineUpdates || []) {
     const moveId = Number(u?.moveId);
     const qtyN = u?.qty_done != null ? Number(u.qty_done) : NaN;
-    if (!Number.isFinite(moveId) || moveId <= 0 || !Number.isFinite(qtyN) || qtyN <= 0) continue;
+    if (!Number.isFinite(moveId) || moveId <= 0 || !Number.isFinite(qtyN) || qtyN < 0) continue;
     qtyByMoveId.set(moveId, qtyN);
   }
   for (const line of deliveryLines || []) {
     const moveId = line.moveId ?? line.move_id;
     const productId = line.productId ?? line.product_id;
     const qtyN = line.qty_done != null ? Number(line.qty_done) : NaN;
-    if (moveId == null || productId == null || !Number.isFinite(qtyN) || qtyN <= 0) continue;
+    if (moveId == null || productId == null || !Number.isFinite(qtyN) || qtyN < 0) continue;
     qtyByMoveId.set(Number(moveId), qtyN);
     // Odoo 19: SET move.quantity instead of CREATE a line. CREATE on a Ready
     // picking can leave qty off the procurement move that SOL move_ids counts.
-    if (!useQuantity && !updatedMoveIds.has(Number(moveId))) {
+    // Never CREATE a 0-qty line — write quantity=0 on the existing move instead (S11915).
+    if (!useQuantity && qtyN > 0.0001 && !updatedMoveIds.has(Number(moveId))) {
       moveLineIdsCommands.push([
         0,
         0,
@@ -984,6 +988,10 @@ export async function applyPickingDeliverySnapshotSequential(pickingId, snapshot
           updatedMoveIds.add(Number(moveId));
           continue;
         }
+        if (qtyN <= 0.0001) {
+          updatedMoveIds.add(Number(moveId));
+          continue;
+        }
         await createMoveLine(pid, Number(moveId), Number(productId), qtyN);
         updatedMoveIds.add(Number(moveId));
       } catch (createErr) {
@@ -1096,14 +1104,14 @@ export async function pickingDeliverySnapshotAlreadyApplied(pickingId, snapshot 
   for (const line of deliveryLines || []) {
     const mid = Number(line?.moveId ?? line?.move_id);
     const qty = Number(line?.qty_done);
-    if (!Number.isFinite(mid) || mid <= 0 || !Number.isFinite(qty) || qty <= 0) continue;
+    if (!Number.isFinite(mid) || mid <= 0 || !Number.isFinite(qty) || qty < 0) continue;
     const prev = expectedByMove.get(mid);
     expectedByMove.set(mid, prev == null ? qty : Math.max(prev, qty));
   }
   for (const u of moveLineUpdates || []) {
     const mid = Number(u?.moveId);
     const qty = Number(u?.qty_done);
-    if (!Number.isFinite(mid) || mid <= 0 || !Number.isFinite(qty) || qty <= 0) continue;
+    if (!Number.isFinite(mid) || mid <= 0 || !Number.isFinite(qty) || qty < 0) continue;
     const prev = expectedByMove.get(mid);
     expectedByMove.set(mid, prev == null ? qty : Math.max(prev, qty));
   }
@@ -1130,18 +1138,89 @@ export async function pickingDeliverySnapshotAlreadyApplied(pickingId, snapshot 
       actual = (mls || []).reduce((sum, ml) => sum + (Number(ml?.qty_done) || 0), 0);
     }
     if (!Number.isFinite(actual) || Math.abs(actual - expected) > tolerance) return false;
+    // Mobile 0 vs reserved line qty: move.quantity can still read 0 on Ready while
+    // Validate would copy reservation (S11915). Do not skip the 0 write.
+    if (expected <= 0.0001) {
+      const mls = await getStockMoveLinesByMoveIds([mid]).catch(() => []);
+      const fromLines = (mls || []).reduce((sum, ml) => sum + odooMoveLineDoneQty(ml), 0);
+      if (fromLines > tolerance) return false;
+    }
   }
   return true;
+}
+
+/**
+ * Open picking only. If mobile delivered 0 for a product that still has a stock.move,
+ * add qty_done: 0 so Validate cannot copy reserved Demand (S11915).
+ * Never changes Demand, never adds positive qty, never runs on Done pickings.
+ */
+async function attachMissingZeroQtyLinesForRequestedProducts(pickingId, snapshot = {}) {
+  const requested = snapshot.requestedQtyByProduct || {};
+  const zeroProductIds = [];
+  for (const [k, v] of Object.entries(requested)) {
+    const prodId = Number(k);
+    const q = coerceDeliveredQty(v);
+    if (!Number.isFinite(prodId) || prodId <= 0 || !Number.isFinite(q) || q > 0.0001) continue;
+    zeroProductIds.push(prodId);
+  }
+  if (!zeroProductIds.length) return snapshot;
+
+  const pid = Number(pickingId);
+  const moves = await getStockMovesByPickingId(pid).catch(() => []);
+  const live = (Array.isArray(moves) ? moves : []).filter((mv) => {
+    const st = String(mv?.state || "").toLowerCase();
+    return st !== "cancel";
+  });
+  if (!live.length) return snapshot;
+
+  const lines = [...(snapshot.deliveryLines || [])];
+  const claimedPositive = new Set();
+  for (const line of lines) {
+    const prodId = Number(line?.productId ?? line?.product_id);
+    const q = coerceDeliveredQty(line?.qty_done);
+    if (!Number.isFinite(prodId) || prodId <= 0 || !Number.isFinite(q) || q <= 0.0001) continue;
+    claimedPositive.add(prodId);
+  }
+
+  const byProduct = new Map();
+  for (const mv of live) {
+    const prodId = Number(Array.isArray(mv.product_id) ? mv.product_id[0] : mv.product_id);
+    const mid = Number(mv.id);
+    if (!Number.isFinite(prodId) || prodId <= 0 || !Number.isFinite(mid) || mid <= 0) continue;
+    const list = byProduct.get(prodId) || [];
+    list.push(mv);
+    byProduct.set(prodId, list);
+  }
+
+  let changed = false;
+  for (const prodId of zeroProductIds) {
+    if (claimedPositive.has(prodId)) continue;
+    const list = byProduct.get(prodId);
+    if (!list?.length) continue;
+    const sorted = [...list].sort((a, b) => Number(a.id) - Number(b.id));
+    for (const mv of sorted) {
+      const mid = Number(mv.id);
+      if (!Number.isFinite(mid) || mid <= 0) continue;
+      if (lines.some((l) => Number(l?.moveId ?? l?.move_id) === mid)) continue;
+      lines.push({ moveId: mid, productId: prodId, qty_done: 0 });
+      changed = true;
+    }
+  }
+  if (!changed) return snapshot;
+  return { ...snapshot, deliveryLines: lines };
 }
 
 /** Idempotent: skip Odoo write when snapshot already matches; otherwise atomic write + sequential fallback. */
 export async function applyPickingDeliverySnapshotIdempotent(pickingId, snapshot = {}, meta = {}) {
   const pid = Number(pickingId);
   if (!Number.isFinite(pid) || pid <= 0) return { ok: true, mode: "noop" };
-  let enriched = await enrichDeliverySnapshotWithExistingMoveLines(pid, snapshot);
   const stateRows = await getPickingState(pid).catch(() => []);
   const pick = Array.isArray(stateRows) ? stateRows[0] : stateRows;
   const isDone = String(pick?.state || "").toLowerCase() === "done";
+  const working = isDone
+    ? snapshot
+    : await attachMissingZeroQtyLinesForRequestedProducts(pid, snapshot);
+  let enriched = await enrichDeliverySnapshotWithExistingMoveLines(pid, working);
   // pickingAlreadyOpen only skipped a duplicate state read. It must NEVER skip the
   // Done downward guard — that wrote 10→0 / 18→0 on a transfer that had just gone Done.
   // Open picking: write immediately. Done picking: keep downward-qty guard + already-applied skip.
@@ -1157,7 +1236,7 @@ export async function applyPickingDeliverySnapshotIdempotent(pickingId, snapshot
     // Remaining deliveryLines would CREATE. Skip when Odoo already matches — retry
     // CREATE is what stacked qty (S06821). Happy path with reserved lines never hits this
     // (enrich maps them to moveLineUpdates).
-    if (await pickingDeliverySnapshotAlreadyApplied(pid, snapshot)) {
+    if (await pickingDeliverySnapshotAlreadyApplied(pid, working)) {
       return { ok: true, mode: "already_applied" };
     }
   }
