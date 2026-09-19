@@ -5,6 +5,8 @@ import { coerceDeliveredQty } from "../utils/deliverySync.js";
 let _stockMoveHasQuantityField = null;
 /** null = unknown; Odoo 19 uses `quantity` on stock.move.line. A custom `qty_done` may exist but is not stored. */
 let _stockMoveLineHasQuantityField = null;
+/** null = unknown; Odoo 17+ `picked` tells Validate to use encoded quantity instead of Demand. */
+let _stockMoveHasPickedField = null;
 
 function dedupeMoveLineUpdatesByLineId(updates = []) {
   const byLine = new Map();
@@ -42,6 +44,19 @@ function moveLineQtyWriteVals(qty) {
   const q = Number(qty);
   if (_stockMoveLineHasQuantityField !== false) return { quantity: q };
   return { qty_done: q };
+}
+
+/**
+ * Odoo 17+ button_validate with skip_immediate uses Demand (product_uom_qty) unless
+ * the move is picked. Writing quantity alone can leave picked=false — then 15 ordered
+ * / 10 mobile still validates as 15. Do not write Demand.
+ */
+function moveDoneQtyWriteVals(qty) {
+  const q = coerceDeliveredQty(qty);
+  if (_stockMoveHasQuantityField === false) return { quantity_done: q };
+  const vals = { quantity: q };
+  if (_stockMoveHasPickedField !== false) vals.picked = true;
+  return vals;
 }
 
 /** Prefer the line that already has done qty — lowest-id empty lines must not steal/zero the real qty. */
@@ -252,31 +267,28 @@ export const getPickingsBySaleIds = (saleOrderIds) => {
 export const getStockMovesByPickingId = async (pickingId) => {
   const domain = [[["picking_id", "=", pickingId]]];
   const baseFields = ["id", "product_uom_qty", "product_id", "state", "sale_line_id", "picking_id"];
-  if (_stockMoveHasQuantityField === false) {
-    const rows = await callOdoo("stock.move", "search_read", domain, {
-      fields: [...baseFields, "quantity_done"],
-      limit: 500,
-    });
-    return Array.isArray(rows) ? rows : [];
-  }
+  const qtyField = _stockMoveHasQuantityField === false ? "quantity_done" : "quantity";
+  const withPicked = _stockMoveHasPickedField !== false;
+  const fields = withPicked ? [...baseFields, qtyField, "picked"] : [...baseFields, qtyField];
   try {
-    // Odoo 19 stores done qty on `quantity`. Do not request `quantity_done` in the
-    // same read — that field is gone and would fail the whole search_read.
     const rows = await callOdoo("stock.move", "search_read", domain, {
-      fields: [...baseFields, "quantity"],
+      fields,
       limit: 500,
     });
-    _stockMoveHasQuantityField = true;
+    if (qtyField === "quantity") _stockMoveHasQuantityField = true;
+    if (withPicked) _stockMoveHasPickedField = true;
     return Array.isArray(rows) ? rows : [];
   } catch (e) {
     const msg = String(e?.message || e);
-    if (!/invalid field ['"]?quantity['"]?/i.test(msg)) throw e;
-    _stockMoveHasQuantityField = false;
-    const rows = await callOdoo("stock.move", "search_read", domain, {
-      fields: [...baseFields, "quantity_done"],
-      limit: 500,
-    });
-    return Array.isArray(rows) ? rows : [];
+    if (withPicked && /invalid field ['"]?picked['"]?/i.test(msg)) {
+      _stockMoveHasPickedField = false;
+      return getStockMovesByPickingId(pickingId);
+    }
+    if (qtyField === "quantity" && /invalid field ['"]?quantity['"]?/i.test(msg)) {
+      _stockMoveHasQuantityField = false;
+      return getStockMovesByPickingId(pickingId);
+    }
+    throw e;
   }
 };
 
@@ -622,18 +634,34 @@ async function writeMoveDoneQuantityOdoo17Aware(moveId, qty) {
   // 0 is a real delivery (product not delivered). Skipping it let Validate copy reserved Demand
   // onto Done qty (S11915 7115/OUT/01269 GAS2.4 mobile 0 / BO 4). Callers strip 4→0 on Done pickings.
   if (!Number.isFinite(mid) || mid <= 0 || !Number.isFinite(q) || q < 0) return;
+  const writeMove = (vals) => callOdoo("stock.move", "write", [[mid], vals]);
   if (_stockMoveHasQuantityField !== false) {
     try {
-      await callOdoo("stock.move", "write", [[mid], { quantity: q }]);
+      await writeMove(moveDoneQtyWriteVals(q));
       _stockMoveHasQuantityField = true;
+      if (_stockMoveHasPickedField !== false) _stockMoveHasPickedField = true;
       return;
     } catch (e) {
       const msg = String(e?.message || e);
-      if (!/invalid field ['"]?quantity['"]?/i.test(msg)) throw e;
-      _stockMoveHasQuantityField = false;
+      if (/invalid field ['"]?picked['"]?/i.test(msg)) {
+        _stockMoveHasPickedField = false;
+        try {
+          await writeMove({ quantity: q });
+          _stockMoveHasQuantityField = true;
+          return;
+        } catch (e2) {
+          const msg2 = String(e2?.message || e2);
+          if (!/invalid field ['"]?quantity['"]?/i.test(msg2)) throw e2;
+          _stockMoveHasQuantityField = false;
+        }
+      } else if (/invalid field ['"]?quantity['"]?/i.test(msg)) {
+        _stockMoveHasQuantityField = false;
+      } else {
+        throw e;
+      }
     }
   }
-  await callOdoo("stock.move", "write", [[mid], { quantity_done: q }]);
+  await writeMove({ quantity_done: q });
 }
 
 /**
@@ -879,7 +907,8 @@ export function buildPickingDeliveryWritePayload({
     if (useQuantity) {
       // Delivered qty only. Never copy delivered onto product_uom_qty — that is Demand
       // (S11801 GAS2.4 17→30, GAS12.5 15→150, GAS5 15→10 after Done).
-      moveIdsCommands.push([1, moveId, { quantity: qty }]);
+      // picked=true so skip_immediate Validate cannot fall back to Demand (15 ordered / 10 mobile).
+      moveIdsCommands.push([1, moveId, moveDoneQtyWriteVals(qty)]);
       continue;
     }
     if (updatedMoveIds.has(moveId) || createdMoveLineForMove.has(moveId)) continue;
@@ -1177,6 +1206,12 @@ export async function pickingDeliverySnapshotAlreadyApplied(pickingId, snapshot 
       const mls = await getStockMoveLinesByMoveIds([mid]).catch(() => []);
       const fromLines = (mls || []).reduce((sum, ml) => sum + odooMoveLineDoneQty(ml), 0);
       if (fromLines > tolerance) return false;
+    }
+    // Quantity number can already equal mobile (or reserved) while picked=false.
+    // skip_immediate Validate then uses Demand — 15 ordered / 10 mobile becomes 15.
+    const demand = Number(fromPick?.product_uom_qty) || 0;
+    if (Math.abs(demand - expected) > tolerance && fromPick?.picked !== true) {
+      return false;
     }
   }
   // S12009: positives already matched reserved Demand (24/23/26) so apply was skipped
