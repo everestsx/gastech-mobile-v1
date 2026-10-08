@@ -764,7 +764,8 @@ export default function DashboardScreen({ navigation }) {
         if (!Number.isFinite(orderId)) continue;
         const resumeEntry = resumeById[String(orderId)] || resumeById[orderId];
         const pickSt = ordersTabPickState[order.id] ?? ordersTabPickState[orderId] ?? '';
-        const payPending = pendingPaymentOrderIds.has(orderId);
+        const payPending =
+          pendingPaymentOrderIds.has(orderId) && !pendingCheckoutSaleOrderIds.has(orderId);
         if (payPending) {
           localCompleted += 1;
           continue;

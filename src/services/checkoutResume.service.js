@@ -68,6 +68,39 @@ export async function clearCheckoutResume(saleOrderId) {
   await writeMap(map);
 }
 
+/**
+ * Signatures captured on the invoice step before Complete. Kept outside `local_invoices`
+ * because that row means "completed" (My Invoices, delivered lists, sync hold release).
+ * One key per order so large base64 blobs never bloat the resume map.
+ */
+const SIG_KEY_PREFIX = 'gastech_checkout_sig_v1_';
+
+export async function setCheckoutSignatures(saleOrderId, customerSig, driverSig) {
+  await AsyncStorage.setItem(
+    `${SIG_KEY_PREFIX}${String(saleOrderId)}`,
+    JSON.stringify({ customer: customerSig || '', driver: driverSig || '' })
+  );
+}
+
+export async function getCheckoutSignatures(saleOrderId) {
+  try {
+    const raw = await AsyncStorage.getItem(`${SIG_KEY_PREFIX}${String(saleOrderId)}`);
+    if (!raw) return null;
+    const o = JSON.parse(raw);
+    return o && typeof o === 'object' ? { customer: o.customer || '', driver: o.driver || '' } : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function clearCheckoutSignatures(saleOrderId) {
+  try {
+    await AsyncStorage.removeItem(`${SIG_KEY_PREFIX}${String(saleOrderId)}`);
+  } catch {
+    /* ignore */
+  }
+}
+
 export async function getCheckoutResumeEntry(saleOrderId) {
   const map = await readMap();
   return map[String(saleOrderId)] || null;

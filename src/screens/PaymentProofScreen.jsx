@@ -33,7 +33,11 @@ import { empty } from '../database/dbHelpers.js';
 import { isSqliteFullError, sqliteFullUserMessage } from '../database/sqliteMaintenance.js';
 import { markSaleOrderDeliveredInUi } from '../utils/completedOrderUi.js';
 import { getOrAssignInvoiceNumber } from '../utils/invoiceNumber';
-import { clearCheckoutResume } from '../services/checkoutResume.service';
+import {
+  clearCheckoutResume,
+  getCheckoutSignatures,
+  clearCheckoutSignatures,
+} from '../services/checkoutResume.service';
 import { finalizeLocalInvoiceSnapshotFromPayment } from '../utils/localInvoiceSnapshot.js';
 
 const MAX_PHOTOS = 3;
@@ -200,6 +204,7 @@ export default function PaymentProofScreen({ route, navigation }) {
       paymentPayload?.driverName != null && String(paymentPayload.driverName).trim()
         ? String(paymentPayload.driverName).trim()
         : '';
+    const stagedSigs = await getCheckoutSignatures(soId);
 
     const invoiceId = await localInvoicesDb.upsertLocalInvoice({
       sale_order_id: soId,
@@ -208,8 +213,8 @@ export default function PaymentProofScreen({ route, navigation }) {
       amount_untaxed: untaxed,
       amount_tax: tax,
       state: 'posted',
-      customer_signature_data: existingLocalInv?.customer_signature_data ?? '',
-      driver_signature_data: existingLocalInv?.driver_signature_data ?? '',
+      customer_signature_data: existingLocalInv?.customer_signature_data || stagedSigs?.customer || '',
+      driver_signature_data: existingLocalInv?.driver_signature_data || stagedSigs?.driver || '',
       driver_name: checkoutDriverName,
     });
 
@@ -385,6 +390,7 @@ export default function PaymentProofScreen({ route, navigation }) {
           }
           await finalizeLocalCheckoutState();
           await clearCheckoutResume(soId);
+          await clearCheckoutSignatures(soId);
         } catch (bgErr) {
           console.warn('[PaymentProof] background checkout', bgErr?.message || bgErr);
         }

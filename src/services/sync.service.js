@@ -162,6 +162,9 @@ const DRIVE_UPLOAD_CONCURRENCY = 2;
 const DRIVE_IMAGE_MAX_WIDTH = 1280;
 const DRIVE_IMAGE_JPEG_COMPRESS = 0.55;
 const LIGHT_SYNC_MAX_ORDERS = 250;
+const SALE_ORDER_LINE_FETCH_CHUNK = 300;
+const STOCK_PICKING_FETCH_SO_CHUNK = 100;
+const STOCK_PICKING_FETCH_PAGE = 500;
 const ENABLE_SYNC_INVOICE_PDF_CHATTER_ATTACHMENT = false;
 const ENABLE_CHECKOUT_DRIVE_PREFETCH = false;
 
@@ -5748,7 +5751,7 @@ async function buildGasDeliveredCountChatterBody(soId, paymentPayload) {
   const { linesToOdooHtmlBody } = await import('./proofAttachment.service.js');
   const sep = '────────────────────────────────────────';
   const lines = [];
-  lines.push('Gas Delivered Count updated through mobile..');
+  lines.push('Gas Delivery Quantity Recorded via Mobile App');
   lines.push(sep);
   for (const [label, qty] of qtyByProductLabel.entries()) {
     lines.push(`${label}: ${formatQty(qty)}`);
@@ -10494,23 +10497,85 @@ async function runSyncInternal(options = {}) {
         'price_subtotal',
         'price_total',
       ];
+      // Chunked so the Odoo row limit can never truncate lines. A single `limit: 1000` call
+      // dropped the last orders' lines (sorted by order_id) once a day exceeded ~140 orders × 7
+      // catalog lines, leaving those orders on the Order tab with "Qty: —".
+      const fetchLinesByIds = async (ids) => {
+        const chunks = [];
+        for (let i = 0; i < ids.length; i += SALE_ORDER_LINE_FETCH_CHUNK) {
+          chunks.push(ids.slice(i, i + SALE_ORDER_LINE_FETCH_CHUNK));
+        }
+        const out = [];
+        await mapWithConcurrencyLimit(chunks, 3, async (chunk) => {
+          const rows = await callOdoo('sale.order.line', 'search_read', [[['id', 'in', chunk]]], {
+            fields: lineFields,
+            limit: chunk.length,
+          });
+          out.push(...(rows || []));
+        });
+        return out;
+      };
       const linesPromise =
         lineIds.length > 0
           ? (log('fetch', `order lines (${lineIds.length} ids)`),
-            callOdoo('sale.order.line', 'search_read', [[['id', 'in', lineIds]]], {
-              fields: lineFields,
-              limit: 1000,
-            }))
+            (async () => {
+              const fetched = await fetchLinesByIds(lineIds);
+              const gotIds = new Set(fetched.map((l) => Number(l?.id)));
+              const missing = [...new Set(lineIds.map(Number))].filter((id) => !gotIds.has(id));
+              if (missing.length === 0) return fetched;
+              log('fetch', `order lines missing ${missing.length} id(s) — retrying`);
+              const retried = await fetchLinesByIds(missing);
+              const merged = [...fetched, ...retried];
+              const mergedIds = new Set(merged.map((l) => Number(l?.id)));
+              const stillMissing = missing.filter((id) => !mergedIds.has(id));
+              if (stillMissing.length > 0) {
+                const affectedOrders = lineSourceOrders
+                  .filter((o) =>
+                    (o.order_line || []).some((e) => stillMissing.includes(Number(Array.isArray(e) ? e[0] : e)))
+                  )
+                  .map((o) => o.name || o.id);
+                logWarn(
+                  'fetch order lines incomplete',
+                  new Error(`${stillMissing.length} line(s) missing for ${affectedOrders.join(', ')}`)
+                );
+                result.error = `Order lines incomplete for ${affectedOrders.length} order(s) — sync will retry`;
+              }
+              return merged;
+            })())
           : Promise.resolve([]);
+      // Paged by SO chunk + offset so a hard row limit can never drop pickings. A single
+      // `limit: 500` call silently truncated once a vehicle's window had >500 pickings, and
+      // Odoo's default order (scheduled_date asc) dropped the newest — today's — first.
+      const fetchPickingsForSaleIds = async (saleIds) => {
+        const chunks = [];
+        for (let i = 0; i < saleIds.length; i += STOCK_PICKING_FETCH_SO_CHUNK) {
+          chunks.push(saleIds.slice(i, i + STOCK_PICKING_FETCH_SO_CHUNK));
+        }
+        const out = [];
+        await mapWithConcurrencyLimit(chunks, 3, async (chunk) => {
+          for (let offset = 0; ; offset += STOCK_PICKING_FETCH_PAGE) {
+            const page =
+              (await callOdoo('stock.picking', 'search_read', [[['sale_id', 'in', chunk]]], {
+                fields: ['id', 'name', 'sale_id', 'state', 'move_ids', 'backorder_ids'],
+                order: 'id asc',
+                limit: STOCK_PICKING_FETCH_PAGE,
+                offset,
+              })) || [];
+            out.push(...page);
+            if (page.length < STOCK_PICKING_FETCH_PAGE) break;
+          }
+        });
+        const byId = new Map();
+        for (const p of out) {
+          const id = Number(p?.id);
+          if (Number.isFinite(id)) byId.set(id, p);
+        }
+        return [...byId.values()];
+      };
       const pickingsPromise =
         pickingSourceOrderIds.length > 0
           ? (log('fetch', `stock.picking (${pickingSourceOrderIds.length} SOs, light=${isLightPullMode})`),
-            callOdoo(
-              'stock.picking',
-              'search_read',
-              [[['sale_id', 'in', pickingSourceOrderIds]]],
-              { fields: ['id', 'name', 'sale_id', 'state', 'move_ids', 'backorder_ids'], limit: 500 }
-            ))
+            fetchPickingsForSaleIds(pickingSourceOrderIds))
           : Promise.resolve([]);
       const [lines, pickings] = await Promise.all([linesPromise, pickingsPromise]);
       allLines = lines || [];
@@ -10784,7 +10849,7 @@ async function runSyncInternal(options = {}) {
     //TODO: count column should renamed to results
     await syncLogDb.appendLog({
       sync_at: syncAt,
-      status: 'success',
+      status: result.error ? 'error' : 'success',
       message: result.error ? result.error : 'Sync successful',
       counts: JSON.stringify(result),
     });

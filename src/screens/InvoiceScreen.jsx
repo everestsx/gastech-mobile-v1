@@ -41,7 +41,13 @@ import SignatureCanvas from 'react-native-signature-canvas';
 import { resolveInvoiceCustomerDisplayName } from '../utils/customerDisplayName';
 import { fetchInvoicePartyInfo, partyInfoReadyForPrint } from '../utils/invoicePartyInfo';
 import { lineSubtotalAtQuantity, lineTaxAtQuantity } from '../utils/orderLineTax.js';
-import { setCheckoutResumePhase, clearCheckoutResume, getCheckoutResumeEntry } from '../services/checkoutResume.service';
+import {
+  setCheckoutResumePhase,
+  clearCheckoutResume,
+  getCheckoutResumeEntry,
+  setCheckoutSignatures,
+  getCheckoutSignatures,
+} from '../services/checkoutResume.service';
 import * as syncQueueDb from '../database/syncQueue.js';
 import { DEFAULT_SMS_ENABLED, normalizeSmsEnabled } from '../services/smsPreference.service';
 import {
@@ -1914,8 +1920,9 @@ export default function InvoiceScreen({ route, navigation }) {
         bankName: chequeRow?.bank_name || null,
         checkNumber: chequeRow?.check_number || null,
       });
-      setLocalCustomerSig(localInv?.customer_signature_data ?? null);
-      setLocalDriverSig(localInv?.driver_signature_data ?? null);
+      const stagedSigs = localInv ? null : await getCheckoutSignatures(saleOrderId);
+      setLocalCustomerSig(localInv?.customer_signature_data || stagedSigs?.customer || null);
+      setLocalDriverSig(localInv?.driver_signature_data || stagedSigs?.driver || null);
       setLoading(false);
 
       setInvoiceScreenUiCache(Number(saleOrderId), {
@@ -2650,6 +2657,22 @@ export default function InvoiceScreen({ route, navigation }) {
       const custSig = norm(rawCust);
       const drvSig = norm(rawDrv);
       const existing = await localInvoicesDb.getLocalInvoiceBySaleOrderId(saleOrderId);
+
+      if (!existing) {
+        await setCheckoutSignatures(saleOrderId, custSig, drvSig);
+        setLocalCustomerSig(custSig || null);
+        setLocalDriverSig(drvSig || null);
+        setShowSignatureCaptureModal(false);
+        setCaptureCustomerSig(null);
+        setCaptureDriverSig(null);
+        setCaptureCustomerSaved(false);
+        setCaptureDriverSaved(false);
+        setSignatureCaptureStep('customer');
+        captureCustomerRef.current?.clearSignature();
+        captureDriverRef.current?.clearSignature();
+        navigation.setParams({ promptSignatures: false });
+        return;
+      }
 
       let invNumber =
         existing?.invoice_number ??
