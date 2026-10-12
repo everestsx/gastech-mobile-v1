@@ -30,6 +30,7 @@ import { useSync } from '../context/SyncContext';
 import { useFocusEffect } from '@react-navigation/native';
 import { odooImageToUri } from '../services/employee.service';
 import { isSqliteFullError, sqliteFullUserMessage } from '../database/sqliteMaintenance.js';
+import { closeDatabaseForReload } from '../database/db.js';
 
 export default function MenuScreen({ navigation }) {
   const { t } = useTranslation();
@@ -168,6 +169,7 @@ export default function MenuScreen({ navigation }) {
           onPress: async () => {
             hideAlert();
             try {
+              await closeDatabaseForReload();
               await Updates.reloadAsync();
             } catch (e) {
               showAlert(t('menu.restartFailed', 'Restart failed'), e?.message || t('menu.closeAndReopen', 'Please close and reopen the app.'));

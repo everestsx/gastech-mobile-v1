@@ -52,9 +52,33 @@ function getRawDb() {
         /* non-fatal */
       }
       return patchExpoSqliteBindings(db);
+    }).catch((e) => {
+      rawDbPromise = null;
+      throw e;
     });
   }
   return rawDbPromise;
+}
+
+/**
+ * Finish queued work and close the connection before an in-app JS reload (OTA "Restart now").
+ * Otherwise the old runtime's connection can still hold a write lock when the new one opens.
+ */
+export async function closeDatabaseForReload() {
+  try {
+    await Promise.race([_queue, new Promise((r) => setTimeout(r, 5000))]);
+  } catch (_) {
+    /* ignore */
+  }
+  const pending = rawDbPromise;
+  rawDbPromise = null;
+  if (!pending) return;
+  try {
+    const db = await pending;
+    if (typeof db.closeAsync === 'function') await db.closeAsync();
+  } catch (e) {
+    console.warn('[DB] close before reload:', e?.message ?? e);
+  }
 }
 
 const SALE_ORDERS_COLUMNS = [
@@ -80,6 +104,13 @@ const SALE_ORDERS_COLUMNS = [
 ];
 
 async function runMigrations(db) {
+  // Wait for a lock instead of failing instantly with "database is locked" when another
+  // connection (e.g. the one left behind by an in-app OTA reload) is mid-write.
+  try {
+    await db.execAsync('PRAGMA busy_timeout = 8000');
+  } catch (_) {
+    /* non-fatal */
+  }
   await db.execAsync('PRAGMA journal_mode = WAL');
   try {
     await db.execAsync('PRAGMA wal_autocheckpoint = 200');
@@ -803,11 +834,37 @@ async function runMigrations(db) {
 /** Prevents reclaim from re-entering itself when its own DELETEs also hit SQLITE_FULL. */
 let _reclaiming = false;
 
+function isSqliteBusyError(err) {
+  return /database is locked|SQLITE_BUSY/i.test(String(err?.message || err || ''));
+}
+
+const BUSY_RETRY_DELAYS_MS = [300, 1000, 2500];
+
+/** A failed write/transaction is rolled back, so re-running the same op is safe. */
+async function runWithBusyRetry(db, fn) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fn(db);
+    } catch (e) {
+      if (!isSqliteBusyError(e) || attempt >= BUSY_RETRY_DELAYS_MS.length) throw e;
+      try {
+        if (typeof db.isInTransactionAsync === 'function' && (await db.isInTransactionAsync())) {
+          await db.execAsync('ROLLBACK');
+        }
+      } catch (_) {
+        /* ignore */
+      }
+      console.warn(`[DB] database is locked — retry ${attempt + 1}/${BUSY_RETRY_DELAYS_MS.length}`);
+      await new Promise((r) => setTimeout(r, BUSY_RETRY_DELAYS_MS[attempt]));
+    }
+  }
+}
+
 function enqueue(fn) {
   const p = _queue.then(async () => {
     const db = await getRawDb();
     try {
-      return await fn(db);
+      return await runWithBusyRetry(db, fn);
     } catch (e) {
       if (!isSqliteFullError(e) || _reclaiming) throw e;
       _reclaiming = true;

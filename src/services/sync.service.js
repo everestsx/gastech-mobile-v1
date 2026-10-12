@@ -3,7 +3,7 @@
  * Sync = fetch from backend and store; app reads only from DB.
  */
 import { getCustomers, getPartnersByIds } from './customer.service';
-import { getAllSaleOrders, getSaleOrdersByVehicle } from './saleOrder.service';
+import { getAllSaleOrders, getSaleOrdersByVehicle, getSaleOrdersByIdsFromOdoo } from './saleOrder.service';
 import { getAllProducts, getProductsByIds, getMandatoryEmptyCylinderProducts } from './product.service';
 import { getJournals } from './journal.service';
 import { getRoutes } from './route.service';
@@ -10405,6 +10405,72 @@ async function runSyncInternal(options = {}) {
       result.error = err;
       throw new Error(err);
     }
+    // An order completed on another device leaves the "open" pull and can only return through
+    // the capped date-window pull (250 light / 500 full). With large volumes it falls outside
+    // that cap and stays "open" here forever, so re-read any order this device still shows as
+    // open but Odoo did not return.
+    const reconciledOrderIds = new Set();
+    if (vehicleId != null) {
+      try {
+        const fetchedIdSet = new Set((orders || []).map((o) => Number(o?.id)));
+        const staleOpenIds = ((await getCachedOrders(vehicleId)) || [])
+          .filter((o) => !fetchedIdSet.has(Number(o?.id)) && isOpenAssignedOrder(o))
+          .map((o) => Number(o.id))
+          .filter((id) => Number.isFinite(id) && id > 0);
+        if (staleOpenIds.length > 0) {
+          log('fetch', `re-read ${staleOpenIds.length} local open order(s) missing from capped pull`);
+          const refreshed = (await getSaleOrdersByIdsFromOdoo(staleOpenIds)) || [];
+          for (const o of refreshed) reconciledOrderIds.add(Number(o.id));
+          orders = [...(orders || []), ...refreshed];
+          result.orders = orders.length;
+        }
+      } catch (e) {
+        logWarn('re-read stale open orders', e);
+      }
+    }
+    // Route orders are created with ordered qty 0 and the driver sets the real qty at delivery,
+    // so after checkout Odoo still computes invoice_status "no" even though a posted invoice
+    // exists. Other devices only treat "invoiced" as completed, so mark those orders invoiced.
+    // Orders completed or queued on this device are skipped: they already show as delivered here,
+    // and their upload/invoice flow must not be touched.
+    const invoicedByPostedInvoiceIds = new Set();
+    try {
+      const { getSaleOrderIdsWithLocalInvoices } = await import('../database/localInvoices.js');
+      const [localInvoicedIds, queuedSaleOrderIds] = await Promise.all([
+        getSaleOrderIdsWithLocalInvoices().catch(() => new Set()),
+        syncQueueDb.getPendingSaleOrderIds().catch(() => new Set()),
+      ]);
+      const candidateIds = (orders || [])
+        .filter((o) => {
+          const id = Number(o?.id);
+          if (localInvoicedIds.has(id) || queuedSaleOrderIds.has(id)) return false;
+          const inv = String(o?.invoice_status || '').toLowerCase();
+          return String(o?.state || '') !== 'cancel' && inv !== 'invoiced' && inv !== 'gastech_invoiced';
+        })
+        .map((o) => Number(o.id))
+        .filter((id) => Number.isFinite(id) && id > 0);
+      if (candidateIds.length > 0) {
+        const { callOdoo: callOdooForInvoiced } = await import('./index.service');
+        for (let i = 0; i < candidateIds.length; i += 500) {
+          const chunk = candidateIds.slice(i, i + 500);
+          const rows = await callOdooForInvoiced(
+            'sale.order',
+            'search_read',
+            [[['id', 'in', chunk], ['invoice_ids.state', '=', 'posted']]],
+            { fields: ['id'], limit: chunk.length }
+          );
+          for (const r of rows || []) invoicedByPostedInvoiceIds.add(Number(r.id));
+        }
+        if (invoicedByPostedInvoiceIds.size > 0) {
+          orders = (orders || []).map((o) =>
+            invoicedByPostedInvoiceIds.has(Number(o?.id)) ? { ...o, invoice_status: 'invoiced' } : o
+          );
+          log('fetch', `${invoicedByPostedInvoiceIds.size} order(s) have a posted invoice — treated as invoiced`);
+        }
+      }
+    } catch (e) {
+      logWarn('detect orders with posted invoice', e);
+    }
     if (isLoggingOut) return { error: 'Logout in progress' };
     // Dashboard and order lists read from local DB only; preserve local state for orders with pending upload.
     const pendingSaleOrderIds = await syncQueueDb.getPendingSaleOrderIds();
@@ -10458,13 +10524,38 @@ async function runSyncInternal(options = {}) {
 
     if (includeHeavyOrderStateSync) {
       await refreshPaymentTypesFromOdoo(orders || [], { skipOrderIds: paymentRefreshSkipIds });
+    } else if (invoicedByPostedInvoiceIds.size > 0) {
+      try {
+        const localRows = await saleOrdersDb.getSaleOrdersByIds([...invoicedByPostedInvoiceIds]);
+        const needSplit = (orders || []).filter((o) => {
+          const id = Number(o?.id);
+          if (!invoicedByPostedInvoiceIds.has(id)) return false;
+          const row = localRows[id] || {};
+          return !String(row.payment_type || '').trim();
+        });
+        if (needSplit.length > 0) {
+          await refreshPaymentTypesFromOdoo(needSplit, { skipOrderIds: paymentRefreshSkipIds });
+        }
+      } catch (e) {
+        logWarn('light sync payment split for invoiced orders', e);
+      }
     }
 
     const lineSourceOrders =
       isMasterDataMode
-        ? (orders || []).filter((o) => isOpenAssignedOrder(o) || orderDateForMode(o).startsWith(localToday))
+        ? (orders || []).filter(
+            (o) =>
+              isOpenAssignedOrder(o) ||
+              orderDateForMode(o).startsWith(localToday) ||
+              reconciledOrderIds.has(Number(o.id))
+          )
         : isLightPullMode
-          ? (orders || []).filter((o) => isOpenAssignedOrder(o) || orderDateForMode(o).startsWith(localToday))
+          ? (orders || []).filter(
+              (o) =>
+                isOpenAssignedOrder(o) ||
+                orderDateForMode(o).startsWith(localToday) ||
+                reconciledOrderIds.has(Number(o.id))
+            )
           : orders || [];
     const orderIds = (orders || []).map((o) => o.id);
     const lineSourceOrderIds = lineSourceOrders.map((o) => o.id);

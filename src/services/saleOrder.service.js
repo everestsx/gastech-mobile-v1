@@ -306,6 +306,21 @@ export const getSaleOrdersByVehicle = async (vehicleId, dateFrom, syncDateField 
 };
 
 /**
+ * Re-read specific sale order headers by id (same fields as the vehicle pull).
+ * Ids deleted in Odoo are simply absent from the result.
+ */
+export const getSaleOrdersByIdsFromOdoo = async (ids, chunkSize = 100) => {
+  const wanted = [...new Set((ids || []).map(Number).filter((n) => Number.isFinite(n) && n > 0))];
+  const out = [];
+  for (let i = 0; i < wanted.length; i += chunkSize) {
+    const chunk = wanted.slice(i, i + chunkSize);
+    const rows = await searchReadSaleOrders([['id', 'in', chunk]], { limit: chunk.length });
+    out.push(...(rows || []));
+  }
+  return out;
+};
+
+/**
  * Get total quantity (sum of product_uom_qty) per order for given order line ids.
  * Returns { orderId: totalQty }.
  */

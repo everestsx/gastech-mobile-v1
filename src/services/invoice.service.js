@@ -547,20 +547,44 @@ export const postPaymentAndReconcile = async (paymentId, invoiceId) => {
 /** Get invoices by sale order origin (invoice_origin in orderNames). Matches API: account.move search_read. */
 export const getInvoicesByOrigins = (orderNames) => {
   if (!Array.isArray(orderNames) || orderNames.length === 0) return Promise.resolve([]);
-  const domain = [
-    ["invoice_origin", "in", orderNames],
-    ["move_type", "=", "out_invoice"],
-  ];
-  return callOdoo(
+  return searchReadAllPagesByChunk(
     "account.move",
-    "search_read",
-    [domain],
-    {
-      fields: ["id", "name", "invoice_origin", "payment_state", "amount_total", "amount_residual"],
-      limit: 500,
-    }
+    orderNames,
+    (chunk) => [
+      ["invoice_origin", "in", chunk],
+      ["move_type", "=", "out_invoice"],
+    ],
+    ["id", "name", "invoice_origin", "payment_state", "amount_total", "amount_residual"]
   );
 };
+
+const PAGED_FETCH_CHUNK = 200;
+const PAGED_FETCH_PAGE = 500;
+
+/**
+ * search_read over a large `in` list without a silent row cap: chunk the values,
+ * page each chunk by offset (stable id order), dedupe by id.
+ */
+async function searchReadAllPagesByChunk(model, values, buildDomain, fields) {
+  const out = new Map();
+  for (let i = 0; i < values.length; i += PAGED_FETCH_CHUNK) {
+    const chunk = values.slice(i, i + PAGED_FETCH_CHUNK);
+    for (let offset = 0; ; offset += PAGED_FETCH_PAGE) {
+      const page =
+        (await callOdoo(model, "search_read", [buildDomain(chunk)], {
+          fields,
+          order: "id asc",
+          limit: PAGED_FETCH_PAGE,
+          offset,
+        })) || [];
+      for (const row of page) {
+        if (row?.id != null) out.set(Number(row.id), row);
+      }
+      if (page.length < PAGED_FETCH_PAGE) break;
+    }
+  }
+  return Array.from(out.values());
+}
 
 const READ_CHUNK = 80;
 
@@ -654,11 +678,11 @@ export async function getInvoicesForPaymentRefresh(orderNames, saleOrderIds) {
 /** Get payments linked to given invoice ids (reconciled). */
 export const getPaymentsByInvoiceIds = (invoiceIds) => {
   if (!Array.isArray(invoiceIds) || invoiceIds.length === 0) return Promise.resolve([]);
-  return callOdoo(
+  return searchReadAllPagesByChunk(
     "account.payment",
-    "search_read",
-    [[["reconciled_invoice_ids", "in", invoiceIds]]],
-    { fields: ["id", "amount", "journal_id", "reconciled_invoice_ids"], limit: 500 }
+    invoiceIds,
+    (chunk) => [["reconciled_invoice_ids", "in", chunk]],
+    ["id", "amount", "journal_id", "reconciled_invoice_ids"]
   );
 };
 
