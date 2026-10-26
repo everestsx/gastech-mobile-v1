@@ -71,31 +71,50 @@ export async function clearCheckoutResume(saleOrderId) {
 /**
  * Signatures captured on the invoice step before Complete. Kept outside `local_invoices`
  * because that row means "completed" (My Invoices, delivered lists, sync hold release).
- * One key per order so large base64 blobs never bloat the resume map.
+ *
+ * In-memory first: PNG data-URLs are large; Android AsyncStorage/SharedPreferences can
+ * intermittently fail or hang on big writes. Memory keeps Continue → next step reliable
+ * for the rest of this checkout session even when disk persist fails.
  */
 const SIG_KEY_PREFIX = 'gastech_checkout_sig_v1_';
+const _checkoutSigMemory = new Map();
 
 export async function setCheckoutSignatures(saleOrderId, customerSig, driverSig) {
-  await AsyncStorage.setItem(
-    `${SIG_KEY_PREFIX}${String(saleOrderId)}`,
-    JSON.stringify({ customer: customerSig || '', driver: driverSig || '' })
-  );
+  const id = String(saleOrderId);
+  const payload = { customer: customerSig || '', driver: driverSig || '' };
+  _checkoutSigMemory.set(id, payload);
+  try {
+    await AsyncStorage.setItem(`${SIG_KEY_PREFIX}${id}`, JSON.stringify(payload));
+  } catch (e) {
+    // Non-fatal — memory still has the signatures for PaymentProof in this session.
+    console.warn('[checkout] signature AsyncStorage save failed', e?.message ?? e);
+  }
 }
 
 export async function getCheckoutSignatures(saleOrderId) {
+  const id = String(saleOrderId);
+  const mem = _checkoutSigMemory.get(id);
+  if (mem && (mem.customer || mem.driver)) return mem;
   try {
-    const raw = await AsyncStorage.getItem(`${SIG_KEY_PREFIX}${String(saleOrderId)}`);
+    const raw = await AsyncStorage.getItem(`${SIG_KEY_PREFIX}${id}`);
     if (!raw) return null;
     const o = JSON.parse(raw);
-    return o && typeof o === 'object' ? { customer: o.customer || '', driver: o.driver || '' } : null;
+    if (o && typeof o === 'object') {
+      const payload = { customer: o.customer || '', driver: o.driver || '' };
+      _checkoutSigMemory.set(id, payload);
+      return payload;
+    }
+    return null;
   } catch {
     return null;
   }
 }
 
 export async function clearCheckoutSignatures(saleOrderId) {
+  const id = String(saleOrderId);
+  _checkoutSigMemory.delete(id);
   try {
-    await AsyncStorage.removeItem(`${SIG_KEY_PREFIX}${String(saleOrderId)}`);
+    await AsyncStorage.removeItem(`${SIG_KEY_PREFIX}${id}`);
   } catch {
     /* ignore */
   }

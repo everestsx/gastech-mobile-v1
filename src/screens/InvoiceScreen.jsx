@@ -1201,6 +1201,8 @@ export default function InvoiceScreen({ route, navigation }) {
   /** Bumps when signature modal opens so pads remount with correct initial dataURL. */
   const [signatureModalSession, setSignatureModalSession] = useState(0);
   const signatureModalEnteredRef = useRef(false);
+  /** Prevents double-tap Continue while the first persist is still advancing UI. */
+  const persistSignaturesInFlightRef = useRef(false);
   const captureCustomerRef = useRef(null);
   const captureDriverRef = useRef(null);
   const MAX_PHOTOS = 3;
@@ -2058,6 +2060,8 @@ export default function InvoiceScreen({ route, navigation }) {
     signaturesComplete,
   ]);
 
+  // Only when the modal opens — do not re-run on localCustomerSig updates while open
+  // (that could remount pads / clear in-progress strokes mid-sign).
   useLayoutEffect(() => {
     if (!showSignatureCaptureModal) {
       signatureModalEnteredRef.current = false;
@@ -2075,7 +2079,8 @@ export default function InvoiceScreen({ route, navigation }) {
     setCaptureDriverSaved(!!d);
     setSignatureCaptureStep('customer');
     setSignatureModalSession((s) => s + 1);
-  }, [showSignatureCaptureModal, localCustomerSig, localDriverSig]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally only on modal open
+  }, [showSignatureCaptureModal]);
 
   useEffect(() => {
     setHideSyncIndicator(true);
@@ -2645,7 +2650,11 @@ export default function InvoiceScreen({ route, navigation }) {
     displayTax,
   ]);
 
-  /** Persist signatures even when no local invoice row yet (invoice row is finalized later on payment proof complete). */
+  /**
+   * Advance past the signature modal first, then persist in the background.
+   * Waiting on AsyncStorage/SQLite before closing was the intermittent Continue hang:
+   * large PNG data-URLs can fail or stall the write, so Invoice Method never opened.
+   */
   const persistCapturedSignatures = useCallback(
     async (rawCust, rawDrv) => {
       const norm = (raw) => {
@@ -2656,64 +2665,8 @@ export default function InvoiceScreen({ route, navigation }) {
       };
       const custSig = norm(rawCust);
       const drvSig = norm(rawDrv);
-      const existing = await localInvoicesDb.getLocalInvoiceBySaleOrderId(saleOrderId);
 
-      if (!existing) {
-        await setCheckoutSignatures(saleOrderId, custSig, drvSig);
-        setLocalCustomerSig(custSig || null);
-        setLocalDriverSig(drvSig || null);
-        setShowSignatureCaptureModal(false);
-        setCaptureCustomerSig(null);
-        setCaptureDriverSig(null);
-        setCaptureCustomerSaved(false);
-        setCaptureDriverSaved(false);
-        setSignatureCaptureStep('customer');
-        captureCustomerRef.current?.clearSignature();
-        captureDriverRef.current?.clearSignature();
-        navigation.setParams({ promptSignatures: false });
-        return;
-      }
-
-      let invNumber =
-        existing?.invoice_number ??
-        (order?.invoice_number && String(order.invoice_number).trim() ? String(order.invoice_number).trim() : null) ??
-        invoiceNumber ??
-        null;
-      if (invNumber == null || String(invNumber).trim() === '') {
-        try {
-          invNumber = await getOrAssignInvoiceNumber(saleOrderId, {
-            saleOrderName: order?.name,
-            backendInvoiceNumber: order?.invoice_number,
-          });
-          setInvoiceNumber(invNumber);
-        } catch (_) {
-          invNumber = `INV-${saleOrderId}`;
-        }
-      }
-
-      const amountTotal =
-        existing?.amount_total != null && existing.amount_total !== ''
-          ? Number(existing.amount_total)
-          : Number(displayTotal) || Number(order?.amount_total) || 0;
-      const amountUntaxed =
-        existing?.amount_untaxed != null && existing.amount_untaxed !== ''
-          ? Number(existing.amount_untaxed)
-          : Number(displaySubtotal) || Number(order?.amount_untaxed) || amountTotal;
-      const amountTax =
-        existing?.amount_tax != null && existing.amount_tax !== ''
-          ? Number(existing.amount_tax)
-          : Number(displayTax) || Number(order?.amount_tax) || 0;
-
-      await localInvoicesDb.upsertLocalInvoice({
-        sale_order_id: Number(saleOrderId),
-        invoice_number: String(invNumber),
-        amount_total: amountTotal,
-        amount_untaxed: amountUntaxed,
-        amount_tax: amountTax,
-        state: existing?.state || 'posted',
-        customer_signature_data: custSig,
-        driver_signature_data: drvSig,
-      });
+      // UI must move forward even if disk persist fails (same session still has these in state).
       setLocalCustomerSig(custSig || null);
       setLocalDriverSig(drvSig || null);
       setShowSignatureCaptureModal(false);
@@ -2722,9 +2675,71 @@ export default function InvoiceScreen({ route, navigation }) {
       setCaptureCustomerSaved(false);
       setCaptureDriverSaved(false);
       setSignatureCaptureStep('customer');
-      captureCustomerRef.current?.clearSignature();
-      captureDriverRef.current?.clearSignature();
+      try {
+        captureCustomerRef.current?.clearSignature();
+        captureDriverRef.current?.clearSignature();
+      } catch (_) {
+        /* WebView may already be tearing down */
+      }
       navigation.setParams({ promptSignatures: false });
+
+      try {
+        const existing = await localInvoicesDb.getLocalInvoiceBySaleOrderId(saleOrderId);
+        if (!existing) {
+          await setCheckoutSignatures(saleOrderId, custSig, drvSig);
+          return;
+        }
+
+        let invNumber =
+          existing?.invoice_number ??
+          (order?.invoice_number && String(order.invoice_number).trim()
+            ? String(order.invoice_number).trim()
+            : null) ??
+          invoiceNumber ??
+          null;
+        if (invNumber == null || String(invNumber).trim() === '') {
+          try {
+            invNumber = await getOrAssignInvoiceNumber(saleOrderId, {
+              saleOrderName: order?.name,
+              backendInvoiceNumber: order?.invoice_number,
+            });
+            setInvoiceNumber(invNumber);
+          } catch (_) {
+            invNumber = `INV-${saleOrderId}`;
+          }
+        }
+
+        const amountTotal =
+          existing?.amount_total != null && existing.amount_total !== ''
+            ? Number(existing.amount_total)
+            : Number(displayTotal) || Number(order?.amount_total) || 0;
+        const amountUntaxed =
+          existing?.amount_untaxed != null && existing.amount_untaxed !== ''
+            ? Number(existing.amount_untaxed)
+            : Number(displaySubtotal) || Number(order?.amount_untaxed) || amountTotal;
+        const amountTax =
+          existing?.amount_tax != null && existing.amount_tax !== ''
+            ? Number(existing.amount_tax)
+            : Number(displayTax) || Number(order?.amount_tax) || 0;
+
+        await localInvoicesDb.upsertLocalInvoice({
+          sale_order_id: Number(saleOrderId),
+          invoice_number: String(invNumber),
+          amount_total: amountTotal,
+          amount_untaxed: amountUntaxed,
+          amount_tax: amountTax,
+          state: existing?.state || 'posted',
+          customer_signature_data: custSig,
+          driver_signature_data: drvSig,
+        });
+      } catch (e) {
+        console.warn('[InvoiceScreen] persist signatures (non-blocking)', e?.message ?? e);
+        try {
+          await setCheckoutSignatures(saleOrderId, custSig, drvSig);
+        } catch (_) {
+          /* memory staging inside setCheckoutSignatures still holds them */
+        }
+      }
     },
     [
       saleOrderId,
@@ -3184,6 +3199,7 @@ export default function InvoiceScreen({ route, navigation }) {
               (!captureCustomerSaved || !captureDriverSaved) && styles.sigCapDoneBtnDisabled,
             ]}
             onPress={() => {
+              if (persistSignaturesInFlightRef.current) return;
               const custOk =
                 isUsableSignatureBlob(captureCustomerSig) && captureCustomerSaved;
               const drvOk = isUsableSignatureBlob(captureDriverSig) && captureDriverSaved;
@@ -3194,7 +3210,10 @@ export default function InvoiceScreen({ route, navigation }) {
                 );
                 return;
               }
-              void persistCapturedSignatures(captureCustomerSig, captureDriverSig);
+              persistSignaturesInFlightRef.current = true;
+              void persistCapturedSignatures(captureCustomerSig, captureDriverSig).finally(() => {
+                persistSignaturesInFlightRef.current = false;
+              });
             }}
             activeOpacity={0.88}
             disabled={!captureCustomerSaved || !captureDriverSaved}
