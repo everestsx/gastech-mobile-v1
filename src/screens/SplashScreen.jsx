@@ -63,6 +63,17 @@ export default function SplashScreenComponent({ navigation }) {
             setTimeout(() => reject(new Error('DB init timeout (web?)')), 2500)
           ),
         ]);
+        // Proactive space reclaim so SQLITE_FULL does not block the next login/delivery write.
+        void import('../database/db.js')
+          .then((m) => m.reclaimSqliteSpace({ aggressive: false }))
+          .catch(() => {});
+        void import('../database/sqliteMaintenance.js')
+          .then(async (m) => {
+            await m.clearStaleAsyncStorageBloat({ aggressive: false });
+            // Once per week: aggressive vacuum + prune expired history + orphan signature keys.
+            await m.runWeeklyStorageMaintenanceIfDue({ force: false });
+          })
+          .catch(() => {});
       } catch (_) {
         /* continue — DB not available (web) or timed out */
       }

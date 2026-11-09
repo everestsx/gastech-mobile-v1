@@ -42,6 +42,7 @@ import {
   odooImageToUri,
 } from '../services/employee.service';
 import { recordDriverLogin } from '../services/driverLoginHistory.service';
+import { isSqliteFullError, sqliteFullUserMessage } from '../database/sqliteMaintenance.js';
 
 
 
@@ -258,10 +259,25 @@ export default function LoginScreen({ navigation }) {
         phone: p.phone || '',
       }));
 
+    const licensePlate = String(selected.license_plate || selected.name || '').trim();
+    let vehicleId = selected.id;
+    const sessionBase = {
+      isAdmin: false,
+      vehicleName: selected.name,
+      licensePlate,
+      driverId: matchedDriver.id,
+      workContactId: matchedDriver.workContactId ?? null,
+      driverName: matchedDriver.name,
+      driverBarcode: matchedDriver.barcode,
+      driverPhone: matchedDriver.phone || '',
+      selectedPorters,
+      loggedInAt: new Date().toISOString(),
+      sessionExpiresAt: getSessionExpiryAtIsoEndOfLocalDay(),
+      pendingInitialSync: false,
+    };
+
     setLoading(true);
     try {
-      const licensePlate = String(selected.license_plate || selected.name || '').trim();
-      let vehicleId = selected.id;
       try {
         const liveId = await resolveFleetVehicleId({
           vehicleId: selected.id,
@@ -274,20 +290,9 @@ export default function LoginScreen({ navigation }) {
 
       await clearPreCheckDoneState();
       await saveUserSession({
-        isAdmin: false,
+        ...sessionBase,
         vehicleId,
-        vehicleName: selected.name,
-        licensePlate,
-        driverId: matchedDriver.id,
-        workContactId: matchedDriver.workContactId ?? null,
-        driverName: matchedDriver.name,
-        driverBarcode: matchedDriver.barcode,
         driverImageBase64: matchedDriver.imageBase64,
-        driverPhone: matchedDriver.phone || '',
-        selectedPorters,
-        loggedInAt: new Date().toISOString(),
-        sessionExpiresAt: getSessionExpiryAtIsoEndOfLocalDay(),
-        pendingInitialSync: false,
       });
 
       try {
@@ -339,9 +344,32 @@ export default function LoginScreen({ navigation }) {
       navigation.replace('Main');
     } catch (err) {
       const msg = String(err?.message || '').trim();
+      // SQLITE_FULL: reclaim + slim session save so a full phone doesn't block the dashboard.
+      if (isSqliteFullError(err)) {
+        try {
+          const { recoverFromStorageFull } = await import('../database/db.js');
+          await recoverFromStorageFull();
+          await saveUserSession({
+            ...sessionBase,
+            vehicleId,
+            driverImageBase64: null,
+            selectedPorters: selectedPorters.map((p) => ({ ...p, imageBase64: null })),
+          });
+          resetLoginFlow();
+          setPassword('');
+          navigation.replace('Main');
+          return;
+        } catch (retryErr) {
+          console.warn('[Login] SQLITE_FULL retry failed', retryErr?.message || retryErr);
+          showAlert('Login failed', sqliteFullUserMessage(), [
+            { text: 'Try again', onPress: hideAlert },
+          ]);
+          return;
+        }
+      }
       showAlert(
         'Login failed',
-        msg || 'Could not save your session.',
+        isSqliteFullError(err) ? sqliteFullUserMessage() : msg || 'Could not save your session.',
         [{ text: 'Try again', onPress: hideAlert }]
       );
     } finally {

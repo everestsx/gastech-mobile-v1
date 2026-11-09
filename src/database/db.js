@@ -6,7 +6,11 @@
 import * as SQLite from 'expo-sqlite';
 import * as FileSystem from 'expo-file-system';
 import { coerceSqliteStatementBindings } from './dbHelpers.js';
-import { isSqliteFullError, reclaimSqliteSpaceOnDb } from './sqliteMaintenance.js';
+import {
+  isSqliteFullError,
+  reclaimSqliteSpaceOnDb,
+  clearStaleAsyncStorageBloat,
+} from './sqliteMaintenance.js';
 
 const DB_NAME = 'gastech.db';
 
@@ -870,6 +874,8 @@ function enqueue(fn) {
       _reclaiming = true;
       try {
         await reclaimSqliteSpaceOnDb(db, { aggressive: true });
+        // AsyncStorage is a separate SQLite DB in the same app sandbox — free it too.
+        await clearStaleAsyncStorageBloat({ aggressive: true }).catch(() => {});
       } catch (reclaimErr) {
         console.warn('[DB] SQLITE_FULL reclaim failed', reclaimErr?.message ?? reclaimErr);
         throw e;
@@ -886,6 +892,32 @@ function enqueue(fn) {
 /** Periodic / post-sync space reclaim (WAL checkpoint, drop leftover synced JSON). */
 export async function reclaimSqliteSpace(options = {}) {
   return enqueue((db) => reclaimSqliteSpaceOnDb(db, options));
+}
+
+/**
+ * Emergency reclaim when login / delivery / any write hits SQLITE_FULL.
+ * LoginScreen and EmptyCylinderCollection already call this — it must exist.
+ * Clears gastech.db bloat + AsyncStorage signature/cache bloat + expired delivery history.
+ */
+export async function recoverFromStorageFull() {
+  try {
+    const { pruneExpiredLocalDeliveryHistory } = await import(
+      '../services/vehicleHistoryRetention.service.js'
+    );
+    await pruneExpiredLocalDeliveryHistory({});
+  } catch (e) {
+    console.warn('[DB] recover retention prune', e?.message ?? e);
+  }
+  try {
+    await reclaimSqliteSpace({ aggressive: true });
+  } catch (e) {
+    console.warn('[DB] recover sqlite reclaim', e?.message ?? e);
+  }
+  try {
+    await clearStaleAsyncStorageBloat({ aggressive: true });
+  } catch (e) {
+    console.warn('[DB] recover AsyncStorage reclaim', e?.message ?? e);
+  }
 }
 
 /**

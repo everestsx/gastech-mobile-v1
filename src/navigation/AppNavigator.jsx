@@ -87,6 +87,12 @@ function reclaimSqliteOnResumeIfDue() {
   void import('../database/db.js')
     .then((m) => m.reclaimSqliteSpace({ aggressive: false }))
     .catch(() => {});
+  void import('../database/sqliteMaintenance.js')
+    .then(async (m) => {
+      await m.clearStaleAsyncStorageBloat({ aggressive: false });
+      await m.runWeeklyStorageMaintenanceIfDue({ force: false });
+    })
+    .catch(() => {});
 }
 
 async function enforceSessionNotExpired() {

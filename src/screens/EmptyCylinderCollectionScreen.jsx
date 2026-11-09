@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -149,6 +149,7 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const sqliteFullRetryRef = useRef(false);
   const [reasonModalVisible, setReasonModalVisible] = useState(false);
   const [selectedReasonKey, setSelectedReasonKey] = useState('');
   const resolvedLanguage = useMemo(
@@ -449,11 +450,23 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
         navigation.replace('InvoiceScreen', invoiceParams);
       } catch (e) {
         if (isSqliteFullError(e)) {
-          try {
-            const { reclaimSqliteSpace } = await import('../database/db.js');
-            await reclaimSqliteSpace({ aggressive: true });
-          } catch (_) {
-            /* space reclaim is best-effort; user message below still applies */
+          if (!sqliteFullRetryRef.current) {
+            sqliteFullRetryRef.current = true;
+            try {
+              const { recoverFromStorageFull } = await import('../database/db.js');
+              await recoverFromStorageFull();
+              // One automatic retry after reclaim so delivery can continue.
+              await persistAndNavigate(emptyCylinderChatterBody);
+              return;
+            } catch (_) {
+              Alert.alert(
+                t('emptycylindercollection.error', 'Error'),
+                sqliteFullUserMessage()
+              );
+              return;
+            } finally {
+              sqliteFullRetryRef.current = false;
+            }
           }
           Alert.alert(
             t('emptycylindercollection.error', 'Error'),
@@ -469,7 +482,7 @@ export default function EmptyCylinderCollectionScreen({ route, navigation }) {
         setSaving(false);
       }
     },
-    [buildEntriesPayload, invoiceNavParams, navigation, saleOrderId]
+    [buildEntriesPayload, invoiceNavParams, navigation, saleOrderId, t]
   );
 
   const onPressConfirm = useCallback(() => {

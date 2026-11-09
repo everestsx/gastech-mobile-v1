@@ -1798,23 +1798,40 @@ export async function saveUserSession(user) {
   const storage = await getAsyncStorage();
   const safeUser = sanitizeUserSessionForStorage(user);
   const mediaPayload = JSON.stringify(extractUserSessionMedia(user));
-  try {
-    await storage.multiSet([
-      [KEYS.USER, JSON.stringify(safeUser)],
-      [KEYS.USER_MEDIA, mediaPayload],
-    ]);
-  } catch (e) {
-    // On some devices AsyncStorage may fail when media payload is large.
-    // Keep login reliable by storing core session first, then try media best-effort.
-    // Never overwrite existing media with empty placeholders, otherwise profile images disappear.
-    console.warn(`${LOG_TAG} saveUserSession media payload fallback`, e?.message ?? e);
-    await storage.setItem(KEYS.USER, JSON.stringify(safeUser));
+  const writeCoreAndMaybeMedia = async () => {
     try {
-      await storage.setItem(KEYS.USER_MEDIA, mediaPayload);
-    } catch (_) {
-      // ignore media storage fallback errors; core session is already saved.
-      // keep previously stored USER_MEDIA intact in this case.
+      await storage.multiSet([
+        [KEYS.USER, JSON.stringify(safeUser)],
+        [KEYS.USER_MEDIA, mediaPayload],
+      ]);
+    } catch (e) {
+      // On some devices AsyncStorage may fail when media payload is large.
+      // Keep login reliable by storing core session first, then try media best-effort.
+      // Never overwrite existing media with empty placeholders, otherwise profile images disappear.
+      console.warn(`${LOG_TAG} saveUserSession media payload fallback`, e?.message ?? e);
+      await storage.setItem(KEYS.USER, JSON.stringify(safeUser));
+      try {
+        await storage.setItem(KEYS.USER_MEDIA, mediaPayload);
+      } catch (_) {
+        // ignore media storage fallback errors; core session is already saved.
+      }
     }
+  };
+  try {
+    await writeCoreAndMaybeMedia();
+  } catch (e) {
+    // AsyncStorage is SQLite-backed on Android — SQLITE_FULL blocks "Go to dashboard".
+    // Reclaim app sandbox space once, then save core session only (no photos).
+    const { isSqliteFullError } = await import('../database/sqliteMaintenance.js');
+    if (!isSqliteFullError(e)) throw e;
+    console.warn(`${LOG_TAG} saveUserSession SQLITE_FULL — recovering`, e?.message ?? e);
+    try {
+      const { recoverFromStorageFull } = await import('../database/db.js');
+      await recoverFromStorageFull();
+    } catch (recoverErr) {
+      console.warn(`${LOG_TAG} saveUserSession recover failed`, recoverErr?.message ?? recoverErr);
+    }
+    await storage.setItem(KEYS.USER, JSON.stringify(safeUser));
   }
 }
 
@@ -5751,7 +5768,7 @@ async function buildGasDeliveredCountChatterBody(soId, paymentPayload) {
   const { linesToOdooHtmlBody } = await import('./proofAttachment.service.js');
   const sep = '────────────────────────────────────────';
   const lines = [];
-  lines.push('Gas Delivery Quantity Recorded via Mobile App Sign');
+  lines.push('Gas Delivery Quantity Recorded via Mobile App Updated');
   lines.push(sep);
   for (const [label, qty] of qtyByProductLabel.entries()) {
     lines.push(`${label}: ${formatQty(qty)}`);
@@ -10936,6 +10953,15 @@ async function runSyncInternal(options = {}) {
       await reclaimSqliteSpace({ aggressive: false });
     } catch (spaceErr) {
       logWarn('sync sqlite space reclaim', spaceErr);
+    }
+    try {
+      const { clearStaleAsyncStorageBloat, runWeeklyStorageMaintenanceIfDue } = await import(
+        '../database/sqliteMaintenance.js'
+      );
+      await clearStaleAsyncStorageBloat({ aggressive: false });
+      void runWeeklyStorageMaintenanceIfDue({ force: false });
+    } catch (spaceErr) {
+      logWarn('sync async storage / weekly maintenance', spaceErr);
     }
     //TODO: count column should renamed to results
     await syncLogDb.appendLog({

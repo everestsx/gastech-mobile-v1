@@ -287,7 +287,16 @@ function convertIntegerToWords(value) {
 }
 
 function formatAmountInWords(amount) {
-  return `${convertIntegerToWords(amount)} Only`;
+  const numeric = Number(amount);
+  if (!Number.isFinite(numeric)) return 'Zero Only';
+  const abs = Math.abs(numeric);
+  // Keep cents (2 dp) — do not round the whole amount to an integer.
+  const rupees = Math.floor(abs + 1e-9);
+  const cents = Math.round((abs - rupees) * 100);
+  const rupeeWords = convertIntegerToWords(rupees);
+  const prefix = numeric < 0 ? 'Minus ' : '';
+  if (cents <= 0) return `${prefix}${rupeeWords} Only`;
+  return `${prefix}${rupeeWords} and Cents ${convertIntegerToWords(cents)} Only`;
 }
 
 function buildInvoiceHtml(
