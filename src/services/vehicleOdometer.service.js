@@ -11,6 +11,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { callOdoo, callOdooArgs, callOdooJson2 } from './index.service';
 import * as syncQueueDb from '../database/syncQueue.js';
+import { getAppCache, setAppCache } from '../database/appCache.js';
 import { getEmployeeWorkContactId, parseWorkContactId } from './employee.service.js';
 import { resolveFleetVehicleId } from './vehicle.service.js';
 import { formatLocalYyyyMmDd } from '../utils/localDate.js';
@@ -458,6 +459,31 @@ export async function flushVehicleOdometerQueueItem(item) {
   });
 }
 
+/**
+ * Start KM is stored in BOTH AsyncStorage and gastech.db (app_cache).
+ *
+ * Why: Android AsyncStorage is a separate SQLite file capped at 6 MB by default
+ * (AsyncStorage_db_size_in_MB). Once a driver's AsyncStorage holds enough base64 photos /
+ * signatures / party caches, every NEW write fails with SQLITE_FULL even when the phone has
+ * plenty of free storage. That made Start Day show "Could not save start KM" on those phones.
+ * gastech.db (expo-sqlite) has no such cap, so the copy there keeps Start Day and the
+ * End Day "end KM >= start KM" check working. Only if both writes fail do we throw.
+ */
+const START_ODOMETER_CACHE_KEY = 'start_odometer_v1';
+
+function normalizeStoredStartOdometer(parsed) {
+  if (!parsed || typeof parsed !== 'object') return null;
+  const km = parseOdometerKm(parsed.km);
+  const vehicleId = Number(parsed.vehicleId);
+  if (km == null || !Number.isFinite(vehicleId) || vehicleId <= 0) return null;
+  return {
+    vehicleId,
+    km,
+    loggedInAt: parsed.loggedInAt != null ? String(parsed.loggedInAt) : null,
+    recordedAt: parsed.recordedAt || null,
+  };
+}
+
 export async function saveStartOdometer({ vehicleId, km, loggedInAt }) {
   const payload = {
     vehicleId: Number(vehicleId),
@@ -465,32 +491,48 @@ export async function saveStartOdometer({ vehicleId, km, loggedInAt }) {
     loggedInAt: loggedInAt != null ? String(loggedInAt) : null,
     recordedAt: new Date().toISOString(),
   };
-  await AsyncStorage.setItem(START_ODOMETER_KEY, JSON.stringify(payload));
+  let asyncErr = null;
+  let dbErr = null;
+  try {
+    await AsyncStorage.setItem(START_ODOMETER_KEY, JSON.stringify(payload));
+  } catch (e) {
+    asyncErr = e;
+    console.warn('[vehicleOdometer] start KM AsyncStorage save failed', e?.message ?? e);
+  }
+  try {
+    await setAppCache(START_ODOMETER_CACHE_KEY, payload);
+  } catch (e) {
+    dbErr = e;
+    console.warn('[vehicleOdometer] start KM app_cache save failed', e?.message ?? e);
+  }
+  if (asyncErr && dbErr) throw asyncErr;
   return payload;
 }
 
 export async function getStartOdometer() {
+  let fromAsync = null;
+  let fromDb = null;
   try {
     const raw = await AsyncStorage.getItem(START_ODOMETER_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    const km = parseOdometerKm(parsed?.km);
-    const vehicleId = Number(parsed?.vehicleId);
-    if (km == null || !Number.isFinite(vehicleId) || vehicleId <= 0) return null;
-    return {
-      vehicleId,
-      km,
-      loggedInAt: parsed?.loggedInAt != null ? String(parsed.loggedInAt) : null,
-      recordedAt: parsed?.recordedAt || null,
-    };
-  } catch (_) {
-    return null;
+    if (raw) fromAsync = normalizeStoredStartOdometer(JSON.parse(raw));
+  } catch (_) {}
+  try {
+    fromDb = normalizeStoredStartOdometer(await getAppCache(START_ODOMETER_CACHE_KEY));
+  } catch (_) {}
+  if (fromAsync && fromDb) {
+    const a = Date.parse(String(fromAsync.recordedAt || ''));
+    const d = Date.parse(String(fromDb.recordedAt || ''));
+    return Number.isFinite(d) && (!Number.isFinite(a) || d > a) ? fromDb : fromAsync;
   }
+  return fromAsync || fromDb;
 }
 
 export async function clearStartOdometer() {
   try {
     await AsyncStorage.removeItem(START_ODOMETER_KEY);
+  } catch (_) {}
+  try {
+    await setAppCache(START_ODOMETER_CACHE_KEY, null);
   } catch (_) {}
 }
 

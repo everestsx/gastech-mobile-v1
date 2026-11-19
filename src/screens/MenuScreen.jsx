@@ -461,6 +461,18 @@ export default function MenuScreen({ navigation }) {
 
       <TouchableOpacity
         style={[styles.menuItem, { backgroundColor: colors.surface, borderColor: colors.border }]}
+        onPress={() => navigation.navigate('StorageManagement')}
+        activeOpacity={0.8}
+      >
+        <Ionicons name="server-outline" size={24} color={colors.primary} />
+        <Text style={[styles.menuItemText, { color: colors.text }]}>
+          {t('menu.storageManagement', 'Storage Management')}
+        </Text>
+        <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={[styles.menuItem, { backgroundColor: colors.surface, borderColor: colors.border }]}
         onPress={handleCheckAppUpdate}
         activeOpacity={0.8}
         disabled={checkingAppUpdate}

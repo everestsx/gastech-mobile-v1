@@ -92,12 +92,36 @@ async function readPortersCache() {
   }
 }
 
+/**
+ * Android AsyncStorage is one SQLite DB capped at 6 MB, and a single row > ~2 MB cannot be read
+ * back. Writing every porter's photo here on each login refilled that DB. The cache keeps the full
+ * roster (names / phones / ids) but only as many small photos as fit in PORTERS_CACHE_IMAGE_BUDGET.
+ * Budget stays below the 200 KB threshold at which sqliteMaintenance strips porter images, so the
+ * cleanup and this write do not undo each other. The login screen still gets every photo in memory.
+ */
+const PORTERS_CACHE_IMAGE_BUDGET = 180_000;
+const PORTERS_CACHE_MAX_IMAGE_CHARS = 60_000; // larger = legacy full-size image_1920; never cached
+
+function slimPortersForCache(rows) {
+  let used = 0;
+  return (Array.isArray(rows) ? rows : []).map((p) => {
+    if (!p || typeof p !== "object") return p;
+    const img = typeof p.imageBase64 === "string" ? p.imageBase64 : null;
+    if (!img) return p;
+    if (img.length <= PORTERS_CACHE_MAX_IMAGE_CHARS && used + img.length <= PORTERS_CACHE_IMAGE_BUDGET) {
+      used += img.length;
+      return p;
+    }
+    return { ...p, imageBase64: null };
+  });
+}
+
 async function writePortersCache(rows) {
   try {
     const storage = await getAsyncStorage();
     await storage.setItem(
       PORTERS_CACHE_KEY,
-      JSON.stringify({ savedAt: Date.now(), rows: Array.isArray(rows) ? rows : [] })
+      JSON.stringify({ savedAt: Date.now(), rows: slimPortersForCache(rows) })
     );
   } catch {
     // cache write is best-effort
@@ -126,6 +150,15 @@ export function odooImageToUri(imageField) {
   if (!s) return null;
   if (s.startsWith("data:")) return s;
   return `data:image/png;base64,${s}`;
+}
+
+/** image_1920 (drivers) or image_256 (porters); Odoo sends `false` when there is no photo. */
+function pickEmployeeImage(row) {
+  for (const k of ["image_1920", "image_256"]) {
+    const v = row?.[k];
+    if (v != null && v !== false && String(v).trim() !== "") return String(v);
+  }
+  return null;
 }
 
 /** Prefer mobile, then work phone — always a string for session / SQLite (never null). */
@@ -166,7 +199,7 @@ export function normalizeEmployee(row, enteredDriverCode = "") {
     id: row.id,
     name: row.name || "",
     barcode: entered,
-    imageBase64: row.image_1920 != null && row.image_1920 !== false ? String(row.image_1920) : null,
+    imageBase64: pickEmployeeImage(row),
     phone: pickEmployeePhone(row),
     workContactId: parseWorkContactId(row.work_contact_id) ?? parseWorkContactId(row.address_id),
   };
@@ -206,10 +239,24 @@ export const getDrivingEmployees = () =>
   );
 
 /** All employees in the Porters department (multi-select on login). */
-export const getPortersEmployees = () =>
-  employeeSearchRead([["department_id.name", "=", "Porters"]], { limit: 500 }).then((rows) =>
-    rows.map((r) => normalizeEmployee(r)).filter(Boolean)
-  );
+/**
+ * Porters: `image_256` (Odoo image.mixin thumbnail) instead of `image_1920`. Largest porter avatar
+ * in the app is 96 dp (profile modal); full-size photos were 10–50x larger and are what filled
+ * AsyncStorage (porter cache + selected porters in session media). Falls back to the original
+ * full-size read if the server rejects the thumbnail field, so login never loses the porter list.
+ */
+const PORTER_READ_FIELDS = ["id", "name", "image_256", "mobile_phone", "work_phone", "work_contact_id"];
+
+export const getPortersEmployees = async () => {
+  const domain = [["department_id.name", "=", "Porters"]];
+  let rows;
+  try {
+    rows = await employeeSearchRead(domain, { limit: 500, fields: PORTER_READ_FIELDS });
+  } catch (_) {
+    rows = await employeeSearchRead(domain, { limit: 500 });
+  }
+  return rows.map((r) => normalizeEmployee(r)).filter(Boolean);
+};
 
 /** Faster porter list without image blobs (used for quick initial load). */
 export const getPortersEmployeesFast = () =>

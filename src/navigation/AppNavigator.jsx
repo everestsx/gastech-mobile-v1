@@ -31,6 +31,7 @@ import MyCommissionScreen from '../screens/MyCommissionScreen';
 import VehicleStockScreen from '../screens/VehicleStockScreen';
 import SyncHistoryScreen from '../screens/SyncHistoryScreen';
 import DataUsageScreen from '../screens/DataUsageScreen';
+import StorageManagementScreen from '../screens/StorageManagementScreen';
 import LocalInvoicesScreen from '../screens/LocalInvoicesScreen';
 import CancelOrdersScreen from '../screens/CancelOrdersScreen';
 import InvoicedCustomersScreen from '../screens/InvoicedCustomersScreen';
@@ -271,6 +272,11 @@ function MainStackScreen() {
         name="DataUsage"
         component={DataUsageScreen}
         options={{ ...headerScreenOptions, title: t('navigation.dataUsage', 'Data Usage') }}
+      />
+      <MainStack.Screen
+        name="StorageManagement"
+        component={StorageManagementScreen}
+        options={{ ...headerScreenOptions, title: t('navigation.storageManagement', 'Storage Management') }}
       />
       <MainStack.Screen
         name="LocalInvoices"
